@@ -251,21 +251,36 @@ function findKeyLine(lines, key) {
   return null;
 }
 
-// Strips a trailing YAML comment from an UNQUOTED scalar value: a "#"
-// preceded by whitespace starts a comment that runs to the end of the
-// line. This is the format's own rule (plain YAML), not something this
-// reader adds on top of it, so `readScalar` applies it before anything
-// else looks at the value. A value that opens with a quote is returned
-// untouched, comment-looking "#" and all: what is inside a quoted span is
-// data, and `unquote` (called after this) is the one place that decides
-// where such a span ends, so this function must not also guess at it.
-// PARSER_LIMITS below names the one surprising consequence: an unquoted
-// value that was meant to contain a literal "#" preceded by a space loses
-// everything from that point on, silently and correctly, per the format.
+// Strips a trailing YAML comment from a scalar value: a "#" preceded by
+// whitespace starts a comment that runs to the end of the line. This is
+// the format's own rule (plain YAML), not something this reader adds on
+// top of it, so `readScalar` applies it before anything else looks at
+// the value. What is INSIDE a quoted span is always left untouched,
+// comment-looking "#" and all, since that is data; `unquote` (called
+// after this) is still the one place that decides where such a span
+// ends. Fix round 3: an earlier version of this function treated
+// "opens with a quote" as "nothing real follows on this line", which
+// left a real trailing comment AFTER a properly closed quoted value
+// (`status: "stable" # confirmed`) stuck to the value, so the whole
+// thing failed `unquote`'s first/last-character match and came back
+// unquoted and uncommented. This version finds the matching closing
+// quote first (the next occurrence of the same quote character), and
+// only then looks for a comment in whatever follows it, leaving the
+// quoted span itself exactly as it was. PARSER_LIMITS below names the
+// one surprising consequence that remains: an unquoted value meant to
+// contain a literal "#" preceded by a space loses everything from that
+// point on, silently and correctly, per the format.
 function stripTrailingComment(rawHead) {
   const withoutLeadingSpace = rawHead.replace(/^[ \t]+/, '');
   const first = withoutLeadingSpace[0];
-  if (first === '"' || first === "'") return rawHead.trim();
+  if (first === '"' || first === "'") {
+    const closeIndex = withoutLeadingSpace.indexOf(first, 1);
+    if (closeIndex === -1) return rawHead.trim(); // no closing quote at all: leave it for unquote to judge, unchanged
+    const afterQuote = withoutLeadingSpace.slice(closeIndex + 1);
+    const commentInTail = /[ \t]#/.exec(afterQuote);
+    if (!commentInTail) return withoutLeadingSpace.trim();
+    return (withoutLeadingSpace.slice(0, closeIndex + 1) + afterQuote.slice(0, commentInTail.index)).trim();
+  }
   const commentStart = /[ \t]#/.exec(withoutLeadingSpace);
   if (!commentStart) return rawHead.trim();
   return withoutLeadingSpace.slice(0, commentStart.index).trim();

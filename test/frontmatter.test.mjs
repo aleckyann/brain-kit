@@ -216,6 +216,18 @@ test('readScalar strips a trailing comment from an unquoted value, but leaves a 
   assert.equal(readScalar('title: "issue #42"', 'title'), 'issue #42');
 });
 
+// Fix round 3: a quoted value followed by a REAL trailing comment (after
+// the closing quote, not a "#" inside the quoted span) used to misread,
+// since the earlier version of stripTrailingComment treated "opens with
+// a quote" as "nothing else follows this line": the comment stayed
+// glued to the value, unquote's first/last-character check then failed,
+// and the whole thing came back with its quotes and its comment intact.
+test('readScalar strips a trailing comment after a closing quote too, but still leaves a hash inside the quotes alone when nothing follows', () => {
+  assert.equal(readScalar('status: "stable" # confirmed after the last review', 'status'), 'stable');
+  assert.equal(readScalar('title: "issue #42" # and it is still open', 'title'), 'issue #42');
+  assert.equal(readScalar('title: "issue #42"', 'title'), 'issue #42');
+});
+
 test('readScalar treats a "#" with no preceding space as part of the value, not as a comment marker', () => {
   assert.equal(readScalar('tag: item#5', 'tag'), 'item#5');
 });

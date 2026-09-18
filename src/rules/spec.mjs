@@ -65,21 +65,35 @@
 // whose vault reports fifteen findings that they have a broken bundle
 // when they may only have an opinionated one, which is the wrong
 // direction to be wrong in: it is the answer that gets the tool switched
-// off. Every rule object below carries a `level` of 'must' (type-required
-// directly from section 11; index-no-frontmatter and log-format through
-// it, since section 11 defers to their own sections for the reserved
-// filenames) or 'should' (the five trust and lifecycle rules), and every
-// finding carries the same level its rule does.
+// off.
+//
+// Fix round 3: the level belongs to the CHECK, not to the rule. Two
+// rules (index-no-frontmatter, log-format) bundle checks the format
+// grades differently, so a single level per rule made the ruler
+// over-claim on precisely this point. Every finding carries its own
+// `level`, set either by the rule object (when every check it emits
+// agrees: type-required is always 'must'; the five section 5 to 10
+// rules are always 'should') or by the individual finding, for the two
+// rules whose checks do not agree. `runSpecRules` prefers a finding's
+// own level over its rule's, so a rule with no single level simply
+// never sets one and every one of its findings must. When a reading of
+// the format is arguable rather than plain, the level claimed is
+// 'should', never 'must': telling a person their bundle is NOT
+// CONFORMANT on a reading the text does not plainly support is the
+// failure that gets a validator switched off.
 //
 // Section 11 also settles two questions this file no longer has to guess
 // at. First, quoted here rather than left as an inference: consumers
 // "MUST treat a bare `verified` mapping as a one-element list", which is
 // exactly what readVerifiedEvents below already did on this project's
-// own judgment before the citation existed. Second: consumers "MUST NOT
-// reject a concept for an unknown `type` value", which is why
-// type-required below checks only that `type` is non-empty and never
-// enumerates what it may be; a closed list of allowed types is a house
-// rule (frontmatter.type_enum, task 5), and never belongs here.
+// own judgment before the citation existed. Second, and corrected in fix
+// round 3 (the sentence quoted here in an earlier round did not exist;
+// it spliced two real ones into a third): section 11 separately lists
+// what consumers "MUST NOT reject a bundle because of", one item being
+// "Unknown `type` values". That is why type-required below checks only
+// that `type` is non-empty and never enumerates what it may be; a closed
+// list of allowed types is a house rule (frontmatter.type_enum, task 5),
+// and never belongs here.
 //
 // Section 5, quoted rather than inferred: "Every timestamp-valued key in
 // OKF is an ISO 8601 datetime with an explicit UTC offset." This binds
@@ -125,6 +139,33 @@
 // verified-events again reports a `verified` key present with no events
 // under it at all, restoring a finding the original validator also made
 // ("verified vazio") that this port had silently dropped.
+//
+// Fix round 3, six corrections: the level moved from the rule to the
+// check (see above); withoutFencedBlocks now matches CommonMark's own
+// fence rule (up to three leading spaces, three-or-more backticks OR
+// tildes, tracking the opening marker's character and length and
+// closing only on a marker at least as long of the SAME character)
+// instead of a bare "```" prefix, which missed tilde fences, mishandled
+// a shorter fence nested in a longer one, and, worst, treated a fenced
+// three-backtick line found inside a four-space-indented code block as
+// a real fence toggle, silently swallowing every real heading after it;
+// type-required no longer says a file "has no frontmatter at all" when
+// its frontmatter parses fine and simply has no type key, which is the
+// commonest way this rule fires and had been miscast as the unterminated
+// case's message since fix round 1 narrowed that one branch without
+// revisiting the other; the offset ceiling on a datetime's UTC offset is
+// 14 hours, not 23 (the real range of UTC offsets in use, checked
+// against the offset's digits regardless of sign, so +14:00 and -12:00
+// both pass and +15:00 does not); frontmatterKeyLine now recognises a
+// quoted key the same way findKeyLine in src/frontmatter.mjs already
+// does, since fix round 1 widened the shared lookup but left this
+// module's own line-number helper matching only the bare form, which
+// made a quoted key read correctly but report a null line; and
+// stripTrailingComment now finds the real closing quote of a quoted
+// value before looking for a comment after it, rather than assuming a
+// value that opens with a quote never has anything real following it on
+// the same line, which is what let a quoted, then commented, scalar
+// still misread.
 import { posix } from 'node:path';
 import { readEntries, readMapping, readScalar, splitFrontmatter } from '../frontmatter.mjs';
 
@@ -177,9 +218,14 @@ const DATETIME_WITH_OFFSET_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(
 
 // A datetime with an explicit offset (a bare "Z" counts as one): right
 // shape, a calendar-valid date, a clock-valid time, and, when the offset
-// is not "Z", an offset hour of 0-23 and an offset minute of 0-59 (the
-// same bounds a clock's own hour and minute use, since an offset is a
-// difference of clock time from UTC, not a separate kind of number).
+// is not "Z", an offset hour of 0-14 and an offset minute of 0-59.
+// Fourteen, not twenty-four: a clock's own hour runs to 23, but a UTC
+// offset's real range in current use is -12:00 to +14:00, checked here
+// against the digits alone regardless of sign, so +14:00 and -12:00
+// both pass and +15:00 does not. Nothing asymmetric is coded for the
+// negative side on purpose: the format gives no distinct bound for it,
+// and a single ceiling checked against the unsigned digits already
+// accepts every real offset in use and rejects anything wider.
 function isValidIsoDatetimeWithOffset(value) {
   const match = DATETIME_WITH_OFFSET_PATTERN.exec(value);
   if (!match) return false;
@@ -187,7 +233,7 @@ function isValidIsoDatetimeWithOffset(value) {
   if (!isValidCalendarDate(Number(yearStr), Number(monthStr), Number(dayStr))) return false;
   if (!isValidTimeOfDay(Number(hourStr), Number(minuteStr), Number(secondStr))) return false;
   if (zone === 'Z') return true;
-  return Number(zone.slice(1, 3)) <= 23 && Number(zone.slice(4, 6)) <= 59;
+  return Number(zone.slice(1, 3)) <= 14 && Number(zone.slice(4, 6)) <= 59;
 }
 
 // --- fenced code blocks, skipped before log-format reads headings -------------
@@ -204,16 +250,42 @@ function isValidIsoDatetimeWithOffset(value) {
 // it, keeps every line NUMBER after the fence exactly where it was: a
 // heading reported after a multi-line fence must still point at its own
 // real line, not at a line shifted up by however long the fence was.
+//
+// Fix round 3: matches the fence rule the review handed down, not a bare
+// "```" prefix. A fence marker is up to three leading spaces, then three
+// or more backticks OR three or more tildes (never mixed), with nothing
+// but the rest of the line after it (an info string on an OPENING fence
+// is allowed and ignored; a CLOSING fence allows only trailing
+// whitespace). The four leading spaces of a real indented code block
+// never match "at most three", so a fence-shaped line inside one is
+// plain text here, not a toggle: this is what fixed the false negative
+// where such a line silently opened a fence that swallowed every real
+// heading after it. Closing requires the SAME character and a marker at
+// LEAST as long as the one that opened it, tracked in `fence`, so a
+// shorter same-character fence nested inside a longer one (three
+// backticks inside four) is content, not a close, and a tilde fence is
+// recognised on the same terms as a backtick one instead of being
+// missed entirely.
+const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})[ \t]*(.*)$/;
+
 function withoutFencedBlocks(text) {
-  let inFence = false;
+  let fence = null; // { char, length } of the open fence, or null
   return text
     .split('\n')
     .map((line) => {
-      if (/^```/.test(line.trim())) {
-        inFence = !inFence;
+      const match = FENCE_LINE.exec(line);
+      if (!match) return fence ? '' : line;
+
+      const marker = match[1];
+      const rest = match[2];
+      if (!fence) {
+        fence = { char: marker[0], length: marker.length };
         return '';
       }
-      return inFence ? '' : line;
+      if (marker[0] === fence.char && marker.length >= fence.length && rest.trim() === '') {
+        fence = null;
+      }
+      return ''; // a marker line while inside a fence is always blanked, whether it closes the fence or is merely content that happens to look like one
     })
     .join('\n');
 }
@@ -236,9 +308,18 @@ function isBlank(value) {
 // its line 0 is always the file's line 2, since splitFrontmatter's own
 // opening delimiter match consumes exactly one line ("---" plus its own
 // newline) before frontmatter begins, whatever the block's content is.
+//
+// The key may be written bare or quoted ("key": value, 'key': value),
+// matching findKeyLine in src/frontmatter.mjs on the same three
+// alternatives: fix round 1 widened that shared lookup so every reader
+// finds a quoted key, but left this helper matching only the bare form,
+// so a quoted key was read correctly and then reported at a null line,
+// as if it were absent. Fixed here rather than by exporting and reusing
+// findKeyLine itself, which is private to that module on purpose (this
+// helper only needs WHERE a key's line is, never how its value reads).
 function frontmatterKeyLine(frontmatter, key) {
   if (!frontmatter) return null;
-  const pattern = new RegExp(`^${key}[ \t]*:`);
+  const pattern = new RegExp(`^(?:"${key}"|'${key}'|${key})[ \t]*:`);
   const lines = frontmatter.split('\n');
   for (let i = 0; i < lines.length; i++) {
     if (pattern.test(lines[i])) return i + 2;
@@ -283,10 +364,11 @@ function looksLikeUnterminatedFrontmatter(text) {
 
 // --- type-required (4.1) -------------------------------------------------------
 //
-// Non-empty, never enumerated: section 11 says consumers "MUST NOT reject
-// a concept for an unknown type value", so this check stops at "is type
-// here and is it non-empty" on purpose. A closed list of allowed types
-// belongs to the house ruler's frontmatter.type_enum (task 5), never here.
+// Non-empty, never enumerated: section 11 lists "Unknown `type` values"
+// among what consumers "MUST NOT reject a bundle because of", so this
+// check stops at "is type here and is it non-empty" on purpose. A closed
+// list of allowed types belongs to the house ruler's frontmatter.type_enum
+// (task 5), never here.
 
 const typeRequired = {
   id: 'type-required',
@@ -301,22 +383,27 @@ const typeRequired = {
       const value = readScalar(frontmatter, 'type');
       const line = frontmatterKeyLine(frontmatter, 'type');
       if (value === null) {
-        // frontmatter is null here either because the file never opened
-        // one at all, or because it opened one that never closed: those
-        // are different claims. Reporting "missing" for the second case
-        // would be the exact confident-wrong-finding this whole module
-        // exists to avoid, since a type line can be sitting in plain
-        // sight inside the unterminated block; readScalar cannot see it
-        // either way, once splitFrontmatter itself could not find where
-        // the block ends, so this is a shape problem, not an absence.
-        if (frontmatter === null && looksLikeUnterminatedFrontmatter(rawText)) {
-          findings.push({
-            file,
-            line: null,
-            message: 'frontmatter opens with "---" but is never closed with a second one, so type cannot be confirmed; close the block',
-          });
+        // Three different claims share `value === null`, and only one
+        // of them is "there is no frontmatter at all": frontmatter may
+        // also be null because it opened with "---" and never closed
+        // (fix round 1: reporting "missing" there would deny a type
+        // line sitting in plain sight inside the unterminated block),
+        // or frontmatter may parse perfectly well and simply carry no
+        // type key at all, the commonest way this rule fires and the
+        // one fix round 1's narrower wording accidentally broke by
+        // leaving it in the same branch as "no frontmatter at all".
+        if (frontmatter === null) {
+          if (looksLikeUnterminatedFrontmatter(rawText)) {
+            findings.push({
+              file,
+              line: null,
+              message: 'frontmatter opens with "---" but is never closed with a second one, so type cannot be confirmed; close the block',
+            });
+          } else {
+            findings.push({ file, line: null, message: 'type is required but missing (the file has no frontmatter at all)' });
+          }
         } else {
-          findings.push({ file, line: null, message: 'type is required but missing (the file has no frontmatter at all)' });
+          findings.push({ file, line: null, message: 'type is required but missing (this file has frontmatter, but no type key in it)' });
         }
       } else if (value === undefined) {
         findings.push({ file, line, message: 'type is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' });
@@ -339,11 +426,21 @@ function isCommentLine(trimmedLine) {
 }
 
 // --- index-no-frontmatter (8, 12) -----------------------------------------------
+//
+// Two checks, two levels, quoted rather than inferred (fix round 3).
+// Section 8 states plainly: "Index files contain no frontmatter, with
+// one exception: a bundle-root `index.md` MAY carry an `okf_version`
+// key." A non-root index carrying any frontmatter is therefore 'must'
+// (section 8 plus section 11 clause 3, which makes the reserved
+// filenames conformance). What section 8's exception does NOT plainly
+// say is whether a key beyond `okf_version` on the root index breaks
+// anything: that reading is arguable, and the rule to apply to an
+// arguable reading is to claim the lower level, so the root-index extra-
+// key check is 'should'.
 
 const indexNoFrontmatter = {
   id: 'index-no-frontmatter',
   section: '8, 12',
-  level: 'must',
   check(files, context) {
     const findings = [];
     for (const file of files) {
@@ -352,7 +449,12 @@ const indexNoFrontmatter = {
       if (!hasFrontmatter) continue; // no frontmatter at all is fine everywhere, root included
 
       if (file !== 'index.md') {
-        findings.push({ file, line: 1, message: 'index.md is reserved and must carry no frontmatter (only the root index may declare okf_version)' });
+        findings.push({
+          file,
+          line: 1,
+          level: 'must',
+          message: 'index.md is reserved and must carry no frontmatter (only the root index may declare okf_version)',
+        });
         continue;
       }
 
@@ -376,6 +478,7 @@ const indexNoFrontmatter = {
         findings.push({
           file,
           line: extraIndex + 2,
+          level: 'should',
           message: `the root index may declare only okf_version and nothing else; found "${lines[extraIndex].trim()}"`,
         });
       }
@@ -385,11 +488,28 @@ const indexNoFrontmatter = {
 };
 
 // --- log-format (9) -------------------------------------------------------------
+//
+// Four checks, two levels (fix round 3). Section 9's text, quoted rather
+// than inferred, states exactly one requirement: "Date headings MUST use
+// ISO 8601 `YYYY-MM-DD` form." Section 9 says nothing about ordering and
+// nothing about frontmatter in the log; those checks stay, since they
+// are real and useful, but at 'should', the level for a reading the text
+// does not plainly support. The date-form check itself splits in two: a
+// heading whose text has the shape of an attempt at YYYY-MM-DD (four
+// digits, dash, two digits, dash, two digits) but fails the calendar is
+// squarely what section 9's MUST is about, since a calendar-impossible
+// date is not a real ISO 8601 date under any form, so that is 'must'. A
+// heading that does not even have that shape (an arbitrary prose
+// heading, "## Notes") is a WIDER claim, that every level-two heading in
+// the log ought to be a date at all, which section 9 never states, so
+// that is 'should'.
+function looksLikeDateAttempt(text) {
+  return DATE_PATTERN.test(text);
+}
 
 const logFormat = {
   id: 'log-format',
   section: '9',
-  level: 'must',
   check(files, context) {
     const findings = [];
     for (const file of files) {
@@ -397,7 +517,7 @@ const logFormat = {
       const text = context.readFile(file);
       const { hasFrontmatter } = splitFrontmatter(text);
       if (hasFrontmatter) {
-        findings.push({ file, line: 1, message: 'log.md is reserved and must carry no frontmatter' });
+        findings.push({ file, line: 1, level: 'should', message: 'log.md is reserved and should carry no frontmatter' });
       }
 
       const headings = [];
@@ -411,8 +531,20 @@ const logFormat = {
       for (const heading of headings) {
         if (isValidIsoDate(heading.text)) {
           dated.push(heading);
+        } else if (looksLikeDateAttempt(heading.text)) {
+          findings.push({
+            file,
+            line: heading.line,
+            level: 'must',
+            message: `log heading "## ${heading.text}" is not a valid ISO 8601 date; section 9 requires the YYYY-MM-DD form`,
+          });
         } else {
-          findings.push({ file, line: heading.line, message: `log heading "## ${heading.text}" is not an ISO date (YYYY-MM-DD)` });
+          findings.push({
+            file,
+            line: heading.line,
+            level: 'should',
+            message: `log heading "## ${heading.text}" is not a date`,
+          });
         }
       }
       for (let i = 1; i < dated.length; i++) {
@@ -420,7 +552,8 @@ const logFormat = {
           findings.push({
             file,
             line: dated[i].line,
-            message: `log dates must run from most recent to oldest; "${dated[i].text}" comes after "${dated[i - 1].text}"`,
+            level: 'should',
+            message: `log dates should run from most recent to oldest; "${dated[i].text}" comes after "${dated[i - 1].text}"`,
           });
         }
       }
@@ -616,23 +749,32 @@ export const SPEC_RULES = Object.freeze([
 ]);
 
 // Runs every rule over `files`, in order, and returns their findings
-// flattened into one array, each stamped with `ruler: 'spec'` plus the
-// id, section and level carried by the rule that produced it. A finding
-// is identified by the PAIR of ruler and id, never by id alone: this
-// project's own plan briefly had the house ruler redefine stale_after
-// under its own id, before section 5 turned out to fix the timestamp
-// form outright and that idea was dropped, so no id currently collides
-// across the two rulers, but a rule filtering on id alone would still be
-// one rename away from silencing the wrong ruler's finding, which is
-// exactly the fragility stamping `ruler` on every finding removes.
-// `level` ('must' or `should`, never computed here, always the rule's
-// own) lets a consumer group or filter by conformance tier without
-// re-deriving it, so a report can put every must-level finding ahead of
-// every should-level one instead of treating fifteen departures from
-// guidance as fifteen broken bundles. Rules are data (SPEC_RULES is a
-// plain array of { id, section, level, check }), and this loop is the
-// entire runner: no rule is special-cased, so a future suppression list
-// can name one rule by id without this function ever having to change.
+// flattened into one array, each stamped with `ruler: 'spec'`, the id
+// and section carried by the rule that produced it, and a `level`. A
+// finding is identified by the PAIR of ruler and id, never by id alone:
+// this project's own plan briefly had the house ruler redefine
+// stale_after under its own id, before section 5 turned out to fix the
+// timestamp form outright and that idea was dropped, so no id currently
+// collides across the two rulers, but a rule filtering on id alone
+// would still be one rename away from silencing the wrong ruler's
+// finding, which is exactly the fragility stamping `ruler` on every
+// finding removes.
+//
+// `level` ('must' or 'should') is a FINDING property, not only a rule
+// one (fix round 3): a rule's own `level`, when it has one, is the
+// default every one of its findings takes; a finding that sets its own
+// `level` (index-no-frontmatter and log-format each emit both must and
+// should findings from different checks) overrides that default. A rule
+// whose checks disagree simply carries no `level` of its own, so every
+// one of its findings is required to set one, with nothing to silently
+// fall back to. This lets a consumer group or filter by conformance
+// tier without re-deriving it, so a report can put every must-level
+// finding ahead of every should-level one instead of treating fifteen
+// departures from guidance as fifteen broken bundles. Rules are data
+// (SPEC_RULES is a plain array of { id, section, level?, check }), and
+// this loop is the entire runner: no rule is special-cased, so a future
+// suppression list can name one rule by id without this function ever
+// having to change.
 export function runSpecRules(files, context) {
   const findings = [];
   for (const rule of SPEC_RULES) {
@@ -641,7 +783,7 @@ export function runSpecRules(files, context) {
         ruler: 'spec',
         id: rule.id,
         section: rule.section,
-        level: rule.level,
+        level: partial.level ?? rule.level,
         file: partial.file,
         line: partial.line,
         message: partial.message,

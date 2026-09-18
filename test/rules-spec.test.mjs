@@ -25,10 +25,8 @@
 // entries or a scalar (all but index-no-frontmatter and log-format, which
 // work from raw text and headings instead) is tested for both.
 //
-// A finding is identified by the PAIR of ruler and id, never by id alone:
-// stale-after-format exists again, with a different meaning, in the house
-// ruler (a vault may narrow the spec's "either form" down to one), so
-// every filter below matches on `f.ruler === 'spec' && f.id === '...'`
+// A finding is identified by the PAIR of ruler and id, never by id alone,
+// so every filter below matches on `f.ruler === 'spec' && f.id === '...'`
 // rather than id alone, and a dedicated test pins down that every finding
 // this module produces carries `ruler: 'spec'` explicitly.
 import { test } from 'node:test';
@@ -178,7 +176,7 @@ test('a vault where every note satisfies every rule, the root index carries no f
 
 // --- SPEC_RULES and runSpecRules: shape and the ruler+id identity -------------
 
-test('SPEC_RULES is a plain array of eight rule objects, each with a stable id, a section string, a must-or-should level, and a check function', () => {
+test('SPEC_RULES is a plain array of eight rule objects, each with a stable id and a section string, and a check function', () => {
   assert.ok(Array.isArray(SPEC_RULES));
   assert.deepEqual(
     SPEC_RULES.map((rule) => rule.id),
@@ -197,33 +195,30 @@ test('SPEC_RULES is a plain array of eight rule objects, each with a stable id, 
     assert.equal(typeof rule.id, 'string');
     assert.equal(typeof rule.section, 'string');
     assert.ok(rule.section.length > 0);
-    assert.ok(['must', 'should'].includes(rule.level), `${rule.id} has an unexpected level: ${rule.level}`);
     assert.equal(typeof rule.check, 'function');
   }
 });
 
-// Section 11 makes exactly three things conformance (a parseable
-// frontmatter block, a non-empty type, and the reserved filenames
-// following their own sections): the three rules that speak for those
-// are 'must', and the five trust and lifecycle rules are 'should'. Pinned
-// down as its own data-driven assertion, since the loop above only
-// checks that a level is one of the two valid strings, not which rule
-// carries which one.
-test('type-required, index-no-frontmatter and log-format are must-level; the five trust and lifecycle rules are should-level', () => {
+// The level belongs to the CHECK, not to the rule (fix round 3):
+// index-no-frontmatter and log-format each emit both a 'must' and a
+// 'should' finding from different checks, so neither carries one
+// uniform level of its own; every finding either of them produces must
+// set its own `level`, with nothing to silently fall back to. The other
+// six rules agree with themselves (type-required always 'must'; the
+// five section 5 to 10 rules always 'should'), so their rule object
+// carries that one level as every one of their findings' default.
+test('type-required is must-level and the five section 5 to 10 rules are should-level; index-no-frontmatter and log-format carry no single level of their own', () => {
   const levelById = Object.fromEntries(SPEC_RULES.map((rule) => [rule.id, rule.level]));
-  assert.deepEqual(
-    { ...levelById },
-    {
-      'type-required': 'must',
-      'index-no-frontmatter': 'must',
-      'log-format': 'must',
-      'generated-actor': 'should',
-      'verified-events': 'should',
-      'status-enum': 'should',
-      'stale-after-format': 'should',
-      'sources-resource': 'should',
-    },
-  );
+  assert.deepEqual(levelById, {
+    'type-required': 'must',
+    'index-no-frontmatter': undefined,
+    'log-format': undefined,
+    'generated-actor': 'should',
+    'verified-events': 'should',
+    'status-enum': 'should',
+    'stale-after-format': 'should',
+    'sources-resource': 'should',
+  });
 });
 
 test('every finding carries the same level its rule does', () => {
@@ -263,19 +258,32 @@ test('a single note can collect findings from more than one rule at once, each c
 
 // --- type-required ------------------------------------------------------------
 
-test('type-required flags a note with no frontmatter at all and, separately, one whose frontmatter has no type key, but allows one with a non-empty type', () => {
+// Fix round 3: a well-formed frontmatter block that simply has no type
+// key is the commonest way this rule fires, and it used to say the file
+// "has no frontmatter at all", which is false when the block parses
+// fine and just lacks the one key. Both messages checked against each
+// other here, not just each against a shared /required/ regex, since
+// that regex is exactly loose enough to have hidden this bug for two
+// fix rounds.
+test('type-required flags a note with no frontmatter at all and, separately, one whose frontmatter has no type key, with two different messages, but allows one with a non-empty type', () => {
   const files = {
     ...cleanVaultFiles(),
     'people/no-frontmatter.md': 'Just prose, no frontmatter.\n',
     'people/no-type-key.md': '---\ndescription: has frontmatter but no type\n---\nBody.\n',
   };
   const findings = findingsFor(files);
-  for (const file of ['people/no-frontmatter.md', 'people/no-type-key.md']) {
-    const bad = findings.filter((f) => isSpec('type-required')(f) && f.file === file);
-    assert.equal(bad.length, 1, `${file} should have exactly one type-required finding`);
-    assert.equal(bad[0].line, null);
-    assert.match(bad[0].message, /required/);
-  }
+
+  const noFrontmatter = findings.filter((f) => isSpec('type-required')(f) && f.file === 'people/no-frontmatter.md');
+  assert.equal(noFrontmatter.length, 1);
+  assert.equal(noFrontmatter[0].line, null);
+  assert.match(noFrontmatter[0].message, /no frontmatter at all/);
+
+  const noTypeKey = findings.filter((f) => isSpec('type-required')(f) && f.file === 'people/no-type-key.md');
+  assert.equal(noTypeKey.length, 1);
+  assert.equal(noTypeKey[0].line, null);
+  assert.match(noTypeKey[0].message, /required/);
+  assert.ok(!/no frontmatter at all/.test(noTypeKey[0].message), 'a well-formed block with no type key must not be told it has no frontmatter at all');
+
   assert.deepEqual(findings.filter((f) => f.file === 'people/ana.md'), []);
 });
 
@@ -353,6 +361,10 @@ test('index-no-frontmatter allows the root index to have no frontmatter at all, 
   assert.equal(bad[0].file, 'index.md');
   assert.equal(bad[0].line, 3); // line 1 "---", line 2 okf_version, line 3 the extra key
   assert.match(bad[0].message, /okf_version/);
+  // Section 8's exception names only okf_version; whether another key
+  // breaks the structure is arguable, and the rule for an arguable
+  // reading is to claim the lower level.
+  assert.equal(bad[0].level, 'should');
 });
 
 // Fix round 1, two defects in the same check: a YAML comment annotating
@@ -388,6 +400,8 @@ test('index-no-frontmatter flags any non-root index.md that carries frontmatter 
   const bad = findings.filter((f) => isSpec('index-no-frontmatter')(f) && f.file === 'people/index.md');
   assert.equal(bad.length, 1);
   assert.equal(bad[0].line, 1);
+  // Section 8 states this plainly, with no exception for a non-root index.
+  assert.equal(bad[0].level, 'must');
   assert.deepEqual(findings.filter((f) => f.file === 'projects/index.md'), []);
 });
 
@@ -400,14 +414,33 @@ test('log-format flags a log.md that carries frontmatter, at line 1, but allows 
   assert.equal(bad[0].file, 'memory/log.md');
   assert.equal(bad[0].line, 1);
   assert.match(bad[0].message, /frontmatter/);
+  // Section 9 is silent on frontmatter in the log; the structure it shows has none.
+  assert.equal(bad[0].level, 'should');
 });
 
-test('log-format flags a heading that is not an ISO date, at the line of that heading, but allows a well-formed date heading', () => {
-  const files = { ...cleanVaultFiles(), 'memory/log.md': ['## 2026-09-18', '', 'ok', '', '## not a date', '', 'bad', ''].join('\n') };
+// Fix round 3: this single check splits into two, by level. A heading
+// that does not even have the shape of a date attempt ("## not a date")
+// is the WIDER, should-level claim (section 9 never says every heading
+// must be a date); a heading that HAS the shape but fails the calendar
+// ("## 2026-02-30") is squarely section 9's own must-level requirement,
+// since a calendar-impossible value is not YYYY-MM-DD form under any
+// reading. Both pinned down together, alongside a well-formed date
+// heading that must produce neither.
+test('log-format flags a heading with no date shape at should-level, and a heading with the shape but a bad calendar at must-level, but allows a well-formed date heading', () => {
+  const files = {
+    ...cleanVaultFiles(),
+    'memory/log.md': ['## 2026-09-18', '', 'ok', '', '## not a date', '', '## 2026-02-30', '', 'bad', ''].join('\n'),
+  };
   const findings = findingsFor(files).filter((f) => isSpec('log-format')(f) && f.file === 'memory/log.md');
-  assert.equal(findings.length, 1);
-  assert.equal(findings[0].line, 5);
-  assert.match(findings[0].message, /is not an ISO date/);
+  assert.equal(findings.length, 2);
+
+  const notShaped = findings.find((f) => f.line === 5);
+  assert.equal(notShaped.level, 'should');
+  assert.match(notShaped.message, /is not a date/);
+
+  const shapedButImpossible = findings.find((f) => f.line === 7);
+  assert.equal(shapedButImpossible.level, 'must');
+  assert.match(shapedButImpossible.message, /is not a valid ISO 8601 date/);
 });
 
 test('log-format flags dates that run oldest-first instead of most-recent-first, at the line of the entry that breaks the order', () => {
@@ -419,6 +452,8 @@ test('log-format flags dates that run oldest-first instead of most-recent-first,
   assert.equal(findings.length, 1);
   assert.equal(findings[0].line, 5);
   assert.match(findings[0].message, /most recent to oldest/);
+  // Section 9 shows newest first and never states it as a requirement.
+  assert.equal(findings[0].level, 'should');
 });
 
 // Two consecutive headings dated the same day (more than one entry
@@ -485,7 +520,9 @@ test('log-format survives malformed and binary-ish content without throwing, and
 
   const messy = findings.filter((f) => isSpec('log-format')(f) && f.file === 'd/log.md');
   assert.equal(messy.length, 2);
-  assert.match(messy[0].message, /is not an ISO date/);
+  assert.equal(messy[0].level, 'should');
+  assert.match(messy[0].message, /is not a date/);
+  assert.equal(messy[1].level, 'should');
   assert.match(messy[1].message, /most recent to oldest/);
 });
 
@@ -523,8 +560,60 @@ test('log-format never reads a heading or a date from inside a fenced code block
   };
   const findings = findingsFor(files).filter((f) => isSpec('log-format')(f) && f.file === 'memory/log.md');
   assert.equal(findings.length, 1, 'only the heading outside the fence should be flagged, not the two decoys inside it');
-  assert.match(findings[0].message, /is not an ISO date/);
+  assert.equal(findings[0].level, 'should');
+  assert.match(findings[0].message, /is not a date/);
   assert.match(findings[0].message, /OUTSIDE the fence/);
+});
+
+// Fix round 3: the fence rule handed down by the review, not a bare
+// "```" prefix. Three cases in one test, each a gap the earlier version
+// had: a tilde fence (missed entirely, since only backticks were
+// recognised); a three-backtick fence nested inside a four-backtick one
+// (closed early on the shorter marker, since length was never tracked);
+// and, the false negative, a line of three backticks inside a real
+// four-space-indented code block, which must NOT open a fence at all,
+// or everything after it silently disappears, including a violation
+// that must still be caught.
+test('withoutFencedBlocks recognises a tilde fence, does not close a longer fence on a shorter nested marker, and never treats an indented code block as a fence', () => {
+  const files = {
+    ...cleanVaultFiles(),
+    'a/log.md': ['## 2026-09-18', '', '~~~', '## not a real heading, inside a tilde fence', '## 2099-01-01', '~~~', '', '## 2026-09-17', ''].join(
+      '\n',
+    ),
+    'b/log.md': [
+      '## 2026-09-18',
+      '',
+      '````',
+      'an outer four-backtick fence',
+      '```',
+      '## not a real heading, a three-backtick fence nested inside it',
+      '```',
+      'still inside the outer fence, since three backticks is shorter than four',
+      '````',
+      '',
+      '## 2026-09-17',
+      '',
+    ].join('\n'),
+    // The deliberately bad heading after the indented block is the
+    // detector: if the indented "```" line wrongly opened a fence, this
+    // line, and the finding it must produce, would silently disappear.
+    'c/log.md': [
+      '## 2026-09-18',
+      '',
+      '    a four-space indented code block',
+      '    ```',
+      '    three backticks, indented the same way: still just code, not a fence',
+      '',
+      '## not a real date, deliberately bad, must still be caught',
+      '',
+    ].join('\n'),
+  };
+  const findings = findingsFor(files);
+  assert.deepEqual(findings.filter((f) => f.file === 'a/log.md'), []);
+  assert.deepEqual(findings.filter((f) => f.file === 'b/log.md'), []);
+  const cFindings = findings.filter((f) => isSpec('log-format')(f) && f.file === 'c/log.md');
+  assert.equal(cFindings.length, 1, 'the heading after the indented code block must still be read and flagged');
+  assert.match(cFindings[0].message, /is not a date/);
 });
 
 // log-format's own heading check shares the same calendar-valid date
@@ -535,7 +624,8 @@ test('log-format checks the calendar on its headings too, not just their shape',
   const files = { ...cleanVaultFiles(), 'memory/log.md': ['## 2026-02-29', '', 'a leap day that never happened in 2026', ''].join('\n') };
   const findings = findingsFor(files).filter((f) => isSpec('log-format')(f) && f.file === 'memory/log.md');
   assert.equal(findings.length, 1);
-  assert.match(findings[0].message, /is not an ISO date/);
+  assert.equal(findings[0].level, 'must');
+  assert.match(findings[0].message, /is not a valid ISO 8601 date/);
 });
 
 // --- generated-actor ---------------------------------------------------------
@@ -569,6 +659,22 @@ test('generated-actor requires a non-empty by, but leaves at alone when at is si
   assert.equal(noBy.length, 1);
   assert.match(noBy[0].message, /by/);
   assert.deepEqual(findings.filter((f) => isSpec('generated-actor')(f) && f.file === 'people/no-at.md'), []);
+});
+
+// Fix round 3: fix round 1 widened findKeyLine in src/frontmatter.mjs to
+// recognise a quoted key, so a quoted "generated" key now reads
+// correctly, but this module's OWN frontmatterKeyLine still matched only
+// the bare form, so the resulting finding reported line: null, as if
+// the key were absent, for a key that is right there on screen.
+test('a quoted generated key is read correctly and its finding reports a real line, not null', () => {
+  const files = {
+    ...cleanVaultFiles(),
+    'people/quoted-key.md': CLEAN_NOTE.replace('generated: { by: human:ana, at: 2026-09-18T09:30:00Z }', '"generated": { at: 2026-09-18T09:30:00Z }'),
+  };
+  const findings = findingsFor(files).filter((f) => isSpec('generated-actor')(f) && f.file === 'people/quoted-key.md');
+  assert.equal(findings.length, 1);
+  assert.match(findings[0].message, /by/);
+  assert.equal(findings[0].line, 3); // line 1 "---", line 2 "type: person", line 3 "generated": {...}
 });
 
 test('generated-actor requires at, when present, to be an ISO 8601 datetime, but accepts one with an explicit offset', () => {
@@ -765,6 +871,40 @@ test('generated-actor checks the calendar and the clock on at, not just the shap
     const bad = findingsFor(files).filter((f) => isSpec('generated-actor')(f) && f.file === 'people/bad.md');
     assert.equal(bad.length, 1, `${label} should be flagged`);
   }
+});
+
+// Fix round 3: the offset ceiling is 14 hours (the real range of UTC
+// offsets in use), not 24. Plus fourteen and minus twelve, the two
+// examples the review named, must both pass; plus fifteen must not.
+test('generated-actor accepts an offset up to plus fourteen hours and down to minus twelve, but not beyond plus fourteen', () => {
+  const files = {
+    ...cleanVaultFiles(),
+    'people/plus14.md': CLEAN_NOTE.replace('at: 2026-09-18T09:30:00Z }', 'at: 2026-09-18T09:30:00+14:00 }'),
+    'people/minus12.md': CLEAN_NOTE.replace('at: 2026-09-18T09:30:00Z }', 'at: 2026-09-18T09:30:00-12:00 }'),
+    'people/plus15.md': CLEAN_NOTE.replace('at: 2026-09-18T09:30:00Z }', 'at: 2026-09-18T09:30:00+15:00 }'),
+  };
+  const findings = findingsFor(files);
+  assert.deepEqual(findings.filter((f) => isSpec('generated-actor')(f) && f.file === 'people/plus14.md'), []);
+  assert.deepEqual(findings.filter((f) => isSpec('generated-actor')(f) && f.file === 'people/minus12.md'), []);
+  assert.equal(findings.filter((f) => isSpec('generated-actor')(f) && f.file === 'people/plus15.md').length, 1);
+});
+
+// Leap-day handling itself is untouched by this round; re-confirmed here
+// across a century year (not divisible by 400, so NOT a leap year) and a
+// four-century year (divisible by 400, so a leap year after all), since
+// the review verified exactly these cases and asked that this logic not
+// be disturbed while fixing the offset ceiling right beside it.
+test('generated-actor still gets the century and four-century leap-year cases right, unchanged by this round', () => {
+  const files = {
+    ...cleanVaultFiles(),
+    // 1900 is divisible by 100 but not by 400: not a leap year, so its 29th of February does not exist.
+    'people/century.md': CLEAN_NOTE.replace('at: 2026-09-18T09:30:00Z }', 'at: 1900-02-29T09:30:00Z }'),
+    // 2000 is divisible by 400: a leap year, so its 29th of February is real.
+    'people/four-century.md': CLEAN_NOTE.replace('at: 2026-09-18T09:30:00Z }', 'at: 2000-02-29T09:30:00Z }'),
+  };
+  const findings = findingsFor(files);
+  assert.equal(findings.filter((f) => isSpec('generated-actor')(f) && f.file === 'people/century.md').length, 1);
+  assert.deepEqual(findings.filter((f) => isSpec('generated-actor')(f) && f.file === 'people/four-century.md'), []);
 });
 
 test('stale-after-format does not fire when stale_after is absent, but does fire, against PARSER_LIMITS, when present in an unreadable shape', () => {
