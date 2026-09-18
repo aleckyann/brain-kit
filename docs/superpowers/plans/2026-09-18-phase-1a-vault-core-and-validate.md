@@ -8,7 +8,7 @@
 
 **Tech Stack:** Node.js >= 24, ESM, zero runtime dependencies, `node:test`.
 
-**Spec:** the approved design at `/home/aleck/.claude/plans/ultracode-ao-mostrar-o-hazy-rain.md` (private to the maintainer), sections "Arquitetura do brain-kit" and "Fases de implementação", phase 1. Phase 1 is split into slices because one plan cannot carry it at usable quality; this is slice A. The phase's done-criteria are met only when all slices land.
+**Spec:** the approved design at `<the maintainer's private approved plan>` (private to the maintainer), sections "Arquitetura do brain-kit" and "Fases de implementação", phase 1. Phase 1 is split into slices because one plan cannot carry it at usable quality; this is slice A. The phase's done-criteria are met only when all slices land.
 
 **Phase 1 slices, for orientation (only A is planned here):**
 - **1A (this plan):** vault core and `validate`.
@@ -29,7 +29,7 @@
 - The maintainer's pre-push gate is active (`core.hooksPath=.githooks`) and scans every commit of a push. Never bypass it with `--no-verify`; if it refuses, report the refusal.
 - Commits use a conventional prefix and end with the trailer `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
 - Do not push. The controller pushes and watches CI.
-- Work in `/home/aleck/Área de trabalho/brain-kit`, branch `main`. Tasks 1 and 2 have landed; the suite is at 109 tests and must stay green.
+- Work in `<KIT>`, branch `main`. Tasks 1 and 2 have landed; the suite is at 109 tests and must stay green.
 
 ## Facts established by the Phase 1 opening experiment (18/09/2026)
 
@@ -43,7 +43,7 @@ A throwaway plugin was loaded with `claude --plugin-dir` in a live session. Thes
 
 ## Source being ported
 
-The original vault's validator lives at `/home/aleck/Área de trabalho/brain/scripts/validate-okf.mjs`, 215 lines, and is the behavioural reference: read it before writing code. It is a single file that walks the tree, extracts frontmatter with a regular expression, and accumulates problems into named buckets, printing `[spec]` and `[casa]` separately. Port its behaviour, not its shape, and fix these four defects, each of which was found by review and is not to be reproduced:
+The original vault's validator lives at `<REFERENCE_VAULT>/scripts/validate-okf.mjs`, 215 lines, and is the behavioural reference: read it before writing code. It is a single file that walks the tree, extracts frontmatter with a regular expression, and accumulates problems into named buckets, printing `[spec]` and `[casa]` separately. Port its behaviour, not its shape, and fix these four defects, each of which was found by review and is not to be reproduced:
 
 1. `stale_after` is required to be a plain `YYYY-MM-DD` date under a `[spec]` label, while the canonical OKF specification asks for a datetime with an offset. A vault that follows the specification is failed by a ruler that claims to be the specification. Here, the format is a house rule with three settings and the spec ruler accepts both forms.
 2. The placeholder exemption (a value containing `<`) is applied inside spec checks everywhere in the tree, so any note with an angle bracket in a dated field escapes validation. Here it applies only under the configured templates directory.

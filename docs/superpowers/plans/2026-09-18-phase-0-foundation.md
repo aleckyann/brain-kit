@@ -8,7 +8,7 @@
 
 **Tech Stack:** Node.js >= 24 (ESM, `node:test`, `node:child_process`), bash (pre-push hook, hook wrapper), GitHub Actions, npm registry, Claude Code CLI 2.1.270+ (`claude plugin validate --strict`, `claude --plugin-dir`).
 
-**Spec:** the approved design lives (privately, on the maintainer's machine) at `/home/aleck/.claude/plans/ultracode-ao-mostrar-o-hazy-rain.md`. The public, scrubbed rationale is produced by Task 9 of this plan (`docs/rationale.md`, `docs/incidents.md`).
+**Spec:** the approved design lives (privately, on the maintainer's machine) at `<the maintainer's private approved plan>`. The public, scrubbed rationale is produced by Task 9 of this plan (`docs/rationale.md`, `docs/incidents.md`).
 
 ## Global Constraints
 
@@ -20,7 +20,7 @@
 - Phase 0 hooks are silent no-ops (consume stdin, print nothing, exit 0). Anything else would block every Claude Code session with the plugin enabled.
 - Commits: conventional prefix (`chore:`, `feat:`, `test:`, `docs:`, `ci:`), body optional, trailer `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 - The pre-push gate (Task 6) must be active before the first `git push` (Task 11).
-- Work happens in `/home/aleck/Área de trabalho/brain-kit`. Run commands from that directory.
+- Work happens in `<KIT>`. Run commands from that directory.
 
 ---
 
@@ -37,7 +37,7 @@
 - [ ] **Step 1: Initialize git**
 
 ```bash
-cd "/home/aleck/Área de trabalho/brain-kit"
+cd "<KIT>"
 git init -q -b main
 git config user.name "Aleck Yann"
 git config user.email "aleckyann@gmail.com"
@@ -874,7 +874,7 @@ git commit -q -m "feat: dependency-free JSON schema subset validator" -m "Co-Aut
 ```json
 {
   "vault_id": "ana-brain",
-  "canonical_path": "/home/ana/brain",
+  "canonical_path": "<REFERENCE_VAULT>",
   "claude_bin": "claude",
   "model": "claude-opus-4-8",
   "network_check": ["nm-online", "-q", "--timeout=90"],
@@ -1867,9 +1867,9 @@ git commit -q -m "ci: node tests on ubuntu and macos, plugin validate" -m "Co-Au
 - Create: `docs/incidents.md`
 
 **Sources (read-only, on the maintainer's machine, NOT to be copied):**
-- Approved plan: `/home/aleck/.claude/plans/ultracode-ao-mostrar-o-hazy-rain.md` (sections "O que é o Brain", "Princípios", "Camadas", "Lições", "Lacunas").
+- Approved plan: `<the maintainer's private approved plan>` (sections "O que é o Brain", "Princípios", "Camadas", "Lições", "Lacunas").
 - 73 lessons and 17 principles as JSON: `/tmp/claude-1000/-home-aleck--rea-de-trabalho-brain/825fb966-74f8-4e48-bcf6-c973c82aa1cb/scratchpad/brain-map-sintese.json` (fields `licoes_de_desenho[]` with `regra`/`incidente`, `principios[]`, `lacunas_conhecidas[]`).
-- Agent memories with failure modes: `/home/aleck/.claude/projects/-home-aleck--rea-de-trabalho-brain/memory/*.md`.
+- Agent memories with failure modes: `<the maintainer's private agent memories>`.
 
 **Scrubbing rules (mandatory):** replace every person by a role ("the maintainer", "a colleague", "the CTO" becomes "a senior engineer", "a mentor"); the company becomes "the company"; clients become "a customer"; internal tools and products become "an internal tool", "the CRM", "the ERP"; the local shell-rewriting hook becomes "a local shell hook that rewrites command output"; keep dates (DD/MM/YYYY), numbers, file names of the original vault scripts (they are generic: `validate-okf.mjs`, `propose.mjs`, `curadoria-noturna.sh`) and the technical facts. Never write the company name, a colleague's name, a client's name or a real e-mail. Write in English.
 
@@ -2113,7 +2113,7 @@ git commit -q -m "docs: readme (en, pt-BR), contributing, security, changelog" -
 
 ```bash
 mkdir -p ~/.config/brain-kit
-VAULT="/home/aleck/Área de trabalho/brain"
+VAULT="<REFERENCE_VAULT>"
 {
   # People and organizations known to the private vault, from file slugs:
   # "first-last.md" becomes the regex "first[- ]last".
@@ -2183,7 +2183,7 @@ Expected: `0.0.1`.
 - [ ] **Step 4: Tag**
 
 ```bash
-cd "/home/aleck/Área de trabalho/brain-kit"
+cd "<KIT>"
 git tag -a v0.0.1 -m "brain-kit 0.0.1: phase 0 foundation"
 git push origin v0.0.1
 ```
