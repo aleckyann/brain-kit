@@ -17,14 +17,23 @@ export function run(command, args = [], options = {}) {
     throw new Error('run() must never shell out: pass the program and its arguments as an array instead');
   }
   const result = spawnSync(command, args, { encoding: 'utf8', ...options, shell: false });
+  // spawnSync still captures whatever the child wrote before dying — a few
+  // lines before a timeout kills it, say — even when it also reports an
+  // error. That real output must survive, not be replaced by empty strings;
+  // only a genuine absence of captured output falls back to ''.
+  const stdout = result.stdout ?? '';
   if (result.error) {
-    return { status: 1, stdout: '', stderr: result.error.message };
+    const stderr = result.stderr ? `${result.stderr}\n${result.error.message}` : result.error.message;
+    // Force non-zero explicitly rather than `?? 1`: spawnSync reports status
+    // null in the cases seen so far (ENOENT, a killing timeout), but this is
+    // the error branch, so a failure must never read back as status 0.
+    return { status: result.status || 1, stdout, stderr };
   }
   return {
     // spawnSync leaves status null when the process was killed by a signal;
     // that is still a failure, so it is reported as a non-zero status.
     status: result.status ?? 1,
-    stdout: result.stdout ?? '',
+    stdout,
     stderr: result.stderr ?? '',
   };
 }

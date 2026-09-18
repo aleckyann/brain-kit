@@ -11,10 +11,11 @@ import { basename, join, resolve } from 'node:path';
 //                 a run, so two runs against the same vault never overlap
 //                 (ports the original vault's flock-based lock, now scoped
 //                 per vault instead of one lock shared by every vault).
-//   WATERMARK     the last day (or ref) the curator has already scanned
-//                 (ports the original "marca d'água"). Kept as JSON, not a
-//                 bare date string, so it can grow a second field later
-//                 without a format migration.
+//   WATERMARK     the high-water mark of the last day (or ref) the scheduled
+//                 curator has already read, carried over from the original
+//                 vault's own watermark file. Kept as JSON, not a bare date
+//                 string, so it can grow a second field later without a
+//                 format migration.
 //   LAST_RUN      a small record of the most recent run's outcome (status,
 //                 timestamp), so a briefing or `doctor` can answer "did the
 //                 last run succeed" without re-parsing the log directory.
