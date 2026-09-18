@@ -1,83 +1,360 @@
 {
   "$schema": "https://raw.githubusercontent.com/aleckyann/brain-kit/main/schema/config.schema.json",
   "kit_version": "0.0.1",
-  "lang": "pt-BR",
+  "lang": "en",
   "okf_version": "0.2",
-  "owner": { "name": "Ana", "handle": "ana", "email": "ana@example.com", "role": "founder", "company": "Example Ltd", "agent_role": "advisor and chief of staff" },
-  "vault": { "title": "Ana's Second Brain", "repo": "ana/brain", "private": true, "default_branch": null, "timezone": "America/Sao_Paulo", "locale": "C.UTF-8" },
-  "actors": { "human": "human:ana", "agent_prefix": "brain-kit-curator", "scheduled": "process:brain-kit-curate" },
+  "owner": {
+    "name": "Ana",
+    "handle": "ana",
+    "email": "ana@example.com",
+    "role": "founder",
+    "company": "Example Ltd",
+    "agent_role": "advisor and chief of staff"
+  },
+  "vault": {
+    "title": "Ana's Second Brain",
+    "repo": "ana/brain",
+    "private": true,
+    "default_branch": null,
+    "timezone": "UTC",
+    "locale": "en_US.UTF-8"
+  },
+  "actors": {
+    "human": "human:ana",
+    "agent_prefix": "brain-kit-curator",
+    "scheduled": "process:brain-kit-curate"
+  },
   "taxonomy": {
     "collections": {
-      "people": { "type": "person", "template": "templates/template-person.md" },
-      "projects": { "type": "project", "template": "templates/template-project.md" },
-      "decisions": { "type": "decision", "template": "templates/template-decision.md", "filename_pattern": "YYYY-MM-<slug>" }
+      "people": {
+        "type": "person",
+        "template": "templates/template-person.md"
+      },
+      "projects": {
+        "type": "project",
+        "template": "templates/template-project.md"
+      },
+      "decisions": {
+        "type": "decision",
+        "template": "templates/template-decision.md",
+        "filename_pattern": "YYYY-MM-<slug>"
+      }
     },
-    "domains": ["core", "memory", "pending"],
+    "domains": [
+      "core",
+      "memory",
+      "pending"
+    ],
     "no_index": [],
     "log": "memory/log.md",
-    "log_markers": { "capture": "Captura", "promoted": "Promovido", "correction": "Correção", "creation": "Criação" },
+    "log_markers": {
+      "capture": "Capture",
+      "promoted": "Promoted",
+      "correction": "Correction",
+      "creation": "Creation"
+    },
     "templates_dir": "templates",
     "attachments_dir": "attachments",
     "files": {
       "followups": "pending/follow-ups.md",
-      "promises": "pending/promessas.md",
-      "rituals": "core/ritmo-semanal.md",
-      "execution_system": "core/sistema-de-execucao.md",
-      "style_guide": "core/diretrizes-de-resposta.md",
+      "promises": "pending/promises.md",
+      "rituals": "core/weekly-rhythm.md",
+      "execution_system": "core/execution-system.md",
+      "style_guide": "core/response-guidelines.md",
       "bootstrap": "BOOTSTRAP.md",
       "strategy_index": "decisions/index.md",
       "metrics": null,
       "glossary": null
     },
     "columns": {
-      "followups": { "registered": "Registrado", "what": "O quê", "with": "Com quem / onde", "deadline": "Prazo", "next_step": "Próximo passo", "open_heading": "## Abertos", "resolved_heading": "## Resolvidos" },
-      "promises": { "made_at": "Feita em", "to": "Para quem", "what": "O que prometi", "condition": "Condição / prazo", "status": "Status", "active_heading": "## Ativas", "done_heading": "## Cumpridas / renegociadas" },
-      "rituals": { "calendar_title": "Título no calendário", "cadence": "Cadência", "time": "Horário", "owner": "Dono", "fixed_attendees": "Participantes fixos", "feeds": "Alimenta", "feeds_none": "nenhuma ainda" }
+      "followups": {
+        "registered": "Logged",
+        "what": "What",
+        "with": "With whom / where",
+        "deadline": "Deadline",
+        "next_step": "Next step",
+        "open_heading": "## Open",
+        "resolved_heading": "## Resolved"
+      },
+      "promises": {
+        "made_at": "Made on",
+        "to": "To whom",
+        "what": "What I promised",
+        "condition": "Condition / deadline",
+        "status": "Status",
+        "active_heading": "## Active",
+        "done_heading": "## Done / renegotiated"
+      },
+      "rituals": {
+        "calendar_title": "Calendar title",
+        "cadence": "Cadence",
+        "time": "Time",
+        "owner": "Owner",
+        "fixed_attendees": "Fixed attendees",
+        "feeds": "Feeds",
+        "feeds_none": "none yet"
+      }
     }
   },
   "frontmatter": {
-    "required": ["description", "generated"],
-    "forbidden": ["timestamp"],
+    "required": [
+      "description",
+      "generated"
+    ],
+    "forbidden": [
+      "timestamp"
+    ],
     "type_enum": null,
     "extensions": {
-      "confidencial": { "type": "boolean", "default": false },
-      "situacao": { "type": "enum", "values_by_type": { "decision": ["aberta", "em-execucao", "concluida", "revertida"], "project": ["ativo", "ideia", "adiado", "concluido", "arquivado"] } },
-      "vinculo": { "type": "enum", "values": ["equipe", "familia", "mentor", "externo"], "default": "equipe" },
-      "autor": { "type": "string" },
-      "lido": { "type": "string" },
-      "data": { "type": "date" },
-      "idioma": { "type": "string" }
+      "confidential": {
+        "type": "boolean",
+        "default": false
+      },
+      "stage": {
+        "type": "enum",
+        "values_by_type": {
+          "decision": [
+            "open",
+            "in-progress",
+            "done",
+            "reverted"
+          ],
+          "project": [
+            "active",
+            "idea",
+            "postponed",
+            "done",
+            "archived"
+          ]
+        }
+      },
+      "relationship": {
+        "type": "enum",
+        "values": [
+          "team",
+          "family",
+          "mentor",
+          "external"
+        ],
+        "default": "team"
+      },
+      "author": {
+        "type": "string"
+      },
+      "reviewed": {
+        "type": "string"
+      },
+      "review_date": {
+        "type": "date"
+      },
+      "language": {
+        "type": "string"
+      }
     }
   },
-  "stale_policy": { "key": "path", "months": { "people/": 6, "pending/": 3 } },
-  "validate": { "stale_after_format": "datetime", "link_style": "file-relative", "wikilinks": "forbid", "require_root_okf_version": false, "placeholder_pattern": "<[^>]+>", "ignore_paths": [], "timestamp_deviation": "forbid" },
+  "stale_policy": {
+    "key": "path",
+    "months": {
+      "people/": 6,
+      "pending/": 3
+    }
+  },
+  "validate": {
+    "stale_after_format": "datetime",
+    "link_style": "file-relative",
+    "wikilinks": "forbid",
+    "require_root_okf_version": false,
+    "placeholder_pattern": "<[^>]+>",
+    "ignore_paths": [],
+    "timestamp_deviation": "forbid"
+  },
   "lint": {
-    "columns": "error", "tables": "error", "orphans": "warn", "index_completeness": "warn", "secrets": "error", "privacy": "error", "attribution": "warn",
-    "style": { "forbidden_chars": ["—"], "base": "auto" },
-    "tables_limits": { "max_cell_chars": 600, "duplicate_rows": "error" }
+    "columns": "error",
+    "tables": "error",
+    "orphans": "warn",
+    "index_completeness": "warn",
+    "secrets": "error",
+    "privacy": "error",
+    "attribution": "warn",
+    "style": {
+      "forbidden_chars": [
+        "\u2014"
+      ],
+      "base": "auto"
+    },
+    "tables_limits": {
+      "max_cell_chars": 600,
+      "duplicate_rows": "error"
+    }
   },
   "privacy": {
-    "confidential_dirs": ["people/"],
+    "confidential_dirs": [
+      "people/"
+    ],
     "require_private_repo": true,
-    "secret_patterns": ["ghp_[A-Za-z0-9]{20,}", "github_pat_", "sk-ant-", "BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY", "AKIA[0-9A-Z]{16}"],
+    "secret_patterns": [
+      "ghp_[A-Za-z0-9]{20,}",
+      "github_pat_",
+      "sk-ant-",
+      "BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY",
+      "AKIA[0-9A-Z]{16}"
+    ],
     "third_party_data_acknowledged": true,
     "retention_note": "people/ holds personal data about third parties; removal on request: see SECURITY.md",
     "audiences": {}
   },
-  "git": { "agent_identity": { "name": "Ana's Second Brain (curator)", "email": "curator@example.invalid" }, "branch_prefix": "curador/", "commit_prefix": "curadoria:", "pr_command": "gh", "pr_title": "{{commit_prefix}} {{summary}}", "pr_body": ".brain-kit/pr-body.md", "ci": "github-actions", "ci_engine_ref": null, "forbid_agent_push_to_default": true },
-  "hooks": { "stop": true, "session_start": true, "session_start_fetch": false, "block_on_inherited_dirt": false, "timeout_seconds": 15 },
+  "git": {
+    "agent_identity": {
+      "name": "Ana's Second Brain (curator)",
+      "email": "curator@example.invalid"
+    },
+    "branch_prefix": "bot/",
+    "commit_prefix": "curate:",
+    "pr_command": "gh",
+    "pr_title": "{{commit_prefix}} {{summary}}",
+    "pr_body": ".brain-kit/pr-body.md",
+    "ci": "github-actions",
+    "ci_engine_ref": null,
+    "forbid_agent_push_to_default": true
+  },
+  "hooks": {
+    "stop": true,
+    "session_start": true,
+    "session_start_fetch": false,
+    "block_on_inherited_dirt": false,
+    "timeout_seconds": 15
+  },
   "curate": {
-    "enabled": true, "schedule": ["09:30", "14:00", "20:00"], "prompt": ".brain-kit/prompts/curate.md", "signature": "Curador do segundo cérebro",
-    "max_turns": 100, "budget_usd": 5.0, "network_min_wait_ms": 100,
-    "caps": { "transcripts": 20, "search_docs_opened": 3, "attached_notes_opened": 6, "new_pending_items": 5 },
-    "promotion_map": { "owner_action": "pending/follow-ups.md", "owner_promise": "pending/promessas.md", "third_party_strategic": "pending/follow-ups.md", "third_party_operational": "log-only", "strategic_decision": "decisions/", "decision_needs_talk": "pending/follow-ups.md", "person_fact": "people/", "ritual_change": "core/ritmo-semanal.md" },
-    "sources": { "required": ["transcripts"], "best_effort": ["calendar", "meeting_notes"] },
-    "extra_signatures": [], "allowed_tools_extra": [], "disallowed_tools_extra": []
+    "enabled": true,
+    "schedule": [
+      "09:30",
+      "14:00",
+      "20:00"
+    ],
+    "prompt": ".brain-kit/prompts/curate.md",
+    "signature": "Second brain curator (example)",
+    "max_turns": 100,
+    "budget_usd": 5,
+    "network_min_wait_ms": 100,
+    "caps": {
+      "transcripts": 20,
+      "search_docs_opened": 3,
+      "attached_notes_opened": 6,
+      "new_pending_items": 5
+    },
+    "promotion_map": {
+      "owner_action": "pending/follow-ups.md",
+      "owner_promise": "pending/promises.md",
+      "third_party_strategic": "pending/follow-ups.md",
+      "third_party_operational": "log-only",
+      "strategic_decision": "decisions/",
+      "decision_needs_talk": "pending/follow-ups.md",
+      "person_fact": "people/",
+      "ritual_change": "core/weekly-rhythm.md"
+    },
+    "sources": {
+      "required": [
+        "transcripts"
+      ],
+      "best_effort": [
+        "calendar",
+        "meeting_notes"
+      ]
+    },
+    "extra_signatures": [],
+    "allowed_tools_extra": [],
+    "disallowed_tools_extra": []
   },
   "sources": {
-    "transcripts": { "adapter": "claude-code", "include_projects": ["-home-ana-brain"], "exclude_path_patterns": ["/-tmp-", "--claude-worktrees-"], "sample_strategy": "tail-first" },
-    "calendar": { "provider": "claude-connector-google-calendar", "server_display_name": "claude.ai Google Calendar", "tool_prefix": "mcp__claude_ai_Google_Calendar__", "tool_suffixes": ["list_events", "list_calendars"], "calendars": ["ana@example.com"], "team_calendars": [], "team_calendars_consent_noted": false, "skip_events_with_owner": true, "dedup_by": "eventId", "privacy": { "exclude_event_types": ["OUT_OF_OFFICE", "FOCUS_TIME"], "exclude_keywords": ["consulta", "médico", "saúde"], "team_personal_events": "drop" }, "focus_blocks_as_ruler": true },
-    "meeting_notes": { "provider": "claude-connector-google-drive", "server_display_name": "claude.ai Google Drive", "tool_prefix": "mcp__claude_ai_Google_Drive__", "tool_suffixes": ["search_files", "read_file_content"], "search_title_contains": "Anotações do Gemini", "attached_title_prefix": "Notas - ", "window_hours_before_day": 12, "dedup_by": "literal-title-in-log", "never_download": ["recording", "full_transcript"] }
+    "transcripts": {
+      "adapter": "claude-code",
+      "include_projects": [
+        "-home-ana-brain"
+      ],
+      "exclude_path_patterns": [
+        "/-tmp-",
+        "--claude-worktrees-"
+      ],
+      "sample_strategy": "tail-first"
+    },
+    "calendar": {
+      "provider": "claude-connector-google-calendar",
+      "server_display_name": "claude.ai Google Calendar",
+      "tool_prefix": "mcp__claude_ai_Google_Calendar__",
+      "tool_suffixes": [
+        "list_events",
+        "list_calendars"
+      ],
+      "calendars": [
+        "ana@example.com"
+      ],
+      "team_calendars": [],
+      "team_calendars_consent_noted": false,
+      "skip_events_with_owner": true,
+      "dedup_by": "eventId",
+      "privacy": {
+        "exclude_event_types": [
+          "OUT_OF_OFFICE",
+          "FOCUS_TIME"
+        ],
+        "exclude_keywords": [
+          "personal"
+        ],
+        "team_personal_events": "drop"
+      },
+      "focus_blocks_as_ruler": true
+    },
+    "meeting_notes": {
+      "provider": "claude-connector-google-drive",
+      "server_display_name": "claude.ai Google Drive",
+      "tool_prefix": "mcp__claude_ai_Google_Drive__",
+      "tool_suffixes": [
+        "search_files",
+        "read_file_content"
+      ],
+      "search_title_contains": "Meeting notes",
+      "attached_title_prefix": "Notes - ",
+      "window_hours_before_day": 12,
+      "dedup_by": "literal-title-in-log",
+      "never_download": [
+        "recording",
+        "full_transcript"
+      ]
+    }
   },
-  "briefing": { "enabled": true, "schedule": "40 8 * * 1-5", "prompt": ".brain-kit/prompts/briefing.md", "signature": "Briefing matinal do segundo cérebro", "max_words": 500, "max_questions": 3, "questions_dedup_days": 15, "question_escalate_after": 3, "question_max_age_days": 45, "write_caps": { "captures": 5, "pending_changes": 3 }, "strategy_doc": { "index": "decisions/index.md", "title_contains": "carta" }, "main_metric": "MRR", "calendar_id": "ana@example.com", "read": ["index.md", "AGENTS.md", "decisions/index.md", "pending/promessas.md", "projects/index.md", "core/ritmo-semanal.md"], "never_read": ["people/", "attachments/", ".brain-kit/", "memory/log.md#inteiro"] }
+  "briefing": {
+    "enabled": true,
+    "schedule": "40 8 * * 1-5",
+    "prompt": ".brain-kit/prompts/briefing.md",
+    "signature": "Second brain morning briefing (example)",
+    "max_words": 500,
+    "max_questions": 3,
+    "questions_dedup_days": 15,
+    "question_escalate_after": 3,
+    "question_max_age_days": 45,
+    "write_caps": {
+      "captures": 5,
+      "pending_changes": 3
+    },
+    "strategy_doc": {
+      "index": "decisions/index.md",
+      "title_contains": "charter"
+    },
+    "main_metric": "MRR",
+    "calendar_id": "ana@example.com",
+    "read": [
+      "index.md",
+      "AGENTS.md",
+      "decisions/index.md",
+      "pending/promises.md",
+      "projects/index.md",
+      "core/weekly-rhythm.md"
+    ],
+    "never_read": [
+      "people/",
+      "attachments/",
+      ".brain-kit/",
+      "memory/log.md#full"
+    ]
+  }
 }

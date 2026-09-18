@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/aleckyann/brain-kit/main/schema/config.schema.json",
   "kit_version": "0.0.1",
-  "lang": "en",
+  "lang": "pt-BR",
   "okf_version": "0.2",
   "owner": {
     "name": "Ana",
@@ -16,8 +16,8 @@
     "repo": "ana/brain",
     "private": true,
     "default_branch": null,
-    "timezone": "UTC",
-    "locale": "en_US.UTF-8"
+    "timezone": "America/Sao_Paulo",
+    "locale": "pt_BR.UTF-8"
   },
   "actors": {
     "human": "human:ana",
@@ -48,19 +48,19 @@
     "no_index": [],
     "log": "memory/log.md",
     "log_markers": {
-      "capture": "Capture",
-      "promoted": "Promoted",
-      "correction": "Correction",
-      "creation": "Creation"
+      "capture": "Captura",
+      "promoted": "Promovido",
+      "correction": "Correção",
+      "creation": "Criação"
     },
     "templates_dir": "templates",
     "attachments_dir": "attachments",
     "files": {
       "followups": "pending/follow-ups.md",
-      "promises": "pending/promises.md",
-      "rituals": "core/weekly-rhythm.md",
-      "execution_system": "core/execution-system.md",
-      "style_guide": "core/response-guidelines.md",
+      "promises": "pending/promessas.md",
+      "rituals": "core/ritmo-semanal.md",
+      "execution_system": "core/sistema-de-execucao.md",
+      "style_guide": "core/diretrizes-de-resposta.md",
       "bootstrap": "BOOTSTRAP.md",
       "strategy_index": "decisions/index.md",
       "metrics": null,
@@ -68,31 +68,31 @@
     },
     "columns": {
       "followups": {
-        "registered": "Logged",
-        "what": "What",
-        "with": "With whom / where",
-        "deadline": "Deadline",
-        "next_step": "Next step",
-        "open_heading": "## Open",
-        "resolved_heading": "## Resolved"
+        "registered": "Registrado",
+        "what": "O que",
+        "with": "Com quem / onde",
+        "deadline": "Prazo",
+        "next_step": "Próximo passo",
+        "open_heading": "## Abertos",
+        "resolved_heading": "## Resolvidos"
       },
       "promises": {
-        "made_at": "Made on",
-        "to": "To whom",
-        "what": "What I promised",
-        "condition": "Condition / deadline",
+        "made_at": "Feita em",
+        "to": "Para quem",
+        "what": "O que prometi",
+        "condition": "Condição / prazo",
         "status": "Status",
-        "active_heading": "## Active",
-        "done_heading": "## Done / renegotiated"
+        "active_heading": "## Ativas",
+        "done_heading": "## Cumpridas / renegociadas"
       },
       "rituals": {
-        "calendar_title": "Calendar title",
-        "cadence": "Cadence",
-        "time": "Time",
-        "owner": "Owner",
-        "fixed_attendees": "Fixed attendees",
-        "feeds": "Feeds",
-        "feeds_none": "none yet"
+        "calendar_title": "Título no calendário",
+        "cadence": "Cadência",
+        "time": "Horário",
+        "owner": "Dono",
+        "fixed_attendees": "Participantes fixos",
+        "feeds": "Alimenta",
+        "feeds_none": "nenhuma ainda"
       }
     }
   },
@@ -106,48 +106,48 @@
     ],
     "type_enum": null,
     "extensions": {
-      "confidential": {
+      "confidencial": {
         "type": "boolean",
         "default": false
       },
-      "stage": {
+      "situacao": {
         "type": "enum",
         "values_by_type": {
           "decision": [
-            "open",
-            "in-progress",
-            "done",
-            "reverted"
+            "aberta",
+            "em-execucao",
+            "concluida",
+            "revertida"
           ],
           "project": [
-            "active",
-            "idea",
-            "postponed",
-            "done",
-            "archived"
+            "ativo",
+            "ideia",
+            "adiado",
+            "concluido",
+            "arquivado"
           ]
         }
       },
-      "relationship": {
+      "vinculo": {
         "type": "enum",
         "values": [
-          "team",
-          "family",
+          "equipe",
+          "familia",
           "mentor",
-          "external"
+          "externo"
         ],
-        "default": "team"
+        "default": "equipe"
       },
-      "author": {
+      "autor": {
         "type": "string"
       },
-      "reviewed": {
+      "lido": {
         "type": "string"
       },
-      "review_date": {
+      "data": {
         "type": "date"
       },
-      "language": {
+      "idioma": {
         "type": "string"
       }
     }
@@ -200,7 +200,7 @@
       "AKIA[0-9A-Z]{16}"
     ],
     "third_party_data_acknowledged": true,
-    "retention_note": "people/ holds personal data about third parties; removal on request: see SECURITY.md",
+    "retention_note": "people/ contém dados pessoais de terceiros; remoção sob solicitação: veja SECURITY.md",
     "audiences": {}
   },
   "git": {
@@ -208,8 +208,8 @@
       "name": "Ana's Second Brain (curator)",
       "email": "curator@example.invalid"
     },
-    "branch_prefix": "bot/",
-    "commit_prefix": "curate:",
+    "branch_prefix": "curador/",
+    "commit_prefix": "curadoria:",
     "pr_command": "gh",
     "pr_title": "{{commit_prefix}} {{summary}}",
     "pr_body": ".brain-kit/pr-body.md",
@@ -232,7 +232,7 @@
       "20:00"
     ],
     "prompt": ".brain-kit/prompts/curate.md",
-    "signature": "Second brain curator (example)",
+    "signature": "Curador do segundo cérebro (exemplo)",
     "max_turns": 100,
     "budget_usd": 5,
     "network_min_wait_ms": 100,
@@ -244,13 +244,13 @@
     },
     "promotion_map": {
       "owner_action": "pending/follow-ups.md",
-      "owner_promise": "pending/promises.md",
+      "owner_promise": "pending/promessas.md",
       "third_party_strategic": "pending/follow-ups.md",
       "third_party_operational": "log-only",
       "strategic_decision": "decisions/",
       "decision_needs_talk": "pending/follow-ups.md",
       "person_fact": "people/",
-      "ritual_change": "core/weekly-rhythm.md"
+      "ritual_change": "core/ritmo-semanal.md"
     },
     "sources": {
       "required": [
@@ -263,8 +263,7 @@
     },
     "extra_signatures": [],
     "allowed_tools_extra": [],
-    "disallowed_tools_extra": [],
-    "claude_bin": "claude"
+    "disallowed_tools_extra": []
   },
   "sources": {
     "transcripts": {
@@ -299,7 +298,7 @@
           "FOCUS_TIME"
         ],
         "exclude_keywords": [
-          "personal"
+          "pessoal"
         ],
         "team_personal_events": "drop"
       },
@@ -313,8 +312,8 @@
         "search_files",
         "read_file_content"
       ],
-      "search_title_contains": "Meeting notes",
-      "attached_title_prefix": "Notes - ",
+      "search_title_contains": "Notas de reunião",
+      "attached_title_prefix": "Notas - ",
       "window_hours_before_day": 12,
       "dedup_by": "literal-title-in-log",
       "never_download": [
@@ -327,7 +326,7 @@
     "enabled": true,
     "schedule": "40 8 * * 1-5",
     "prompt": ".brain-kit/prompts/briefing.md",
-    "signature": "Second brain morning briefing (example)",
+    "signature": "Briefing matinal do segundo cérebro (exemplo)",
     "max_words": 500,
     "max_questions": 3,
     "questions_dedup_days": 15,
@@ -339,7 +338,7 @@
     },
     "strategy_doc": {
       "index": "decisions/index.md",
-      "title_contains": "charter"
+      "title_contains": "carta"
     },
     "main_metric": "MRR",
     "calendar_id": "ana@example.com",
@@ -347,15 +346,15 @@
       "index.md",
       "AGENTS.md",
       "decisions/index.md",
-      "pending/promises.md",
+      "pending/promessas.md",
       "projects/index.md",
-      "core/weekly-rhythm.md"
+      "core/ritmo-semanal.md"
     ],
     "never_read": [
       "people/",
       "attachments/",
       ".brain-kit/",
-      "memory/log.md#full"
+      "memory/log.md#inteiro"
     ]
   }
 }

@@ -17,8 +17,8 @@ export function run(command, args = [], options = {}) {
     throw new Error('run() must never shell out: pass the program and its arguments as an array instead');
   }
   const result = spawnSync(command, args, { encoding: 'utf8', ...options, shell: false });
-  // spawnSync still captures whatever the child wrote before dying — a few
-  // lines before a timeout kills it, say — even when it also reports an
+  // spawnSync still captures whatever the child wrote before dying (a few
+  // lines before a timeout kills it, say) even when it also reports an
   // error. That real output must survive, not be replaced by empty strings;
   // only a genuine absence of captured output falls back to ''.
   const stdout = result.stdout ?? '';

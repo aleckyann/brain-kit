@@ -285,6 +285,36 @@ test('a vault with one spec finding and one house finding exits 1 and names both
   assert.match(result.stdout, /not conformant to the format/);
 });
 
+// --- a finding's own text is rendered through the pack, in the vault's language ----
+
+// Neither of the two rules involved here builds an English string
+// itself (src/rules/spec.mjs and src/rules/house.mjs's own headers): a
+// finding carries a messageKey and params, and src/commands/validate.mjs
+// is the one place that turns them into a sentence, through the
+// translator built from THIS vault's own config.lang. This is the
+// direct proof of that, on a real finding's own body, not only on the
+// section headings around it: the same BROKEN_PERSON fixture as the
+// test above, once in English and once in pt-BR, each showing the
+// finding's own message in that language, not the other one, and never
+// the bare key name a rendering bug that skipped the pack would leak
+// (a raw "spec.type_required.no_frontmatter" is not a sentence in
+// either language).
+test('a finding\'s own message text is rendered through the vault\'s pack, not left as a bare key and not stuck in one language', () => {
+  const enRoot = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/broken.md': BROKEN_PERSON }, config: { lang: 'en' } });
+  const enResult = run([enRoot]);
+  assert.match(enResult.stdout, /type is required but missing/);
+  assert.match(enResult.stdout, /is forbidden by this vault's own configuration but is present/);
+  assert.doesNotMatch(enResult.stdout, /spec\.type_required/);
+  assert.doesNotMatch(enResult.stdout, /house\.forbidden_fields/);
+
+  const ptRoot = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/broken.md': BROKEN_PERSON }, config: { lang: 'pt-BR' } });
+  const ptResult = run([ptRoot]);
+  assert.match(ptResult.stdout, /type é obrigatório, mas está ausente/);
+  assert.match(ptResult.stdout, /é proibido pela própria configuração deste vault, mas está presente/);
+  assert.doesNotMatch(ptResult.stdout, /type is required but missing/);
+  assert.doesNotMatch(ptResult.stdout, /spec\.type_required/);
+});
+
 // --- --json carries the same counts as the text report, plus `blocking` ----
 
 test('--json prints one object with findings, stale, counts, parserLimits, blocking and the two ruler names, matching the text report', () => {
@@ -452,7 +482,12 @@ test('the report follows the vault\'s config.lang, never the operator\'s BRAIN_K
 
   const ptRoot = makeVault({
     files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': CLEAN_PERSON },
-    config: {}, // config.lang defaults to pt-BR in the fixture's own base config
+    // Stated explicitly, not left to whatever the shared base fixture
+    // (test/fixtures/config/valid.json) happens to declare for lang: an
+    // empty override here used to pass only because that fixture was
+    // itself pt-BR at the time, which meant this test proved nothing
+    // about config.lang and everything about the fixture's own default.
+    config: { lang: 'pt-BR' },
   });
   const ptButEnvSaysEn = run([ptRoot], { env: { BRAIN_KIT_LANG: 'en' } });
   assert.equal(ptButEnvSaysEn.status, EXIT.OK);
@@ -464,9 +499,9 @@ test('the report follows the vault\'s config.lang, never the operator\'s BRAIN_K
 
 test('partitionFindings places a recognised finding in exactly one of must, should or house', () => {
   const combined = [
-    { ruler: 'spec', id: 'a', check: 'x', level: 'must', file: 'f.md', line: 1, message: 'm' },
-    { ruler: 'spec', id: 'b', check: 'x', level: 'should', file: 'f.md', line: 1, message: 'm' },
-    { ruler: 'house', id: 'c', check: 'x', file: 'f.md', line: 1, message: 'm' },
+    { ruler: 'spec', id: 'a', check: 'x', level: 'must', file: 'f.md', line: 1, messageKey: 'spec.type_required.empty', params: {} },
+    { ruler: 'spec', id: 'b', check: 'x', level: 'should', file: 'f.md', line: 1, messageKey: 'spec.type_required.empty', params: {} },
+    { ruler: 'house', id: 'c', check: 'x', file: 'f.md', line: 1, messageKey: 'spec.type_required.empty', params: {} },
   ];
   const { must, should, house, unexpected } = partitionFindings(combined);
   assert.equal(must.length, 1);
@@ -476,7 +511,7 @@ test('partitionFindings places a recognised finding in exactly one of must, shou
 });
 
 test('partitionFindings puts a finding with an unrecognised ruler/level combination in `unexpected`, never dropping it out of every group', () => {
-  const bogus = { ruler: 'spec', id: 'x', check: 'y', level: 'somehow-else', file: 'f.md', line: 1, message: 'm' };
+  const bogus = { ruler: 'spec', id: 'x', check: 'y', level: 'somehow-else', file: 'f.md', line: 1, messageKey: 'spec.type_required.empty', params: {} };
   const { must, should, house, unexpected } = partitionFindings([bogus]);
   assert.deepEqual(must, []);
   assert.deepEqual(should, []);
@@ -485,7 +520,7 @@ test('partitionFindings puts a finding with an unrecognised ruler/level combinat
 });
 
 test('a house finding that somehow carries a level also lands in unexpected, never silently accepted as house', () => {
-  const bogus = { ruler: 'house', id: 'x', check: 'y', level: 'must', file: 'f.md', line: 1, message: 'm' };
+  const bogus = { ruler: 'house', id: 'x', check: 'y', level: 'must', file: 'f.md', line: 1, messageKey: 'spec.type_required.empty', params: {} };
   const { house, unexpected } = partitionFindings([bogus]);
   assert.deepEqual(house, []);
   assert.deepEqual(unexpected, [bogus]);
@@ -495,8 +530,8 @@ test('a house finding that somehow carries a level also lands in unexpected, nev
 
 test('buildReport: a should-only run and a house-only run both block (exit 1) and both say so, never claiming the vault is simply fine', () => {
   const t = createTranslator('en');
-  const shouldOnly = [{ ruler: 'spec', id: 'x', check: 'y', level: 'should', file: 'f.md', line: 1, message: 'm' }];
-  const houseOnly = [{ ruler: 'house', id: 'x', check: 'y', file: 'f.md', line: 1, message: 'm' }];
+  const shouldOnly = [{ ruler: 'spec', id: 'x', check: 'y', level: 'should', file: 'f.md', line: 1, messageKey: 'spec.type_required.empty', params: {} }];
+  const houseOnly = [{ ruler: 'house', id: 'x', check: 'y', file: 'f.md', line: 1, messageKey: 'spec.type_required.empty', params: {} }];
 
   for (const combined of [shouldOnly, houseOnly]) {
     const report = buildReport(combined, [], { t });
@@ -515,12 +550,12 @@ test('buildReport: a should-only run and a house-only run both block (exit 1) an
 test('buildReport: a must finding says broken; an all-warnings run says conformant with nothing blocking; an empty run says clean', () => {
   const t = createTranslator('en');
 
-  const withMust = [{ ruler: 'spec', id: 'x', check: 'y', level: 'must', file: 'f.md', line: 1, message: 'm' }];
+  const withMust = [{ ruler: 'spec', id: 'x', check: 'y', level: 'must', file: 'f.md', line: 1, messageKey: 'spec.type_required.empty', params: {} }];
   const broken = buildReport(withMust, [], { t });
   assert.equal(broken.exitCode, EXIT.FAILURE);
   assert.match(broken.text, /not conformant to the format/);
 
-  const allWarnings = [{ ruler: 'spec', id: 'x', check: 'y', level: 'should', file: 'f.md', line: 1, message: 'm', warning: true }];
+  const allWarnings = [{ ruler: 'spec', id: 'x', check: 'y', level: 'should', file: 'f.md', line: 1, messageKey: 'spec.type_required.empty', params: {}, warning: true }];
   const warningsOnly = buildReport(allWarnings, [], { t });
   assert.equal(warningsOnly.exitCode, EXIT.OK);
   assert.equal(warningsOnly.json.blocking, false);
@@ -531,14 +566,51 @@ test('buildReport: a must finding says broken; an all-warnings run says conforma
   assert.match(clean.text, /no findings/i);
 });
 
+// --- a lineless finding prints its file alone, never a bare hyphen ---------
+
+// Pinned down as an EXACT line, not a substring match: a looser regex
+// (say, one that merely allows an optional trailing "-" or ":") would
+// pass just the same whether this printed "people/broken.md" or
+// "people/broken.md-", which is exactly the shape of test that let a
+// bare hyphen on a lineless finding ship unnoticed before. `line: null`
+// is the real, on-purpose shape a finding takes when there is no line
+// to point at (type-required's own three "missing" branches, for
+// instance): formatFinding's own ternary must render that as the file
+// alone, with nothing standing in for the absent number.
+test('buildReport: a finding with no line number prints its file alone, never a bare hyphen where a number would be', () => {
+  const t = createTranslator('en');
+  const lineless = [
+    { ruler: 'spec', id: 'type-required', check: 'type-present', level: 'must', file: 'people/broken.md', line: null, messageKey: 'spec.type_required.no_type_key', params: {} },
+  ];
+  const report = buildReport(lineless, [], { t });
+  const findingLine = report.text.split('\n').find((line) => line.includes('type-required'));
+  assert.equal(findingLine, `people/broken.md  type-required  ${t('spec.type_required.no_type_key')}`);
+});
+
 test('buildReport: an unrecognised finding says the run cannot vouch for conformance, and still blocks', () => {
   const t = createTranslator('en');
-  const bogus = [{ ruler: 'spec', id: 'x', check: 'y', level: 'somehow-else', file: 'f.md', line: 1, message: 'm' }];
+  const bogus = [{ ruler: 'spec', id: 'x', check: 'y', level: 'somehow-else', file: 'f.md', line: 1, messageKey: 'spec.type_required.empty', params: {} }];
   const report = buildReport(bogus, [], { t });
   assert.equal(report.exitCode, EXIT.FAILURE);
   assert.equal(report.json.counts.unexpected, 1);
   assert.match(report.text, /cannot say whether the vault is conformant/);
   assert.match(report.text, /Tool defect/);
+});
+
+// formatDefect (the tool-defect section's own line formatter) takes `t`
+// for exactly the same reason formatFinding does: this finding's own
+// message is a key and params too, and nothing else in this file's
+// tests ever reads the RENDERED text of a defect line, only the
+// section heading around it. Pinned down as an exact line for the same
+// reason the lineless-finding test above is: a substring check would
+// have passed just the same against a formatDefect that forgot to
+// render at all.
+test('buildReport: a tool-defect line renders its own message through the pack too, not only the section around it', () => {
+  const t = createTranslator('en');
+  const bogus = [{ ruler: 'spec', id: 'x', check: 'y', level: 'somehow-else', file: 'f.md', line: 1, messageKey: 'spec.type_required.empty', params: {} }];
+  const report = buildReport(bogus, [], { t });
+  const defectLine = report.text.split('\n').find((line) => line.startsWith('f.md'));
+  assert.equal(defectLine, `f.md:1  ruler=spec id=x level=somehow-else  ${t('spec.type_required.empty')}`);
 });
 
 // --- clause 1: the full path set reaching the link checker -----------------
@@ -571,7 +643,12 @@ test('a log heading is still recognised through CRLF line endings and a leading 
   const parsed = JSON.parse(result.stdout);
   const heading = parsed.findings.find((f) => f.id === 'log-format' && f.check === 'heading-not-a-date');
   assert.ok(heading, `expected a heading-not-a-date finding; got ${JSON.stringify(parsed.findings)}`);
-  assert.match(heading.message, /## Notes/);
+  // --json exposes the raw messageKey and params, never a formed
+  // sentence (the same contract the rule modules themselves keep): the
+  // heading text this finding is about is a PARAM, not a substring to
+  // grep out of a rendered string.
+  assert.equal(heading.messageKey, 'spec.log_format.heading_not_a_date');
+  assert.equal(heading.params.heading, 'Notes');
 });
 
 // --- clause 3: the read cache ------------------------------------------------

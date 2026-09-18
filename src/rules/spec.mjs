@@ -147,7 +147,7 @@
 // splitFrontmatter itself lost track of where the block ends; and
 // verified-events again reports a `verified` key present with no events
 // under it at all, restoring a finding the original validator also made
-// ("verified vazio") that this port had silently dropped.
+// (reported by the original validator in Portuguese as "verified empty") that this port had silently dropped.
 //
 // Fix round 3, six corrections: the level moved from the rule to the
 // check (see above); withoutFencedBlocks now matches CommonMark's own
@@ -253,6 +253,20 @@
 // src/frontmatter.mjs, exported once and imported here and by the house
 // ruler, rather than kept as two copies that had already, separately,
 // diverged from each other (see that export's own comment).
+//
+// Task 8: no rule below builds a finding's user-facing text. Every
+// `findings.push` names a `messageKey` (a key into lang/en/messages.json
+// and lang/pt-BR/messages.json, both required to carry it, a test in
+// test/lang.test.mjs enforces this) and `params` (the values that key's
+// placeholders need, always a plain object, `{}` when the key has none).
+// src/commands/validate.mjs is the one place that turns a key and its
+// params into a sentence, through the translator built from the VAULT's
+// own config.lang. Before this task every rule here built an English
+// string directly, so a report framed in the vault's chosen language
+// printed English findings underneath its own headings; that split is
+// also the only reason a stray Portuguese phrase could ever hide in this
+// otherwise English-only file, since English prose is not usually where
+// anyone looks for one.
 import { posix } from 'node:path';
 import { frontmatterKeyLine, readEntries, readMapping, readScalar, splitFrontmatter } from '../frontmatter.mjs';
 import { stripCode } from '../markdown.mjs';
@@ -429,18 +443,19 @@ const typeRequired = {
               file,
               line: null,
               check: 'type-present',
-              message: 'frontmatter opens with "---" but is never closed with a second one, so type cannot be confirmed; close the block',
+              messageKey: 'spec.type_required.unterminated',
+              params: {},
             });
           } else {
-            findings.push({ file, line: null, check: 'type-present', message: 'type is required but missing (the file has no frontmatter at all)' });
+            findings.push({ file, line: null, check: 'type-present', messageKey: 'spec.type_required.no_frontmatter', params: {} });
           }
         } else {
-          findings.push({ file, line: null, check: 'type-present', message: 'type is required but missing (this file has frontmatter, but no type key in it)' });
+          findings.push({ file, line: null, check: 'type-present', messageKey: 'spec.type_required.no_type_key', params: {} });
         }
       } else if (value === undefined) {
-        findings.push({ file, line, check: 'shape-readable', message: 'type is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' });
+        findings.push({ file, line, check: 'shape-readable', messageKey: 'common.shape_unreadable', params: { field: 'type' } });
       } else if (isBlank(value)) {
-        findings.push({ file, line, check: 'type-non-empty', message: 'type is present but empty; it must be a non-empty string' });
+        findings.push({ file, line, check: 'type-non-empty', messageKey: 'spec.type_required.empty', params: {} });
       }
     }
     return findings;
@@ -490,7 +505,8 @@ const indexNoFrontmatter = {
           line: 1,
           level: 'must',
           check: 'no-frontmatter-outside-root',
-          message: 'index.md is reserved and must carry no frontmatter (only the root index may declare okf_version)',
+          messageKey: 'spec.index_no_frontmatter.outside_root',
+          params: {},
         });
         continue;
       }
@@ -517,7 +533,8 @@ const indexNoFrontmatter = {
           line: extraIndex + 2,
           level: 'should',
           check: 'root-okf-version-only',
-          message: `the root index may declare only okf_version and nothing else; found "${lines[extraIndex].trim()}"`,
+          messageKey: 'spec.index_no_frontmatter.extra_key',
+          params: { found: lines[extraIndex].trim() },
         });
       }
     }
@@ -595,7 +612,7 @@ const logFormat = {
       const text = context.readFile(file);
       const { hasFrontmatter } = splitFrontmatter(text);
       if (hasFrontmatter) {
-        findings.push({ file, line: 1, level: 'should', check: 'no-frontmatter', message: 'log.md is reserved and should carry no frontmatter' });
+        findings.push({ file, line: 1, level: 'should', check: 'no-frontmatter', messageKey: 'spec.log_format.has_frontmatter', params: {} });
       }
 
       const headings = [];
@@ -615,7 +632,8 @@ const logFormat = {
             line: heading.line,
             level: 'must',
             check: 'heading-calendar',
-            message: `log heading "## ${heading.text}" is in YYYY-MM-DD form but names a day that does not exist; section 9 requires a real ISO 8601 date`,
+            messageKey: 'spec.log_format.heading_calendar',
+            params: { heading: heading.text },
           });
         } else if (looksLikeDateAttempt(heading.text)) {
           findings.push({
@@ -623,7 +641,8 @@ const logFormat = {
             line: heading.line,
             level: 'must',
             check: 'heading-form',
-            message: `log heading "## ${heading.text}" is a date written in another form; section 9 requires date headings in ISO 8601 YYYY-MM-DD form`,
+            messageKey: 'spec.log_format.heading_form',
+            params: { heading: heading.text },
           });
         } else {
           findings.push({
@@ -631,7 +650,8 @@ const logFormat = {
             line: heading.line,
             level: 'should',
             check: 'heading-not-a-date',
-            message: `log heading "## ${heading.text}" is not a date heading; a log groups its entries under dates`,
+            messageKey: 'spec.log_format.heading_not_a_date',
+            params: { heading: heading.text },
           });
         }
       }
@@ -642,7 +662,8 @@ const logFormat = {
             line: dated[i].line,
             level: 'must',
             check: 'ordering',
-            message: `log dates must run from most recent to oldest; "${dated[i].text}" comes after "${dated[i - 1].text}"`,
+            messageKey: 'spec.log_format.ordering',
+            params: { date: dated[i].text, previous: dated[i - 1].text },
           });
         }
       }
@@ -676,18 +697,19 @@ const generatedActor = {
       if (generated === null) continue; // absent: this rule only applies when generated is present
       const line = frontmatterKeyLine(frontmatter, 'generated');
       if (generated === undefined) {
-        findings.push({ file, line, check: 'shape-readable', message: 'generated is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' });
+        findings.push({ file, line, check: 'shape-readable', messageKey: 'common.shape_unreadable', params: { field: 'generated' } });
         continue;
       }
       if (isBlank(generated.by)) {
-        findings.push({ file, line, check: 'actor-present', message: 'generated.by is required but missing or empty' });
+        findings.push({ file, line, check: 'actor-present', messageKey: 'spec.generated_actor.missing_actor', params: {} });
       }
       if (!isBlank(generated.at) && !isValidIsoDatetimeWithOffset(generated.at)) {
         findings.push({
           file,
           line,
           check: 'timestamp-form',
-          message: `generated.at "${generated.at}" is not an ISO 8601 datetime with an explicit UTC offset, which section 5 requires for every timestamp-valued key`,
+          messageKey: 'common.timestamp_form',
+          params: { field: 'generated.at', value: generated.at },
         });
       }
     }
@@ -735,32 +757,33 @@ const verifiedEvents = {
       if (events === null) continue; // absent: this rule only applies when verified is present
       const line = frontmatterKeyLine(frontmatter, 'verified');
       if (events === undefined) {
-        findings.push({ file, line, check: 'shape-readable', message: 'verified is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' });
+        findings.push({ file, line, check: 'shape-readable', messageKey: 'common.shape_unreadable', params: { field: 'verified' } });
         continue;
       }
       if (events.length === 0) {
         // Present but carrying no events at all (the key is there with
         // nothing indented underneath it): fix round 1 restored this
         // finding, which the original validator also reported as
-        // "verified vazio". An empty inline mapping ("verified: {}") is
+        // its own Portuguese "verified empty" message. An empty inline mapping ("verified: {}") is
         // NOT this case: readVerifiedEvents normalises it into a single
         // one-element list instead, which already fails the by/at check
         // below on its own, the same way it did before this round.
-        findings.push({ file, line, check: 'has-events', message: 'verified is present but carries no events; remove the key or add at least one with by and at' });
+        findings.push({ file, line, check: 'has-events', messageKey: 'spec.verified_events.empty', params: {} });
         continue;
       }
       events.forEach((event, index) => {
         if (isBlank(event.by)) {
-          findings.push({ file, line, check: 'event-actor', message: `verified[${index}].by is required but missing or empty` });
+          findings.push({ file, line, check: 'event-actor', messageKey: 'spec.verified_events.missing_actor', params: { index } });
         }
         if (isBlank(event.at)) {
-          findings.push({ file, line, check: 'event-timestamp-present', message: `verified[${index}].at is required but missing or empty` });
+          findings.push({ file, line, check: 'event-timestamp-present', messageKey: 'spec.verified_events.missing_timestamp', params: { index } });
         } else if (!isValidIsoDatetimeWithOffset(event.at)) {
           findings.push({
             file,
             line,
             check: 'event-timestamp-form',
-            message: `verified[${index}].at "${event.at}" is not an ISO 8601 datetime with an explicit UTC offset, which section 5 requires for every timestamp-valued key`,
+            messageKey: 'common.timestamp_form',
+            params: { field: `verified[${index}].at`, value: event.at },
           });
         }
       });
@@ -784,9 +807,9 @@ const statusEnum = {
       if (status === null) continue; // absent: this rule only applies when status is present
       const line = frontmatterKeyLine(frontmatter, 'status');
       if (status === undefined) {
-        findings.push({ file, line, check: 'shape-readable', message: 'status is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' });
+        findings.push({ file, line, check: 'shape-readable', messageKey: 'common.shape_unreadable', params: { field: 'status' } });
       } else if (!STATUS_ENUM.has(status)) {
-        findings.push({ file, line, check: 'status-enum', message: `status "${status}" is not one of draft, stable, deprecated` });
+        findings.push({ file, line, check: 'status-enum', messageKey: 'spec.status_enum.invalid', params: { value: status } });
       }
     }
     return findings;
@@ -823,13 +846,14 @@ const staleAfterFormat = {
       if (staleAfter === null) continue; // absent: this rule only applies when stale_after is present
       const line = frontmatterKeyLine(frontmatter, 'stale_after');
       if (staleAfter === undefined) {
-        findings.push({ file, line, check: 'shape-readable', message: 'stale_after is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' });
+        findings.push({ file, line, check: 'shape-readable', messageKey: 'common.shape_unreadable', params: { field: 'stale_after' } });
       } else if (!isValidIsoDatetimeWithOffset(staleAfter)) {
         findings.push({
           file,
           line,
           check: 'timestamp-form',
-          message: `stale_after "${staleAfter}" must be an ISO 8601 datetime with an explicit UTC offset; section 5 requires this for every timestamp-valued key, so a plain date is no longer accepted here`,
+          messageKey: 'spec.stale_after_format.invalid',
+          params: { value: staleAfter },
         });
       }
     }
@@ -860,19 +884,20 @@ const sourcesResource = {
       if (sources === null) continue; // absent: this rule only applies when sources is present
       const line = frontmatterKeyLine(frontmatter, 'sources');
       if (sources === undefined) {
-        findings.push({ file, line, check: 'shape-readable', message: 'sources is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' });
+        findings.push({ file, line, check: 'shape-readable', messageKey: 'common.shape_unreadable', params: { field: 'sources' } });
         continue;
       }
       sources.forEach((entry, index) => {
         if (isBlank(entry.resource)) {
-          findings.push({ file, line, check: 'entry-resource', message: `sources[${index}] is missing a non-empty resource` });
+          findings.push({ file, line, check: 'entry-resource', messageKey: 'spec.sources_resource.missing_resource', params: { index } });
         }
         if (!isBlank(entry.last_modified) && !isValidIsoDatetimeWithOffset(entry.last_modified)) {
           findings.push({
             file,
             line,
             check: 'entry-timestamp-form',
-            message: `sources[${index}].last_modified "${entry.last_modified}" is not an ISO 8601 datetime with an explicit UTC offset, which section 5 requires for every timestamp-valued key`,
+            messageKey: 'common.timestamp_form',
+            params: { field: `sources[${index}].last_modified`, value: entry.last_modified },
           });
         }
       });
@@ -942,7 +967,8 @@ export function runSpecRules(files, context) {
         level: partial.level ?? rule.level,
         file: partial.file,
         line: partial.line,
-        message: partial.message,
+        messageKey: partial.messageKey,
+        params: partial.params,
       });
     }
   }

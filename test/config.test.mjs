@@ -12,6 +12,33 @@ test('the example config is valid', () => {
   assert.deepEqual(validateConfig(fixture('config/valid.json')), []);
 });
 
+// test/fixtures/config/valid-pt-BR.json exists to PROVE a claim this kit
+// has always made and, until this test, never once checked: taxonomy is
+// configuration, so its labels, file names and column headings are the
+// vault owner's own language, not brain-kit's. Its EN sibling above is
+// deliberately, wholly English; this one is deliberately, wholly pt-BR,
+// down to the taxonomy the schema leaves free-form. Checking only
+// `validateConfig(...) === []` would pass against a fixture that was
+// quietly re-anglicised (the schema does not know or care what
+// language a free-form string is in), so this test also pins down
+// specific non-English values at the exact schema paths a previous
+// pass renamed to English keys: a column heading, a file name, and an
+// extension field name. Mutate any one of those three values back to
+// English and this test, not just the schema check, must fail.
+test('the pt-BR sibling fixture proves the configuration accepts non-English labels, file names and column headings', () => {
+  const config = fixture('config/valid-pt-BR.json');
+  assert.deepEqual(validateConfig(config), []);
+  assert.equal(config.lang, 'pt-BR');
+  // A non-English column heading, under a schema key (taxonomy.columns)
+  // that only ever requires a string.
+  assert.equal(config.taxonomy.columns.followups.what, 'O que');
+  // A non-English file name, under taxonomy.files (also free-form).
+  assert.equal(config.taxonomy.files.promises, 'pending/promessas.md');
+  // A non-English extension field name, under frontmatter.extensions
+  // (the map's own keys are free-form, not drawn from any enum).
+  assert.ok('situacao' in config.frontmatter.extensions, 'expected a non-English extension field name');
+});
+
 test('a machine-only key anywhere in the versioned config is rejected', () => {
   const errors = validateConfig(fixture('config/with-machine-key.json'));
   assert.ok(errors.some((e) => e.startsWith('$.curate.claude_bin: machine-only key')), errors.join('\n'));

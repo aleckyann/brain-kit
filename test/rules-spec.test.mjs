@@ -36,7 +36,20 @@ import { join } from 'node:path';
 import { loadConfig } from '../src/config.mjs';
 import { walkVault } from '../src/vault.mjs';
 import { SPEC_RULES, runSpecRules } from '../src/rules/spec.mjs';
+import { createTranslator } from '../src/lang.mjs';
 import { makeVault } from './helpers/vault-fixture.mjs';
+
+// A finding carries a message KEY and PARAMS, never a formed sentence
+// (see src/rules/spec.mjs's own header): the pack is rendered here,
+// once, for every test below that used to read finding.message
+// directly, so this file keeps asserting on rendered English text
+// without the rule module ever building that text itself. `en` is
+// this file's own fixed rendering language, independent of whatever
+// language a given test's vault happens to declare.
+const englishFor = createTranslator('en');
+function renderedMessage(finding) {
+  return englishFor(finding.messageKey, finding.params ?? {});
+}
 
 // --- test scaffolding --------------------------------------------------------
 
@@ -242,7 +255,7 @@ test('every finding carries ruler "spec" explicitly, a check naming its own asse
   assert.ok(findings.length > 0, 'the fixture must produce at least one real finding for this assertion to mean anything');
   for (const finding of findings) {
     assert.equal(finding.ruler, 'spec');
-    assert.deepEqual(Object.keys(finding).sort(), ['check', 'file', 'id', 'level', 'line', 'message', 'ruler', 'section']);
+    assert.deepEqual(Object.keys(finding).sort(), ['check', 'file', 'id', 'level', 'line', 'messageKey', 'params', 'ruler', 'section']);
     assert.equal(typeof finding.check, 'string');
     assert.ok(finding.check.length > 0);
   }
@@ -294,13 +307,13 @@ test('type-required flags a note with no frontmatter at all and, separately, one
   const noFrontmatter = findings.filter((f) => isSpec('type-required')(f) && f.file === 'people/no-frontmatter.md');
   assert.equal(noFrontmatter.length, 1);
   assert.equal(noFrontmatter[0].line, null);
-  assert.match(noFrontmatter[0].message, /no frontmatter at all/);
+  assert.match(renderedMessage(noFrontmatter[0]), /no frontmatter at all/);
 
   const noTypeKey = findings.filter((f) => isSpec('type-required')(f) && f.file === 'people/no-type-key.md');
   assert.equal(noTypeKey.length, 1);
   assert.equal(noTypeKey[0].line, null);
-  assert.match(noTypeKey[0].message, /required/);
-  assert.ok(!/no frontmatter at all/.test(noTypeKey[0].message), 'a well-formed block with no type key must not be told it has no frontmatter at all');
+  assert.match(renderedMessage(noTypeKey[0]), /required/);
+  assert.ok(!/no frontmatter at all/.test(renderedMessage(noTypeKey[0])), 'a well-formed block with no type key must not be told it has no frontmatter at all');
 
   assert.deepEqual(findings.filter((f) => f.file === 'people/ana.md'), []);
 });
@@ -321,20 +334,20 @@ test('type-required never says a type is missing when its frontmatter is merely 
 
   const unterminated = findings.filter((f) => isSpec('type-required')(f) && f.file === 'people/unterminated.md');
   assert.equal(unterminated.length, 1);
-  assert.ok(!/missing/.test(unterminated[0].message), 'must not claim the type is missing when it is plainly on screen');
-  assert.match(unterminated[0].message, /never closed|not closed/);
+  assert.ok(!/missing/.test(renderedMessage(unterminated[0])), 'must not claim the type is missing when it is plainly on screen');
+  assert.match(renderedMessage(unterminated[0]), /never closed|not closed/);
 
   const closed = findings.filter((f) => isSpec('type-required')(f) && f.file === 'people/closed-no-type.md');
   assert.equal(closed.length, 1);
-  assert.match(closed[0].message, /missing/);
+  assert.match(renderedMessage(closed[0]), /missing/);
 });
 
 test('type-required treats a present but unreadable type (a block scalar header) as a distinct finding from an absent one, naming PARSER_LIMITS rather than calling the field missing', () => {
   const files = { ...cleanVaultFiles(), 'people/unreadable-type.md': CLEAN_NOTE.replace('type: person', 'type: |') };
   const findings = findingsFor(files).filter((f) => isSpec('type-required')(f) && f.file === 'people/unreadable-type.md');
   assert.equal(findings.length, 1);
-  assert.match(findings[0].message, /PARSER_LIMITS/);
-  assert.ok(!/required but missing/.test(findings[0].message), 'an unreadable shape must not be reported as missing');
+  assert.match(renderedMessage(findings[0]), /PARSER_LIMITS/);
+  assert.ok(!/required but missing/.test(renderedMessage(findings[0])), 'an unreadable shape must not be reported as missing');
   assert.equal(findings[0].line, 2); // line 1 is "---", line 2 is "type: |"
 });
 
@@ -342,7 +355,7 @@ test('type-required flags a type key present but left empty, distinct from both 
   const files = { ...cleanVaultFiles(), 'people/empty-type.md': CLEAN_NOTE.replace('type: person', 'type:') };
   const findings = findingsFor(files).filter((f) => isSpec('type-required')(f) && f.file === 'people/empty-type.md');
   assert.equal(findings.length, 1);
-  assert.match(findings[0].message, /empty/);
+  assert.match(renderedMessage(findings[0]), /empty/);
 });
 
 test('type-required exempts index.md and log.md at any depth, even though neither carries a type, but still flags an ordinary file beside them with the same problem', () => {
@@ -378,7 +391,7 @@ test('index-no-frontmatter allows the root index to have no frontmatter at all, 
   assert.equal(bad.length, 1);
   assert.equal(bad[0].file, 'index.md');
   assert.equal(bad[0].line, 3); // line 1 "---", line 2 okf_version, line 3 the extra key
-  assert.match(bad[0].message, /okf_version/);
+  assert.match(renderedMessage(bad[0]), /okf_version/);
   // Section 8's exception names only okf_version; whether another key
   // breaks the structure is arguable, and the rule for an arguable
   // reading is to claim the lower level.
@@ -405,7 +418,7 @@ test('index-no-frontmatter exempts a YAML comment annotating okf_version, but st
   const bad = findingsFor(withIndentedExtra).filter(isSpec('index-no-frontmatter'));
   assert.equal(bad.length, 1);
   assert.equal(bad[0].line, 3);
-  assert.match(bad[0].message, /title/);
+  assert.match(renderedMessage(bad[0]), /title/);
 });
 
 test('index-no-frontmatter flags any non-root index.md that carries frontmatter at all, at line 1, but allows one with none', () => {
@@ -431,7 +444,7 @@ test('log-format flags a log.md that carries frontmatter, at line 1, but allows 
   assert.equal(bad.length, 1);
   assert.equal(bad[0].file, 'memory/log.md');
   assert.equal(bad[0].line, 1);
-  assert.match(bad[0].message, /frontmatter/);
+  assert.match(renderedMessage(bad[0]), /frontmatter/);
   // Section 9 is silent on frontmatter in the log; the structure it shows has none.
   assert.equal(bad[0].level, 'should');
 });
@@ -471,23 +484,23 @@ test('log-format grades a malformed date heading and an impossible date heading 
 
   const prose = findings.find((f) => f.line === 5);
   assert.equal(prose.level, 'should');
-  assert.match(prose.message, /is not a date heading/);
+  assert.match(renderedMessage(prose), /is not a date heading/);
 
   const impossible = findings.find((f) => f.line === 7);
   assert.equal(impossible.level, 'must');
-  assert.match(impossible.message, /names a day that does not exist/);
+  assert.match(renderedMessage(impossible), /names a day that does not exist/);
 
   for (const line of [9, 11]) {
     const wrongForm = findings.find((f) => f.line === line);
     assert.equal(wrongForm.level, 'must', `the heading on line ${line} violates section 9's only MUST`);
-    assert.match(wrongForm.message, /requires date headings in ISO 8601 YYYY-MM-DD form/);
+    assert.match(renderedMessage(wrongForm), /requires date headings in ISO 8601 YYYY-MM-DD form/);
   }
 
   // The three messages must not be interchangeable: telling someone
   // "section 9 requires the YYYY-MM-DD form" about "## 2026-02-30",
   // whose form is already fine, teaches them nothing about what is
   // wrong, which is the defect fix round 4 was called in to fix.
-  assert.equal(new Set(findings.map((f) => f.message.replace(/"## [^"]*"/, ''))).size, 3);
+  assert.equal(new Set(findings.map((f) => renderedMessage(f).replace(/"## [^"]*"/, ''))).size, 3);
 });
 
 test('log-format flags dates that run oldest-first instead of most-recent-first, at must-level, at the line of the entry that breaks the order', () => {
@@ -498,7 +511,7 @@ test('log-format flags dates that run oldest-first instead of most-recent-first,
   const findings = findingsFor(files).filter((f) => isSpec('log-format')(f) && f.file === 'memory/log.md');
   assert.equal(findings.length, 1);
   assert.equal(findings[0].line, 5);
-  assert.match(findings[0].message, /most recent to oldest/);
+  assert.match(renderedMessage(findings[0]), /most recent to oldest/);
   // Section 9 opens "The format is a flat list of date-grouped entries,
   // newest first:", so ordering is STATED, not merely shown by the
   // example, and section 11 clause 3 makes following section 9 a matter
@@ -540,7 +553,7 @@ test('log-format allows two consecutive headings dated the same day, not just st
   assert.deepEqual(findings.filter((f) => f.file === 'memory/log.md'), []);
   const bad = findings.filter((f) => isSpec('log-format')(f) && f.file === 'archive/log.md');
   assert.equal(bad.length, 1);
-  assert.match(bad[0].message, /most recent to oldest/);
+  assert.match(renderedMessage(bad[0]), /most recent to oldest/);
 });
 
 test('log-format survives malformed and binary-ish content without throwing, and still finds the bad-format and out-of-order defects mixed in with garbage', () => {
@@ -572,9 +585,9 @@ test('log-format survives malformed and binary-ish content without throwing, and
   const messy = findings.filter((f) => isSpec('log-format')(f) && f.file === 'd/log.md');
   assert.equal(messy.length, 2);
   assert.equal(messy[0].level, 'should'); // "## not-a-real-date" is prose, not an attempt at a date
-  assert.match(messy[0].message, /is not a date heading/);
+  assert.match(renderedMessage(messy[0]), /is not a date heading/);
   assert.equal(messy[1].level, 'must'); // ordering: section 9 states "newest first"
-  assert.match(messy[1].message, /most recent to oldest/);
+  assert.match(renderedMessage(messy[1]), /most recent to oldest/);
 });
 
 // Fix round 1, the critical finding: a "## " line or a quoted date inside
@@ -612,8 +625,8 @@ test('log-format never reads a heading or a date from inside a fenced code block
   const findings = findingsFor(files).filter((f) => isSpec('log-format')(f) && f.file === 'memory/log.md');
   assert.equal(findings.length, 1, 'only the heading outside the fence should be flagged, not the two decoys inside it');
   assert.equal(findings[0].level, 'should');
-  assert.match(findings[0].message, /is not a date heading/);
-  assert.match(findings[0].message, /OUTSIDE the fence/);
+  assert.match(renderedMessage(findings[0]), /is not a date heading/);
+  assert.match(renderedMessage(findings[0]), /OUTSIDE the fence/);
 });
 
 // Fix round 3: the fence rule handed down by the review, not a bare
@@ -664,7 +677,7 @@ test('withoutFencedBlocks recognises a tilde fence, does not close a longer fenc
   assert.deepEqual(findings.filter((f) => f.file === 'b/log.md'), []);
   const cFindings = findings.filter((f) => isSpec('log-format')(f) && f.file === 'c/log.md');
   assert.equal(cFindings.length, 1, 'the heading after the indented code block must still be read and flagged');
-  assert.match(cFindings[0].message, /is not a date heading/);
+  assert.match(renderedMessage(cFindings[0]), /is not a date heading/);
 });
 
 // The review's addition to the fence contract: a fence quoted inside a
@@ -687,7 +700,7 @@ test('a fenced block inside a blockquote is skipped the same as an unquoted one,
   };
   const findings = findingsFor(files).filter((f) => isSpec('log-format')(f) && f.file === 'memory/log.md');
   assert.equal(findings.length, 1, 'only the heading after the blockquote should be flagged, not the one quoted and fenced inside it');
-  assert.match(findings[0].message, /is not a date heading/);
+  assert.match(renderedMessage(findings[0]), /is not a date heading/);
 });
 
 // log-format's own heading check shares the same calendar-valid date
@@ -703,7 +716,7 @@ test('log-format checks the calendar on its headings too, not just their shape',
   const findings = findingsFor(files).filter((f) => isSpec('log-format')(f) && f.file === 'memory/log.md');
   assert.equal(findings.length, 1);
   assert.equal(findings[0].level, 'must');
-  assert.match(findings[0].message, /names a day that does not exist/);
+  assert.match(renderedMessage(findings[0]), /names a day that does not exist/);
 });
 
 // --- generated-actor ---------------------------------------------------------
@@ -722,8 +735,8 @@ test('generated-actor does not fire when generated is absent, but does fire, aga
 
   const unreadable = findings.filter((f) => isSpec('generated-actor')(f) && f.file === 'people/unreadable-generated.md');
   assert.equal(unreadable.length, 1);
-  assert.match(unreadable[0].message, /PARSER_LIMITS/);
-  assert.ok(!/missing/.test(unreadable[0].message));
+  assert.match(renderedMessage(unreadable[0]), /PARSER_LIMITS/);
+  assert.ok(!/missing/.test(renderedMessage(unreadable[0])));
 });
 
 test('generated-actor requires a non-empty by, but leaves at alone when at is simply absent', () => {
@@ -735,7 +748,7 @@ test('generated-actor requires a non-empty by, but leaves at alone when at is si
   const findings = findingsFor(files);
   const noBy = findings.filter((f) => isSpec('generated-actor')(f) && f.file === 'people/no-by.md');
   assert.equal(noBy.length, 1);
-  assert.match(noBy[0].message, /by/);
+  assert.match(renderedMessage(noBy[0]), /by/);
   assert.deepEqual(findings.filter((f) => isSpec('generated-actor')(f) && f.file === 'people/no-at.md'), []);
 });
 
@@ -751,7 +764,7 @@ test('a quoted generated key is read correctly and its finding reports a real li
   };
   const findings = findingsFor(files).filter((f) => isSpec('generated-actor')(f) && f.file === 'people/quoted-key.md');
   assert.equal(findings.length, 1);
-  assert.match(findings[0].message, /by/);
+  assert.match(renderedMessage(findings[0]), /by/);
   assert.equal(findings[0].line, 3); // line 1 "---", line 2 "type: person", line 3 "generated": {...}
 });
 
@@ -759,7 +772,7 @@ test('generated-actor requires at, when present, to be an ISO 8601 datetime, but
   const files = { ...cleanVaultFiles(), 'people/bad-at.md': CLEAN_NOTE.replace('at: 2026-09-18T09:30:00Z }', 'at: 18/09/2026 }') };
   const findings = findingsFor(files).filter((f) => isSpec('generated-actor')(f) && f.file === 'people/bad-at.md');
   assert.equal(findings.length, 1);
-  assert.match(findings[0].message, /ISO 8601/);
+  assert.match(renderedMessage(findings[0]), /ISO 8601/);
   // people/ana.md, present in every fixture above via cleanVaultFiles(), keeps its
   // "at: 2026-09-18T09:30:00Z" (an offset of zero, spelled "Z") and reports nothing.
 });
@@ -777,7 +790,7 @@ test('verified-events does not fire when verified is absent, but does fire, agai
 
   const unreadable = findings.filter((f) => isSpec('verified-events')(f) && f.file === 'people/unreadable-verified.md');
   assert.equal(unreadable.length, 1);
-  assert.match(unreadable[0].message, /PARSER_LIMITS/);
+  assert.match(renderedMessage(unreadable[0]), /PARSER_LIMITS/);
 });
 
 test('verified-events requires both by and at on a single inline event, but allows one that carries both', () => {
@@ -787,7 +800,7 @@ test('verified-events requires both by and at on a single inline event, but allo
   };
   const findings = findingsFor(files).filter((f) => isSpec('verified-events')(f) && f.file === 'people/verified-missing-at.md');
   assert.equal(findings.length, 1);
-  assert.match(findings[0].message, /verified\[0\]/);
+  assert.match(renderedMessage(findings[0]), /verified\[0\]/);
   // people/ana.md keeps its complete inline event and reports nothing (see the clean-baseline test).
 });
 
@@ -805,7 +818,7 @@ test('verified-events requires at to be an ISO 8601 datetime with an explicit of
   const findings = findingsFor(files).filter((f) => isSpec('verified-events')(f) && f.file === 'people/verified-bad-at-form.md');
   assert.equal(findings.length, 1);
   assert.equal(findings[0].check, 'event-timestamp-form');
-  assert.match(findings[0].message, /UTC offset/);
+  assert.match(renderedMessage(findings[0]), /UTC offset/);
 });
 
 // Fix round 2: a blank at and a malformed at used to share the same
@@ -839,12 +852,12 @@ test('verified-events reads a block list of multiple events and flags only the o
   };
   const findings = findingsFor(files).filter((f) => isSpec('verified-events')(f) && f.file === 'people/verified-list.md');
   assert.equal(findings.length, 1);
-  assert.match(findings[0].message, /verified\[1\]/);
+  assert.match(renderedMessage(findings[0]), /verified\[1\]/);
 });
 
 // Fix round 1: a `verified` key present with nothing under it at all
 // (zero events) used to pass silently. Restored, matching the original
-// validator's own "verified vazio" finding. Paired against an empty
+// validator's own finding (reported in Portuguese as "verified empty"). Paired against an empty
 // INLINE mapping ("verified: {}"), which is a different shape (one
 // event with no fields) that already fails the by/at check on its own
 // and must keep doing so, not be swept into this same "no events" path.
@@ -858,7 +871,7 @@ test('verified-events flags a key present with no events under it at all, but tr
 
   const emptyBlock = findings.filter((f) => isSpec('verified-events')(f) && f.file === 'people/verified-empty-block.md');
   assert.equal(emptyBlock.length, 1);
-  assert.match(emptyBlock[0].message, /no events/);
+  assert.match(renderedMessage(emptyBlock[0]), /no events/);
 
   // An empty inline mapping is one event with BOTH fields blank, and
   // fix round 5 split the by check and the at check apart (the same
@@ -870,7 +883,7 @@ test('verified-events flags a key present with no events under it at all, but tr
   const emptyMapping = findings.filter((f) => isSpec('verified-events')(f) && f.file === 'people/verified-empty-mapping.md');
   assert.equal(emptyMapping.length, 2);
   assert.deepEqual(emptyMapping.map((f) => f.check).sort(), ['event-actor', 'event-timestamp-present']);
-  for (const finding of emptyMapping) assert.match(finding.message, /verified\[0\]/);
+  for (const finding of emptyMapping) assert.match(renderedMessage(finding), /verified\[0\]/);
 });
 
 // --- status-enum ---------------------------------------------------------------
@@ -888,7 +901,7 @@ test('status-enum accepts every value in the enum, but flags one outside it', ()
   const files = { ...cleanVaultFiles(), 'people/status-bad.md': CLEAN_NOTE.replace('status: stable', 'status: pending') };
   const bad = findingsFor(files).filter((f) => isSpec('status-enum')(f) && f.file === 'people/status-bad.md');
   assert.equal(bad.length, 1);
-  assert.match(bad[0].message, /draft, stable, deprecated/);
+  assert.match(renderedMessage(bad[0]), /draft, stable, deprecated/);
 });
 
 test('status-enum does not fire when status is absent, but does fire, against PARSER_LIMITS, when it is present in an unreadable shape', () => {
@@ -902,7 +915,7 @@ test('status-enum does not fire when status is absent, but does fire, against PA
 
   const unreadable = findings.filter((f) => isSpec('status-enum')(f) && f.file === 'people/unreadable-status.md');
   assert.equal(unreadable.length, 1);
-  assert.match(unreadable[0].message, /PARSER_LIMITS/);
+  assert.match(renderedMessage(unreadable[0]), /PARSER_LIMITS/);
 });
 
 // --- stale-after-format ----------------------------------------------------------
@@ -928,8 +941,8 @@ test('stale-after-format requires an explicit UTC offset per section 5: a dateti
   };
   const findings = findingsFor(files).filter((f) => isSpec('stale-after-format')(f) && f.file === 'people/date-only.md');
   assert.equal(findings.length, 1);
-  assert.match(findings[0].message, /explicit UTC offset/);
-  assert.match(findings[0].message, /section 5/);
+  assert.match(renderedMessage(findings[0]), /explicit UTC offset/);
+  assert.match(renderedMessage(findings[0]), /section 5/);
 });
 
 test('stale-after-format flags any value that is not a datetime with an explicit UTC offset, including a placeholder-looking value, since the spec ruler has no notion of templates', () => {
@@ -1078,7 +1091,7 @@ test('stale-after-format does not fire when stale_after is absent, but does fire
 
   const unreadable = findings.filter((f) => isSpec('stale-after-format')(f) && f.file === 'people/unreadable-stale-after.md');
   assert.equal(unreadable.length, 1);
-  assert.match(unreadable[0].message, /PARSER_LIMITS/);
+  assert.match(renderedMessage(unreadable[0]), /PARSER_LIMITS/);
 });
 
 // --- sources-resource --------------------------------------------------------------
@@ -1093,7 +1106,7 @@ test('sources-resource requires every entry to carry a non-empty resource, flagg
   };
   const findings = findingsFor(files).filter((f) => isSpec('sources-resource')(f) && f.file === 'people/sources-list.md');
   assert.deepEqual(
-    findings.map((f) => f.message.match(/sources\[\d+\]/)[0]),
+    findings.map((f) => renderedMessage(f).match(/sources\[\d+\]/)[0]),
     ['sources[1]', 'sources[2]'],
   );
 });
@@ -1123,7 +1136,7 @@ test('sources-resource checks last_modified\x27s form when present, but leaves i
   const bad = findings.filter((f) => isSpec('sources-resource')(f) && f.file === 'people/sources-bad-last-modified.md');
   assert.equal(bad.length, 1);
   assert.equal(bad[0].check, 'entry-timestamp-form');
-  assert.match(bad[0].message, /last_modified/);
+  assert.match(renderedMessage(bad[0]), /last_modified/);
 });
 
 test('sources-resource does not fire when sources is absent, but does fire, against PARSER_LIMITS, when present in an unreadable shape', () => {
@@ -1137,7 +1150,7 @@ test('sources-resource does not fire when sources is absent, but does fire, agai
 
   const unreadable = findings.filter((f) => isSpec('sources-resource')(f) && f.file === 'people/unreadable-sources.md');
   assert.equal(unreadable.length, 1);
-  assert.match(unreadable[0].message, /PARSER_LIMITS/);
+  assert.match(renderedMessage(unreadable[0]), /PARSER_LIMITS/);
 });
 
 // --- a rule must never throw: malformed, truncated, empty and binary-ish files ----

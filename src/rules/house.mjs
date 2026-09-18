@@ -213,6 +213,13 @@
 // reads on its own. The actual transformation is applyTimestampDeviation,
 // exported below, next to the one place that already knows what
 // "forbid" and "allow" mean for this setting.
+//
+// Task 8: same contract as spec.mjs's own header describes. No rule
+// below builds user-facing text; every `findings.push` names a
+// `messageKey` (present in both lang/en/messages.json and
+// lang/pt-BR/messages.json) and `params`, and src/commands/validate.mjs
+// is the only place that renders them, through the vault's own
+// config.lang.
 import { posix } from 'node:path';
 import { frontmatterKeyLine, readEntries, readList, readMapping, readScalar, splitFrontmatter } from '../frontmatter.mjs';
 import { stripCode } from '../markdown.mjs';
@@ -324,20 +331,22 @@ const requiredFields = {
       for (const key of required) {
         const { state } = classifyField(frontmatter, key);
         if (state === 'absent') {
-          findings.push({ file, line: null, check: 'field-present', message: `${key} is required by this vault's own configuration but is missing` });
+          findings.push({ file, line: null, check: 'field-present', messageKey: 'house.required_fields.missing', params: { key } });
         } else if (state === 'blank') {
           findings.push({
             file,
             line: frontmatterKeyLine(frontmatter, key),
             check: 'field-non-empty',
-            message: `${key} is required by this vault's own configuration but is empty`,
+            messageKey: 'house.required_fields.empty',
+            params: { key },
           });
         } else if (state === 'unreadable') {
           findings.push({
             file,
             line: frontmatterKeyLine(frontmatter, key),
             check: 'shape-readable',
-            message: `${key} is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)`,
+            messageKey: 'common.shape_unreadable',
+            params: { field: key },
           });
         }
       }
@@ -369,7 +378,8 @@ const forbiddenFields = {
           file,
           line: frontmatterKeyLine(frontmatter, key),
           check: 'field-forbidden',
-          message: `${key} is forbidden by this vault's own configuration but is present`,
+          messageKey: 'house.forbidden_fields.present',
+          params: { key },
         });
       }
     }
@@ -397,12 +407,12 @@ const typeEnum = {
       if (value === null) continue; // absence is type-required's finding, not this one's
       const line = frontmatterKeyLine(frontmatter, 'type');
       if (value === undefined) {
-        findings.push({ file, line, check: 'shape-readable', message: 'type is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' });
+        findings.push({ file, line, check: 'shape-readable', messageKey: 'common.shape_unreadable', params: { field: 'type' } });
         continue;
       }
       if (isBlank(value)) continue; // an empty type is type-required's finding, not this one's
       if (!allowed.includes(value)) {
-        findings.push({ file, line, check: 'type-allowed', message: `type "${value}" is not one of this vault's allowed types: ${allowed.join(', ')}` });
+        findings.push({ file, line, check: 'type-allowed', messageKey: 'house.type_enum.invalid', params: { value, allowed: allowed.join(', ') } });
       }
     }
     return findings;
@@ -487,7 +497,8 @@ const extensionFields = {
             file,
             line,
             check: 'shape-readable',
-            message: `${fieldName} is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)`,
+            messageKey: 'common.shape_unreadable',
+            params: { field: fieldName },
           });
           continue;
         }
@@ -499,16 +510,22 @@ const extensionFields = {
         if (placeholder && isUnderDir(file, templatesDir) && placeholder.test(value)) continue;
 
         if (spec.type === 'boolean' && !isValidBooleanValue(value)) {
-          findings.push({ file, line, check: 'value-kind', message: `${fieldName} "${value}" must be a boolean (true or false)` });
+          findings.push({ file, line, check: 'value-kind', messageKey: 'house.extension_fields.boolean', params: { field: fieldName, value } });
         } else if (spec.type === 'number' && !isValidNumberValue(value)) {
-          findings.push({ file, line, check: 'value-kind', message: `${fieldName} "${value}" must be a number` });
+          findings.push({ file, line, check: 'value-kind', messageKey: 'house.extension_fields.number', params: { field: fieldName, value } });
         } else if (spec.type === 'date' && !isValidCalendarDateValue(value)) {
-          findings.push({ file, line, check: 'value-kind', message: `${fieldName} "${value}" must be an ISO calendar date (YYYY-MM-DD)` });
+          findings.push({ file, line, check: 'value-kind', messageKey: 'house.extension_fields.date', params: { field: fieldName, value } });
         } else if (spec.type === 'enum') {
           const noteType = readScalar(frontmatter, 'type');
           const allowed = allowedEnumValues(spec, typeof noteType === 'string' ? noteType : null);
           if (allowed !== null && !allowed.includes(value)) {
-            findings.push({ file, line, check: 'enum-value', message: `${fieldName} "${value}" is not one of this vault's allowed values: ${allowed.join(', ')}` });
+            findings.push({
+              file,
+              line,
+              check: 'enum-value',
+              messageKey: 'house.extension_fields.enum',
+              params: { field: fieldName, value, allowed: allowed.join(', ') },
+            });
           }
         }
         // spec.type === 'string' has no further shape to check: any
@@ -762,10 +779,11 @@ const linkStyle = {
             file,
             line,
             check: 'file-relative',
-            message: `link ${seen} starts with a slash, which resolves against the host, not the repository, and breaks where a human reviews the change; this vault requires file-relative links`,
+            messageKey: 'house.link_style.file_relative',
+            params: { seen },
           });
         } else if (style === 'bundle-absolute' && !isAbsolute) {
-          findings.push({ file, line, check: 'bundle-absolute', message: `link ${seen} does not start with a slash; this vault requires bundle-absolute links` });
+          findings.push({ file, line, check: 'bundle-absolute', messageKey: 'house.link_style.bundle_absolute', params: { seen } });
         }
       });
     }
@@ -788,7 +806,13 @@ const linkTargetExists = {
       forEachInternalLink(file, context, (target, pathPart, line) => {
         const resolved = resolveLinkPath(file, pathPart);
         if (!context.all.has(resolved)) {
-          findings.push({ file, line, check: 'target-exists', message: `link target "${target}" does not resolve to a file in this vault (resolved to "${resolved}")` });
+          findings.push({
+            file,
+            line,
+            check: 'target-exists',
+            messageKey: 'house.link_target_exists.broken',
+            params: { target, resolved },
+          });
         }
       });
     }
@@ -814,7 +838,8 @@ const noWikilinks = {
           file,
           line: prefixLineCount + lineIndex,
           check: 'wikilink-forbidden',
-          message: `[[${target}]] is a wikilink, which this vault forbids; use a standard markdown link instead`,
+          messageKey: 'house.no_wikilinks.forbidden',
+          params: { target },
         });
       }
     }
@@ -833,7 +858,7 @@ const rootOkfVersion = {
     const value = readScalar(frontmatter, 'okf_version');
     const line = frontmatterKeyLine(frontmatter, 'okf_version');
     if (value === null) {
-      return [{ file: 'index.md', line: null, check: 'declared', message: 'the root index does not declare okf_version, which this vault requires' }];
+      return [{ file: 'index.md', line: null, check: 'declared', messageKey: 'house.root_okf_version.missing', params: {} }];
     }
     if (value === undefined) {
       return [
@@ -841,7 +866,8 @@ const rootOkfVersion = {
           file: 'index.md',
           line,
           check: 'shape-readable',
-          message: 'okf_version is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)',
+          messageKey: 'common.shape_unreadable',
+          params: { field: 'okf_version' },
         },
       ];
     }
@@ -852,7 +878,8 @@ const rootOkfVersion = {
           file: 'index.md',
           line,
           check: 'matches-configured',
-          message: `the root index declares okf_version "${value}" but this vault is configured for "${expected}"`,
+          messageKey: 'house.root_okf_version.mismatch',
+          params: { value, expected },
         },
       ];
     }
@@ -961,7 +988,8 @@ export function runHouseRules(files, context) {
         check: partial.check,
         file: partial.file,
         line: partial.line,
-        message: partial.message,
+        messageKey: partial.messageKey,
+        params: partial.params,
       });
     }
   }

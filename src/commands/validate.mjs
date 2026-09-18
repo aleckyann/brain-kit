@@ -149,15 +149,28 @@ export function partitionFindings(combined) {
   return { must, should, house, unexpected };
 }
 
+// Every rule module hands this command a message KEY and PARAMS, never a
+// formed sentence (src/rules/spec.mjs and src/rules/house.mjs's own
+// headers): this is the one place a finding's message is actually
+// rendered into text, through `t`, the translator built from the
+// VAULT's own config.lang. That is the whole point of carrying a key
+// and params this far instead of a string: a rule module has no notion
+// of the vault's language, and building an English sentence there,
+// underneath a heading this command already framed in the vault's own
+// language, is the exact bug this refactor removes.
+function renderMessage(finding, t) {
+  return t(finding.messageKey, finding.params ?? {});
+}
+
 function formatFinding(finding, t) {
   const tag = finding.warning ? `${t('validate.warning_tag')} ` : '';
   const location = finding.line != null ? `${finding.file}:${finding.line}` : finding.file;
-  return `${location}  ${finding.id}  ${tag}${finding.message}`;
+  return `${location}  ${finding.id}  ${tag}${renderMessage(finding, t)}`;
 }
 
-function formatDefect(finding) {
+function formatDefect(finding, t) {
   const location = finding.line != null ? `${finding.file}:${finding.line}` : finding.file;
-  return `${location}  ruler=${finding.ruler} id=${finding.id} level=${finding.level}  ${finding.message}`;
+  return `${location}  ruler=${finding.ruler} id=${finding.id} level=${finding.level}  ${renderMessage(finding, t)}`;
 }
 
 // Renders one of the three format-defined groups. --only-problems drops
@@ -184,7 +197,7 @@ function renderGroup(t, key, findings, onlyProblems) {
 function renderDefectSection(t, unexpected) {
   if (unexpected.length === 0) return [];
   const lines = [`== ${t('validate.heading_defect')} ==`, t('validate.explain_defect')];
-  for (const finding of sortFindings(unexpected)) lines.push(formatDefect(finding));
+  for (const finding of sortFindings(unexpected)) lines.push(formatDefect(finding, t));
   lines.push('');
   return lines;
 }
