@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, copyFileSync, chmodSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 
 const HOOK = join(KIT_ROOT, '.githooks', 'pre-push');
@@ -158,4 +158,32 @@ test('the remote being unreachable makes the hook scan everything', () => {
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /possible leak in notes\.md/);
   assert.match(r.stderr, /could not query remote/);
+});
+
+test('an existing ref whose remote_sha is unknown to this clone still gets scanned', () => {
+  const { work, bare, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+
+  // A second clone of the same bare remote pushes a commit that this work
+  // tree never fetches, so its object database genuinely lacks it, not just
+  // a stale cache: `remote_sha` (live, from the push negotiation below) will
+  // name a commit `work` has never seen.
+  const other = join(dirname(bare), 'other');
+  assert.equal(spawnSync('git', ['init', '-q', '-b', 'main', other]).status, 0);
+  git(other, ['remote', 'add', 'origin', bare]);
+  assert.equal(git(other, ['fetch', '-q', 'origin']).status, 0);
+  assert.equal(git(other, ['checkout', '-q', '-b', 'main', 'origin/main']).status, 0);
+  commit(other, 'other.md', 'unrelated change from another clone\n', 'other clone commit');
+  assert.equal(git(other, ['push', '-q', 'origin', 'main']).status, 0);
+
+  // Back in the original work tree, which never fetched, diverge with a
+  // commit carrying a personal pattern, then force-push over the remote's
+  // tip, a commit `work` does not have. `remote_sha..local_sha` is an
+  // invalid range for this clone: it must fall back to a full scan and
+  // catch the leak, not treat the failed range as "nothing to scan".
+  commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'leak');
+  const r = git(work, ['push', '--force', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /possible leak in notes\.md/);
 });

@@ -94,7 +94,22 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   if [ "$remote_sha" != "$ZERO" ]; then
     # The remote already has this ref, and git just told us so, live, as part
     # of this very push negotiation. Scan exactly what is new since then.
-    commits="$(git rev-list "$remote_sha..$local_sha")"
+    #
+    # 18/09/2026, third lesson: remote_sha is authoritative about what the
+    # remote has, but that says nothing about what THIS clone has. A clone
+    # that is stale-behind (another clone pushed, or force-pushed, without
+    # this one ever fetching) can be asked to range over a remote_sha whose
+    # object it does not possess at all. `git rev-list A..B` then fails
+    # ("Invalid revision range") with empty stdout, which used to look
+    # exactly like "nothing to scan": the loop below ran zero times, `failed`
+    # stayed 0, and the push went through completely unscanned. An empty
+    # result must never be read as "safe"; only a range that actually
+    # computed is. Capture the exit status and fail closed into a full scan
+    # when the range itself could not be computed.
+    if ! commits="$(git rev-list "$remote_sha..$local_sha" 2>/dev/null)"; then
+      echo "pre-push: the remote's reported commit for $local_ref ($remote_sha) is unknown to this clone; scanning the entire history of $local_ref instead of trusting that range." >&2
+      commits="$(git rev-list "$local_sha")"
+    fi
   else
     # A ref the remote does not have yet: ask the remote directly what it
     # holds (once per hook run) instead of trusting the local tracking refs.
