@@ -167,6 +167,8 @@ Both rulers share one signature, `run<X>Rules(files, context) -> Finding[]`, and
 - `files` is the markdown subset of that single walk: sorted, relative to the root, forward slashes. It is what a rule iterates, and neither ruler filters or re-walks it.
 - `context` is `{ root, config, all, readFile }`. `all` is the full walk including attachments, as a `Set`, so membership is a lookup and not a scan. `readFile(relPath)` returns the file's text and caches it, so a dozen rules reading one file cost one read.
 
+**The reader's two absences, ratified in task 3 and binding here.** Every reader in `src/frontmatter.mjs` distinguishes them, and a rule that collapses them reports the wrong thing. `null` means the key is ABSENT, so a required-field rule reports a missing field. `undefined` means the key is PRESENT but written in a shape this deliberately-regular-expression reader cannot see, so a rule must NOT report it as missing: the field is on screen, and a human who sees the tool deny what they can read stops trusting the tool. Report that case against `PARSER_LIMITS`, naming the shape, so the message says it could not read this rather than that you did not write it.
+
 `link-target-exists` resolves against `context.all`, never against `files`, which is the only reason the walk asks for everything. One walk, one truth: a second walk would let two halves of the same command disagree about what the vault contains, and that disagreement is defect 4, the one this slice exists to remove.
 
 ---
@@ -184,6 +186,8 @@ Both rulers share one signature, `run<X>Rules(files, context) -> Finding[]`, and
 **The ruler contract (identical for tasks 4, 5 and 6, and binding on all three).** `validate` calls `walkVault(root, config, { all: true })` exactly ONCE and hands both rulers the same two arguments:
 - `files`: the markdown subset of that single walk, sorted, relative to the root, forward slashes. A ruler iterates it and never filters or re-walks it.
 - `context`: `{ root, config, all, readFile }`. `all` is the full walk including attachments, as a `Set`, so membership is a lookup and not a scan. `readFile(relPath)` returns a file's text and caches it, so a dozen rules reading one file cost one read.
+
+**The reader's two absences, ratified in task 3 and binding here.** Every reader in `src/frontmatter.mjs` distinguishes them, and a rule that collapses them reports the wrong thing. `null` means the key is ABSENT, so a required-field rule reports a missing field. `undefined` means the key is PRESENT but written in a shape this deliberately-regular-expression reader cannot see, so a rule must NOT report it as missing: the field is on screen, and a human who sees the tool deny what they can read stops trusting the tool. Report that case against `PARSER_LIMITS`, naming the shape, so the message says it could not read this rather than that you did not write it.
 
 `link-target-exists` resolves against `context.all`, never against `files`: that is the only reason the walk asks for everything. No rules module calls `walkVault` itself. One walk, one truth, because a second walk would let two halves of the same command disagree about what the vault contains, which is defect 4, the one this slice exists to remove.
 
@@ -222,6 +226,8 @@ The rules, each with a stable English id, and each carrying the section of the f
 **The ruler contract (identical for tasks 4, 5 and 6, and binding on all three).** `validate` calls `walkVault(root, config, { all: true })` exactly ONCE and hands both rulers the same two arguments:
 - `files`: the markdown subset of that single walk, sorted, relative to the root, forward slashes. A ruler iterates it and never filters or re-walks it.
 - `context`: `{ root, config, all, readFile }`. `all` is the full walk including attachments, as a `Set`, so membership is a lookup and not a scan. `readFile(relPath)` returns a file's text and caches it, so a dozen rules reading one file cost one read.
+
+**The reader's two absences, ratified in task 3 and binding here.** Every reader in `src/frontmatter.mjs` distinguishes them, and a rule that collapses them reports the wrong thing. `null` means the key is ABSENT, so a required-field rule reports a missing field. `undefined` means the key is PRESENT but written in a shape this deliberately-regular-expression reader cannot see, so a rule must NOT report it as missing: the field is on screen, and a human who sees the tool deny what they can read stops trusting the tool. Report that case against `PARSER_LIMITS`, naming the shape, so the message says it could not read this rather than that you did not write it.
 
 `link-target-exists` resolves against `context.all`, never against `files`: that is the only reason the walk asks for everything. No rules module calls `walkVault` itself. One walk, one truth, because a second walk would let two halves of the same command disagree about what the vault contains, which is defect 4, the one this slice exists to remove.
 
@@ -267,6 +273,8 @@ Two behaviours the tests must pin down, because both were defects in the origina
 **The ruler contract (identical for tasks 4, 5 and 6, and binding on all three).** `validate` calls `walkVault(root, config, { all: true })` exactly ONCE and hands both rulers the same two arguments:
 - `files`: the markdown subset of that single walk, sorted, relative to the root, forward slashes. A ruler iterates it and never filters or re-walks it.
 - `context`: `{ root, config, all, readFile }`. `all` is the full walk including attachments, as a `Set`, so membership is a lookup and not a scan. `readFile(relPath)` returns a file's text and caches it, so a dozen rules reading one file cost one read.
+
+**The reader's two absences, ratified in task 3 and binding here.** Every reader in `src/frontmatter.mjs` distinguishes them, and a rule that collapses them reports the wrong thing. `null` means the key is ABSENT, so a required-field rule reports a missing field. `undefined` means the key is PRESENT but written in a shape this deliberately-regular-expression reader cannot see, so a rule must NOT report it as missing: the field is on screen, and a human who sees the tool deny what they can read stops trusting the tool. Report that case against `PARSER_LIMITS`, naming the shape, so the message says it could not read this rather than that you did not write it.
 
 `link-target-exists` resolves against `context.all`, never against `files`: that is the only reason the walk asks for everything. No rules module calls `walkVault` itself. One walk, one truth, because a second walk would let two halves of the same command disagree about what the vault contains, which is defect 4, the one this slice exists to remove.
 
