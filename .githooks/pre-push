@@ -12,6 +12,13 @@
 #   override:     BRAIN_KIT_LEAK_PATTERNS=/path/to/file
 # The hook fails closed: no patterns file, no push.
 #
+# Portability: bash 3.2 and a POSIX userland. The project's own CI runs this on
+# macOS, whose /bin/bash is 3.2.57 and whose grep, sort and tr are BSD, so
+# nothing here may need bash 4 (no associative arrays, no ${var,,}) or a
+# GNU-only flag. The flags relied on are `grep -a`, `grep -m`, `sort -z` and
+# `tr -d`, all present in both userlands, and every empty-array expansion uses
+# the ${arr[@]+"${arr[@]}"} form, which old bash needs under `set -u`.
+#
 # Activate once per clone:  git config core.hooksPath .githooks
 set -u
 
@@ -40,6 +47,42 @@ set -u
 #       patterns file). Both are explicit now: a regular, readable, non-empty
 #       file or no push, and any grep status above 1 refuses the push naming
 #       the file and the status.
+#
+# 18/09/2026, fifth lesson: four more, the last two about the machine the hook
+# runs on rather than about git.
+#   (d) Typechanges were dropped. `--diff-filter=AM` names what to KEEP, and
+#       git has more letters than A and M: replacing a symlink with a regular
+#       file carrying a secret is a `T`, which was excluded, so it reached the
+#       remote unscanned with exit 0 and no warning. An allow-list of change
+#       kinds is a blind spot by construction. The filter is inverted now:
+#       `--diff-filter=d`, lower case, excludes deletions and keeps everything
+#       else, so additions, modifications, typechanges, copies and renames are
+#       all scanned. Deletions are the only kind with nothing to read.
+#   (e) Only the last stage's status was read. The scan is a pipeline,
+#       `git show | tr | grep`, and `$?` reports grep alone. A `git show` that
+#       fails (a gitlink whose commit this clone does not have exits 128) or a
+#       `tr` that dies feeds grep an empty stream, grep says "nothing matched",
+#       and a file nobody could read was called clean. Every stage's status is
+#       inspected through PIPESTATUS now. The order matters: grep's own verdict
+#       is read first, because `-m` makes grep close the pipe early on a match
+#       and the upstream stages then report SIGPIPE (141), which is expected
+#       and says nothing about the blob. Upstream failures are what turns an
+#       otherwise clean verdict into a refusal.
+#   (f) The hook required bash 4. The dedupe used an associative array and
+#       `"${remote_exclusions[@]}"` aborts on an empty array under `set -u` in
+#       old bash, so on macOS (bash 3.2.57) the dedupe silently switched off
+#       and the very first push died on an unbound variable. A gate that
+#       behaves differently, or not at all, on the machine its users have is
+#       not a gate. The dedupe is `sort -zu` now, which keeps the NUL
+#       discipline and needs no shell features, the exclusions use the
+#       ${arr[@]+"${arr[@]}"} form, and the bash-version detection is gone:
+#       there is no version-dependent behaviour left to detect.
+#   (g) The locale could abort the scan. BSD `tr` and `grep` in a UTF-8 locale
+#       can fail on an invalid byte sequence, which is exactly what a binary
+#       blob is full of, and with (e) that abort read as a clean file. The
+#       scanning pipeline forces LC_ALL=C, so every stage treats input as
+#       bytes. The patterns are ASCII, with no locale-dependent character
+#       class, so no existing match changes.
 PATTERNS_FILE="${BRAIN_KIT_LEAK_PATTERNS:-$HOME/.config/brain-kit/leak-patterns.txt}"
 if [ ! -e "$PATTERNS_FILE" ]; then
   echo "pre-push: leak patterns file not found: $PATTERNS_FILE" >&2
@@ -68,6 +111,20 @@ GENERIC_PATTERNS='-----BEGIN (RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY-----|ghp_
 
 ZERO='0000000000000000000000000000000000000000'
 failed=0
+
+# Scratch files. The scanning pipeline has to run in this shell, not inside a
+# command substitution, so that PIPESTATUS can be read for every stage (fifth
+# lesson, (e)); its output therefore goes to a file. `mktemp -d` with an
+# explicit template behaves the same in GNU and BSD userlands. Failing to
+# create it refuses the push: no scratch space, no scan.
+if ! TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/brain-kit-prepush.XXXXXX")"; then
+  echo "pre-push: could not create a temporary directory; refusing to push." >&2
+  exit 1
+fi
+trap 'rm -rf "$TMP_DIR"' EXIT
+PATHS_RAW="$TMP_DIR/paths.raw"
+PATHS_FILE="$TMP_DIR/paths"
+HITS_FILE="$TMP_DIR/hits"
 
 # 18/09/2026: a ref the remote does not have yet (remote_sha = zero) used to
 # scan `git rev-list "$local_sha"`, the entire history. That is right for a
@@ -122,59 +179,63 @@ query_remote() {
 # message, never the verdict: one hit already refuses the push.
 MAX_HITS=5
 
-# Dedupe of the path list within one commit (see the fourth lesson, (a): with
-# `-m`, diff-tree lists a path once per parent it differs from). Associative
-# arrays need bash 4; on an older bash the dedupe is simply switched off and
-# every path the diff prints is scanned, duplicates included. That fallback is
-# noisier, never blinder: it scans more, never less.
-if [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
-  declare -A seen_paths
-  can_dedupe=1
-else
-  can_dedupe=0
-fi
-
-seen_reset() {
-  [ "$can_dedupe" -eq 1 ] && seen_paths=()
-  return 0
-}
-
-seen_new() {
-  # 0 = this path has not been scanned yet in this commit, 1 = it has. The
-  # "p:" prefix keeps the subscript from ever being exactly * or @, which some
-  # bash versions read as "every element" rather than as a key.
-  [ "$can_dedupe" -eq 1 ] || return 0
-  [ -n "${seen_paths["p:$1"]+set}" ] && return 1
-  seen_paths["p:$1"]=1
-  return 0
-}
-
 scan_blob() {
   # $1 = commit sha, $2 = path. Prints "line: match" for every hit, capped.
-  local sha="$1" path="$2" hits status
+  local sha="$1" path="$2" show_status tr_status grep_status
   # `-a` instead of `-I`: a blob git or grep considers binary is scanned as
   # text rather than waved through (fourth lesson, (b)). NULs are stripped
   # before grep and not after, which keeps line numbering intact (a NUL is not
-  # a newline), keeps the captured output free of bytes the shell would drop
-  # with a warning, and can only make a pattern match more readily, never
-  # less. `-m` stops grep at the print cap instead of reading a whole binary.
-  hits="$(git show "$sha:$path" 2>/dev/null | tr -d '\0' | grep -n -a -i -E -m "$MAX_HITS" -f "$PATTERNS_FILE" -e "$GENERIC_PATTERNS")"
-  status=$?
-  if [ "$status" -gt 1 ]; then
+  # a newline), keeps the output free of bytes the shell would drop with a
+  # warning, and can only make a pattern match more readily, never less. `-m`
+  # stops grep at the print cap instead of reading a whole binary. LC_ALL=C
+  # makes every stage byte-oriented (fifth lesson, (g)).
+  LC_ALL=C git show "$sha:$path" 2>/dev/null \
+    | LC_ALL=C tr -d '\000' \
+    | LC_ALL=C grep -n -a -i -E -m "$MAX_HITS" -f "$PATTERNS_FILE" -e "$GENERIC_PATTERNS" > "$HITS_FILE"
+  # The whole array at once: any command after the pipeline, an assignment
+  # included, overwrites PIPESTATUS.
+  pipe_status=("${PIPESTATUS[@]}")
+  show_status="${pipe_status[0]}"
+  tr_status="${pipe_status[1]}"
+  grep_status="${pipe_status[2]}"
+
+  if [ "$grep_status" -gt 1 ]; then
     # grep did not say "clean", it said nothing at all: an invalid regex in
     # the patterns file, an I/O error, a patterns file it could not read.
     # Swallowing this with `|| true` is exactly how a scanner shrugs.
     failed=1
-    echo "pre-push: could not scan $path (at ${sha:0:7}): grep exited $status (patterns file: $PATTERNS_FILE)." >&2
+    echo "pre-push: could not scan $path (at ${sha:0:7}): grep exited $grep_status (patterns file: $PATTERNS_FILE)." >&2
     return 0
   fi
-  [ "$status" -ne 0 ] && return 0   # 1: nothing matched
-  failed=1
-  echo "pre-push: possible leak in $path (at ${sha:0:7}):" >&2
-  # Truncate each printed line and blank out control bytes, so a match inside
-  # a binary blob stays readable in a terminal. Bytes above 0x7f are left
-  # alone, so ordinary accented text survives.
-  printf '%s\n' "$hits" | cut -b 1-200 | tr '\000-\010\013\014\016-\037\177' '.' | sed 's/^/    /' >&2
+
+  if [ "$grep_status" -eq 0 ]; then
+    # A hit. The upstream stages may report SIGPIPE (141) right here, because
+    # `-m` made grep stop reading early; that is expected and says nothing
+    # about the blob, and the verdict is already "refuse".
+    failed=1
+    echo "pre-push: possible leak in $path (at ${sha:0:7}):" >&2
+    # Truncate each printed line and drop control bytes, so a match inside a
+    # binary blob stays readable in a terminal. Bytes above 0x7f are left
+    # alone, so ordinary accented text survives.
+    LC_ALL=C cut -b 1-200 < "$HITS_FILE" \
+      | LC_ALL=C tr -d '\000-\010\013\014\016-\037\177' \
+      | sed 's/^/    /' >&2
+    return 0
+  fi
+
+  # grep read the whole stream and matched nothing. That verdict is only worth
+  # something if every stage before it actually ran (fifth lesson, (e)).
+  if [ "$show_status" -ne 0 ]; then
+    failed=1
+    echo "pre-push: could not read $path (at ${sha:0:7}): git show exited $show_status; refusing instead of calling it clean." >&2
+    return 0
+  fi
+  if [ "$tr_status" -ne 0 ]; then
+    failed=1
+    echo "pre-push: could not read $path (at ${sha:0:7}): tr exited $tr_status; refusing instead of calling it clean." >&2
+    return 0
+  fi
+  return 0
 }
 
 while read -r local_ref local_sha remote_ref remote_sha; do
@@ -204,7 +265,9 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     # holds (once per hook run) instead of trusting the local tracking refs.
     query_remote
     if [ "$remote_reachable" -eq 1 ]; then
-      commits="$(git rev-list "$local_sha" "${remote_exclusions[@]}")"
+      # The ${arr[@]+"${arr[@]}"} form, not "${arr[@]}": an empty array under
+      # `set -u` aborts the script in bash 3.2 (fifth lesson, (f)).
+      commits="$(git rev-list "$local_sha" ${remote_exclusions[@]+"${remote_exclusions[@]}"})"
     else
       echo "pre-push: could not query remote '$remote_name' (git ls-remote failed); scanning the entire history of $local_ref instead of trusting the local tracking refs." >&2
       commits="$(git rev-list "$local_sha")"
@@ -213,29 +276,44 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 
   while IFS= read -r commit; do
     [ -z "$commit" ] && continue
-    seen_reset
-    if ! git rev-parse -q --verify "$commit^" >/dev/null 2>&1; then
-      # Root commit: it has no parent to diff against, so every file it
-      # introduces is new to the remote.
-      while IFS= read -r -d '' path; do
-        [ -z "$path" ] && continue
-        seen_new "$path" || continue
-        scan_blob "$commit" "$path"
-      done < <(git ls-tree -r -z --name-only "$commit")
-    else
+    if git rev-parse -q --verify "$commit^" >/dev/null 2>&1; then
       # `-m` (fourth lesson, (a)): without it a merge commit diffs to nothing
       # and is never scanned. With it diff-tree emits one diff per parent, so
-      # any path differing from any parent is listed, and `seen_new` keeps a
-      # path from being scanned once per parent. Some git versions also print
-      # the commit id as a field of its own here despite --no-commit-id; that
-      # is harmless, because `git show <sha>:<that id>` resolves to nothing
-      # and scans nothing, and it can never hide a real path.
-      while IFS= read -r -d '' path; do
-        [ -z "$path" ] && continue
-        seen_new "$path" || continue
-        scan_blob "$commit" "$path"
-      done < <(git diff-tree -m -r -z --no-commit-id --name-only --diff-filter=AM "$commit")
+      # any path differing from any parent is listed, and the dedupe below
+      # keeps a path from being scanned once per parent. Some git versions
+      # also print the commit id as a field of its own here despite
+      # --no-commit-id; that is harmless, because `git show <sha>:<that id>`
+      # resolves to nothing, and it can never hide a real path.
+      #
+      # `--diff-filter=d` (fifth lesson, (d)): exclude deletions, keep every
+      # other kind of change, typechanges included.
+      git diff-tree -m -r -z --no-commit-id --name-only --diff-filter=d "$commit" > "$PATHS_RAW"
+    else
+      # Root commit: it has no parent to diff against, so every file it
+      # introduces is new to the remote.
+      git ls-tree -r -z --name-only "$commit" > "$PATHS_RAW"
     fi
+    list_status=$?
+    if [ "$list_status" -ne 0 ]; then
+      failed=1
+      echo "pre-push: could not list the files of $commit (git exited $list_status); refusing instead of scanning nothing." >&2
+      continue
+    fi
+
+    # Dedupe without an associative array (fifth lesson, (f)). `sort -zu`
+    # keeps the NUL separation, so paths with spaces or newlines survive. The
+    # dedupe is an optimisation, not a safety property: if sort cannot do it,
+    # scan the raw list instead, duplicates included. Noisier, never blinder.
+    if ! LC_ALL=C sort -zu < "$PATHS_RAW" > "$PATHS_FILE" 2>/dev/null; then
+      cat "$PATHS_RAW" > "$PATHS_FILE"
+    elif [ -s "$PATHS_RAW" ] && [ ! -s "$PATHS_FILE" ]; then
+      cat "$PATHS_RAW" > "$PATHS_FILE"
+    fi
+
+    while IFS= read -r -d '' path; do
+      [ -z "$path" ] && continue
+      scan_blob "$commit" "$path"
+    done < "$PATHS_FILE"
   done <<< "$commits"
 done
 

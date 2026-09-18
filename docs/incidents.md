@@ -285,21 +285,49 @@ merge against every parent, read a binary blob as text. Where the
 configuration itself is the blind spot, check it for real (regular, readable,
 non-empty), not merely for existence. Capping how much of a match is printed
 is about the message, never about the verdict.
+A last sweep the same day found four more of the same kind, and two of them
+were about the machine rather than about the version control system. Listing
+which kinds of change to keep, instead of which to drop, silently excluded
+typechanges, so replacing a symbolic link with an ordinary file carrying a
+secret went out unscanned. The scan is a pipeline, and only its last stage's
+status was read, so a first stage that failed on an unreadable entry fed the
+search an empty stream and the file was called clean. The dedup needed shell
+features newer than the shell the project's own continuous integration runs on,
+where it would have switched itself off and the first push would have died on
+an unbound variable. And the text tools, in a locale that expects characters
+rather than bytes, can abort on the invalid sequences a binary file is full of,
+which with the previous point read as clean again. Three more rules, same
+spirit. Prefer an exclusion list to an inclusion list when listing what to
+scan: the excluded set is the one you can enumerate safely, and anything new
+the tool learns to report then arrives scanned rather than ignored. Read the
+status of every stage of a pipeline, not only the last one, and expect the
+benign case (a search that stops early on a match closes the pipe and the
+upstream stages report a broken pipe, which is not a failure). And never
+require a shell or a userland newer than the one the people and the runners
+actually have: pin the scan to bytes with a byte locale, check the versions
+your continuous integration runs on, and where a convenience tool may be
+missing, degrade to more scanning, never to less.
 **Where it lives in brain-kit.** `.githooks/pre-push` (`remote_sha..local_sha`
 for a ref the remote already has; `query_remote`'s live `git ls-remote`,
 cached per hook run, for one it does not; full-history fallback if the remote
 cannot be reached or the range fails to compute; `diff-tree -m` with a
-per-commit dedupe so merges are diffed against every parent; `grep -a` with a
+per-commit dedupe so merges are diffed against every parent; `--diff-filter=d`,
+which drops only deletions, so typechanges are scanned; `grep -a` with a
 printed-hit cap so a binary blob is scanned instead of skipped; the regular,
-readable, non-empty check on the patterns file; `scan_blob` refusing on any
-search status above "nothing matched"), `test/pre-push-hook.test.mjs` ("a tag
-pointing at already-pushed commits is allowed", "a new branch is still scanned
-for its own commits", "a stale-ahead tracking ref does not hide an unpublished
-commit", "the remote being unreachable makes the hook scan everything", "an
-existing ref whose remote_sha is unknown to this clone still gets scanned", "a
-merge commit whose resolution introduces a leak is refused", "a blob with a
-NUL byte is scanned instead of skipped as binary", "a patterns file that
-cannot do its job refuses the push").
+readable, non-empty check on the patterns file; `scan_blob` reading every
+stage's status through `PIPESTATUS` and refusing on any search status above
+"nothing matched"; `LC_ALL=C` on the whole scanning pipeline; a `sort -zu`
+dedupe and `${arr[@]+"${arr[@]}"}` expansions, so the hook needs nothing newer
+than bash 3.2, the version the macOS job in `.github/workflows/ci.yml` runs),
+`test/pre-push-hook.test.mjs` ("a tag pointing at already-pushed commits is
+allowed", "a new branch is still scanned for its own commits", "a stale-ahead
+tracking ref does not hide an unpublished commit", "the remote being
+unreachable makes the hook scan everything", "an existing ref whose remote_sha
+is unknown to this clone still gets scanned", "a merge commit whose resolution
+introduces a leak is refused", "a blob with a NUL byte is scanned instead of
+skipped as binary", "a patterns file that cannot do its job refuses the push",
+"a typechange from symlink to regular file is scanned", "a blob that cannot be
+read refuses the push instead of passing").
 
 ## Headless runs, network and scheduling
 
