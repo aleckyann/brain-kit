@@ -1,10 +1,12 @@
 {
-  "cli.usage": "brain-kit {version}\n\nUso: brain-kit <comando> [opções]\n\nComandos disponíveis nesta versão:\n  hook <stop|session-start>              ponto de entrada dos hooks do plugin do Claude Code (lê o evento em JSON pelo stdin)\n  validate [dir] [--only-problems] [--json]   valida um vault contra o Open Knowledge Format e as regras da própria casa\n  --version                              imprime a versão\n  --help                                 imprime esta ajuda\n\nCódigos de saída: 0 ok, 1 falha, 2 uso ou fora de um vault, 3 degradado, 4 fonte obrigatória não lida, 69 rede ou conector indisponível, 75 adiado (tente de novo).",
+  "cli.usage": "brain-kit {version}\n\nUso: brain-kit <comando> [opções]\n\nComandos disponíveis nesta versão:\n  hook <stop|session-start>                   ponto de entrada dos hooks do plugin do Claude Code (lê o evento em JSON pelo stdin)\n  validate [dir] [--only-problems] [--json]   valida um vault contra o Open Knowledge Format e as regras da própria casa\n  --version                                   imprime a versão\n  --help                                      imprime esta ajuda\n\nCódigos de saída: 0 ok, 1 falha, 2 uso ou fora de um vault, 3 degradado, 4 fonte obrigatória não lida, 69 rede ou conector indisponível, 75 adiado (tente de novo).",
   "cli.unknown_command": "brain-kit: comando desconhecido \"{command}\".",
   "hook.unknown_event": "brain-kit hook: evento desconhecido \"{event}\" (esperado: {events}).",
   "lang.fallback_warning": "[brain-kit] tradução ausente para \"{key}\" em {lang}; usando {reference}.",
   "validate.usage": "Uso: brain-kit validate [dir] [--only-problems] [--json]",
   "validate.bad_argument": "brain-kit validate: argumento não reconhecido \"{arg}\".",
+  "validate.path_not_found": "brain-kit validate: \"{dir}\" não existe.",
+  "validate.path_not_a_directory": "brain-kit validate: \"{dir}\" não é um diretório.",
   "validate.no_vault": "brain-kit validate: nenhum vault brain-kit encontrado a partir de \"{dir}\" ou de algum diretório acima dele (procurando {config} e {index}).",
   "validate.heading_must": "Especificação, obrigatório (must)",
   "validate.explain_must": "Estas ocorrências significam que o pacote não é conforme ao Open Knowledge Format.",
@@ -12,6 +14,8 @@
   "validate.explain_should": "Estas ocorrências significam que o vault se afasta da orientação do formato, sem deixar de ser conforme.",
   "validate.heading_house": "Regras da casa",
   "validate.explain_house": "Estas ocorrências significam que o vault se afasta das próprias regras que declarou. O formato não define nível de conformidade para elas.",
+  "validate.heading_defect": "Defeito da ferramenta: ocorrências não classificáveis",
+  "validate.explain_defect": "Estas ocorrências carregam uma combinação de regra e nível que este comando não reconhece. Isto é um defeito do próprio brain-kit, não do seu vault; por favor relate.",
   "validate.group_clean": "Nenhuma ocorrência neste grupo.",
   "validate.counts_summary": "Totais: {must} obrigatórias, {should} recomendadas, {house} da casa.",
   "validate.heading_stale": "Notas com o stale_after vencido",
@@ -19,7 +23,9 @@
   "validate.stale_entry": "{file}: o stale_after {staleAfter} já passou.",
   "validate.stale_none": "Nenhuma nota passou do seu stale_after.",
   "validate.warning_tag": "[aviso]",
+  "validate.verdict_clean": "Resultado: nenhuma ocorrência. O vault é conforme e sem divergências.",
+  "validate.verdict_warnings_only": "Resultado: o vault é conforme. Toda ocorrência acima foi rebaixada a aviso; nada bloqueia esta execução.",
+  "validate.verdict_blocking": "Resultado: o vault é conforme ao formato, mas as ocorrências acima (orientação ou regras da casa) bloqueiam esta execução.",
   "validate.verdict_broken": "Resultado: o vault não é conforme ao formato.",
-  "validate.verdict_opinionated": "Resultado: o vault é conforme. As ocorrências acima são de orientação ou de preferências da casa, não falhas de conformidade.",
-  "validate.verdict_clean": "Resultado: nenhuma ocorrência. O vault é conforme e sem divergências."
+  "validate.verdict_unexpected": "Resultado: pelo menos uma ocorrência não pôde ser classificada; esta execução não pode dizer se o vault é conforme. Veja a seção de defeito da ferramenta acima."
 }

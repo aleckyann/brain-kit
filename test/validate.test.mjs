@@ -3,12 +3,26 @@
 // context } their own tests only ever built by hand. Driven mostly
 // through the real binary (spawnSync), per this project's own standing
 // rule that a command's tests exercise the thing a person actually
-// runs, not only the function underneath it. One test near the bottom
-// is the deliberate exception: proving the single walkVault call (the
-// whole point of src/vault.mjs's ruler contract) needs to count calls
-// made inside the process, which a child process's exit code and output
-// alone cannot show; src/commands/validate.mjs's own `deps` parameter
-// exists for exactly that one test.
+// runs, not only the function underneath it.
+//
+// Fix round 1 rewrote most of this file. The stub audit from round 0
+// proved the wrong thing: a fully emptied module had zero survivors,
+// and yet four contract clauses (the single walk, the link checker's
+// full path set, the reader's normalisation, and the read cache) had NO
+// test at all, because gutting a whole function is not the same as
+// perturbing one clause of it. This round replaces that instrument:
+// each of those four clauses gets its own test, built so that mutating
+// exactly that clause (and nothing else) in a copy of the tree makes a
+// NAMED test fail. Which test catches which mutation is recorded in
+// .superpowers/sdd/2026-09-18-phase-1a-vault-core-and-validate/task-6-report.md,
+// "Fix round 1", since the mutation itself is never committed here.
+//
+// A few tests below are deliberately unit-level (importing runValidate,
+// buildReport, partitionFindings or makeReadFile directly) rather than
+// spawning the real binary: counting an internal call, or forcing a
+// finding shape no real rule currently produces, needs in-process
+// access that a child process's exit code and stdout alone cannot give.
+// Every other test still drives bin/brain-kit.mjs for real.
 //
 // Example data: the fictional owner Ana and example.com throughout, and
 // the actor human:ana, per this project's own standing rule against real
@@ -17,14 +31,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
 import { createTranslator } from '../src/lang.mjs';
-import { runValidate } from '../src/commands/validate.mjs';
 import { walkVault } from '../src/vault.mjs';
+import { runValidate, buildReport, partitionFindings, makeReadFile } from '../src/commands/validate.mjs';
 import { makeVault } from './helpers/vault-fixture.mjs';
 
 const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
@@ -128,7 +142,34 @@ const MIGRATING_DATE = [
   '',
 ].join('\n');
 
-// --- helpers -------------------------------------------------------------
+// A note whose only content is a file-relative link to a real,
+// non-markdown attachment. Clean under every house setting EXCEPT
+// link-target-exists, which is exactly the one this fixture exists to
+// exercise: the target only resolves if context.all carries every file
+// the walk found, attachments included, not only the markdown subset.
+const LINKS_TO_ATTACHMENT = [
+  '---',
+  'type: person',
+  'description: an example person with one link to a real attachment',
+  'generated: { by: human:ana, at: 2026-09-18T09:30:00Z }',
+  '---',
+  '# Ana',
+  '',
+  'See [the diagram](../attachments/diagram.png) for context.',
+  '',
+].join('\n');
+
+// A log whose one heading is deliberately not a date: with CRLF line
+// endings and a leading byte-order mark. Correctly normalised, spec.mjs's
+// log-format rule reads "## Notes" as a real heading and reports it
+// should-level, not-a-date. Read the CRLF and the BOM raw (unnormalised),
+// and `/^## (.+)$/` never matches that line at all (the trailing \r a
+// bare `$` cannot cross, the BOM sitting where `#` must be), so the
+// heading is never even seen: the SAME real defect the note has goes
+// unreported, silently, which is the failure this clause exists to
+// prevent. String.fromCharCode keeps this source file itself ASCII-only.
+const BOM = String.fromCharCode(0xfeff);
+const CRLF_LOG_WITH_UNRECOGNISED_HEADING = BOM + ['## Notes', '', 'Free text, not a dated entry on purpose.', ''].join('\r\n');
 
 function fakeIo() {
   let stdout = '';
@@ -143,12 +184,18 @@ function fakeIo() {
   };
 }
 
-function run(args, { cwd, input = '' } = {}) {
+// BRAIN_KIT_LANG is set to English by default purely so this test file's
+// own assertions can match stable English substrings for the errors that
+// happen BEFORE a vault (and therefore a vault language) is known. Once
+// a vault is found, the report itself follows config.lang, never this
+// variable; several tests below deliberately set it to something else
+// to prove exactly that.
+function run(args, { cwd, input = '', env } = {}) {
   return spawnSync(process.execPath, [BIN, 'validate', ...args], {
     cwd,
     input,
     encoding: 'utf8',
-    env: { ...process.env, BRAIN_KIT_LANG: 'en' },
+    env: { ...process.env, BRAIN_KIT_LANG: 'en', ...env },
   });
 }
 
@@ -166,15 +213,38 @@ test('validate outside a vault exits 2 naming what is missing, never a stack tra
   assert.match(outsideResult.stderr, /no brain-kit vault/);
   assert.doesNotMatch(outsideResult.stderr, /at Object|\.mjs:\d+:\d+/); // no stack trace
 
-  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': CLEAN_PERSON } });
+  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': CLEAN_PERSON }, config: { lang: 'en' } });
   const insideResult = run([root]);
   assert.equal(insideResult.status, EXIT.OK);
   assert.match(insideResult.stdout, /no findings/i);
 });
 
-// Resolving from the working directory, not only from an explicit argument.
+// --- a path argument that names no real scope, paired with real ones -------
+
+test('a path argument that does not exist exits 2 naming it; a real subdirectory of the same vault still climbs to that vault', () => {
+  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': CLEAN_PERSON }, config: { lang: 'en' } });
+
+  const typo = join(root, 'people', 'this-directory-does-not-exist');
+  const missing = run([typo]);
+  assert.equal(missing.status, EXIT.USAGE);
+  assert.equal(missing.stdout, '');
+  assert.match(missing.stderr, /does not exist/);
+
+  const realSubdir = run([join(root, 'people')]);
+  assert.equal(realSubdir.status, EXIT.OK);
+});
+
+test('a path argument that is a file, not a directory, exits 2 naming it, rather than silently climbing to the enclosing vault', () => {
+  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': CLEAN_PERSON }, config: { lang: 'en' } });
+  const result = run([join(root, 'people', 'ana.md')]);
+  assert.equal(result.status, EXIT.USAGE);
+  assert.match(result.stderr, /not a directory/);
+});
+
+// --- resolving from the working directory ------------------------------------
+
 test('validate with no directory argument resolves the vault from the working directory', () => {
-  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': CLEAN_PERSON } });
+  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': CLEAN_PERSON }, config: { lang: 'en' } });
   const result = run([], { cwd: root });
   assert.equal(result.status, EXIT.OK);
   assert.match(result.stdout, /no findings/i);
@@ -183,7 +253,7 @@ test('validate with no directory argument resolves the vault from the working di
 // --- a conforming vault --------------------------------------------------
 
 test('a conforming vault exits 0 and says so', () => {
-  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': CLEAN_PERSON } });
+  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': CLEAN_PERSON }, config: { lang: 'en' } });
   const result = run([root]);
   assert.equal(result.status, EXIT.OK);
   assert.equal(result.stderr, '');
@@ -196,7 +266,7 @@ test('a conforming vault exits 0 and says so', () => {
 // --- one spec finding and one house finding, each under its own heading ----
 
 test('a vault with one spec finding and one house finding exits 1 and names both under their own headings, in must, should, house order', () => {
-  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/broken.md': BROKEN_PERSON } });
+  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/broken.md': BROKEN_PERSON }, config: { lang: 'en' } });
   const result = run([root]);
   assert.equal(result.status, EXIT.FAILURE);
 
@@ -207,17 +277,18 @@ test('a vault with one spec finding and one house finding exits 1 and names both
 
   const mustSection = result.stdout.slice(mustAt, shouldAt);
   const houseSection = result.stdout.slice(houseAt);
-  assert.match(mustSection, /people\/broken\.md:[\d-]+ {2}type-required/);
+  assert.match(mustSection, /people\/broken\.md[\d:-]*\s{2}type-required/);
   assert.match(houseSection, /people\/broken\.md:[\d-]+ {2}forbidden-fields/);
-  // named under their OWN heading, never the other one
   assert.doesNotMatch(mustSection, /forbidden-fields/);
   assert.doesNotMatch(houseSection, /type-required/);
+  // the verdict must not claim conformance above a red build
+  assert.match(result.stdout, /not conformant to the format/);
 });
 
-// --- --json carries the same counts as the text report ----------------------
+// --- --json carries the same counts as the text report, plus `blocking` ----
 
-test('--json prints one object with findings, stale, counts, parserLimits and the two ruler names, matching the text report', () => {
-  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/broken.md': BROKEN_PERSON } });
+test('--json prints one object with findings, stale, counts, parserLimits, blocking and the two ruler names, matching the text report', () => {
+  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/broken.md': BROKEN_PERSON }, config: { lang: 'en' } });
   const textResult = run([root]);
   const jsonResult = run([root, '--json']);
   assert.equal(jsonResult.status, textResult.status);
@@ -228,6 +299,8 @@ test('--json prints one object with findings, stale, counts, parserLimits and th
   assert.equal(parsed.counts.must, 1);
   assert.equal(parsed.counts.should, 0);
   assert.equal(parsed.counts.house, 1);
+  assert.equal(parsed.counts.unexpected, 0);
+  assert.equal(parsed.blocking, true);
   assert.equal(parsed.findings.length, 2);
   assert.ok(parsed.findings.some((f) => f.ruler === 'spec' && f.id === 'type-required' && f.level === 'must'));
   assert.ok(parsed.findings.some((f) => f.ruler === 'house' && f.id === 'forbidden-fields'));
@@ -237,14 +310,14 @@ test('--json prints one object with findings, stale, counts, parserLimits and th
 });
 
 test('--json prints nothing else on stdout', () => {
-  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': CLEAN_PERSON } });
+  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': CLEAN_PERSON }, config: { lang: 'en' } });
   const result = run([root, '--json']);
   assert.equal(result.status, EXIT.OK);
-  // exactly one line: the JSON object, newline-terminated
   const lines = result.stdout.split('\n');
   assert.equal(lines.length, 2); // the object's line, then the trailing empty string after the final \n
   assert.equal(lines[1], '');
   assert.doesNotThrow(() => JSON.parse(lines[0]));
+  assert.equal(JSON.parse(lines[0]).blocking, false);
 });
 
 // --- staleness is informational and never affects the exit code ------------
@@ -252,6 +325,7 @@ test('--json prints nothing else on stdout', () => {
 test('a note past its stale_after date exits 0 and lists it as informational; a note not yet due is never listed', () => {
   const root = makeVault({
     files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/old.md': STALE_OLD, 'people/fresh.md': FRESH_FUTURE },
+    config: { lang: 'en' },
   });
   const result = run([root]);
   assert.equal(result.status, EXIT.OK); // staleness never affects the exit code
@@ -261,16 +335,17 @@ test('a note past its stale_after date exits 0 and lists it as informational; a 
   const jsonResult = run([root, '--json']);
   const parsed = JSON.parse(jsonResult.stdout);
   assert.equal(jsonResult.status, EXIT.OK);
+  assert.equal(parsed.blocking, false);
   assert.deepEqual(parsed.findings, []);
   assert.equal(parsed.stale.length, 1);
   assert.equal(parsed.stale[0].file, 'people/old.md');
   assert.equal(parsed.stale[0].staleAfter, '2020-06-01T00:00:00Z');
 });
 
-// --- --only-problems omits the clean groups, and only those -----------------
+// --- --only-problems omits the clean groups and an empty stale section -----
 
 test('--only-problems omits the clean groups; without it, a clean group is still shown and says so', () => {
-  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/broken.md': BROKEN_PERSON } });
+  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/broken.md': BROKEN_PERSON }, config: { lang: 'en' } });
 
   const full = run([root]);
   assert.match(full.stdout, /Specification, should/);
@@ -283,25 +358,39 @@ test('--only-problems omits the clean groups; without it, a clean group is still
   assert.match(onlyProblems.stdout, /House rules/);
 });
 
+test('--only-problems also omits an empty staleness section; a non-empty one is shown either way', () => {
+  const cleanRoot = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/broken.md': BROKEN_PERSON }, config: { lang: 'en' } });
+  const full = run([cleanRoot]);
+  assert.match(full.stdout, /stale_after/i);
+  const onlyProblems = run([cleanRoot, '--only-problems']);
+  assert.doesNotMatch(onlyProblems.stdout, /stale_after/i);
+
+  const staleRoot = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/old.md': STALE_OLD }, config: { lang: 'en' } });
+  const staleOnlyProblems = run([staleRoot, '--only-problems']);
+  assert.match(staleOnlyProblems.stdout, /people\/old\.md/); // shown even under --only-problems, since it is not empty
+});
+
 // --- timestamp_deviation: downgrades should, never touches must ------------
 
 test('validate.timestamp_deviation "allow" downgrades a should-level timestamp finding to a warning that does not affect the exit code; "forbid" (the default) does not', () => {
   const files = { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/migrating.md': MIGRATING_DATE };
 
-  const forbidRoot = makeVault({ files }); // default config: validate.timestamp_deviation is "forbid"
+  const forbidRoot = makeVault({ files, config: { lang: 'en' } }); // default: validate.timestamp_deviation is "forbid"
   const forbidResult = run([forbidRoot, '--json']);
   assert.equal(forbidResult.status, EXIT.FAILURE);
   const forbidParsed = JSON.parse(forbidResult.stdout);
   assert.equal(forbidParsed.findings.length, 1);
   assert.equal(forbidParsed.findings[0].warning, undefined);
+  assert.equal(forbidParsed.blocking, true);
 
-  const allowRoot = makeVault({ files, config: { validate: { timestamp_deviation: 'allow' } } });
+  const allowRoot = makeVault({ files, config: { lang: 'en', validate: { timestamp_deviation: 'allow' } } });
   const allowResult = run([allowRoot, '--json']);
   assert.equal(allowResult.status, EXIT.OK); // the only finding is now a warning
   const allowParsed = JSON.parse(allowResult.stdout);
   assert.equal(allowParsed.findings.length, 1);
   assert.equal(allowParsed.findings[0].warning, true);
   assert.equal(allowParsed.counts.warnings, 1);
+  assert.equal(allowParsed.blocking, false);
 });
 
 test('a must finding is untouched by timestamp_deviation "allow" even in the same run as a downgraded should finding', () => {
@@ -312,7 +401,7 @@ test('a must finding is untouched by timestamp_deviation "allow" even in the sam
       'people/migrating.md': MIGRATING_DATE,
       'people/missing-type.md': MISSING_TYPE_ONLY,
     },
-    config: { validate: { timestamp_deviation: 'allow' } },
+    config: { lang: 'en', validate: { timestamp_deviation: 'allow' } },
   });
   const result = run([root, '--json']);
   assert.equal(result.status, EXIT.FAILURE); // the must finding still counts
@@ -323,9 +412,10 @@ test('a must finding is untouched by timestamp_deviation "allow" even in the sam
   assert.equal(must.warning, undefined);
   assert.ok(should, 'expected the downgraded should finding to survive');
   assert.equal(should.warning, true);
+  assert.equal(parsed.blocking, true);
 });
 
-// --- bad usage, paired with the same flags used correctly -------------------
+// --- bad usage / --help, paired with the same flags used correctly ---------
 
 test('an unrecognized argument exits 2 with usage on stderr; the same vault with real flags exits cleanly', () => {
   const bad = run(['--not-a-real-flag']);
@@ -333,19 +423,189 @@ test('an unrecognized argument exits 2 with usage on stderr; the same vault with
   assert.equal(bad.stdout, '');
   assert.match(bad.stderr, /--not-a-real-flag/);
 
-  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': CLEAN_PERSON } });
+  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': CLEAN_PERSON }, config: { lang: 'en' } });
   const good = run([root, '--only-problems', '--json']);
   assert.equal(good.status, EXIT.OK);
   assert.doesNotThrow(() => JSON.parse(good.stdout));
 });
 
-// --- the single-walk contract: unit-level, since counting calls made inside
-// a child process cannot be done from outside it. Every other test in this
-// file drives the real binary; this is the one place src/commands/validate.mjs's
-// `deps` parameter (never used by src/cli.mjs itself) is reached for.
+test('--help exits 0 and prints usage, rather than the 2 an unrecognized flag gets', () => {
+  const help = run(['--help']);
+  assert.equal(help.status, EXIT.OK);
+  assert.match(help.stdout, /brain-kit validate/);
 
+  const bad = run(['--nope']);
+  assert.equal(bad.status, EXIT.USAGE);
+});
+
+// --- every user-facing string follows the vault's OWN config.lang ----------
+
+test('the report follows the vault\'s config.lang, never the operator\'s BRAIN_KIT_LANG', () => {
+  const enRoot = makeVault({
+    files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': CLEAN_PERSON },
+    config: { lang: 'en' },
+  });
+  const enButEnvSaysPt = run([enRoot], { env: { BRAIN_KIT_LANG: 'pt-BR' } });
+  assert.equal(enButEnvSaysPt.status, EXIT.OK);
+  assert.match(enButEnvSaysPt.stdout, /Specification, must/);
+  assert.doesNotMatch(enButEnvSaysPt.stdout, /Especifica/);
+
+  const ptRoot = makeVault({
+    files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': CLEAN_PERSON },
+    config: {}, // config.lang defaults to pt-BR in the fixture's own base config
+  });
+  const ptButEnvSaysEn = run([ptRoot], { env: { BRAIN_KIT_LANG: 'en' } });
+  assert.equal(ptButEnvSaysEn.status, EXIT.OK);
+  assert.match(ptButEnvSaysEn.stdout, /Especifica/);
+  assert.doesNotMatch(ptButEnvSaysEn.stdout, /Specification, must/);
+});
+
+// --- the three groups are a partition, not three filters --------------------
+
+test('partitionFindings places a recognised finding in exactly one of must, should or house', () => {
+  const combined = [
+    { ruler: 'spec', id: 'a', check: 'x', level: 'must', file: 'f.md', line: 1, message: 'm' },
+    { ruler: 'spec', id: 'b', check: 'x', level: 'should', file: 'f.md', line: 1, message: 'm' },
+    { ruler: 'house', id: 'c', check: 'x', file: 'f.md', line: 1, message: 'm' },
+  ];
+  const { must, should, house, unexpected } = partitionFindings(combined);
+  assert.equal(must.length, 1);
+  assert.equal(should.length, 1);
+  assert.equal(house.length, 1);
+  assert.deepEqual(unexpected, []);
+});
+
+test('partitionFindings puts a finding with an unrecognised ruler/level combination in `unexpected`, never dropping it out of every group', () => {
+  const bogus = { ruler: 'spec', id: 'x', check: 'y', level: 'somehow-else', file: 'f.md', line: 1, message: 'm' };
+  const { must, should, house, unexpected } = partitionFindings([bogus]);
+  assert.deepEqual(must, []);
+  assert.deepEqual(should, []);
+  assert.deepEqual(house, []);
+  assert.deepEqual(unexpected, [bogus]);
+});
+
+test('a house finding that somehow carries a level also lands in unexpected, never silently accepted as house', () => {
+  const bogus = { ruler: 'house', id: 'x', check: 'y', level: 'must', file: 'f.md', line: 1, message: 'm' };
+  const { house, unexpected } = partitionFindings([bogus]);
+  assert.deepEqual(house, []);
+  assert.deepEqual(unexpected, [bogus]);
+});
+
+// --- the verdict reads the SAME predicate as the exit code -----------------
+
+test('buildReport: a should-only run and a house-only run both block (exit 1) and both say so, never claiming the vault is simply fine', () => {
+  const t = createTranslator('en');
+  const shouldOnly = [{ ruler: 'spec', id: 'x', check: 'y', level: 'should', file: 'f.md', line: 1, message: 'm' }];
+  const houseOnly = [{ ruler: 'house', id: 'x', check: 'y', file: 'f.md', line: 1, message: 'm' }];
+
+  for (const combined of [shouldOnly, houseOnly]) {
+    const report = buildReport(combined, [], { t });
+    assert.equal(report.exitCode, EXIT.FAILURE);
+    assert.equal(report.json.blocking, true);
+    // the verdict (the last line) must never claim the run is clean
+    // above a red build; "No findings in this group." on an unrelated,
+    // genuinely-empty group is fine and expected, so check the verdict
+    // line specifically, not the whole report.
+    const verdictLine = report.text.trim().split('\n').pop();
+    assert.doesNotMatch(verdictLine, /no findings/i);
+    assert.match(verdictLine, /block this run/);
+  }
+});
+
+test('buildReport: a must finding says broken; an all-warnings run says conformant with nothing blocking; an empty run says clean', () => {
+  const t = createTranslator('en');
+
+  const withMust = [{ ruler: 'spec', id: 'x', check: 'y', level: 'must', file: 'f.md', line: 1, message: 'm' }];
+  const broken = buildReport(withMust, [], { t });
+  assert.equal(broken.exitCode, EXIT.FAILURE);
+  assert.match(broken.text, /not conformant to the format/);
+
+  const allWarnings = [{ ruler: 'spec', id: 'x', check: 'y', level: 'should', file: 'f.md', line: 1, message: 'm', warning: true }];
+  const warningsOnly = buildReport(allWarnings, [], { t });
+  assert.equal(warningsOnly.exitCode, EXIT.OK);
+  assert.equal(warningsOnly.json.blocking, false);
+  assert.match(warningsOnly.text, /nothing blocks this run/);
+
+  const clean = buildReport([], [], { t });
+  assert.equal(clean.exitCode, EXIT.OK);
+  assert.match(clean.text, /no findings/i);
+});
+
+test('buildReport: an unrecognised finding says the run cannot vouch for conformance, and still blocks', () => {
+  const t = createTranslator('en');
+  const bogus = [{ ruler: 'spec', id: 'x', check: 'y', level: 'somehow-else', file: 'f.md', line: 1, message: 'm' }];
+  const report = buildReport(bogus, [], { t });
+  assert.equal(report.exitCode, EXIT.FAILURE);
+  assert.equal(report.json.counts.unexpected, 1);
+  assert.match(report.text, /cannot say whether the vault is conformant/);
+  assert.match(report.text, /Tool defect/);
+});
+
+// --- clause 1: the full path set reaching the link checker -----------------
+
+test('a link to a real, non-markdown attachment is not reported broken, because context.all carries the whole walk, attachments included', () => {
+  const root = makeVault({
+    files: {
+      'index.md': INDEX,
+      'memory/log.md': CLEAN_LOG,
+      'attachments/diagram.png': 'not a real png, just needs to exist\n',
+      'people/ana.md': LINKS_TO_ATTACHMENT,
+    },
+    config: { lang: 'en' },
+  });
+  const result = run([root, '--json']);
+  assert.equal(result.status, EXIT.OK);
+  const parsed = JSON.parse(result.stdout);
+  assert.deepEqual(parsed.findings, []);
+});
+
+// --- clause 2: the reader's normalisation, through the actual output -------
+
+test('a log heading is still recognised through CRLF line endings and a leading byte-order mark, observed through the real report', () => {
+  const root = makeVault({
+    files: { 'index.md': INDEX, 'memory/log.md': CRLF_LOG_WITH_UNRECOGNISED_HEADING },
+    config: { lang: 'en' },
+  });
+  const result = run([root, '--json']);
+  assert.equal(result.status, EXIT.FAILURE); // heading-not-a-date is a real, expected should finding
+  const parsed = JSON.parse(result.stdout);
+  const heading = parsed.findings.find((f) => f.id === 'log-format' && f.check === 'heading-not-a-date');
+  assert.ok(heading, `expected a heading-not-a-date finding; got ${JSON.stringify(parsed.findings)}`);
+  assert.match(heading.message, /## Notes/);
+});
+
+// --- clause 3: the read cache ------------------------------------------------
+
+test('makeReadFile caches: a file changed on disk after the first read still reads back as its first content', () => {
+  const root = makeVault({ files: { 'index.md': INDEX, 'people/note.md': 'first content\n' } });
+  const readFile = makeReadFile(root);
+  const first = readFile('people/note.md');
+  assert.equal(first, 'first content\n');
+  writeFileSync(join(root, 'people', 'note.md'), 'second content, written after the first read\n');
+  const second = readFile('people/note.md');
+  assert.equal(second, first); // the on-disk change is not observed: this call was served from the cache
+});
+
+test('makeReadFile: the paired positive, two different paths are read correctly and independently', () => {
+  const root = makeVault({ files: { 'index.md': INDEX, 'a.md': 'A content\n', 'b.md': 'B content\n' } });
+  const readFile = makeReadFile(root);
+  assert.equal(readFile('a.md'), 'A content\n');
+  assert.equal(readFile('b.md'), 'B content\n');
+  assert.equal(readFile('a.md'), 'A content\n'); // still itself, not clobbered by reading 'b.md' in between
+});
+
+// --- clause 4 (redesigned): the single walk, with no bypassable reference --
+
+// src/cli.mjs owns the only reference to the real walkVault that ever
+// reaches this module (see its own comment on BUILTIN_COMMANDS); this
+// test supplies its OWN counting wrapper as that same, now-unbypassable
+// parameter. Unlike round 0's version, there is no second, real
+// walkVault reference left anywhere in src/commands/validate.mjs's
+// module scope for a rogue second call to reach instead: the parameter
+// is the only way in, so counting calls through it is no longer the
+// weak instrument it was.
 test('runValidate calls walkVault exactly once, and still finds real problems through the spy', async () => {
-  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/broken.md': BROKEN_PERSON } });
+  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/broken.md': BROKEN_PERSON }, config: { lang: 'en' } });
   let calls = 0;
   const spy = (...args) => {
     calls += 1;
@@ -353,16 +613,14 @@ test('runValidate calls walkVault exactly once, and still finds real problems th
   };
   const { io, stdout } = fakeIo();
   const t = createTranslator('en');
-  const code = await runValidate([root], io, t, { walkVault: spy });
+  const code = await runValidate([root], io, t, spy);
   assert.equal(calls, 1);
   assert.equal(code, EXIT.FAILURE);
   assert.match(stdout(), /people\/broken\.md/);
 });
 
-// The paired positive: a clean vault through the same spy, exactly one call,
-// exit 0.
 test('runValidate calls walkVault exactly once for a clean vault too', async () => {
-  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': CLEAN_PERSON } });
+  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': CLEAN_PERSON }, config: { lang: 'en' } });
   let calls = 0;
   const spy = (...args) => {
     calls += 1;
@@ -370,7 +628,7 @@ test('runValidate calls walkVault exactly once for a clean vault too', async () 
   };
   const { io } = fakeIo();
   const t = createTranslator('en');
-  const code = await runValidate([root], io, t, { walkVault: spy });
+  const code = await runValidate([root], io, t, spy);
   assert.equal(calls, 1);
   assert.equal(code, EXIT.OK);
 });

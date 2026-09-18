@@ -3,12 +3,22 @@ import { kitVersion } from './version.mjs';
 import { createTranslator, REFERENCE_LANG } from './lang.mjs';
 import { runHook } from './commands/hook.mjs';
 import { runValidate } from './commands/validate.mjs';
+import { walkVault } from './vault.mjs';
 import { ConfigError } from './config.mjs';
 
 // command name -> async (argv, io, t) => exit code
+//
+// validate's own module never imports walkVault itself: this closure is
+// the ONLY reference to the real function that reaches it. That is
+// deliberate (fix round 1): a test spying on an injected walkVault
+// parameter is worthless if the real function also sits reachable one
+// import away inside validate.mjs's own module scope, since a second,
+// accidental call could bypass the spy by using that other reference
+// instead. With the reference owned here and handed down as the one
+// and only way validate.mjs can reach it, there is no such bypass left.
 const BUILTIN_COMMANDS = new Map([
   ['hook', runHook],
-  ['validate', runValidate],
+  ['validate', (argv, io, t) => runValidate(argv, io, t, walkVault)],
 ]);
 
 export async function main(argv, io, { commands = BUILTIN_COMMANDS } = {}) {

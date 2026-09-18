@@ -1,10 +1,12 @@
 {
-  "cli.usage": "brain-kit {version}\n\nUsage: brain-kit <command> [options]\n\nCommands available in this version:\n  hook <stop|session-start>              entry point for the Claude Code plugin hooks (reads the event JSON from stdin)\n  validate [dir] [--only-problems] [--json]   check a vault against the Open Knowledge Format and this vault's own house rules\n  --version                              print the version\n  --help                                 print this help\n\nExit codes: 0 ok, 1 failure, 2 usage or not inside a vault, 3 degraded, 4 required source not read, 69 network or connector unavailable, 75 postponed (retry later).",
+  "cli.usage": "brain-kit {version}\n\nUsage: brain-kit <command> [options]\n\nCommands available in this version:\n  hook <stop|session-start>                   entry point for the Claude Code plugin hooks (reads the event JSON from stdin)\n  validate [dir] [--only-problems] [--json]   check a vault against the Open Knowledge Format and this vault's own house rules\n  --version                                   print the version\n  --help                                      print this help\n\nExit codes: 0 ok, 1 failure, 2 usage or not inside a vault, 3 degraded, 4 required source not read, 69 network or connector unavailable, 75 postponed (retry later).",
   "cli.unknown_command": "brain-kit: unknown command \"{command}\".",
   "hook.unknown_event": "brain-kit hook: unknown event \"{event}\" (expected: {events}).",
   "lang.fallback_warning": "[brain-kit] missing translation for \"{key}\" in {lang}; using {reference}.",
   "validate.usage": "Usage: brain-kit validate [dir] [--only-problems] [--json]",
   "validate.bad_argument": "brain-kit validate: unrecognized argument \"{arg}\".",
+  "validate.path_not_found": "brain-kit validate: \"{dir}\" does not exist.",
+  "validate.path_not_a_directory": "brain-kit validate: \"{dir}\" is not a directory.",
   "validate.no_vault": "brain-kit validate: no brain-kit vault found from \"{dir}\" or any directory above it (looking for {config} and {index}).",
   "validate.heading_must": "Specification, must",
   "validate.explain_must": "These findings mean the bundle is not conformant to the Open Knowledge Format.",
@@ -12,6 +14,8 @@
   "validate.explain_should": "These findings mean the vault departs from the format's own guidance, without breaking conformance.",
   "validate.heading_house": "House rules",
   "validate.explain_house": "These findings mean the vault departs from its own declared rules. The format defines no conformance tier for them.",
+  "validate.heading_defect": "Tool defect: unclassifiable findings",
+  "validate.explain_defect": "These findings carry a ruler and level this command does not recognize. This is a defect in brain-kit itself, not in your vault; please report it.",
   "validate.group_clean": "No findings in this group.",
   "validate.counts_summary": "Totals: {must} must, {should} should, {house} house.",
   "validate.heading_stale": "Notes past their stale_after date",
@@ -19,7 +23,9 @@
   "validate.stale_entry": "{file}: stale_after {staleAfter} has passed.",
   "validate.stale_none": "No note has passed its stale_after date.",
   "validate.warning_tag": "[warning]",
+  "validate.verdict_clean": "Result: no findings. The vault is conformant and has no departures.",
+  "validate.verdict_warnings_only": "Result: the vault is conformant. Every finding above was downgraded to a warning; nothing blocks this run.",
+  "validate.verdict_blocking": "Result: the vault is conformant to the format, but findings above (guidance or house rules) block this run.",
   "validate.verdict_broken": "Result: the vault is not conformant to the format.",
-  "validate.verdict_opinionated": "Result: the vault is conformant. The findings above are guidance or house preferences, not conformance failures.",
-  "validate.verdict_clean": "Result: no findings. The vault is conformant and has no departures."
+  "validate.verdict_unexpected": "Result: at least one finding could not be classified; this run cannot say whether the vault is conformant. See the tool defect section above."
 }
