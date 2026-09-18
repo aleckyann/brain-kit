@@ -7,5 +7,5 @@ land with the code in later phases (allowlist per subcommand, no credentials in 
 machine-specific paths and executables kept outside the repository, lint for secrets and
 privacy on the write path).
 
-Report a vulnerability by opening a private security advisory on GitHub or by e-mail to the
-maintainer listed in `package.json`. Do not open a public issue for a secret or a leak.
+Report a vulnerability through a private security advisory on GitHub (Security tab of the
+repository). Do not open a public issue for a secret or a leak.
