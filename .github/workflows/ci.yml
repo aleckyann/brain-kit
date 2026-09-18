@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: node --test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - name: Tests (includes zero-dependency and generic no-leak gates)
+        run: npm test
+      - name: Package contents
+        run: npm pack --dry-run
+
+  plugin-validate:
+    name: claude plugin validate --strict
+    runs-on: ubuntu-latest
+    # Unverified whether the CLI validates without a login; do not block on it yet.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - run: npm install -g @anthropic-ai/claude-code
+      - run: claude plugin validate --strict .
