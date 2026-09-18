@@ -23,11 +23,12 @@
 - Never build shell command strings. Every external command goes through `execFileSync`/`spawnSync` with an argument array.
 - Code, identifiers, comments and docs in English. User-facing strings come from `lang/<code>/messages.json`, pt-BR being the reference pack and `en` mirroring it key for key; a test enforces parity, and pt-BR carries no em dash (U+2014) and no emoji.
 - Exit codes are fixed and already defined in `src/exit-codes.mjs`: `0` ok, `1` failure, `2` usage or not inside a vault, `3` degraded, `4` required source unread, `69` unavailable, `75` postponed.
-- No household data: no company, colleague or client names, no real e-mail addresses. Fixtures use the fictional owner "Ana" and `example.com` / `example.invalid`.
+- No household data: no company, colleague or client names, no real e-mail addresses, no real personal handles. Fixtures use the fictional owner "Ana" and `example.com` / `example.invalid`, the placeholder actors `human:ana` and `brain-kit-curator/claude-opus-5`.
+- Fixture TAXONOMY is English too, and this is not cosmetic. A fixture vault uses `people/`, `projects/`, `decisions/`, `pending/`, `core/`, `memory/`, `attachments/`, never the reference vault's own Portuguese folder names. The kit's claim is that the taxonomy is configuration, so a test suite written in one adopter's taxonomy quietly asserts the opposite, and every later fixture copies whatever the first one did. Exactly ONE fixture in the suite may use a non-English taxonomy, and it must carry a comment saying it exists to prove the walk and the rulers are taxonomy-agnostic, so the intent is legible rather than accidental.
 - The maintainer's pre-push gate is active (`core.hooksPath=.githooks`) and scans every commit of a push. Never bypass it with `--no-verify`; if it refuses, report the refusal.
 - Commits use a conventional prefix and end with the trailer `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
 - Do not push. The controller pushes and watches CI.
-- Work in `/home/aleck/Área de trabalho/brain-kit`, branch `main`, currently at `66b9aec` with 60 tests passing.
+- Work in `/home/aleck/Área de trabalho/brain-kit`, branch `main`. Tasks 1 and 2 have landed; the suite is at 109 tests and must stay green.
 
 ## Facts established by the Phase 1 opening experiment (18/09/2026)
 
