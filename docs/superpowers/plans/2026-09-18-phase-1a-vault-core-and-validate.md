@@ -129,7 +129,16 @@ The helper `makeVault({ files, config })` creates a temporary directory, writes 
 - Test: `test/frontmatter.test.mjs`
 
 **Interfaces:**
-- Produces: `splitFrontmatter(text) -> { frontmatter, body, hasFrontmatter }`, `readScalar(frontmatter, key)`, `readInlineMapping(frontmatter, key)`, `readList(frontmatter, key)`, `readEntries(frontmatter, key)`, `PARSER_LIMITS` from `src/frontmatter.mjs`.
+- Produces: `splitFrontmatter(text) -> { frontmatter, body, hasFrontmatter }`, `readScalar(frontmatter, key)`, `readMapping(frontmatter, key)`, `readList(frontmatter, key)`, `readEntries(frontmatter, key)`, `PARSER_LIMITS` from `src/frontmatter.mjs`.
+
+Every reader after `splitFrontmatter` takes the `frontmatter` STRING, never the whole file, so a key inside a fenced code block in the body is structurally invisible to them rather than filtered out.
+
+Shapes measured in the reference vault on 18/09/2026, which the readers must handle because they are what real notes contain:
+- `generated` and `verified` are inline mappings, `{ by: x, at: y }`, in 222 of 222 notes that carry them. Not one uses the indented block form.
+- A mapping value is routinely unquoted AND contains a colon, because the format's actor syntax is `human:ana` and `brain-kit-curator/claude-opus-5`. Split each pair on its FIRST colon only.
+- `sources` is a block list of mappings whose entries carry `resource` and optionally `id`, `title`, `author` and a quoted `description` containing commas, colons and accented text.
+
+`readMapping` reads BOTH the inline brace form and the indented block form, and is named for the value it reads rather than for one of the two spellings. The reference vault never writes the block form, but an adopter writing a note by hand will, and a reader that silently returned nothing there would make Task 4's `generated-actor` rule report a missing `by` that is plainly present, which is worse than not checking at all.
 
 This module is deliberately a regular-expression reader and not a YAML parser, because the engine ships with no dependencies. That choice has consequences, and the module must state them rather than hide them: `PARSER_LIMITS` is an exported array of one-line strings describing what it cannot see, and the validator prints it in its JSON output so a consumer is never misled about the depth of the check.
 
@@ -138,7 +147,7 @@ This module is deliberately a regular-expression reader and not a YAML parser, b
 - A file with no frontmatter reports `hasFrontmatter: false` and a body equal to the whole text.
 - A `---` that appears later in the body, for example inside a fenced code block, is not treated as a frontmatter delimiter.
 - `readScalar` reads a plain value, a quoted value, and a value containing a colon; it returns `null` for an absent key; it does not match a key that merely appears inside another line.
-- `readInlineMapping` reads `generated: { by: x, at: y }` into an object and tolerates extra spaces.
+- `readMapping` reads `generated: { by: x, at: y }` into an object and tolerates extra spaces; reads the same key written as an indented block; reads an unquoted value containing a colon, with `verified: { by: human:ana, at: ... }` as the case that must pass; and keeps a quoted value containing a comma intact.
 - `readList` reads both the bracketed inline form and the block form with hyphens.
 - `readEntries` reads a block list of mappings, as `sources` uses, returning one object per entry.
 - A key that appears inside a fenced code block in the body is never read as frontmatter.
