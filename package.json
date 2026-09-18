@@ -1,0 +1,53 @@
+{
+  "name": "brain-kit",
+  "version": "0.0.1",
+  "description": "Second brain kit: an OKF markdown vault curated by AI agents through pull requests, packaged as an npm CLI and a Claude Code plugin",
+  "type": "module",
+  "license": "MIT",
+  "author": "Aleck Yann",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aleckyann/brain-kit.git"
+  },
+  "homepage": "https://github.com/aleckyann/brain-kit#readme",
+  "bugs": "https://github.com/aleckyann/brain-kit/issues",
+  "keywords": [
+    "second-brain",
+    "okf",
+    "open-knowledge-format",
+    "llm-wiki",
+    "knowledge-base",
+    "markdown",
+    "claude-code",
+    "claude-code-plugin"
+  ],
+  "bin": {
+    "brain-kit": "./bin/brain-kit.mjs"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "lang/",
+    "schema/",
+    "templates/",
+    "vendor/",
+    "skills/",
+    "agents/",
+    "hooks/",
+    ".claude-plugin/",
+    "docs/",
+    "README.md",
+    "README.pt-BR.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "SECURITY.md"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

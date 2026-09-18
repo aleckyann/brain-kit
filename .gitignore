@@ -1,0 +1,12 @@
+# Installed packages: the engine has zero runtime dependencies on purpose.
+node_modules/
+# No lockfile: a lockfile in the plugin root would make Claude Code run
+# `npm ci` when it caches the plugin, for nothing.
+package-lock.json
+# npm pack output
+*.tgz
+# OS noise
+.DS_Store
+
+# Subagent-driven-development scratch (ledgers, briefs, review packages)
+.superpowers/
