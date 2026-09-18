@@ -7,7 +7,7 @@
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" stop",
             "timeout": 15,
-            "statusMessage": "brain-kit: checking for pending curation"
+            "statusMessage": "brain-kit hook"
           }
         ]
       }

@@ -44,10 +44,14 @@ test('run-hook.cmd is executable and routes to the engine as a silent no-op', ()
   const wrapper = join(KIT_ROOT, 'hooks', 'run-hook.cmd');
   assert.ok(statSync(wrapper).mode & 0o111, 'run-hook.cmd must be executable');
   // Claude Code runs hook commands through a shell; the wrapper has no shebang
-  // (the first line is the cmd.exe half), so spawn it through bash as a shell would.
-  const r = spawnSync('bash', [wrapper, 'stop'], { input: '{"stop_hook_active":false}', encoding: 'utf8' });
-  assert.equal(r.status, 0, r.stderr);
-  assert.equal(r.stdout, '');
+  // (the first line is the cmd.exe half), so spawn it through a shell as
+  // Claude Code would. Check both bash and the plain POSIX sh some machines
+  // point /bin/sh at (e.g. dash), since the wrapper relies on no bash-only syntax.
+  for (const shell of ['bash', 'sh']) {
+    const r = spawnSync(shell, [wrapper, 'stop'], { input: '{"stop_hook_active":false}', encoding: 'utf8' });
+    assert.equal(r.status, 0, `${shell}: ${r.stderr}`);
+    assert.equal(r.stdout, '', `${shell}: unexpected stdout`);
+  }
 });
 
 test('claude plugin validate --strict passes when the CLI is installed', (t) => {

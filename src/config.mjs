@@ -76,7 +76,7 @@ export function loadConfig(vaultDir) {
 
 export function loadMachine(stateDir) {
   const file = join(stateDir, MACHINE_FILENAME);
-  if (!existsSync(file)) throw new ConfigError(`Machine file not found: ${file} (run brain-kit init or brain-kit machine register)`);
+  if (!existsSync(file)) throw new ConfigError(`Machine file not found: ${file} (created by brain-kit init from phase 1 onward)`);
   const machine = readJson(file);
   const errors = validateMachine(machine);
   if (errors.length) throw new ConfigError(`Invalid ${file}`, errors);

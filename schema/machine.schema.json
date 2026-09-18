@@ -14,6 +14,7 @@
     "notify_command": { "type": "array", "items": { "type": "string" } },
     "path_extra": { "type": "array", "items": { "type": "string" } },
     "transcripts_dir": { "type": "string" },
+    "state_dir": { "type": "string" },
     "paths": {
       "type": "object", "additionalProperties": false,
       "required": ["lock", "watermark", "last_run", "log_dir"],
