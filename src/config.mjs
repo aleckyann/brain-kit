@@ -1,0 +1,84 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { validateSchema } from './schema.mjs';
+import { KIT_ROOT } from './version.mjs';
+
+export const CONFIG_FILENAME = 'brain-kit.config.json';
+export const MACHINE_FILENAME = 'machine.json';
+
+// Keys that execute something or point at this machine. They belong in
+// machine.json (outside the vault, never in a pull request) and are rejected
+// anywhere inside the versioned config, at any depth: the versioned config is
+// writable by the agent and travels through PRs, so a key like notify_command
+// there would be a way to run commands via a merged PR.
+export const MACHINE_ONLY_KEYS = Object.freeze([
+  'claude_bin', 'model', 'network_check', 'notify_command', 'transcripts_dir', 'path_extra',
+  'canonical_path', 'state_dir', 'paths', 'log_retention_days', 'keep_stream', 'briefing_task_id',
+]);
+
+export class ConfigError extends Error {
+  constructor(message, errors = []) {
+    super(errors.length ? `${message}\n  ${errors.join('\n  ')}` : message);
+    this.name = 'ConfigError';
+    this.errors = errors;
+  }
+}
+
+const schemaCache = new Map();
+function loadSchema(name) {
+  if (!schemaCache.has(name)) {
+    schemaCache.set(name, JSON.parse(readFileSync(join(KIT_ROOT, 'schema', name), 'utf8')));
+  }
+  return schemaCache.get(name);
+}
+
+export function findMachineOnlyKeys(value, path = '$', found = []) {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => findMachineOnlyKeys(item, `${path}[${index}]`, found));
+  } else if (value !== null && typeof value === 'object') {
+    for (const [key, sub] of Object.entries(value)) {
+      const here = `${path}.${key}`;
+      if (MACHINE_ONLY_KEYS.includes(key)) found.push(here);
+      findMachineOnlyKeys(sub, here, found);
+    }
+  }
+  return found;
+}
+
+export function validateConfig(config) {
+  const errors = validateSchema(config, loadSchema('config.schema.json'));
+  for (const where of findMachineOnlyKeys(config)) {
+    errors.push(`${where}: machine-only key is not allowed in the versioned config (it belongs in ${MACHINE_FILENAME})`);
+  }
+  return errors;
+}
+
+export function validateMachine(machine) {
+  return validateSchema(machine, loadSchema('machine.schema.json'));
+}
+
+function readJson(file) {
+  try {
+    return JSON.parse(readFileSync(file, 'utf8'));
+  } catch (error) {
+    throw new ConfigError(`Cannot parse ${file}: ${error.message}`);
+  }
+}
+
+export function loadConfig(vaultDir) {
+  const file = join(vaultDir, CONFIG_FILENAME);
+  if (!existsSync(file)) throw new ConfigError(`Not a brain-kit vault: ${CONFIG_FILENAME} not found in ${vaultDir}`);
+  const config = readJson(file);
+  const errors = validateConfig(config);
+  if (errors.length) throw new ConfigError(`Invalid ${file}`, errors);
+  return config;
+}
+
+export function loadMachine(stateDir) {
+  const file = join(stateDir, MACHINE_FILENAME);
+  if (!existsSync(file)) throw new ConfigError(`Machine file not found: ${file} (run brain-kit init or brain-kit machine register)`);
+  const machine = readJson(file);
+  const errors = validateMachine(machine);
+  if (errors.length) throw new ConfigError(`Invalid ${file}`, errors);
+  return machine;
+}

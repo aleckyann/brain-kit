@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/aleckyann/brain-kit/main/schema/machine.schema.json",
+  "title": "brain-kit machine file (state_dir/machine.json, never versioned, mode 0600)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["vault_id", "canonical_path", "claude_bin", "paths"],
+  "properties": {
+    "vault_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+    "canonical_path": { "type": "string", "minLength": 1 },
+    "claude_bin": { "type": "string", "minLength": 1 },
+    "model": { "type": ["string", "null"] },
+    "network_check": { "type": "array", "items": { "type": "string" } },
+    "notify_command": { "type": "array", "items": { "type": "string" } },
+    "path_extra": { "type": "array", "items": { "type": "string" } },
+    "transcripts_dir": { "type": "string" },
+    "paths": {
+      "type": "object", "additionalProperties": false,
+      "required": ["lock", "watermark", "last_run", "log_dir"],
+      "properties": {
+        "lock": { "type": "string" }, "watermark": { "type": "string" }, "last_run": { "type": "string" }, "log_dir": { "type": "string" },
+        "questions_log": { "type": "string" }, "snapshot": { "type": "string" }, "viz": { "type": "string" }
+      }
+    },
+    "log_retention_days": { "type": "integer", "minimum": 1 },
+    "keep_stream": { "type": "boolean" },
+    "briefing_task_id": { "type": ["string", "null"] }
+  }
+}

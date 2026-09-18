@@ -1,0 +1,14 @@
+{
+  "vault_id": "ana-brain",
+  "canonical_path": "/home/ana/brain",
+  "claude_bin": "claude",
+  "model": "claude-opus-4-8",
+  "network_check": ["nm-online", "-q", "--timeout=90"],
+  "notify_command": ["notify-send", "-u", "normal", "{title}", "{body}"],
+  "path_extra": ["~/.npm-global/bin", "~/.local/bin"],
+  "transcripts_dir": "~/.claude/projects",
+  "paths": { "lock": "curate.lock", "watermark": "watermark.json", "last_run": "last-run.json", "log_dir": "logs", "questions_log": "questions.tsv", "snapshot": "snapshot.json", "viz": "viz.html" },
+  "log_retention_days": 30,
+  "keep_stream": false,
+  "briefing_task_id": null
+}

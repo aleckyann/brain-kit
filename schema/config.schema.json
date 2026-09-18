@@ -1,0 +1,265 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/aleckyann/brain-kit/main/schema/config.schema.json",
+  "title": "brain-kit vault configuration (declarative, versioned in the vault)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kit_version", "lang", "okf_version", "owner", "vault", "actors", "taxonomy", "frontmatter", "stale_policy", "validate", "lint", "privacy", "git", "hooks", "curate", "sources", "briefing"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "kit_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+" },
+    "lang": { "type": "string", "enum": ["pt-BR", "en"] },
+    "okf_version": { "type": "string", "enum": ["0.2"] },
+    "owner": {
+      "type": "object", "additionalProperties": false, "required": ["name", "handle"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "handle": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "email": { "type": ["string", "null"], "pattern": "^[^@\\s]+@[^@\\s]+$" },
+        "role": { "type": ["string", "null"] },
+        "company": { "type": ["string", "null"] },
+        "agent_role": { "type": ["string", "null"] }
+      }
+    },
+    "vault": {
+      "type": "object", "additionalProperties": false, "required": ["title", "private", "timezone"],
+      "properties": {
+        "title": { "type": "string", "minLength": 1 },
+        "repo": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+        "private": { "type": "boolean" },
+        "default_branch": { "type": ["string", "null"] },
+        "timezone": { "type": "string", "minLength": 1 },
+        "locale": { "type": "string" }
+      }
+    },
+    "actors": {
+      "type": "object", "additionalProperties": false, "required": ["human", "agent_prefix", "scheduled"],
+      "properties": {
+        "human": { "type": "string", "pattern": "^human:[a-z0-9][a-z0-9-]*$" },
+        "agent_prefix": { "type": "string", "minLength": 1 },
+        "scheduled": { "type": "string", "pattern": "^process:[a-z0-9][a-z0-9-]*$" }
+      }
+    },
+    "taxonomy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["collections", "domains", "log", "log_markers", "templates_dir", "files", "columns"],
+      "properties": {
+        "collections": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object", "additionalProperties": false, "required": ["type"],
+            "properties": { "type": { "type": "string" }, "template": { "type": "string" }, "filename_pattern": { "type": "string" } }
+          }
+        },
+        "domains": { "type": "array", "items": { "type": "string" } },
+        "no_index": { "type": "array", "items": { "type": "string" } },
+        "log": { "type": "string", "minLength": 1 },
+        "log_markers": {
+          "type": "object", "additionalProperties": false, "required": ["capture", "promoted", "correction", "creation"],
+          "properties": { "capture": { "type": "string" }, "promoted": { "type": "string" }, "correction": { "type": "string" }, "creation": { "type": "string" } }
+        },
+        "templates_dir": { "type": "string" },
+        "attachments_dir": { "type": "string" },
+        "files": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "followups": { "type": ["string", "null"] }, "promises": { "type": ["string", "null"] }, "rituals": { "type": ["string", "null"] },
+            "execution_system": { "type": ["string", "null"] }, "style_guide": { "type": ["string", "null"] }, "bootstrap": { "type": ["string", "null"] },
+            "strategy_index": { "type": ["string", "null"] }, "metrics": { "type": ["string", "null"] }, "glossary": { "type": ["string", "null"] }
+          }
+        },
+        "columns": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "followups": { "type": "object", "additionalProperties": { "type": "string" } },
+            "promises": { "type": "object", "additionalProperties": { "type": "string" } },
+            "rituals": { "type": "object", "additionalProperties": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "frontmatter": {
+      "type": "object", "additionalProperties": false, "required": ["required", "forbidden"],
+      "properties": {
+        "required": { "type": "array", "items": { "type": "string" } },
+        "forbidden": { "type": "array", "items": { "type": "string" } },
+        "type_enum": { "type": ["array", "null"], "items": { "type": "string" } },
+        "extensions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object", "additionalProperties": false, "required": ["type"],
+            "properties": {
+              "type": { "type": "string", "enum": ["string", "boolean", "enum", "date", "number"] },
+              "values": { "type": "array", "items": { "type": "string" } },
+              "values_by_type": { "type": "object", "additionalProperties": { "type": "array", "items": { "type": "string" } } },
+              "default": {}
+            }
+          }
+        }
+      }
+    },
+    "stale_policy": {
+      "type": "object", "additionalProperties": false, "required": ["key", "months"],
+      "properties": {
+        "key": { "type": "string", "enum": ["path", "type"] },
+        "months": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 1 } }
+      }
+    },
+    "validate": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "stale_after_format": { "type": "string", "enum": ["date", "datetime", "any"] },
+        "link_style": { "type": "string", "enum": ["file-relative", "bundle-absolute", "any"] },
+        "wikilinks": { "type": "string", "enum": ["forbid", "allow"] },
+        "require_root_okf_version": { "type": "boolean" },
+        "placeholder_pattern": { "type": "string" },
+        "ignore_paths": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "lint": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "columns": { "type": "string", "enum": ["error", "warn", "off"] },
+        "tables": { "type": "string", "enum": ["error", "warn", "off"] },
+        "orphans": { "type": "string", "enum": ["error", "warn", "off"] },
+        "index_completeness": { "type": "string", "enum": ["error", "warn", "off"] },
+        "secrets": { "type": "string", "enum": ["error", "warn", "off"] },
+        "privacy": { "type": "string", "enum": ["error", "warn", "off"] },
+        "attribution": { "type": "string", "enum": ["error", "warn", "off"] },
+        "style": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "forbidden_chars": { "type": "array", "items": { "type": "string" } },
+            "base": { "type": "string", "enum": ["auto", "worktree", "merge-base", "all"] }
+          }
+        },
+        "tables_limits": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "max_cell_chars": { "type": "integer", "minimum": 1 },
+            "duplicate_rows": { "type": "string", "enum": ["error", "warn", "off"] }
+          }
+        }
+      }
+    },
+    "privacy": {
+      "type": "object", "additionalProperties": false, "required": ["confidential_dirs", "require_private_repo"],
+      "properties": {
+        "confidential_dirs": { "type": "array", "items": { "type": "string" } },
+        "require_private_repo": { "type": "boolean" },
+        "secret_patterns": { "type": "array", "items": { "type": "string" } },
+        "third_party_data_acknowledged": { "type": "boolean" },
+        "retention_note": { "type": "string" },
+        "audiences": { "type": "object" }
+      }
+    },
+    "git": {
+      "type": "object", "additionalProperties": false, "required": ["agent_identity", "branch_prefix", "commit_prefix", "pr_command"],
+      "properties": {
+        "agent_identity": {
+          "type": "object", "additionalProperties": false, "required": ["name", "email"],
+          "properties": { "name": { "type": "string", "minLength": 1 }, "email": { "type": "string", "pattern": "^[^@\\s]+@[^@\\s]+$" } }
+        },
+        "branch_prefix": { "type": "string", "minLength": 1 },
+        "commit_prefix": { "type": "string" },
+        "pr_command": { "type": "string", "enum": ["gh"] },
+        "pr_title": { "type": "string" },
+        "pr_body": { "type": "string" },
+        "ci": { "type": "string", "enum": ["github-actions", "none"] },
+        "ci_engine_ref": { "type": ["string", "null"] },
+        "forbid_agent_push_to_default": { "type": "boolean" }
+      }
+    },
+    "hooks": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "stop": { "type": "boolean" }, "session_start": { "type": "boolean" }, "session_start_fetch": { "type": "boolean" },
+        "block_on_inherited_dirt": { "type": "boolean" }, "timeout_seconds": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "curate": {
+      "type": "object", "additionalProperties": false, "required": ["enabled", "schedule", "prompt", "signature", "sources"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "schedule": { "type": "array", "items": { "type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$" } },
+        "prompt": { "type": "string" },
+        "signature": { "type": "string", "minLength": 1 },
+        "max_turns": { "type": "integer", "minimum": 1 },
+        "budget_usd": { "type": "number", "minimum": 0 },
+        "network_min_wait_ms": { "type": "integer", "minimum": 0 },
+        "caps": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+        "promotion_map": { "type": "object", "additionalProperties": { "type": "string" } },
+        "sources": {
+          "type": "object", "additionalProperties": false, "required": ["required", "best_effort"],
+          "properties": {
+            "required": { "type": "array", "items": { "type": "string" } },
+            "best_effort": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "extra_signatures": { "type": "array", "items": { "type": "string" } },
+        "allowed_tools_extra": { "type": "array", "items": { "type": "string" } },
+        "disallowed_tools_extra": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "sources": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "transcripts": {
+          "type": "object", "additionalProperties": false, "required": ["adapter", "include_projects"],
+          "properties": {
+            "adapter": { "type": "string", "enum": ["claude-code"] },
+            "include_projects": { "type": "array", "items": { "type": "string" } },
+            "exclude_path_patterns": { "type": "array", "items": { "type": "string" } },
+            "sample_strategy": { "type": "string", "enum": ["tail-first"] }
+          }
+        },
+        "calendar": {
+          "type": "object", "additionalProperties": false, "required": ["provider", "server_display_name", "tool_prefix", "tool_suffixes", "calendars"],
+          "properties": {
+            "provider": { "type": "string" }, "server_display_name": { "type": "string" }, "tool_prefix": { "type": "string" },
+            "tool_suffixes": { "type": "array", "items": { "type": "string" } },
+            "calendars": { "type": "array", "items": { "type": "string" } },
+            "team_calendars": { "type": "array", "items": { "type": "string" } },
+            "team_calendars_consent_noted": { "type": "boolean" },
+            "skip_events_with_owner": { "type": "boolean" },
+            "dedup_by": { "type": "string" },
+            "privacy": {
+              "type": "object", "additionalProperties": false,
+              "properties": {
+                "exclude_event_types": { "type": "array", "items": { "type": "string" } },
+                "exclude_keywords": { "type": "array", "items": { "type": "string" } },
+                "team_personal_events": { "type": "string", "enum": ["drop"] }
+              }
+            },
+            "focus_blocks_as_ruler": { "type": "boolean" }
+          }
+        },
+        "meeting_notes": {
+          "type": "object", "additionalProperties": false, "required": ["provider", "server_display_name", "tool_prefix", "tool_suffixes", "search_title_contains"],
+          "properties": {
+            "provider": { "type": "string" }, "server_display_name": { "type": "string" }, "tool_prefix": { "type": "string" },
+            "tool_suffixes": { "type": "array", "items": { "type": "string" } },
+            "search_title_contains": { "type": "string" }, "attached_title_prefix": { "type": "string" },
+            "window_hours_before_day": { "type": "integer", "minimum": 0 },
+            "dedup_by": { "type": "string" },
+            "never_download": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "briefing": {
+      "type": "object", "additionalProperties": false, "required": ["enabled", "prompt", "signature"],
+      "properties": {
+        "enabled": { "type": "boolean" }, "schedule": { "type": "string" }, "prompt": { "type": "string" }, "signature": { "type": "string" },
+        "max_words": { "type": "integer", "minimum": 1 }, "max_questions": { "type": "integer", "minimum": 0 },
+        "questions_dedup_days": { "type": "integer", "minimum": 0 }, "question_escalate_after": { "type": "integer", "minimum": 1 },
+        "question_max_age_days": { "type": "integer", "minimum": 1 },
+        "write_caps": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+        "strategy_doc": { "type": "object", "additionalProperties": false, "properties": { "index": { "type": "string" }, "title_contains": { "type": "string" } } },
+        "main_metric": { "type": "string" }, "calendar_id": { "type": ["string", "null"] },
+        "read": { "type": "array", "items": { "type": "string" } },
+        "never_read": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

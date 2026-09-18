@@ -1,0 +1,378 @@
+{
+  "$schema": "https://raw.githubusercontent.com/aleckyann/brain-kit/main/schema/config.schema.json",
+  "kit_version": "0.0.1",
+  "lang": "pt-BR",
+  "okf_version": "0.2",
+  "owner": {
+    "name": "Ana",
+    "handle": "ana",
+    "email": "ana@example.com",
+    "role": "founder",
+    "company": "Example Ltd",
+    "agent_role": "advisor and chief of staff"
+  },
+  "vault": {
+    "title": "Ana's Second Brain",
+    "repo": "ana/brain",
+    "private": true,
+    "default_branch": null,
+    "timezone": "America/Sao_Paulo",
+    "locale": "C.UTF-8"
+  },
+  "actors": {
+    "human": "human:ana",
+    "agent_prefix": "brain-kit-curator",
+    "scheduled": "process:brain-kit-curate"
+  },
+  "taxonomy": {
+    "collections": {
+      "pessoas": {
+        "type": "pessoa",
+        "template": "templates/template-pessoa.md"
+      },
+      "organizacoes": {
+        "type": "organizacao",
+        "template": "templates/template-organizacao.md"
+      },
+      "projetos": {
+        "type": "projeto",
+        "template": "templates/template-projeto.md"
+      },
+      "decisoes": {
+        "type": "decisao",
+        "template": "templates/template-decisao.md",
+        "filename_pattern": "YYYY-MM-<slug>"
+      },
+      "referencias/livros": {
+        "type": "livro",
+        "template": "templates/template-livro.md"
+      }
+    },
+    "domains": [
+      "nucleo",
+      "empresa",
+      "memoria",
+      "pendencias",
+      "pessoal",
+      "reflexoes",
+      "referencias"
+    ],
+    "no_index": [],
+    "log": "memoria/log.md",
+    "log_markers": {
+      "capture": "Captura",
+      "promoted": "Promovido",
+      "correction": "Correção",
+      "creation": "Criação"
+    },
+    "templates_dir": "templates",
+    "attachments_dir": "anexos",
+    "files": {
+      "followups": "pendencias/follow-ups.md",
+      "promises": "pendencias/promessas.md",
+      "rituals": "nucleo/ritmo-semanal.md",
+      "execution_system": "nucleo/sistema-de-execucao.md",
+      "style_guide": "nucleo/diretrizes-de-resposta.md",
+      "bootstrap": "BOOTSTRAP.md",
+      "strategy_index": "decisoes/index.md",
+      "metrics": "empresa/metricas-e-metas.md",
+      "glossary": null
+    },
+    "columns": {
+      "followups": {
+        "registered": "Registrado",
+        "what": "O quê",
+        "with": "Com quem / onde",
+        "deadline": "Prazo",
+        "next_step": "Próximo passo",
+        "open_heading": "## Abertos",
+        "resolved_heading": "## Resolvidos"
+      },
+      "promises": {
+        "made_at": "Feita em",
+        "to": "Para quem",
+        "what": "O que prometi",
+        "condition": "Condição / prazo",
+        "status": "Status",
+        "active_heading": "## Ativas",
+        "done_heading": "## Cumpridas / renegociadas"
+      },
+      "rituals": {
+        "calendar_title": "Título no calendário",
+        "cadence": "Cadência",
+        "time": "Horário",
+        "owner": "Dono",
+        "fixed_attendees": "Participantes fixos",
+        "feeds": "Alimenta",
+        "feeds_none": "nenhuma ainda"
+      }
+    }
+  },
+  "frontmatter": {
+    "required": [
+      "description",
+      "generated"
+    ],
+    "forbidden": [
+      "timestamp"
+    ],
+    "type_enum": null,
+    "extensions": {
+      "confidencial": {
+        "type": "boolean",
+        "default": false
+      },
+      "situacao": {
+        "type": "enum",
+        "values_by_type": {
+          "decisao": [
+            "aberta",
+            "em-execucao",
+            "concluida",
+            "revertida"
+          ],
+          "projeto": [
+            "ativo",
+            "ideia",
+            "adiado",
+            "concluido",
+            "arquivado"
+          ]
+        }
+      },
+      "vinculo": {
+        "type": "enum",
+        "values": [
+          "equipe",
+          "familia",
+          "mentor",
+          "externo"
+        ],
+        "default": "equipe"
+      },
+      "autor": {
+        "type": "string"
+      },
+      "lido": {
+        "type": "string"
+      },
+      "data": {
+        "type": "date"
+      },
+      "idioma": {
+        "type": "string"
+      }
+    }
+  },
+  "stale_policy": {
+    "key": "path",
+    "months": {
+      "pessoas/": 6,
+      "organizacoes/": 12,
+      "pendencias/": 3
+    }
+  },
+  "validate": {
+    "stale_after_format": "datetime",
+    "link_style": "file-relative",
+    "wikilinks": "forbid",
+    "require_root_okf_version": false,
+    "placeholder_pattern": "<[^>]+>",
+    "ignore_paths": []
+  },
+  "lint": {
+    "columns": "error",
+    "tables": "error",
+    "orphans": "warn",
+    "index_completeness": "warn",
+    "secrets": "error",
+    "privacy": "error",
+    "attribution": "warn",
+    "style": {
+      "forbidden_chars": [
+        "—"
+      ],
+      "base": "auto"
+    },
+    "tables_limits": {
+      "max_cell_chars": 600,
+      "duplicate_rows": "error"
+    }
+  },
+  "privacy": {
+    "confidential_dirs": [
+      "pessoas/",
+      "pessoal/"
+    ],
+    "require_private_repo": true,
+    "secret_patterns": [
+      "ghp_[A-Za-z0-9]{20,}",
+      "github_pat_",
+      "sk-ant-",
+      "BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY",
+      "AKIA[0-9A-Z]{16}"
+    ],
+    "third_party_data_acknowledged": true,
+    "retention_note": "pessoas/ holds personal data about third parties; removal on request: see SECURITY.md",
+    "audiences": {}
+  },
+  "git": {
+    "agent_identity": {
+      "name": "Ana's Second Brain (curator)",
+      "email": "curator@example.invalid"
+    },
+    "branch_prefix": "curador/",
+    "commit_prefix": "curadoria:",
+    "pr_command": "gh",
+    "pr_title": "{{commit_prefix}} {{summary}}",
+    "pr_body": ".brain-kit/pr-body.md",
+    "ci": "github-actions",
+    "ci_engine_ref": null,
+    "forbid_agent_push_to_default": true
+  },
+  "hooks": {
+    "stop": true,
+    "session_start": true,
+    "session_start_fetch": false,
+    "block_on_inherited_dirt": false,
+    "timeout_seconds": 15
+  },
+  "curate": {
+    "enabled": true,
+    "schedule": [
+      "09:30",
+      "14:00",
+      "20:00"
+    ],
+    "prompt": ".brain-kit/prompts/curate.md",
+    "signature": "Curador do segundo cérebro",
+    "max_turns": 100,
+    "budget_usd": 5,
+    "network_min_wait_ms": 100,
+    "caps": {
+      "transcripts": 20,
+      "search_docs_opened": 3,
+      "attached_notes_opened": 6,
+      "new_pending_items": 5
+    },
+    "promotion_map": {
+      "owner_action": "pendencias/follow-ups.md",
+      "owner_promise": "pendencias/promessas.md",
+      "third_party_strategic": "pendencias/follow-ups.md",
+      "third_party_operational": "log-only",
+      "strategic_decision": "decisoes/",
+      "decision_needs_talk": "pendencias/follow-ups.md",
+      "org_fact": "organizacoes/",
+      "person_fact": "pessoas/",
+      "ritual_change": "nucleo/ritmo-semanal.md"
+    },
+    "sources": {
+      "required": [
+        "transcripts"
+      ],
+      "best_effort": [
+        "calendar",
+        "meeting_notes"
+      ]
+    },
+    "extra_signatures": [],
+    "allowed_tools_extra": [],
+    "disallowed_tools_extra": [],
+    "claude_bin": "claude"
+  },
+  "sources": {
+    "transcripts": {
+      "adapter": "claude-code",
+      "include_projects": [
+        "-home-ana-brain"
+      ],
+      "exclude_path_patterns": [
+        "/-tmp-",
+        "--claude-worktrees-"
+      ],
+      "sample_strategy": "tail-first"
+    },
+    "calendar": {
+      "provider": "claude-connector-google-calendar",
+      "server_display_name": "claude.ai Google Calendar",
+      "tool_prefix": "mcp__claude_ai_Google_Calendar__",
+      "tool_suffixes": [
+        "list_events",
+        "list_calendars"
+      ],
+      "calendars": [
+        "ana@example.com"
+      ],
+      "team_calendars": [],
+      "team_calendars_consent_noted": false,
+      "skip_events_with_owner": true,
+      "dedup_by": "eventId",
+      "privacy": {
+        "exclude_event_types": [
+          "OUT_OF_OFFICE",
+          "FOCUS_TIME"
+        ],
+        "exclude_keywords": [
+          "consulta",
+          "médico",
+          "saúde"
+        ],
+        "team_personal_events": "drop"
+      },
+      "focus_blocks_as_ruler": true
+    },
+    "meeting_notes": {
+      "provider": "claude-connector-google-drive",
+      "server_display_name": "claude.ai Google Drive",
+      "tool_prefix": "mcp__claude_ai_Google_Drive__",
+      "tool_suffixes": [
+        "search_files",
+        "read_file_content"
+      ],
+      "search_title_contains": "Anotações do Gemini",
+      "attached_title_prefix": "Notas - ",
+      "window_hours_before_day": 12,
+      "dedup_by": "literal-title-in-log",
+      "never_download": [
+        "recording",
+        "full_transcript"
+      ]
+    }
+  },
+  "briefing": {
+    "enabled": true,
+    "schedule": "40 8 * * 1-5",
+    "prompt": ".brain-kit/prompts/briefing.md",
+    "signature": "Briefing matinal do segundo cérebro",
+    "max_words": 500,
+    "max_questions": 3,
+    "questions_dedup_days": 15,
+    "question_escalate_after": 3,
+    "question_max_age_days": 45,
+    "write_caps": {
+      "captures": 5,
+      "pending_changes": 3
+    },
+    "strategy_doc": {
+      "index": "decisoes/index.md",
+      "title_contains": "carta"
+    },
+    "main_metric": "MRR",
+    "calendar_id": "ana@example.com",
+    "read": [
+      "index.md",
+      "AGENTS.md",
+      "decisoes/index.md",
+      "pendencias/promessas.md",
+      "projetos/index.md",
+      "nucleo/ritmo-semanal.md"
+    ],
+    "never_read": [
+      "pessoas/",
+      "organizacoes/",
+      "anexos/",
+      ".brain-kit/",
+      "memoria/log.md#inteiro"
+    ]
+  }
+}
