@@ -108,13 +108,14 @@
     "validate": {
       "type": "object", "additionalProperties": false,
       "properties": {
-        "stale_after_format": { "type": "string", "enum": ["date", "datetime", "any"] },
         "link_style": { "type": "string", "enum": ["file-relative", "bundle-absolute", "any"] },
+        "link_targets": { "type": "string", "enum": ["report", "off"] },
         "wikilinks": { "type": "string", "enum": ["forbid", "allow"] },
         "require_root_okf_version": { "type": "boolean" },
         "placeholder_pattern": { "type": "string" },
         "ignore_paths": { "type": "array", "items": { "type": "string" } },
-        "timestamp_deviation": { "type": "string", "enum": ["forbid", "allow"] }
+        "timestamp_deviation": { "type": "string", "enum": ["forbid", "allow"] },
+        "fail_on": { "type": "string", "enum": ["must", "must+should", "any"] }
       }
     },
     "lint": {

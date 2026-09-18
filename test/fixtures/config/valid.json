@@ -160,7 +160,6 @@
     }
   },
   "validate": {
-    "stale_after_format": "datetime",
     "link_style": "file-relative",
     "wikilinks": "forbid",
     "require_root_okf_version": false,

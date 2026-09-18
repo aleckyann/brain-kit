@@ -168,7 +168,8 @@ test('a vault with an empty frontmatter.required and link_style: any reports not
 
 // Pinned literally, not only verified by hand (review finding 12 of the
 // previous round): a vault that configures NOTHING at all still gets
-// link-target-exists (the one rule that is always on) and nothing else,
+// link-target-exists (the one rule that is on by DEFAULT rather than
+// off) and nothing else,
 // even from a note that would fail every other rule in this file if any
 // of them were on.
 // Pinned literally against context.config being {} OR undefined
@@ -223,9 +224,13 @@ test('every finding carries ruler "house" explicitly, a non-empty check, and exa
   assert.ok(findings.length > 0, 'the fixture must produce at least one real finding for this assertion to mean anything');
   for (const finding of findings) {
     assert.equal(finding.ruler, 'house');
-    assert.deepEqual(Object.keys(finding).sort(), ['check', 'file', 'id', 'line', 'messageKey', 'params', 'ruler']);
+    assert.deepEqual(Object.keys(finding).sort(), ['absence', 'check', 'file', 'id', 'line', 'messageKey', 'params', 'ruler', 'unreadable']);
     assert.equal(typeof finding.check, 'string');
     assert.ok(finding.check.length > 0);
+    // Always present, never sometimes: a consumer must never have to
+    // tell `false` apart from "this ruler forgot to set it".
+    assert.equal(typeof finding.absence, 'boolean');
+    assert.equal(typeof finding.unreadable, 'boolean');
   }
 });
 
@@ -283,6 +288,80 @@ test('required-fields treats a present but unreadable field (a block scalar head
   assert.equal(findings[0].check, 'shape-readable');
   assert.match(renderedMessage(findings[0]), /PARSER_LIMITS/);
   assert.ok(!/missing/.test(renderedMessage(findings[0])), 'an unreadable shape must not be reported as missing');
+});
+
+// The two flags, at every house build site that sets one. They exist
+// for the same reason the spec ruler's do: a finding's own claim about
+// itself must be a FIELD set where the finding is built, never
+// something a later step infers from the sentence it happens to render.
+// No house finding can reach applyTimestampDeviation today, so nothing
+// here is load-bearing for that invariant; the flags are still a claim
+// this ruler makes in its output, and a claim no test reads is a claim
+// that drifts. Verified by mutation: dropping the flag from any one of
+// these three build sites used to fail nothing at all.
+test('the absence and unreadable flags on a house finding say what that finding actually claims, at every site that sets one', () => {
+  const files = {
+    ...cleanVaultFiles(),
+    'people/missing.md': '---\ntype: person\n---\nNo description at all.\n',
+    'people/empty.md': '---\ntype: person\ndescription:\n---\nDescription present but empty.\n',
+    'people/unreadable.md': '---\ntype: person\ndescription: |\n---\nBody.\n',
+    'people/forbidden.md': '---\ntype: person\ndescription: x\ntimestamp: 2026-09-18T09:30:00Z\n---\nBody.\n',
+    'people/bad-type.md': '---\ntype: robot\ndescription: x\n---\nBody.\n',
+  };
+  const config = {
+    okf_version: '0.2',
+    frontmatter: { required: ['description'], forbidden: ['timestamp'], type_enum: ['person'] },
+    validate: { require_root_okf_version: true },
+  };
+  const findings = findingsFor({ files, config });
+  const one = (id, check, file) => {
+    const matched = findings.filter((f) => isHouseCheck(id, check)(f) && (file === undefined || f.file === file));
+    assert.equal(matched.length, 1, `expected exactly one ${id}/${check} finding${file ? ` on ${file}` : ''}`);
+    return matched[0];
+  };
+
+  const absences = [
+    one('required-fields', 'field-present', 'people/missing.md'),
+    one('required-fields', 'field-non-empty', 'people/empty.md'),
+    one('root-okf-version', 'declared'),
+  ];
+  for (const finding of absences) {
+    assert.equal(finding.absence, true, `${finding.id}/${finding.check} reports something that is not there`);
+    assert.equal(finding.unreadable, false);
+  }
+
+  const unreadable = one('required-fields', 'shape-readable', 'people/unreadable.md');
+  assert.equal(unreadable.unreadable, true);
+  assert.equal(unreadable.absence, false, 'a field whose shape could not be read is not a field that is missing: that is the whole two-absences contract');
+
+  // The paired negatives, in the same run, so this cannot pass against a
+  // stub that flags everything: a forbidden field that IS present, and a
+  // type that is present and simply not allowed, claim neither.
+  for (const finding of [one('forbidden-fields', 'field-forbidden', 'people/forbidden.md'), one('type-enum', 'type-allowed', 'people/bad-type.md')]) {
+    assert.equal(finding.absence, false, `${finding.id}/${finding.check} is about something present`);
+    assert.equal(finding.unreadable, false);
+  }
+});
+
+// The other three sites in this ruler that raise a could-not-read
+// finding. They need their own vault because the root index can carry
+// an unreadable okf_version or none at all, never both at once.
+test('the unreadable flag is set at every remaining house site that raises a could-not-read finding, and never claims an absence alongside it', () => {
+  const files = {
+    'index.md': '---\nokf_version: |\n---\n# Welcome\n',
+    'people/unreadable.md': '---\ntype: >\ndescription: an example person\nconfidential: |\n---\nBody.\n',
+  };
+  const config = {
+    okf_version: '0.2',
+    frontmatter: { required: ['description'], forbidden: [], type_enum: ['person'], extensions: { confidential: { type: 'boolean' } } },
+    validate: { require_root_okf_version: true },
+  };
+  const findings = findingsFor({ files, config });
+  const pairs = [...new Set(findings.filter((f) => f.unreadable).map((f) => `${f.id}/${f.check}`))].sort();
+  assert.deepEqual(pairs, ['extension-fields/shape-readable', 'root-okf-version/shape-readable', 'type-enum/shape-readable']);
+  for (const finding of findings.filter((f) => f.unreadable)) {
+    assert.equal(finding.absence, false, 'a shape this reader cannot see is not a field that is missing');
+  }
 });
 
 // A required field need not be a plain scalar: `generated` is a mapping in
@@ -508,6 +587,30 @@ test('extension-fields flags a date field that is not a calendar-valid ISO date,
   assert.deepEqual(findings.filter((f) => isHouse('extension-fields')(f) && f.file === 'people/good-date.md'), []);
 });
 
+// The century and four-century leap rule, on the HOUSE side. The
+// specification ruler had this test and the house ruler did not, while
+// both files carried their own complete, independently written
+// calendar: breaking the spec ruler's leap rule failed a named test,
+// breaking this one failed nothing at all and accepted a day that never
+// existed. Both now come from src/dates.mjs, and this is the test that
+// notices if the house side ever grows its own copy again.
+test('extension-fields still gets the century and four-century leap-year cases right: 1900-02-29 never existed, 2000-02-29 did', () => {
+  const files = {
+    ...cleanVaultFiles(),
+    'people/century.md': '---\ntype: person\nlast_read: 1900-02-29\n---\nBody.\n',
+    'people/four-century.md': '---\ntype: person\nlast_read: 2000-02-29\n---\nBody.\n',
+    'people/ordinary-leap.md': '---\ntype: person\nlast_read: 2024-02-29\n---\nBody.\n',
+    'people/ordinary-common.md': '---\ntype: person\nlast_read: 2023-02-29\n---\nBody.\n',
+  };
+  const config = { frontmatter: { required: [], forbidden: [], extensions: { last_read: { type: 'date' } } } };
+  const findings = findingsFor({ files, config }).filter(isHouse('extension-fields'));
+  assert.deepEqual(
+    findings.map((f) => f.file).sort(),
+    ['people/century.md', 'people/ordinary-common.md'],
+    '1900 is not a leap year and 2023 is not; 2000 and 2024 are',
+  );
+});
+
 test('extension-fields flags an enum field outside its declared values, but allows one inside them', () => {
   const files = {
     ...cleanVaultFiles(),
@@ -591,6 +694,32 @@ test('the placeholder exemption excuses an unparseable dated value under taxonom
   assert.equal(leaked.length, 1, 'a note elsewhere with an angle bracket in a dated field is a finding');
 });
 
+// A path BOUNDARY, not a raw string prefix, and this side of it had no
+// test. src/vault.mjs's own copy of this logic has one ("'logs' ignores
+// logs/ but keeps logs-2024/"); the copy that used to live in
+// src/rules/house.mjs did not, so degrading it to a raw startsWith
+// failed nothing and handed the placeholder exemption to any directory
+// merely NAMED like the templates directory. Both now call
+// vault.isUnderPath.
+test('the placeholder exemption matches a path boundary, not a string prefix: a directory merely named like templates_dir gets no exemption', () => {
+  const files = {
+    ...cleanVaultFiles(),
+    'templates/template-person.md': '---\ntype: person\nlast_read: <fill-in>\n---\nPlaceholder template.\n',
+    'templates-old/template-person.md': '---\ntype: person\nlast_read: <fill-in>\n---\nAn archived template, outside templates_dir.\n',
+  };
+  const config = {
+    taxonomy: { templates_dir: 'templates' },
+    frontmatter: { required: [], forbidden: [], extensions: { last_read: { type: 'date' } } },
+    validate: { placeholder_pattern: '<[^>]+>' },
+  };
+  const findings = findingsFor({ files, config }).filter(isHouse('extension-fields'));
+  assert.deepEqual(
+    findings.map((f) => f.file),
+    ['templates-old/template-person.md'],
+    'templates/ is exempt and templates-old/ is not: one is under the configured directory, the other only starts with its name',
+  );
+});
+
 test('the placeholder exemption never fires without validate.placeholder_pattern configured, even under templates_dir', () => {
   const files = { ...cleanVaultFiles(), 'templates/template-person.md': '---\ntype: person\nlast_read: <fill-in>\n---\nPlaceholder template.\n' };
   // The base config fixture sets its own placeholder_pattern; an explicit
@@ -663,7 +792,7 @@ test('link-style names the resolved path alongside a raw target that does not it
   assert.match(renderedMessage(findings[0]), /\/people\/ghost\.md/, 'the resolved path, which is what was actually judged, must also be named');
 });
 
-// --- link-target-exists (always on) ----------------------------------------------
+// --- link-target-exists (validate.link_targets, default "report") ----------------
 
 test('link-target-exists flags a link to a file that does not exist, but allows one to a real markdown file or a real attachment, resolved relative to the linking file', () => {
   const files = {
@@ -702,6 +831,120 @@ test('link-target-exists is on even when the vault configures nothing at all', (
   const files = { 'index.md': '# Welcome\n', 'people/ana.md': '---\ntype: person\n---\n[ghost](nowhere.md)\n' };
   const findings = findingsFor({ files }).filter(isHouse('link-target-exists'));
   assert.equal(findings.length, 1);
+});
+
+// --- the four shapes this rule used to report as broken while they existed -------
+//
+// Every one of these was reproduced against the real binary before it
+// was fixed, and the first of them is the exact line section 8 of the
+// Open Knowledge Format prints as its own worked example of an index
+// entry: "* [Subdirectory](subdir/) - short description of the
+// subdirectory". walkVault returns files, so no directory could ever be
+// in the set this rule looked in, which made a link to a subdirectory
+// unconditionally broken in a tool whose report then said the vault had
+// departed from a rule it had declared.
+
+test('link-target-exists resolves a link to a subdirectory, the shape the format prints as its own index-entry example, and still flags a link to a directory that does not exist', () => {
+  const files = {
+    'index.md': '# Welcome\n\n* [Subdirectory](people/) - the people in this vault\n* [Ghost](nowhere/) - nothing is here\n',
+    'people/ana.md': '---\ntype: person\n---\nBody.\n',
+  };
+  const findings = findingsFor({ files }).filter((f) => isHouse('link-target-exists')(f) && f.file === 'index.md');
+  assert.equal(findings.length, 1, 'only the directory that does not exist should be flagged');
+  assert.match(renderedMessage(findings[0]), /nowhere\//);
+});
+
+test('link-target-exists resolves a directory link written without its trailing slash too', () => {
+  const files = {
+    'index.md': '# Welcome\n\n* [Subdirectory](people) - the people in this vault\n',
+    'people/ana.md': '---\ntype: person\n---\nBody.\n',
+  };
+  assert.deepEqual(findingsFor({ files }).filter(isHouse('link-target-exists')), []);
+});
+
+// The "../" case was worse than a false positive: the evidence the
+// message printed, "resolved to \"./\"", was neither the link the author
+// wrote nor anything on disk, so the one field added to make a broken
+// link understandable was garbage for the shape a human is most likely
+// to write by hand.
+test('link-target-exists resolves "./" and "../" through normalisation, and the resolved evidence it prints is a real vault path rather than a normalisation artifact', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/ana.md': '---\ntype: person\n---\nSee [here](./), [up](../), [root index](../index.md) and [ghost](../nowhere/deeper/).\n',
+  };
+  const findings = findingsFor({ files }).filter((f) => isHouse('link-target-exists')(f) && f.file === 'people/ana.md');
+  assert.equal(findings.length, 1, 'only the directory that does not exist should be flagged');
+  assert.equal(findings[0].params.resolved, 'nowhere/deeper', 'the resolved path is canonical: no trailing slash, no leading "./"');
+  for (const finding of findings) {
+    assert.ok(!/^\.\/?$/.test(finding.params.resolved), 'the resolved evidence must never be the normalisation artifact "./"');
+  }
+});
+
+// The fifth shape, and the one that belonged to no task: the same single
+// walk fed the ignore filter and the existence set, so
+// validate.ignore_paths silently doubled as a break-every-link-into-here
+// switch. The file is on disk and the owner is looking at it; saying it
+// is not in the vault is the tool telling a person something false.
+test('a link into a directory the configuration told the walk to skip is reported as present but unwalked, in those words, and never as absent', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/ana.md': '---\ntype: person\n---\nSee [the draft](../drafts/idea.md) and [a ghost](../drafts/nothing.md).\n',
+    'drafts/idea.md': '---\ntype: note\n---\nBody.\n',
+  };
+  const config = { validate: { ignore_paths: ['drafts'] } };
+  const findings = findingsFor({ files, config }).filter((f) => isHouse('link-target-exists')(f) && f.file === 'people/ana.md');
+  assert.equal(findings.length, 2);
+
+  const unwalked = findings.filter((f) => f.check === 'target-walked');
+  assert.equal(unwalked.length, 1, 'the file that is really there gets the unwalked finding');
+  assert.equal(unwalked[0].params.resolved, 'drafts/idea.md');
+  assert.equal(unwalked[0].absence, false, 'a file that exists is not an absence, whatever the walk skipped');
+  assert.match(renderedMessage(unwalked[0]), /exists on disk/);
+  assert.match(renderedMessage(unwalked[0]), /ignore_paths/);
+
+  const broken = findings.filter((f) => f.check === 'target-exists');
+  assert.equal(broken.length, 1, 'a file that is genuinely not there is still broken, ignored directory or not');
+  assert.equal(broken[0].params.resolved, 'drafts/nothing.md');
+  assert.equal(broken[0].absence, true);
+});
+
+// A link that climbs out of the vault is not a vault path at all, and is
+// never stat'd: it is reported broken with the canonical path it names,
+// which is an honest answer to "where does this point".
+test('link-target-exists reports a link that climbs out of the vault as broken, naming the path it actually resolved to, and never stats anything above the root', () => {
+  const files = {
+    'index.md': '# Welcome\n\nSee [up](../), the directory this vault sits in.\n',
+    'people/ana.md': '---\ntype: person\n---\n[outside](../../elsewhere.md)\n',
+  };
+  const findings = findingsFor({ files }).filter(isHouse('link-target-exists'));
+  assert.equal(findings.length, 2);
+
+  const fromNote = findings.filter((f) => f.file === 'people/ana.md');
+  assert.equal(fromNote.length, 1);
+  assert.equal(fromNote[0].params.resolved, '../elsewhere.md');
+
+  // The vault's parent directory really does exist on disk, and a
+  // resolver that stat'd it would call this link satisfied: a link
+  // pointing OUT of the vault would then be silently accepted by the
+  // one rule whose whole job is deciding what is in the vault.
+  const fromIndex = findings.filter((f) => f.file === 'index.md');
+  assert.equal(fromIndex.length, 1, 'a link to the vault\x27s own parent directory is outside the vault, not a satisfied directory link');
+  assert.equal(fromIndex[0].params.resolved, '..');
+});
+
+// The policy half. Section 6.1 of the format says "Consumers MUST
+// tolerate broken links: a link whose target does not exist in the
+// bundle is not malformed; it may simply represent not-yet-written
+// knowledge", and section 11 lists broken cross-links among the things a
+// consumer must not reject a bundle over. This rule stays on by default
+// because brain-kit validate is producer-side (see the rule's own
+// comment), but an adopter who reads section 11 now has the setting the
+// module header always claimed every rule had.
+test('validate.link_targets: "off" silences the rule entirely, and the identical vault still reports the broken link under the default', () => {
+  const files = { 'index.md': '# Welcome\n', 'people/ana.md': '---\ntype: person\n---\n[ghost](nowhere.md)\n' };
+  assert.deepEqual(findingsFor({ files, config: { validate: { link_targets: 'off' } } }).filter(isHouse('link-target-exists')), []);
+  assert.equal(findingsFor({ files, config: { validate: { link_targets: 'report' } } }).filter(isHouse('link-target-exists')).length, 1);
+  assert.equal(findingsFor({ files }).filter(isHouse('link-target-exists')).length, 1, 'the default is "report": an unconfigured vault still gets its links checked');
 });
 
 // --- link honesty: query strings, percent-encoding, parens, brackets, nesting -----
@@ -971,7 +1214,7 @@ test('the timestamp-deviation rule never produces a house finding of its own, wh
 });
 
 test('applyTimestampDeviation downgrades a should-level timestamp finding to a warning when the vault declares "allow", but leaves it untouched by default ("forbid")', () => {
-  const shouldFinding = { ruler: 'spec', id: 'stale-after-format', check: 'timestamp-form', section: '5.5', level: 'should', file: 'people/ana.md', line: 6, messageKey: 'spec.stale_after_format.invalid', params: { value: '2026-12-18' } };
+  const shouldFinding = { ruler: 'spec', id: 'stale-after-format', check: 'timestamp-form', section: '5.5', level: 'should', deviationEligible: true, absence: false, file: 'people/ana.md', line: 6, messageKey: 'spec.stale_after_format.invalid', params: { value: '2026-12-18' } };
 
   const allowed = applyTimestampDeviation([shouldFinding], { validate: { timestamp_deviation: 'allow' } });
   assert.equal(allowed.length, 1);
@@ -985,15 +1228,43 @@ test('applyTimestampDeviation downgrades a should-level timestamp finding to a w
   assert.deepEqual(defaulted, [shouldFinding], 'an unconfigured vault gets the format\x27s own answer: forbid');
 });
 
-test('applyTimestampDeviation never touches a must-level finding or a should-level finding under a different check, even while it downgrades the one eligible finding in the same batch', () => {
-  const mustFinding = { ruler: 'spec', id: 'type-required', check: 'type-present', section: '4.1', level: 'must', file: 'people/ana.md', line: null, messageKey: 'spec.type_required.no_type_key', params: {} };
-  const otherShould = { ruler: 'spec', id: 'sources-resource', check: 'entry-resource', section: '5.1', level: 'should', file: 'people/ana.md', line: 8, messageKey: 'spec.sources_resource.missing_resource', params: { index: 0 } };
-  const eligible = { ruler: 'spec', id: 'generated-actor', check: 'timestamp-form', section: '5.2', level: 'should', file: 'people/ana.md', line: 4, messageKey: 'common.timestamp_form', params: { field: 'generated.at', value: 'not-a-datetime' } };
+// The `must` guard, and this test is the second attempt at it. The
+// first built its `must` finding as
+// { id: 'type-required', check: 'type-present' }, a pair that is not
+// eligible for the deviation under any circumstances, so eligibility
+// alone already refused it and the level guard never ran at all:
+// deleting `if (finding.level !== 'should') return finding;` from
+// applyTimestampDeviation failed nothing. The ledger recorded the
+// clause as closed on the strength of that test for two rounds.
+//
+// The finding below is eligible in every other respect - the spec
+// ruler, an eligible id and check, and the eligibility flag itself -
+// so the ONLY thing between it and a `warning: true` is its level.
+test('applyTimestampDeviation never touches a must-level finding, even one that is eligible in every other respect, and never touches a should-level finding that is not eligible, while still downgrading the eligible one in the same batch', () => {
+  const mustFinding = { ruler: 'spec', id: 'generated-actor', check: 'timestamp-form', section: '5.2', level: 'must', deviationEligible: true, absence: false, file: 'people/ana.md', line: 4, messageKey: 'common.timestamp_form', params: { field: 'generated.at', value: 'not-a-datetime' } };
+  const otherShould = { ruler: 'spec', id: 'sources-resource', check: 'entry-resource', section: '5.1', level: 'should', deviationEligible: false, absence: true, file: 'people/ana.md', line: 8, messageKey: 'spec.sources_resource.missing_resource', params: { index: 0 } };
+  const eligible = { ruler: 'spec', id: 'generated-actor', check: 'timestamp-form', section: '5.2', level: 'should', deviationEligible: true, absence: false, file: 'people/ana.md', line: 4, messageKey: 'common.timestamp_form', params: { field: 'generated.at', value: 'not-a-datetime' } };
 
   const result = applyTimestampDeviation([mustFinding, otherShould, eligible], { validate: { timestamp_deviation: 'allow' } });
-  assert.deepEqual(result[0], mustFinding);
+  assert.deepEqual(result[0], mustFinding, 'a must-level finding is never downgraded, whatever else about it is eligible');
   assert.deepEqual(result[1], otherShould);
   assert.equal(result[2].warning, true, 'the one eligible finding in the batch must still be downgraded, or this "leaves the others alone" test would pass against a stub that changes nothing at all');
+});
+
+// The absence guard, asserted the same way and for the same reason: no
+// finding the real rulers produce today carries both the eligibility
+// flag and `absence`, so only a hand-built one can reach this clause.
+// It is defence in depth on purpose. The invariant it protects ("a
+// downgrade may never reach a finding about something being ABSENT")
+// is one check name away from being violated by a future round drawing
+// a check too coarsely, which this repository has already done once.
+test('applyTimestampDeviation never downgrades a finding that reports an ABSENCE, even one flagged eligible in every other respect', () => {
+  const absentButEligible = { ruler: 'spec', id: 'verified-events', check: 'event-timestamp-form', section: '5.2', level: 'should', deviationEligible: true, absence: true, file: 'people/ana.md', line: 6, messageKey: 'spec.verified_events.missing_timestamp', params: { index: 0 } };
+  const presentAndMalformed = { ...absentButEligible, absence: false, messageKey: 'common.timestamp_form', params: { field: 'verified[0].at', value: '2026-09-18' } };
+
+  const result = applyTimestampDeviation([absentButEligible, presentAndMalformed], { validate: { timestamp_deviation: 'allow' } });
+  assert.deepEqual(result[0], absentButEligible, 'an absence finding is never downgraded');
+  assert.equal(result[1].warning, true, 'the same finding without the absence flag must still be downgraded, or this test would pass against a stub that downgrades nothing at all');
 });
 
 // Fix round 1, finding 5 of the previous review, the reason `check`
@@ -1001,12 +1272,12 @@ test('applyTimestampDeviation never touches a must-level finding or a should-lev
 // actor-shaped check under the SAME id as their timestamp-shaped check.
 // Selecting by id alone would downgrade a missing-actor finding just
 // because it shares an id with a real timestamp finding; selecting by
-// the (id, check) pair must not.
+// the eligibility the spec ruler itself set must not.
 test('applyTimestampDeviation never downgrades an actor-presence or shape-readable finding sharing an id with an eligible timestamp-form check, but still downgrades the real timestamp-form finding for that same id in the same batch', () => {
-  const actorMissing = { ruler: 'spec', id: 'generated-actor', check: 'actor-present', section: '5.2', level: 'should', file: 'people/ana.md', line: 4, messageKey: 'spec.generated_actor.missing_actor', params: {} };
-  const shapeUnreadable = { ruler: 'spec', id: 'generated-actor', check: 'shape-readable', section: '5.2', level: 'should', file: 'people/ana.md', line: 4, messageKey: 'common.shape_unreadable', params: { field: 'generated' } };
-  const eventActor = { ruler: 'spec', id: 'verified-events', check: 'event-actor', section: '5.2', level: 'should', file: 'people/ana.md', line: 6, messageKey: 'spec.verified_events.missing_actor', params: { index: 0 } };
-  const timestampForm = { ruler: 'spec', id: 'generated-actor', check: 'timestamp-form', section: '5.2', level: 'should', file: 'people/ana.md', line: 4, messageKey: 'common.timestamp_form', params: { field: 'generated.at', value: 'not-a-datetime' } };
+  const actorMissing = { ruler: 'spec', id: 'generated-actor', check: 'actor-present', section: '5.2', level: 'should', deviationEligible: false, absence: true, file: 'people/ana.md', line: 4, messageKey: 'spec.generated_actor.missing_actor', params: {} };
+  const shapeUnreadable = { ruler: 'spec', id: 'generated-actor', check: 'shape-readable', section: '5.2', level: 'should', deviationEligible: false, unreadable: true, file: 'people/ana.md', line: 4, messageKey: 'common.shape_unreadable', params: { field: 'generated' } };
+  const eventActor = { ruler: 'spec', id: 'verified-events', check: 'event-actor', section: '5.2', level: 'should', deviationEligible: false, absence: true, file: 'people/ana.md', line: 6, messageKey: 'spec.verified_events.missing_actor', params: { index: 0 } };
+  const timestampForm = { ruler: 'spec', id: 'generated-actor', check: 'timestamp-form', section: '5.2', level: 'should', deviationEligible: true, absence: false, file: 'people/ana.md', line: 4, messageKey: 'common.timestamp_form', params: { field: 'generated.at', value: 'not-a-datetime' } };
 
   const result = applyTimestampDeviation([actorMissing, shapeUnreadable, eventActor, timestampForm], { validate: { timestamp_deviation: 'allow' } });
   assert.deepEqual(result[0], actorMissing);
@@ -1015,23 +1286,75 @@ test('applyTimestampDeviation never downgrades an actor-presence or shape-readab
   assert.equal(result[3].warning, true, 'the real timestamp-form finding sharing the same id must still be downgraded, or this test would pass against a stub that changes nothing at all');
 });
 
-// Fix round 2, the invariant itself, asserted directly rather than
-// through a check's name. Naming is a mechanism: this exact repository
-// drew one check name around both a presence assertion and a form
-// assertion in the very round that introduced the field meant to
-// prevent that, and put the original defect back one level down under
-// a declared deviation. The rule that must never break, whatever any
-// future check happens to be called, is stated here without reading a
-// single check field: a finding is filtered by what its own MESSAGE
-// says (something is missing/empty, an absence, versus something
-// present but malformed), through the REAL specification ruler end to
-// end, so a future round that reintroduces the bug by choosing a
-// convenient check name cannot make this test agree with it.
-test('the invariant: a downgrade never reaches a finding whose own message reports something ABSENT, verified through the real specification ruler and never by reading a check name', () => {
+// The eligibility table used to live here, in the house ruler: a frozen
+// array of four (id, check) pairs, every one of them owned by
+// src/rules/spec.mjs. Adding a timestamp-valued key to the spec ruler
+// meant remembering to come and edit this file, with nothing to remind
+// anyone. The fact now travels on the finding, set where the finding is
+// built, and this test asserts the two ends agree END TO END through
+// the real specification ruler: every finding the deviation downgrades
+// carries the flag, and every timestamp-FORM finding the spec ruler can
+// produce carries it.
+test('eligibility for the timestamp deviation is a flag the specification ruler sets on its own finding, not a list the house ruler keeps: every downgraded finding carries it, and no other finding does', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/ana.md': [
+      '---',
+      'type: person',
+      'generated: { by: human:ana, at: 2026-09-18 }',
+      'stale_after: 2027-01-01',
+      'verified: { by: human:ana, at: 2026-09-18 }',
+      'sources:',
+      '  - resource: https://example.com/a',
+      '    last_modified: 2026-09-18',
+      '---',
+      'Body.',
+      '',
+    ].join('\n'),
+  };
+  const root = makeVault({ files });
+  const config = loadConfig(root);
+  const { files: mdFiles, context } = rulerArgsFor(root, config);
+  const specFindings = runSpecRules(mdFiles, context);
+
+  const flagged = specFindings.filter((f) => f.deviationEligible);
+  assert.deepEqual(
+    flagged.map((f) => `${f.id}/${f.check}`).sort(),
+    ['generated-actor/timestamp-form', 'sources-resource/entry-timestamp-form', 'stale-after-format/timestamp-form', 'verified-events/event-timestamp-form'],
+    'all four of section 5\x27s timestamp-valued keys, and nothing else',
+  );
+
+  const downgraded = applyTimestampDeviation(specFindings, { validate: { timestamp_deviation: 'allow' } });
+  const warned = downgraded.filter((f) => f.warning === true);
+  assert.equal(warned.length, flagged.length, 'the deviation downgrades exactly the findings the spec ruler flagged');
+  for (const finding of warned) assert.equal(finding.deviationEligible, true);
+  for (const finding of downgraded) {
+    if (!finding.deviationEligible) assert.notEqual(finding.warning, true);
+  }
+});
+
+// Fix round 2, the invariant itself, and this is the THIRD mechanism
+// for it. The first read a check's name. The second read the finding's
+// own rendered MESSAGE against the phrase "missing or empty", which was
+// rejected when it was written down as a ruling - a tool must not infer
+// its own semantics from its own prose - and kept anyway; a single
+// differently-phrased absence (verified is present but carries no
+// events; this file has frontmatter, but no type key in it) walked
+// straight through it, and task 8 then moved every message into
+// lang/*/messages.json, so the guard had come to depend on the wording
+// of a translation file that a language pack can change without ever
+// touching this repository's logic.
+//
+// It is a FIELD now, set at each findings.push that reports something
+// absent, and this test reads that field and nothing else. No check
+// name, no message text.
+test('the invariant: a downgrade never reaches a finding that reports something ABSENT, asserted against the finding\x27s own absence field and never against its prose, end to end through the real specification ruler', () => {
   const files = {
     'index.md': '# Welcome\n',
     'people/blank-at.md': '---\ntype: person\nverified: { by: human:ana, at: }\n---\nBody.\n',
     'people/malformed-at.md': '---\ntype: person\nverified: { by: human:ana, at: 2026-09-18 }\n---\nBody.\n',
+    'people/no-type.md': '---\nstatus: stable\n---\nBody.\n',
+    'people/empty-verified.md': '---\ntype: person\nverified:\n---\nBody.\n',
   };
   const root = makeVault({ files });
   const config = loadConfig(root);
@@ -1040,12 +1363,16 @@ test('the invariant: a downgrade never reaches a finding whose own message repor
 
   const downgraded = applyTimestampDeviation(specFindings, { validate: { timestamp_deviation: 'allow' } });
 
-  const absent = downgraded.filter((f) => /missing or empty/.test(renderedMessage(f)));
-  const malformed = downgraded.filter((f) => f.id === 'verified-events' && /not an ISO 8601 datetime/.test(renderedMessage(f)));
+  const absent = downgraded.filter((f) => f.absence === true);
+  const malformed = downgraded.filter((f) => f.id === 'verified-events' && f.check === 'event-timestamp-form');
 
-  assert.ok(absent.length > 0, 'the fixture must produce at least one absence finding for this assertion to mean anything');
+  assert.ok(absent.length >= 3, 'the fixture must produce several differently-phrased absence findings for this assertion to mean anything');
+  // Differently phrased on purpose: the previous guard matched one
+  // phrase, and these three do not share one.
+  const phrases = new Set(absent.map((f) => f.messageKey));
+  assert.ok(phrases.size >= 3, `the absences must be phrased differently for this to be a real test of the field: ${[...phrases].join(', ')}`);
   for (const finding of absent) {
-    assert.notEqual(finding.warning, true, `a finding whose message reports something absent must never be downgraded: ${renderedMessage(finding)}`);
+    assert.notEqual(finding.warning, true, `a finding that reports something absent must never be downgraded: ${finding.id}/${finding.check}`);
   }
   assert.ok(malformed.length > 0, 'the fixture must produce at least one malformed-but-present finding for this assertion to mean anything');
   for (const finding of malformed) {

@@ -42,14 +42,26 @@ function isAlwaysIgnoredName(name) {
   return name.startsWith('.') || ALWAYS_IGNORED.includes(name);
 }
 
-// True when `prefix` (an entry of validate.ignore_paths) matches
-// `relPosixPath` (already root-relative, forward-slash). A prefix is a path
-// boundary, not a raw string prefix: "logs" matches "logs/x.md" and "logs"
-// itself, but not "logs-2024/x.md". A trailing slash on the configured
-// prefix is accepted and stripped, so a vault owner does not have to guess
-// which form is expected.
-function matchesIgnorePrefix(relPosixPath, prefix) {
-  const normalized = prefix.endsWith('/') ? prefix.slice(0, -1) : prefix;
+// True when `relPosixPath` (already root-relative, forward-slash) IS `dir`
+// or lies under it. A path BOUNDARY, not a raw string prefix: "logs"
+// matches "logs/x.md" and "logs" itself, but not "logs-2024/x.md". A
+// trailing slash on `dir` is accepted and stripped, so a caller does not
+// have to guess which form is expected, and an empty `dir` matches nothing
+// rather than everything.
+//
+// Exported, and this is the point of exporting it: src/rules/house.mjs had
+// its own copy under the name isUnderDir, deciding whether a note lies
+// under taxonomy.templates_dir and therefore earns the placeholder
+// exemption. The copy there even carried a comment naming this function as
+// the thing it was mirroring, which is the tell: someone knew they were
+// writing a second copy and wrote it anyway. Only this one was under test,
+// so degrading the other to a raw startsWith failed nothing, and handed the
+// placeholder exemption to any directory merely NAMED like the templates
+// directory ("templates-old/"). One definition of what "under a directory"
+// means, in the module that already defines what a vault path is.
+export function isUnderPath(relPosixPath, dir) {
+  if (!dir) return false;
+  const normalized = dir.endsWith('/') ? dir.slice(0, -1) : dir;
   if (normalized === '') return false;
   return relPosixPath === normalized || relPosixPath.startsWith(`${normalized}/`);
 }
@@ -173,7 +185,7 @@ export function walkVault(root, config = {}, { all = false } = {}) {
       if (isAlwaysIgnoredName(entry.name)) continue;
       const fullPath = join(dir, entry.name);
       const relPosixPath = relativePosix(root, fullPath);
-      if (ignorePaths.some((prefix) => matchesIgnorePrefix(relPosixPath, prefix))) continue;
+      if (ignorePaths.some((prefix) => isUnderPath(relPosixPath, prefix))) continue;
 
       if (entry.isSymbolicLink()) {
         const real = resolveSymlinkTarget(fullPath);
@@ -193,4 +205,51 @@ export function walkVault(root, config = {}, { all = false } = {}) {
 
   visit(root);
   return results.sort();
+}
+
+// What a vault-relative path IS, for a consumer holding the single walk
+// and needing to answer a question the walk alone cannot answer.
+//
+// The walk is the one truth about what belongs to the vault, and this
+// function does not touch that: membership is still `all`, the result of
+// the one walkVault call, and nothing here adds a path to it or takes one
+// away. What it adds is the ability to tell three DIFFERENT absences
+// apart, which the walk flattens into one:
+//
+// - 'in-walk'   the path is a file the walk returned.
+// - 'directory' the path is a directory. The walk returns files only, so a
+//               directory is never in `all`, and a consumer asking "does
+//               this exist" about one used to be told no. Section 8 of the
+//               Open Knowledge Format prints a link to a subdirectory as
+//               its own worked example of an index entry, so this is not
+//               an edge case; it is the shape the format's own
+//               progressive-disclosure design is built on.
+// - 'unwalked'  the path is a real file on disk that this walk did not
+//               return: it is under validate.ignore_paths, or under a
+//               dot-entry or node_modules, or it is a symlink pointing
+//               outside the vault. It EXISTS, and a consumer must say so
+//               in those words rather than claim it is missing.
+// - 'absent'    nothing is there.
+// - 'outside'   the path climbs out of the vault, so it is not a vault
+//               path at all and is never stat'd.
+//
+// Why a stat and not a second walk: a walk enumerates, and two
+// enumerations of one tree are two answers to "what does this vault
+// contain", which is defect 4 (see this module's header) and the thing the
+// single-walk contract exists to forbid. One stat of one named path
+// answers "is this particular thing there", a question the walk was never
+// asked, and its answer only ever refines a MESSAGE. It can never move a
+// file into or out of the set the rulers judge.
+export function classifyTargetPath(root, relPosixPath, all) {
+  if (relPosixPath === '..' || relPosixPath.startsWith('../')) return 'outside';
+  if (all.has(relPosixPath)) return 'in-walk';
+  const fullPath = join(root, ...relPosixPath.split('/'));
+  let stats;
+  try {
+    stats = statSync(fullPath);
+  } catch {
+    return 'absent'; // no such path, a dangling symlink, or unreadable: nothing to point at
+  }
+  if (stats.isDirectory()) return 'directory';
+  return 'unwalked';
 }

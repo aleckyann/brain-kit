@@ -255,9 +255,77 @@ test('every finding carries ruler "spec" explicitly, a check naming its own asse
   assert.ok(findings.length > 0, 'the fixture must produce at least one real finding for this assertion to mean anything');
   for (const finding of findings) {
     assert.equal(finding.ruler, 'spec');
-    assert.deepEqual(Object.keys(finding).sort(), ['check', 'file', 'id', 'level', 'line', 'messageKey', 'params', 'ruler', 'section']);
+    assert.deepEqual(
+      Object.keys(finding).sort(),
+      ['absence', 'check', 'deviationEligible', 'file', 'id', 'level', 'line', 'messageKey', 'params', 'ruler', 'section', 'unreadable'],
+    );
+    // The three booleans are always present, never sometimes: a
+    // consumer (and the house ruler's deviation step) must never have to
+    // tell `false` apart from "this ruler forgot to set it".
+    for (const flag of ['absence', 'deviationEligible', 'unreadable']) assert.equal(typeof finding[flag], 'boolean', flag);
     assert.equal(typeof finding.check, 'string');
     assert.ok(finding.check.length > 0);
+  }
+});
+
+// The two self-describing flags, at EVERY site in this ruler that sets
+// one, pinned as exact sets so that dropping the flag from any single
+// findings.push changes the set and fails here. They are set where the
+// finding is built, and that is the point: the invariant they serve ("a
+// downgrade may never reach a finding about something being ABSENT",
+// see src/rules/house.mjs) was guarded first by a check's name and then
+// by matching the finding's own rendered message against a phrase, and
+// task 8 then moved every message into a translation file. A tool must
+// not infer its own semantics from its own prose.
+test('every finding this ruler raises about something ABSENT carries absence, every finding it raises about a shape it could not read carries unreadable and the should tier, and no finding carries both', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'notes/no-frontmatter.md': 'Just a body, no frontmatter at all.\n',
+    'notes/no-type-key.md': '---\nstatus: stable\n---\nBody.\n',
+    'notes/empty-type.md': '---\ntype:\n---\nBody.\n',
+    'notes/no-actor.md': '---\ntype: note\ngenerated: { by: , at: 2026-09-18T09:30:00Z }\n---\nBody.\n',
+    'notes/no-events.md': '---\ntype: note\nverified:\n---\nBody.\n',
+    'notes/blank-event.md': '---\ntype: note\nverified: { by: , at: }\n---\nBody.\n',
+    'notes/no-resource.md': '---\ntype: note\nsources:\n  - resource:\n---\nBody.\n',
+    // One note, six block-scalar headers: every reader in
+    // src/frontmatter.mjs declines this shape, so this single file
+    // reaches every shape-readable push in this file.
+    'notes/unreadable.md': '---\ntype: >\ngenerated: |\nverified: |\nstatus: >\nstale_after: |\nsources: >\n---\nBody.\n',
+  };
+  const findings = findingsFor(files);
+  const pairs = (predicate) => [...new Set(findings.filter(predicate).map((f) => `${f.id}/${f.check}`))].sort();
+
+  assert.deepEqual(pairs((f) => f.absence), [
+    'generated-actor/actor-present',
+    'sources-resource/entry-resource',
+    'type-required/type-non-empty',
+    'type-required/type-present',
+    'verified-events/event-actor',
+    'verified-events/event-timestamp-present',
+    'verified-events/has-events',
+  ]);
+
+  assert.deepEqual(pairs((f) => f.unreadable), [
+    'generated-actor/shape-readable',
+    'sources-resource/shape-readable',
+    'stale-after-format/shape-readable',
+    'status-enum/shape-readable',
+    'type-required/shape-readable',
+    'verified-events/shape-readable',
+  ]);
+
+  // The paired negative, from the same run: a finding about something
+  // present and merely malformed claims neither flag.
+  const malformed = findings.filter((f) => f.id === 'generated-actor' && f.check === 'timestamp-form');
+  for (const finding of malformed) {
+    assert.equal(finding.absence, false);
+    assert.equal(finding.unreadable, false);
+  }
+
+  for (const finding of findings) {
+    assert.ok(!(finding.absence && finding.unreadable), `${finding.id}/${finding.check} claims both absence and unreadable`);
+    if (finding.unreadable) assert.equal(finding.level, 'should', 'a could-not-read finding never claims the must tier');
+    if (finding.absence) assert.equal(finding.deviationEligible, false, 'an absence is never eligible for the timestamp deviation');
   }
 });
 

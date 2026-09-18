@@ -39,6 +39,63 @@ import { applyTimestampDeviation, runHouseRules } from '../rules/house.mjs';
 const ROOT_INDEX = 'index.md';
 const RULERS = Object.freeze(['spec', 'house']);
 
+// The identity of the --json envelope: which command produced it and
+// which revision of its shape this is. One key, and it is here on the
+// day the envelope is first published rather than the day it first
+// changes, because adding a version field to a shape consumers already
+// parse IS the breaking change a version field exists to prevent.
+// Phase 1B's `lint` and 1D's `doctor` will emit envelopes of their own,
+// and without this a consumer holding one of the three has no way to
+// tell which it has. Bump the number when a key is removed or changes
+// meaning; adding a key is not a bump.
+const JSON_VERSION = 'brain-kit.validate/1';
+
+// What makes the run fail, as a house setting rather than a fixed law.
+//
+// Section 11 of the Open Knowledge Format lists what a consumer "MUST
+// NOT reject a bundle because of", and that list bites HERE, at the exit
+// code, not in the prose above it: in a command wired into CI, the exit
+// code IS the reject decision. Every tier blocked it before this
+// setting, so a bundle that is fully conformant to the format failed the
+// run over a log heading written in prose, which is a rejection section
+// 11 tells a consumer not to make. The verdict line was honest about
+// what it was doing and the exit code was still the wrong answer.
+//
+// - 'must'        only a specification `must` finding (a real
+//                 non-conformance) fails the run. This is the setting an
+//                 adopter who reads section 11 and wants the format's
+//                 own answer should choose.
+// - 'must+should' conformance and the format's own guidance, but not
+//                 this one vault's house preferences.
+// - 'any'         anything at all fails the run. The DEFAULT, so nothing
+//                 changes for anyone who says nothing.
+//
+// The default is 'any' and not 'must', deliberately. This command is
+// producer-side: its reader is the person who wrote the vault, and for
+// them a house rule they themselves declared is exactly as worth
+// stopping for as a conformance failure, which is the whole reason the
+// house ruler exists. A tool that quietly stopped failing on findings it
+// used to fail on would also change every existing adopter's build in
+// the direction that hides problems, which is the worse direction to be
+// wrong in. The section 11 argument is real and it is answered by making
+// the lever exist and documenting it, not by moving it for everyone.
+//
+// An unclassifiable finding (the tool-defect bucket) blocks under EVERY
+// setting, including 'must'. A finding this command cannot classify is
+// never something it can also vouch for as safe to ignore, and that is a
+// statement about the tool, not about the vault, so no vault setting
+// gets to wave it through.
+const FAIL_ON_DEFAULT = 'any';
+
+export function computeBlocking({ must, should, house, unexpected }, failOn = FAIL_ON_DEFAULT) {
+  if (unexpected.length > 0) return true;
+  if (must.length > 0) return true;
+  if (failOn === 'must') return false;
+  if (should.some((f) => !f.warning)) return true;
+  if (failOn === 'must+should') return false;
+  return house.length > 0;
+}
+
 function parseArgs(argv) {
   const result = { dir: undefined, onlyProblems: false, json: false, help: false };
   for (const arg of argv) {
@@ -247,7 +304,7 @@ function renderStaleSection(t, stale, onlyProblems) {
 // exists to prevent, on its own last line). `hasBlocking` is that
 // predicate, computed once by the caller and passed in rather than
 // re-derived here, so the two can never read it differently again.
-function renderVerdict(t, { must, should, house, unexpected, stale, hasBlocking }) {
+function renderVerdict(t, { must, should, house, unexpected, stale, hasBlocking, failOn }) {
   if (unexpected.length > 0) return t('validate.verdict_unexpected');
   const totalKnown = must.length + should.length + house.length;
   if (totalKnown === 0) {
@@ -258,12 +315,24 @@ function renderVerdict(t, { must, should, house, unexpected, stale, hasBlocking 
     // instead of flatly denying what is still on screen above it.
     return stale.length > 0 ? t('validate.verdict_clean_with_stale') : t('validate.verdict_clean');
   }
-  if (!hasBlocking) return t('validate.verdict_warnings_only');
+  if (!hasBlocking) {
+    // Two different reasons nothing blocks, and they must not share a
+    // sentence. "Every finding was downgraded to a warning" is true
+    // only when the deviation actually downgraded them; when the
+    // findings are ordinary and this vault's validate.fail_on simply
+    // does not count them, saying they were downgraded would be the
+    // report describing a mechanism that never ran. The exact test is
+    // whether the default setting WOULD have blocked this same set.
+    if (computeBlocking({ must, should, house, unexpected }, 'any')) {
+      return t('validate.verdict_not_blocking', { failOn });
+    }
+    return t('validate.verdict_warnings_only');
+  }
   if (must.length > 0) return t('validate.verdict_broken');
   return t('validate.verdict_blocking');
 }
 
-function renderReport(t, { must, should, house, unexpected, stale, onlyProblems, hasBlocking }) {
+function renderReport(t, { must, should, house, unexpected, stale, onlyProblems, hasBlocking, failOn }) {
   const lines = [];
   lines.push(...renderDefectSection(t, unexpected));
   lines.push(...renderGroup(t, 'must', must, onlyProblems));
@@ -272,7 +341,7 @@ function renderReport(t, { must, should, house, unexpected, stale, onlyProblems,
   lines.push(t('validate.counts_summary', { must: must.length, should: should.length, house: house.length, unexpected: unexpected.length }));
   lines.push('');
   lines.push(...renderStaleSection(t, stale, onlyProblems));
-  lines.push(renderVerdict(t, { must, should, house, unexpected, stale, hasBlocking }));
+  lines.push(renderVerdict(t, { must, should, house, unexpected, stale, hasBlocking, failOn }));
   return `${lines.join('\n')}\n`;
 }
 
@@ -283,7 +352,7 @@ function renderReport(t, { must, should, house, unexpected, stale, onlyProblems,
 // hand-built `combined`, including a shape no real rule can currently
 // produce (the unexpected-level case), without spawning the real binary
 // or making either ruler misbehave first.
-export function buildReport(combined, stale, { onlyProblems = false, t }) {
+export function buildReport(combined, stale, { onlyProblems = false, t, failOn = FAIL_ON_DEFAULT }) {
   const { must, should, house, unexpected } = partitionFindings(combined);
   // The SAME predicate drives the exit code and the verdict line,
   // computed from the PARTITIONED buckets (fix round 2), not from raw
@@ -293,14 +362,17 @@ export function buildReport(combined, stale, { onlyProblems = false, t }) {
   // blocks too (and, after the partition fix above, never carries
   // `warning` at all: a `must` finding that did was already moved into
   // `unexpected`). `should` blocks unless every one of its findings was
-  // downgraded; `house` has no `warning` concept and always blocks.
+  // downgraded; `house` has no `warning` concept. Which of those tiers
+  // actually reaches the exit code is now the vault's own
+  // validate.fail_on (see computeBlocking above), defaulting to the
+  // everything-blocks answer this command has always given.
   // Staleness never even reaches `combined`, so it is structurally
   // incapable of affecting this.
-  const hasBlocking = unexpected.length > 0 || must.length > 0 || house.length > 0 || should.some((f) => !f.warning);
+  const hasBlocking = computeBlocking({ must, should, house, unexpected }, failOn);
   const warnings = should.filter((f) => f.warning).length;
   const counts = { must: must.length, should: should.length, house: house.length, unexpected: unexpected.length, warnings };
-  const json = { findings: combined, stale, counts, parserLimits: PARSER_LIMITS, rulers: RULERS, blocking: hasBlocking };
-  const text = renderReport(t, { must, should, house, unexpected, stale, onlyProblems, hasBlocking });
+  const json = { version: JSON_VERSION, findings: combined, stale, counts, parserLimits: PARSER_LIMITS, rulers: RULERS, failOn, blocking: hasBlocking };
+  const text = renderReport(t, { must, should, house, unexpected, stale, onlyProblems, hasBlocking, failOn });
   return { text, json, exitCode: hasBlocking ? EXIT.FAILURE : EXIT.OK };
 }
 
@@ -374,7 +446,11 @@ export async function runValidate(argv, io, t, walkVault) {
   const combined = applyTimestampDeviation([...specFindings, ...houseFindings], config);
   const stale = computeStale(files, context);
 
-  const { text, json, exitCode } = buildReport(combined, stale, { onlyProblems: parsed.onlyProblems, t: reportT });
+  const { text, json, exitCode } = buildReport(combined, stale, {
+    onlyProblems: parsed.onlyProblems,
+    t: reportT,
+    failOn: config?.validate?.fail_on ?? FAIL_ON_DEFAULT,
+  });
 
   if (parsed.json) {
     io.stdout.write(`${JSON.stringify(json)}\n`);

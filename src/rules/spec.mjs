@@ -180,13 +180,20 @@
 // claim this project made about the format rather than to code that
 // misread a file:
 //
-// 1. Section 9 DOES state ordering. Its opening sentence is "The format
+// 1. Section 9 DOES state ordering, in the sentence "The format
 //    is a flat list of date-grouped entries, newest first:", and section
 //    11 clause 3 makes following section 9 a matter of conformance, so
 //    the log ordering check is 'must', not 'should'. The claim that the
 //    section said nothing about ordering came from reading a window of
 //    lines that began one sentence too late; it is removed from this
-//    module and from the test file, not softened.
+//    module and from the test file, not softened. (Final review: that
+//    sentence is the section's SECOND, not its opening one, which opens
+//    "A `log.md` file MAY appear at any level of the hierarchy to record
+//    the history of changes to that scope." The quotation was exact and
+//    the conclusion right; only the locating claim was wrong, and it is
+//    dropped here rather than replaced with another one, since the
+//    sentence recording the lesson about reading a section from its own
+//    heading should not itself misstate where a sentence sits.)
 // 2. The heading levels were backwards. The 'must' branch fired only for
 //    a well-formed date that failed the calendar, so "## 2026-5-22" and
 //    "## 22/05/2026", the commonest violations of section 9's one real
@@ -268,6 +275,7 @@
 // otherwise English-only file, since English prose is not usually where
 // anyone looks for one.
 import { posix } from 'node:path';
+import { DATE_PATTERN, isValidCalendarDate, isValidIsoDate } from '../dates.mjs';
 import { frontmatterKeyLine, readEntries, readMapping, readScalar, splitFrontmatter } from '../frontmatter.mjs';
 import { stripCode } from '../markdown.mjs';
 
@@ -291,29 +299,15 @@ function isReserved(file) {
 // alone (the pattern below still requires exactly four digits and an
 // explicit "Z" or "+HH:MM"/"-HH:MM"), and stay rejected here.
 
-function isLeapYear(year) {
-  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
-}
-
-const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-
-function isValidCalendarDate(year, month, day) {
-  if (month < 1 || month > 12) return false;
-  const maxDay = month === 2 && isLeapYear(year) ? 29 : DAYS_IN_MONTH[month - 1];
-  return day >= 1 && day <= maxDay;
-}
+// isLeapYear, DAYS_IN_MONTH, isValidCalendarDate and DATE_PATTERN used
+// to live here, and a second, independently written copy of all four
+// lived in src/rules/house.mjs. They now come from src/dates.mjs, once,
+// for the reason that module's own header gives: two calendars that
+// must agree in order to be correct are two chances to disagree, and
+// only one of the two copies was under test.
 
 function isValidTimeOfDay(hour, minute, second) {
   return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 && second >= 0 && second <= 59;
-}
-
-const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
-
-// A plain date: right shape AND a day that exists in that month and year.
-function isValidIsoDate(value) {
-  const match = DATE_PATTERN.exec(value);
-  if (!match) return false;
-  return isValidCalendarDate(Number(match[1]), Number(match[2]), Number(match[3]));
 }
 
 const DATETIME_WITH_OFFSET_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
@@ -447,15 +441,15 @@ const typeRequired = {
               params: {},
             });
           } else {
-            findings.push({ file, line: null, check: 'type-present', messageKey: 'spec.type_required.no_frontmatter', params: {} });
+            findings.push({ file, line: null, check: 'type-present', absence: true, messageKey: 'spec.type_required.no_frontmatter', params: {} });
           }
         } else {
-          findings.push({ file, line: null, check: 'type-present', messageKey: 'spec.type_required.no_type_key', params: {} });
+          findings.push({ file, line: null, check: 'type-present', absence: true, messageKey: 'spec.type_required.no_type_key', params: {} });
         }
       } else if (value === undefined) {
-        findings.push({ file, line, check: 'shape-readable', messageKey: 'common.shape_unreadable', params: { field: 'type' } });
+        findings.push({ file, line, check: 'shape-readable', unreadable: true, messageKey: 'common.shape_unreadable', params: { field: 'type' } });
       } else if (isBlank(value)) {
-        findings.push({ file, line, check: 'type-non-empty', messageKey: 'spec.type_required.empty', params: {} });
+        findings.push({ file, line, check: 'type-non-empty', absence: true, messageKey: 'spec.type_required.empty', params: {} });
       }
     }
     return findings;
@@ -547,8 +541,9 @@ const indexNoFrontmatter = {
 // Four checks, two levels, regraded in fix round 4 against section 9
 // read from its own heading rather than from a window of lines.
 //
-// Section 9 carries two things this rule enforces. Its opening sentence:
-// "The format is a flat list of date-grouped entries, newest first:".
+// Section 9 carries two things this rule enforces. The sentence that
+// states ordering: "The format is a flat list of date-grouped entries,
+// newest first:".
 // And its one sentence with a requirement keyword: "Date headings MUST
 // use ISO 8601 `YYYY-MM-DD` form." Section 11 clause 3 makes following
 // section 9 a matter of conformance ("Every reserved filename
@@ -697,17 +692,18 @@ const generatedActor = {
       if (generated === null) continue; // absent: this rule only applies when generated is present
       const line = frontmatterKeyLine(frontmatter, 'generated');
       if (generated === undefined) {
-        findings.push({ file, line, check: 'shape-readable', messageKey: 'common.shape_unreadable', params: { field: 'generated' } });
+        findings.push({ file, line, check: 'shape-readable', unreadable: true, messageKey: 'common.shape_unreadable', params: { field: 'generated' } });
         continue;
       }
       if (isBlank(generated.by)) {
-        findings.push({ file, line, check: 'actor-present', messageKey: 'spec.generated_actor.missing_actor', params: {} });
+        findings.push({ file, line, check: 'actor-present', absence: true, messageKey: 'spec.generated_actor.missing_actor', params: {} });
       }
       if (!isBlank(generated.at) && !isValidIsoDatetimeWithOffset(generated.at)) {
         findings.push({
           file,
           line,
           check: 'timestamp-form',
+          deviationEligible: true,
           messageKey: 'common.timestamp_form',
           params: { field: 'generated.at', value: generated.at },
         });
@@ -757,7 +753,7 @@ const verifiedEvents = {
       if (events === null) continue; // absent: this rule only applies when verified is present
       const line = frontmatterKeyLine(frontmatter, 'verified');
       if (events === undefined) {
-        findings.push({ file, line, check: 'shape-readable', messageKey: 'common.shape_unreadable', params: { field: 'verified' } });
+        findings.push({ file, line, check: 'shape-readable', unreadable: true, messageKey: 'common.shape_unreadable', params: { field: 'verified' } });
         continue;
       }
       if (events.length === 0) {
@@ -768,20 +764,21 @@ const verifiedEvents = {
         // NOT this case: readVerifiedEvents normalises it into a single
         // one-element list instead, which already fails the by/at check
         // below on its own, the same way it did before this round.
-        findings.push({ file, line, check: 'has-events', messageKey: 'spec.verified_events.empty', params: {} });
+        findings.push({ file, line, check: 'has-events', absence: true, messageKey: 'spec.verified_events.empty', params: {} });
         continue;
       }
       events.forEach((event, index) => {
         if (isBlank(event.by)) {
-          findings.push({ file, line, check: 'event-actor', messageKey: 'spec.verified_events.missing_actor', params: { index } });
+          findings.push({ file, line, check: 'event-actor', absence: true, messageKey: 'spec.verified_events.missing_actor', params: { index } });
         }
         if (isBlank(event.at)) {
-          findings.push({ file, line, check: 'event-timestamp-present', messageKey: 'spec.verified_events.missing_timestamp', params: { index } });
+          findings.push({ file, line, check: 'event-timestamp-present', absence: true, messageKey: 'spec.verified_events.missing_timestamp', params: { index } });
         } else if (!isValidIsoDatetimeWithOffset(event.at)) {
           findings.push({
             file,
             line,
             check: 'event-timestamp-form',
+            deviationEligible: true,
             messageKey: 'common.timestamp_form',
             params: { field: `verified[${index}].at`, value: event.at },
           });
@@ -807,7 +804,7 @@ const statusEnum = {
       if (status === null) continue; // absent: this rule only applies when status is present
       const line = frontmatterKeyLine(frontmatter, 'status');
       if (status === undefined) {
-        findings.push({ file, line, check: 'shape-readable', messageKey: 'common.shape_unreadable', params: { field: 'status' } });
+        findings.push({ file, line, check: 'shape-readable', unreadable: true, messageKey: 'common.shape_unreadable', params: { field: 'status' } });
       } else if (!STATUS_ENUM.has(status)) {
         findings.push({ file, line, check: 'status-enum', messageKey: 'spec.status_enum.invalid', params: { value: status } });
       }
@@ -846,12 +843,13 @@ const staleAfterFormat = {
       if (staleAfter === null) continue; // absent: this rule only applies when stale_after is present
       const line = frontmatterKeyLine(frontmatter, 'stale_after');
       if (staleAfter === undefined) {
-        findings.push({ file, line, check: 'shape-readable', messageKey: 'common.shape_unreadable', params: { field: 'stale_after' } });
+        findings.push({ file, line, check: 'shape-readable', unreadable: true, messageKey: 'common.shape_unreadable', params: { field: 'stale_after' } });
       } else if (!isValidIsoDatetimeWithOffset(staleAfter)) {
         findings.push({
           file,
           line,
           check: 'timestamp-form',
+          deviationEligible: true,
           messageKey: 'spec.stale_after_format.invalid',
           params: { value: staleAfter },
         });
@@ -884,18 +882,19 @@ const sourcesResource = {
       if (sources === null) continue; // absent: this rule only applies when sources is present
       const line = frontmatterKeyLine(frontmatter, 'sources');
       if (sources === undefined) {
-        findings.push({ file, line, check: 'shape-readable', messageKey: 'common.shape_unreadable', params: { field: 'sources' } });
+        findings.push({ file, line, check: 'shape-readable', unreadable: true, messageKey: 'common.shape_unreadable', params: { field: 'sources' } });
         continue;
       }
       sources.forEach((entry, index) => {
         if (isBlank(entry.resource)) {
-          findings.push({ file, line, check: 'entry-resource', messageKey: 'spec.sources_resource.missing_resource', params: { index } });
+          findings.push({ file, line, check: 'entry-resource', absence: true, messageKey: 'spec.sources_resource.missing_resource', params: { index } });
         }
         if (!isBlank(entry.last_modified) && !isValidIsoDatetimeWithOffset(entry.last_modified)) {
           findings.push({
             file,
             line,
             check: 'entry-timestamp-form',
+            deviationEligible: true,
             messageKey: 'common.timestamp_form',
             params: { field: `sources[${index}].last_modified`, value: entry.last_modified },
           });
@@ -959,12 +958,38 @@ export function runSpecRules(files, context) {
   const findings = [];
   for (const rule of SPEC_RULES) {
     for (const partial of rule.check(files, context)) {
+      const unreadable = partial.unreadable === true;
       findings.push({
         ruler: 'spec',
         id: rule.id,
         check: partial.check,
         section: rule.section,
-        level: partial.level ?? rule.level,
+        // A finding that says only "this value's shape could not be read"
+        // is NEVER a conformance claim, whatever tier the rule that
+        // raised it carries. type-required is a `must` rule, and a legal
+        // YAML folded scalar ("type: >" with the value indented beneath)
+        // is a shape src/frontmatter.mjs's regular-expression readers
+        // cannot see, so the honest finding "type is present but its
+        // shape could not be read" used to inherit `must` and print the
+        // report's harshest line: the bundle is not conformant to the
+        // Open Knowledge Format. The tool contradicted itself on one
+        // screen, saying in the verdict that the bundle fails the format
+        // and in the finding underneath it that it had not managed to
+        // look.
+        //
+        // The two-absences contract every rule above honours is exactly
+        // this distinction, and it died in the last inch, between the
+        // ruler and the reader. 'should' is the floor the plan already
+        // set for a reading the format's text does not plainly support:
+        // "we could not read it" is not an arguable reading, it is no
+        // reading at all, and it must not be claimed at the higher tier.
+        // The `unreadable` flag travels with the finding so a consumer
+        // (and --json) can tell this apart from a real guidance
+        // departure.
+        level: unreadable ? 'should' : (partial.level ?? rule.level),
+        unreadable,
+        absence: partial.absence === true,
+        deviationEligible: partial.deviationEligible === true,
         file: partial.file,
         line: partial.line,
         messageKey: partial.messageKey,

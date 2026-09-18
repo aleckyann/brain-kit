@@ -142,9 +142,17 @@ so the defect itself has no incident date.
 **Rule.** Every `[spec]` label is audited against the canonical specification,
 category by category. A house rule wearing a spec badge fails the conforming
 adopter.
-**Where it lives in brain-kit.** `brain-kit validate` with
-`validate.stale_after_format` (date or datetime) in config and a fixed, audited
-`[spec]` ruler (Phase 1).
+**Where it lives in brain-kit.** `brain-kit validate`, with two rulers that never
+share a badge: the specification ruler is fixed in code and cites the section it
+reads, and the house ruler is driven entirely by the vault's own config.
+`stale_after` is settled by the format itself, not by a setting: section 5 says
+every timestamp-valued key is an ISO 8601 datetime with an explicit UTC offset,
+so a plain date is a finding, at `should` level, citing section 5.5. A vault
+still mid-migration off plain dates declares that with
+`validate.timestamp_deviation: "allow"`, which marks those four timestamp-form
+findings as warnings and can never touch a `must`. An earlier version of this
+document offered `validate.stale_after_format` here instead: that setting was
+read by no code, and it promised exactly the leniency this slice removed.
 
 ### Undated: staleness as a build failure would break the build by itself
 **What happened.** Treating `stale_after` alerts as continuous integration failures

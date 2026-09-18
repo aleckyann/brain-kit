@@ -147,7 +147,6 @@ const PARITY_CONFIG = {
   },
   stale_policy: { key: 'path', months: { 'pessoas/': 6, 'pendencias/': 3 } },
   validate: {
-    stale_after_format: 'datetime',
     // File-relative links only, wikilinks forbidden outright: both are
     // unconditional in the original ("[casa] linkAbsoluto", "[casa]
     // wikilinks"), directly observed.

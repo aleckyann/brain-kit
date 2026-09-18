@@ -339,6 +339,22 @@ test('--json prints one object with findings, stale, counts, parserLimits, block
   assert.deepEqual(parsed.rulers, ['spec', 'house']);
 });
 
+// The envelope's own identity, added the day the envelope was first
+// published rather than the day it first changed. 1B's `lint` and 1D's
+// `doctor` will emit envelopes of their own, and without this key a
+// consumer holding one of the three has no way to tell which it has;
+// adding a version field to a shape consumers already parse IS the
+// breaking change a version field exists to prevent.
+test('--json carries a version naming both the command that produced the envelope and the revision of its shape', () => {
+  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': CLEAN_PERSON }, config: { lang: 'en' } });
+  const parsed = JSON.parse(run([root, '--json']).stdout);
+  assert.equal(parsed.version, 'brain-kit.validate/1');
+  // Pinned as the FIRST key of the object, so a consumer reading a
+  // truncated or streamed envelope sees what it is holding before
+  // anything else in it.
+  assert.equal(Object.keys(parsed)[0], 'version');
+});
+
 test('--json prints nothing else on stdout', () => {
   const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': CLEAN_PERSON }, config: { lang: 'en' } });
   const result = run([root, '--json']);
@@ -762,6 +778,49 @@ test('src/commands/validate.mjs imports no walk at all, from any module, under a
   assert.deepEqual(namespaceImportOfVaultModule, [], `found a namespace import of vault.mjs: ${namespaceImportOfVaultModule.join(' | ')}`);
 });
 
+// The same assertion, pointed where the risk actually is. The guard
+// above was written after a reviewer added an aliased import to
+// validate.mjs and proved every behavioural test still passed, and it
+// went where that argument had been. But a second walk was never going
+// to appear in validate.mjs: that module's whole job is the one walk,
+// and its parameter is the only way in. A second walk appears in a new
+// RULE, where a rule author needs to know something about the tree and
+// the walk they were handed does not carry it.
+//
+// Both ruler modules assert in their own headers that they never call
+// walkVault, and nothing checked either one. Verified by mutation:
+// adding `import { walkVault } from '../vault.mjs'` to house.mjs and
+// resolving link-target-exists against a fresh walk instead of
+// context.all failed ZERO tests, while changing behaviour against an
+// ignored-path vault, which is the two halves of one command
+// disagreeing about what the vault contains (src/vault.mjs's header,
+// defect 4) reintroduced with a green suite.
+//
+// A named import of something else from vault.mjs is deliberately
+// allowed: the rulers do import isUnderPath and classifyTargetPath from
+// it, which is the point of that module owning what a vault path IS.
+// Neither one enumerates anything, and the `node:fs` clause below keeps
+// a ruler from rolling its own readdir loop instead.
+test('no rules module imports a walk, from any module, under any name, and none reads the filesystem directly', () => {
+  for (const file of ['spec.mjs', 'house.mjs']) {
+    const source = readFileSync(join(KIT_ROOT, 'src', 'rules', file), 'utf8');
+    const importLines = source.split('\n').filter((line) => /^\s*import\b/.test(line));
+
+    const namedImportOfWalk = importLines.filter((line) => /\bwalkVault\b/.test(line));
+    assert.deepEqual(namedImportOfWalk, [], `${file} imports something naming walkVault: ${namedImportOfWalk.join(' | ')}`);
+
+    const namespaceImportOfVaultModule = importLines.filter((line) => /import\s*\*\s*as\s+\w+\s*from\s*['"][^'"]*\bvault\.mjs['"]/.test(line));
+    assert.deepEqual(namespaceImportOfVaultModule, [], `${file} namespace-imports vault.mjs: ${namespaceImportOfVaultModule.join(' | ')}`);
+
+    // A hand-rolled walk needs a directory reader, and the only way into
+    // one from here is node:fs. Every byte a rule reads comes from
+    // context.readFile, which the command built once, cached and
+    // normalised.
+    const fsImports = importLines.filter((line) => /from\s*['"]node:fs/.test(line));
+    assert.deepEqual(fsImports, [], `${file} imports node:fs directly: ${fsImports.join(' | ')}`);
+  }
+});
+
 // --- a `must` finding carrying `warning` is incoherent, not house-clean-away --
 
 // The same one-forgetful-rule-away argument the round 1 partition fix
@@ -926,4 +985,102 @@ test('the clean verdict does not claim "no departures" right below a stale note 
   // paired positive: with no stale notes either, the original wording still stands
   const fullyClean = buildReport([], [], { t });
   assert.match(fullyClean.text.trim().split('\n').pop(), /no departures/);
+});
+
+// --- a "we could not read it" finding is never a conformance claim ----------
+//
+// The rulers get the two absences right and the command used to undo it
+// in the last inch. type-required is a `must` rule, so its
+// shape-readable finding (a legal YAML folded scalar, which
+// src/frontmatter.mjs's regular-expression readers declare they cannot
+// see) inherited `must` through runSpecRules' `partial.level ??
+// rule.level`, landed in the `must` group under the heading "These
+// findings mean the bundle is not conformant to the Open Knowledge
+// Format", and drove the verdict line to "the vault is not conformant
+// to the format" - directly above a finding saying, in its own words,
+// that the tool had not managed to look. Demoting it used to break zero
+// tests.
+//
+// The frontmatter here is legal YAML and the file is not broken in any
+// way. Written with explicit lines rather than a template literal so
+// the indentation the folded scalar depends on is visible.
+const FOLDED_SCALAR_TYPE = ['---', 'type: >', '  Attested Computation', 'description: an example note', '---', '# A note', ''].join('\n');
+
+test('a finding that says only that a value\x27s shape could not be read never claims the must tier, never lands in the not-conformant group, and never drives the verdict to "not conformant"', () => {
+  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/folded.md': FOLDED_SCALAR_TYPE }, config: { lang: 'en' } });
+  const parsed = JSON.parse(run([root, '--json']).stdout);
+
+  const unreadable = parsed.findings.filter((f) => f.ruler === 'spec' && f.id === 'type-required');
+  assert.equal(unreadable.length, 1, 'the fixture must produce the shape-readable finding for this assertion to mean anything');
+  assert.equal(unreadable[0].check, 'shape-readable');
+  assert.equal(unreadable[0].unreadable, true);
+  assert.equal(unreadable[0].level, 'should', 'a must rule does not make a could-not-read finding a conformance failure');
+  assert.equal(parsed.counts.must, 0);
+
+  const text = run([root]).stdout;
+  assert.doesNotMatch(text, /Result: the vault is not conformant/);
+  assert.match(text, /PARSER_LIMITS/);
+
+  // The paired positive, in the same shape, so this cannot pass against
+  // a stub that demotes everything: a genuinely absent type is still a
+  // must finding and still says the bundle is not conformant.
+  const absentRoot = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/broken.md': MISSING_TYPE_ONLY }, config: { lang: 'en' } });
+  const absent = JSON.parse(run([absentRoot, '--json']).stdout);
+  assert.equal(absent.counts.must, 1);
+  assert.equal(absent.findings[0].level, 'must');
+  assert.equal(absent.findings[0].unreadable, false);
+  assert.match(run([absentRoot]).stdout, /Result: the vault is not conformant/);
+});
+
+// --- validate.fail_on: what actually fails the run --------------------------
+//
+// Section 11 of the Open Knowledge Format lists what a consumer "MUST
+// NOT reject a bundle because of", and in a command wired into CI the
+// reject decision IS the exit code. Every tier blocked it before this
+// setting, so a fully conformant bundle could not reach exit 0. The
+// default is unchanged ('any'), so nothing moves for an adopter who says
+// nothing; the lever exists for one who reads section 11.
+
+test('validate.fail_on defaults to "any", so a vault whose only finding is a house one still fails the run', () => {
+  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/broken.md': BROKEN_PERSON }, config: { lang: 'en' } });
+  const result = run([root]);
+  assert.equal(result.status, EXIT.FAILURE);
+  assert.equal(JSON.parse(run([root, '--json']).stdout).failOn, 'any');
+});
+
+test('validate.fail_on "must" lets a conformant vault reach exit 0 while still printing every house and guidance finding, and still fails on a real non-conformance', () => {
+  const houseOnly = { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/forbidden.md': ['---', 'type: person', 'description: an example person', 'timestamp: 2026-09-18T09:30:00Z', '---', '# Ana', ''].join('\n') };
+  const root = makeVault({ files: houseOnly, config: { lang: 'en', validate: { fail_on: 'must' } } });
+  const result = run([root]);
+  assert.equal(result.status, EXIT.OK, 'a bundle conformant to the format reaches exit 0 under fail_on: must');
+  assert.match(result.stdout, /forbidden-fields/, 'the finding is still reported: the setting moves the exit code, never the report');
+  assert.match(result.stdout, /fail_on/, 'and the verdict line says why the run did not fail');
+  assert.doesNotMatch(result.stdout, /downgraded to a warning/, 'nothing was downgraded; that is a different mechanism and a different sentence');
+
+  const identical = makeVault({ files: houseOnly, config: { lang: 'en' } });
+  assert.equal(run([identical]).status, EXIT.FAILURE, 'the identical vault under the default still fails, or this test would pass against a vault with no findings at all');
+
+  const nonConformant = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/broken.md': MISSING_TYPE_ONLY }, config: { lang: 'en', validate: { fail_on: 'must' } } });
+  assert.equal(run([nonConformant]).status, EXIT.FAILURE, 'fail_on: must still fails on a must');
+});
+
+test('validate.fail_on "must+should" fails on a guidance finding but not on a house one', () => {
+  const shouldOnly = { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/migrating.md': MIGRATING_DATE };
+  const houseOnly = { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/forbidden.md': ['---', 'type: person', 'description: an example person', 'timestamp: 2026-09-18T09:30:00Z', '---', '# Ana', ''].join('\n') };
+  const config = { lang: 'en', validate: { fail_on: 'must+should' } };
+
+  assert.equal(run([makeVault({ files: shouldOnly, config })]).status, EXIT.FAILURE);
+  assert.equal(run([makeVault({ files: houseOnly, config })]).status, EXIT.OK);
+});
+
+// An unclassifiable finding is a statement about the TOOL, not about the
+// vault, so no vault setting gets to wave it through.
+test('an unclassifiable finding blocks under every fail_on setting, including "must"', () => {
+  const t = createTranslator('en');
+  const bogus = [{ ruler: 'nonsense', id: 'x', check: 'y', level: 'whatever', file: 'f.md', line: 1, messageKey: 'spec.type_required.empty', params: {} }];
+  for (const failOn of ['must', 'must+should', 'any']) {
+    const report = buildReport(bogus, [], { t, failOn });
+    assert.equal(report.exitCode, EXIT.FAILURE, failOn);
+    assert.equal(report.json.blocking, true, failOn);
+  }
 });

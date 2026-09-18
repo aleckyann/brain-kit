@@ -2,8 +2,20 @@
 // Knowledge Format itself (src/rules/spec.mjs, this module's sibling and
 // the shape it mirrors: rules as data objects that one runner iterates,
 // never a chain of conditionals). Every setting a rule below reads comes
-// from context.config; none is hard-coded, and every default is the
-// permissive one, so a vault that configures nothing gets the
+// from context.config; none is hard-coded.
+//
+// Every default is the permissive one, with ONE exception, named here
+// rather than left to be discovered: validate.link_targets defaults to
+// "report", so a vault that configures nothing still has its links
+// checked. That exception used to be worse than an exception. The rule
+// read no configuration at all, could not be turned off, and was
+// therefore the one rule in this file whose findings were printed under
+// a heading saying the vault had departed from rules it declared, when
+// the vault had declared nothing and could not have. The setting exists
+// now; the default is argued for at the rule itself, where the format's
+// own MUST-language tolerance of broken links is quoted in full.
+//
+// Apart from that one, a vault that configures nothing gets the
 // specification (spec.mjs) and very little else from this file.
 //
 // Why house findings carry no `level` and no `section`: `must` and
@@ -221,8 +233,15 @@
 // is the only place that renders them, through the vault's own
 // config.lang.
 import { posix } from 'node:path';
+import { isValidIsoDate } from '../dates.mjs';
 import { frontmatterKeyLine, readEntries, readList, readMapping, readScalar, splitFrontmatter } from '../frontmatter.mjs';
 import { stripCode } from '../markdown.mjs';
+// Two helpers, no walk. src/vault.mjs owns what a vault path IS: whether
+// one lies under a directory, and whether one names something that exists.
+// This module still never enumerates the tree (see the ruler contract
+// above, and the test that reads this file's own import lines and refuses
+// any import naming walkVault): it asks about paths it was already handed.
+import { classifyTargetPath, isUnderPath } from '../vault.mjs';
 
 const RESERVED_FILENAMES = Object.freeze(['index.md', 'log.md']);
 
@@ -305,18 +324,6 @@ function classifyField(frontmatter, key) {
   return { state: 'unreadable' };
 }
 
-// True when `file` (root-relative, forward-slash) lies at or under `dir`
-// (a taxonomy.* config path, also root-relative). A path boundary, not a
-// raw string prefix, mirroring src/vault.mjs's own matchesIgnorePrefix
-// (also not exported): "templates" matches "templates/x.md" but not
-// "templates-2024/x.md".
-function isUnderDir(file, dir) {
-  if (!dir) return false;
-  const normalized = dir.endsWith('/') ? dir.slice(0, -1) : dir;
-  if (normalized === '') return false;
-  return file === normalized || file.startsWith(`${normalized}/`);
-}
-
 // --- required-fields (frontmatter.required) -------------------------------------
 
 const requiredFields = {
@@ -331,12 +338,13 @@ const requiredFields = {
       for (const key of required) {
         const { state } = classifyField(frontmatter, key);
         if (state === 'absent') {
-          findings.push({ file, line: null, check: 'field-present', messageKey: 'house.required_fields.missing', params: { key } });
+          findings.push({ file, line: null, check: 'field-present', absence: true, messageKey: 'house.required_fields.missing', params: { key } });
         } else if (state === 'blank') {
           findings.push({
             file,
             line: frontmatterKeyLine(frontmatter, key),
             check: 'field-non-empty',
+            absence: true,
             messageKey: 'house.required_fields.empty',
             params: { key },
           });
@@ -345,6 +353,7 @@ const requiredFields = {
             file,
             line: frontmatterKeyLine(frontmatter, key),
             check: 'shape-readable',
+            unreadable: true,
             messageKey: 'common.shape_unreadable',
             params: { field: key },
           });
@@ -407,7 +416,7 @@ const typeEnum = {
       if (value === null) continue; // absence is type-required's finding, not this one's
       const line = frontmatterKeyLine(frontmatter, 'type');
       if (value === undefined) {
-        findings.push({ file, line, check: 'shape-readable', messageKey: 'common.shape_unreadable', params: { field: 'type' } });
+        findings.push({ file, line, check: 'shape-readable', unreadable: true, messageKey: 'common.shape_unreadable', params: { field: 'type' } });
         continue;
       }
       if (isBlank(value)) continue; // an empty type is type-required's finding, not this one's
@@ -421,19 +430,12 @@ const typeEnum = {
 
 // --- extension-fields (frontmatter.extensions) -----------------------------------
 
-const DATE_ONLY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
-
-function isValidCalendarDateValue(value) {
-  const match = DATE_ONLY_PATTERN.exec(value);
-  if (!match) return false;
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  if (month < 1 || month > 12) return false;
-  const isLeapYear = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
-  const daysInMonth = [31, isLeapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-  return day >= 1 && day <= daysInMonth[month - 1];
-}
+// A date-typed extension field is checked against src/dates.mjs's one
+// calendar. This file used to carry its own regular expression, its own
+// inline leap-year expression and its own days-in-month array, an exact
+// but untested twin of the specification ruler's: breaking that one failed
+// a named test, breaking this one failed nothing and accepted 1900-02-29.
+// See src/dates.mjs's own header.
 
 function isValidBooleanValue(value) {
   return value === 'true' || value === 'false';
@@ -497,6 +499,7 @@ const extensionFields = {
             file,
             line,
             check: 'shape-readable',
+            unreadable: true,
             messageKey: 'common.shape_unreadable',
             params: { field: fieldName },
           });
@@ -507,13 +510,13 @@ const extensionFields = {
         // once the value is confirmed present and readable, since an
         // unreadable shape is reported above regardless of where the
         // file lives.
-        if (placeholder && isUnderDir(file, templatesDir) && placeholder.test(value)) continue;
+        if (placeholder && isUnderPath(file, templatesDir) && placeholder.test(value)) continue;
 
         if (spec.type === 'boolean' && !isValidBooleanValue(value)) {
           findings.push({ file, line, check: 'value-kind', messageKey: 'house.extension_fields.boolean', params: { field: fieldName, value } });
         } else if (spec.type === 'number' && !isValidNumberValue(value)) {
           findings.push({ file, line, check: 'value-kind', messageKey: 'house.extension_fields.number', params: { field: fieldName, value } });
-        } else if (spec.type === 'date' && !isValidCalendarDateValue(value)) {
+        } else if (spec.type === 'date' && !isValidIsoDate(value)) {
           findings.push({ file, line, check: 'value-kind', messageKey: 'house.extension_fields.date', params: { field: fieldName, value } });
         } else if (spec.type === 'enum') {
           const noteType = readScalar(frontmatter, 'type');
@@ -727,9 +730,37 @@ function decodePathSafely(pathPart) {
   }
 }
 
+// Turns a link's path part into ONE canonical vault path: the form
+// posix.normalize produces, with any trailing slash removed, so that
+// "subdir/" and "subdir" are one path and not two. The vault root is
+// spelled "." (what normalize returns for it), and a path that climbs out
+// of the vault keeps its leading "..".
+//
+// This used to hand posix.normalize's raw answer straight to the
+// existence check and straight into the finding's own "resolved to"
+// evidence, which is where two of the four false reports came from. For
+// "subdir/more.md" linking to "../", normalize returned "./"; the vault
+// root was then looked up under the literal name "./", found missing, and
+// the message printed "resolved to \"./\"" as its evidence, which is
+// neither the link the author wrote nor anything that exists on disk. The
+// one field added to make a broken-link message understandable instead of
+// insulting was garbage for exactly the shapes a human writes by hand.
 function resolveLinkPath(file, pathPart) {
-  if (pathPart.startsWith('/')) return pathPart.slice(1);
-  return posix.normalize(posix.join(posix.dirname(file), pathPart));
+  const joined = pathPart.startsWith('/') ? pathPart.slice(1) : posix.join(posix.dirname(file), pathPart);
+  let normalized = posix.normalize(joined);
+  // A trailing slash is the only thing normalize leaves behind that would
+  // make one path look like two. Nothing here strips a leading "./" or
+  // rewrites "." into "": posix.join and posix.normalize never produce
+  // the first, and "." is the canonical spelling of the root that
+  // classifyTargetPath already resolves. A guard for either would be a
+  // clause no input can reach, which reads as defended and is not.
+  while (normalized.endsWith('/') && normalized.length > 1) normalized = normalized.slice(0, -1);
+  // A path that climbs out of the vault ("../../elsewhere.md") is returned
+  // as it is, still canonical: it is a real answer to "where does this
+  // point", it is genuinely not a vault path, and classifyTargetPath
+  // reports it as 'outside' without ever stat'ing anything beyond the
+  // root.
+  return normalized;
 }
 
 // Iterates every internal (non-external, non-fragment-only) link target
@@ -791,29 +822,88 @@ const linkStyle = {
   },
 };
 
-// --- link-target-exists (always on) -----------------------------------------------
+// --- link-target-exists (validate.link_targets) ------------------------------------
 //
 // The only rule in this ruler that reads context.all instead of files:
 // a link may legitimately point at a non-markdown attachment, which is
 // exactly why the single walk this ruler is handed asks for every file,
 // not only the markdown subset.
+//
+// Why this rule is configurable, and why it is still on by default.
+//
+// The Open Knowledge Format tells a CONSUMER to tolerate a broken link,
+// twice and in MUST language. Section 6.1: "Consumers MUST tolerate
+// broken links: a link whose target does not exist in the bundle is not
+// malformed; it may simply represent not-yet-written knowledge." Section
+// 11 lists "Broken cross-links" among the things a consumer "MUST NOT
+// reject a bundle because of". This rule was hard-coded on, under a
+// heading saying the vault departs from rules it declared, in a module
+// whose own header promises that every setting comes from the config. All
+// three of those were false at once, which is how a rule the format
+// explicitly tolerates came to be the single most likely way this tool
+// tells a person something untrue about their own vault.
+//
+// It is a HOUSE rule now, in name and in fact: validate.link_targets is
+// "report" (the default) or "off". It stays on by default because
+// brain-kit validate is a PRODUCER-side tool. Section 6.1 binds the
+// consumer that READS a bundle it did not write, and its reason is
+// generous: a dangling link may be knowledge nobody has written yet, and
+// refusing the whole bundle over one is how a reader loses the rest. The
+// author of the vault is in the other position entirely: they can look at
+// the link and say which of the two it is, and a typo in a path is
+// invisible until something says it out loud. This rule found a real
+// broken link in the reference vault. An adopter who reads section 11 and
+// disagrees now has a setting, and an adopter who wants the findings
+// without the red exit code has validate.fail_on (see
+// src/commands/validate.mjs).
+//
+// What "broken" means, narrowly. A target that EXISTS is not broken,
+// whatever shape it takes:
+//
+// - A directory resolves. "[Subdirectory](subdir/)" is the line section 8
+//   prints as its own worked example of an index entry, and it was
+//   reported broken, because walkVault returns files and no directory can
+//   ever be in that set.
+// - "./" and "../" resolve, through resolveLinkPath's normalisation
+//   above.
+// - A target inside a directory the configuration told the walk to skip
+//   is PRESENT but UNWALKED, and says so in those words. It used to be
+//   reported as "does not resolve to a file in this vault" while the
+//   owner was looking at the file on disk: validate.ignore_paths silently
+//   doubled as a break-every-link-into-here switch, because one walk fed
+//   both the ignore filter and the existence set. It is still worth
+//   saying, because a link into skipped territory is a link this tool
+//   cannot vouch for, but it is a different sentence.
 
 const linkTargetExists = {
   id: 'link-target-exists',
   check(files, context) {
+    const setting = context.config?.validate?.link_targets ?? 'report';
+    if (setting !== 'report') return [];
     const findings = [];
     for (const file of files) {
       forEachInternalLink(file, context, (target, pathPart, line) => {
         const resolved = resolveLinkPath(file, pathPart);
-        if (!context.all.has(resolved)) {
+        const state = classifyTargetPath(context.root, resolved, context.all);
+        if (state === 'in-walk' || state === 'directory') return;
+        if (state === 'unwalked') {
           findings.push({
             file,
             line,
-            check: 'target-exists',
-            messageKey: 'house.link_target_exists.broken',
+            check: 'target-walked',
+            messageKey: 'house.link_target_exists.unwalked',
             params: { target, resolved },
           });
+          return;
         }
+        findings.push({
+          file,
+          line,
+          check: 'target-exists',
+          absence: true,
+          messageKey: 'house.link_target_exists.broken',
+          params: { target, resolved },
+        });
       });
     }
     return findings;
@@ -858,7 +948,7 @@ const rootOkfVersion = {
     const value = readScalar(frontmatter, 'okf_version');
     const line = frontmatterKeyLine(frontmatter, 'okf_version');
     if (value === null) {
-      return [{ file: 'index.md', line: null, check: 'declared', messageKey: 'house.root_okf_version.missing', params: {} }];
+      return [{ file: 'index.md', line: null, check: 'declared', absence: true, messageKey: 'house.root_okf_version.missing', params: {} }];
     }
     if (value === undefined) {
       return [
@@ -866,6 +956,7 @@ const rootOkfVersion = {
           file: 'index.md',
           line,
           check: 'shape-readable',
+          unreadable: true,
           messageKey: 'common.shape_unreadable',
           params: { field: 'okf_version' },
         },
@@ -900,34 +991,6 @@ const timestampDeviation = {
   },
 };
 
-// The specification `should`-level checks a vault may downgrade,
-// identified by the (id, check) pair rather than by id alone (fix round
-// 1: an id is not fine enough on its own, since generated-actor and
-// verified-events each carry an actor-shaped check and a timestamp-
-// shaped check under one id). Every one of these is section 5's own
-// "every timestamp-valued key" claim, made good by spec.mjs's own fix
-// round 5: generated.at, stale_after, verified[].at and
-// sources[].last_modified.
-//
-// log-format is deliberately excluded, and this is a ratified choice,
-// not an oversight left to be inferred from a frozen array: log-format's
-// date headings are governed by section 9, not section 5, and they are
-// plain ISO 8601 DATES ("## YYYY-MM-DD"), not datetimes with a UTC
-// offset at all, so they are not "timestamp-valued keys" in the sense
-// this deviation exists for, which is a vault mid-migration off a plain
-// date onto the offset form section 5 requires. A log heading was never
-// in that form to begin with. Separately, and sufficient on its own:
-// every one of log-format's checks is 'must' or, where 'should'
-// (frontmatter, non-date headings), about something with no timestamp
-// shape either, and this function already refuses to touch a `must`
-// finding no matter what the setting says.
-const TIMESTAMP_ELIGIBLE = Object.freeze([
-  { id: 'generated-actor', check: 'timestamp-form' },
-  { id: 'stale-after-format', check: 'timestamp-form' },
-  { id: 'verified-events', check: 'event-timestamp-form' },
-  { id: 'sources-resource', check: 'entry-timestamp-form' },
-]);
-
 // Downgrades a specification `should`-level timestamp finding to a
 // warning (a `warning: true` field added alongside its own, unchanged
 // `level`, never a rewrite of `level` itself: the original tier is a
@@ -936,22 +999,39 @@ const TIMESTAMP_ELIGIBLE = Object.freeze([
 // "allow". Defaults to "forbid", so an unconfigured vault gets the
 // format's own answer, with every finding passed through untouched.
 //
-// Matches on the TRIPLE of `ruler === 'spec'`, `level === 'should'` and
-// the finding's own `check` being one of TIMESTAMP_ELIGIBLE's (id,
-// check) pairs: `id` alone was tried first and found wanting (see fix
-// round 1 above), and `check` alone would still risk a coincidental
-// name collision across two different rules' own vocabularies, so both
-// are matched together, the same caution spec.mjs's own header applies
-// to `ruler` and `id`. A `must`-level finding is never touched,
-// whatever the setting says: a house declaration can widen leniency for
-// a `should`, never silence a conformance failure.
+// Which findings are eligible is now a FLAG THE SPEC RULER SETS, not a
+// list this module keeps. It used to be TIMESTAMP_ELIGIBLE, a frozen
+// array of four (id, check) pairs, every one of them owned by
+// src/rules/spec.mjs and spelled out here: add a timestamp-valued key to
+// the spec ruler and you had to remember to come and edit the house
+// ruler, with nothing at all to remind you. That is the fence
+// duplication in a different costume, two modules that must agree kept
+// apart, and this file has now paid for that shape three times (the
+// fence stripper, frontmatterKeyLine, the calendar). A spec finding that
+// is a timestamp FORM failure carries `deviationEligible: true` where it
+// is built; the knowledge lives where the fact is.
+//
+// Three guards, and two of them are defence in depth on purpose:
+//
+// - `ruler === 'spec'` and `deviationEligible`: the selection itself.
+// - `level !== 'should'`: a house declaration can widen leniency for a
+//   `should`, never silence a conformance failure. No real finding
+//   carries both `must` and the eligibility flag today, so this guard
+//   cannot fire in production; it is the one thing standing between a
+//   future `must`-level timestamp check and a vault that silences it by
+//   editing its own config, and the test that covers it hands it a
+//   hand-built finding for exactly that reason.
+// - `absence`: a downgrade may never reach a finding that reports
+//   something is NOT THERE. See the field's own explanation on
+//   runHouseRules below.
 export function applyTimestampDeviation(findings, config) {
   const setting = config?.validate?.timestamp_deviation ?? 'forbid';
   if (setting !== 'allow') return findings;
   return findings.map((finding) => {
-    if (finding.ruler !== 'spec' || finding.level !== 'should') return finding;
-    const eligible = TIMESTAMP_ELIGIBLE.some((e) => e.id === finding.id && e.check === finding.check);
-    return eligible ? { ...finding, warning: true } : finding;
+    if (finding.ruler !== 'spec' || !finding.deviationEligible) return finding;
+    if (finding.level !== 'should') return finding;
+    if (finding.absence) return finding;
+    return { ...finding, warning: true };
   });
 }
 
@@ -974,7 +1054,29 @@ export const HOUSE_RULES = Object.freeze([
 // required-fields finding names 'field-present', 'field-non-empty' or
 // 'shape-readable', for instance, not just "required-fields" three
 // times over). No `level`, no `section`: see this file's own header for
-// why their absence is the point. Rules are data (HOUSE_RULES is a
+// why their absence is the point.
+//
+// Two booleans every finding carries, always present rather than
+// sometimes, so a consumer never has to distinguish "false" from "this
+// ruler forgot":
+//
+// - `absence`: this finding reports that something is NOT THERE (a key
+//   missing, a value empty, a collection with no entries, a link target
+//   that does not exist), as opposed to something present and malformed.
+//   It is set at each `findings.push` that makes that claim, which is the
+//   whole point of it. The invariant it protects, "a downgrade may never
+//   reach a finding about something being ABSENT", was first guarded by
+//   matching the finding's own rendered MESSAGE against a phrase, and a
+//   single differently-phrased absence walked straight through it; task 8
+//   then moved every message into lang/*/messages.json, so that guard had
+//   come to depend on the wording of a translation file. A tool must not
+//   infer its own semantics from its own prose, and it must certainly not
+//   infer them from prose a language pack can change.
+// - `unreadable`: this finding says only that a value's shape could not
+//   be read (PARSER_LIMITS). It is never a claim about whether the value
+//   is right, and in the spec ruler it is what stops a "we could not read
+//   it" finding from being printed as a conformance failure (see
+//   runSpecRules). Rules are data (HOUSE_RULES is a
 // plain array of { id, check }), and this loop is the entire runner,
 // mirroring runSpecRules in every way that matters: no rule is
 // special-cased, so a future house rule is one array entry away.
@@ -988,6 +1090,8 @@ export function runHouseRules(files, context) {
         check: partial.check,
         file: partial.file,
         line: partial.line,
+        absence: partial.absence === true,
+        unreadable: partial.unreadable === true,
         messageKey: partial.messageKey,
         params: partial.params,
       });
