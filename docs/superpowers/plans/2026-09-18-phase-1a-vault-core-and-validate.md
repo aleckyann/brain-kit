@@ -203,10 +203,14 @@ The rules, each with a stable English id, and each carrying the section of the f
 | `generated-actor` | When `generated` is present it has a non-empty `by`, and its `at`, when present, is an ISO 8601 datetime. |
 | `verified-events` | When `verified` is present, every event carries both `by` and `at`. |
 | `status-enum` | When `status` is present it is one of `draft`, `stable`, `deprecated`. |
-| `stale-after-format` | When `stale_after` is present it is either a date or a datetime with an offset. Both are accepted here; narrowing to one is a house rule. |
+| `stale-after-format` | When `stale_after` is present it is a datetime with an explicit UTC offset. A plain date is a finding. |
 | `sources-resource` | Every entry of `sources` carries a non-empty `resource`. |
 
-- [ ] **Step 1: Write the failing test.** One fixture vault that passes every rule and reports nothing, and one focused fixture per rule that violates exactly that rule, asserting the finding's `id`, `file` and, where the rule is about a line, its `line`. Include the case that matters most: a note whose `stale_after` is a datetime with an offset must pass, because the original validator failed it.
+**Conformance levels, read from the format's own text on 18/09/2026 and binding on tasks 5 and 6.** The specification defines two tiers, and a ruler that flattens them tells a person that a departure from guidance is a broken bundle. Section 11 makes exactly three things conformance: every non-reserved markdown file carries a parseable frontmatter block; every frontmatter block carries a non-empty `type`; and the reserved filenames follow their own sections. Everything in sections 5 to 10 is what a producer SHOULD do. So every rule object carries a `level` of `must` or `should` alongside its `section`, and the finding carries it too. `type-required`, `index-no-frontmatter` and `log-format` are `must`. The five trust and lifecycle rules are `should`.
+
+Two verbatim sentences from the format that settle questions this plan previously guessed at, quoted here so no task has to guess again. Section 5: "Every timestamp-valued key in OKF is an ISO 8601 datetime with an explicit UTC offset." Section 11: consumers "MUST treat a bare `verified` mapping as a one-element list", and "MUST NOT reject a concept" for an unknown `type` value, which is why a type enumeration is a house rule and never a specification one.
+
+- [ ] **Step 1: Write the failing test.** One fixture vault that passes every rule and reports nothing, and one focused fixture per rule that violates exactly that rule, asserting the finding's `id`, `file` and, where the rule is about a line, its `line`. Include the case that matters most: a note whose `stale_after` is a datetime with an offset must pass, because the original validator failed it, and a note whose `stale_after` is a plain date must now be a finding, because the format requires the offset.
 
 - [ ] **Step 2: Watch it fail, write the module, watch it pass.** Rules are data, not a chain of conditionals: each is an object with an `id` and a `check`, and `runSpecRules` iterates. A rule must never throw on a malformed file; it reports a finding instead.
 
@@ -244,7 +248,7 @@ Every rule reads its setting from the config; none is hard-coded. Defaults are t
 | `link-target-exists` | always on | Every internal link resolves to a file that exists, markdown or attachment. |
 | `no-wikilinks` | `validate.wikilinks` | Double-bracket links are findings when set to forbid. |
 | `root-okf-version` | `validate.require_root_okf_version` | The root index declares `okf_version`, and it equals the configured `okf_version`. |
-| `stale-after-format` | `validate.stale_after_format` | Narrow the accepted form to `date`, to `datetime`, or accept both under `any`. |
+| `timestamp-deviation` | `validate.timestamp_deviation` | A vault that has not yet migrated its timestamps may declare the deviation here, which downgrades the specification's `should`-level timestamp findings to warnings for this vault only. It can never silence a `must`. Default `forbid`, so a vault that declares nothing gets the format's own answer. |
 
 Two behaviours the tests must pin down, because both were defects in the original:
 - The placeholder exemption, configured as `validate.placeholder_pattern`, applies **only** to files under `taxonomy.templates_dir`. A note elsewhere with an angle bracket in a dated field is a finding.
@@ -286,7 +290,8 @@ Behaviour:
 - Run both rulers. Print the spec findings and the house findings under separate headings, each finding as `path:line  id  message`, so the two rulers never blur into one verdict.
 - Notes whose `stale_after` has passed are an informational report, printed after the findings and **never** affecting the exit code. A build that fails as time passes is a build people switch off.
 - `--only-problems` prints only rules that have findings. `--json` prints one object with `findings`, `stale`, `counts`, `parserLimits` and the two ruler names, and prints nothing else on stdout.
-- Exit `0` when there is no finding, `1` when there is at least one, `2` for usage or no vault.
+- Print each finding with its conformance level, and group the `must` findings ahead of the `should` findings, because the first say the bundle is not conformant and the second say it departs from guidance. Flattening them would tell a person their vault is broken when it is merely opinionated.
+- Exit `0` when there is no finding, `1` when there is at least one, `2` for usage or no vault. A `should` finding downgraded to a warning by `validate.timestamp_deviation` does not affect the exit code; a `must` finding always does.
 
 - [ ] **Step 1: Write the failing test,** driving the real binary with `spawnSync`: a conforming vault exits 0 and says so; a vault with one spec and one house finding exits 1 and names both under their own headings; `--json` parses and carries the same counts; a vault with a note past its date exits 0 and lists it as informational; running outside a vault exits 2; `--only-problems` omits the clean rules.
 
