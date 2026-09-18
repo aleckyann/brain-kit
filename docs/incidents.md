@@ -268,13 +268,38 @@ ls-remote` for one it does not. It must never come from the local
 written by this clone's own previous push or fetch, and a remote rewound or
 rewritten from another clone can leave that cache claiming commits the remote
 no longer holds, which would let a leak inside one of them through unscanned.
+The same day, four more holes in the same hook were found and closed, and they
+all had one shape: a scanner that could not see something shrugged instead of
+refusing. A range it could not compute looked like nothing to scan. A merge
+commit produced no diff at all, so a secret typed in while resolving a conflict,
+present in neither parent, went out unexamined. A single NUL byte made the
+search skip the whole file as binary. An empty or non-regular patterns file
+passed the readability check and silently contributed no personal pattern,
+and the search tool's own error status was thrown away, so a pattern that
+would not compile read as a clean file. The rule that covers all of them: a
+scanner that cannot see something must refuse, never shrug. Distinguish
+"looked and found nothing" from "could not look", by capturing exit status
+rather than emptiness, and treat the second as a refusal that names what
+could not be read and why. Where seeing more is possible, prefer it: diff a
+merge against every parent, read a binary blob as text. Where the
+configuration itself is the blind spot, check it for real (regular, readable,
+non-empty), not merely for existence. Capping how much of a match is printed
+is about the message, never about the verdict.
 **Where it lives in brain-kit.** `.githooks/pre-push` (`remote_sha..local_sha`
 for a ref the remote already has; `query_remote`'s live `git ls-remote`,
 cached per hook run, for one it does not; full-history fallback if the remote
-cannot be reached), `test/pre-push-hook.test.mjs` ("a tag pointing at
-already-pushed commits is allowed", "a new branch is still scanned for its
-own commits", "a stale-ahead tracking ref does not hide an unpublished
-commit", "the remote being unreachable makes the hook scan everything").
+cannot be reached or the range fails to compute; `diff-tree -m` with a
+per-commit dedupe so merges are diffed against every parent; `grep -a` with a
+printed-hit cap so a binary blob is scanned instead of skipped; the regular,
+readable, non-empty check on the patterns file; `scan_blob` refusing on any
+search status above "nothing matched"), `test/pre-push-hook.test.mjs` ("a tag
+pointing at already-pushed commits is allowed", "a new branch is still scanned
+for its own commits", "a stale-ahead tracking ref does not hide an unpublished
+commit", "the remote being unreachable makes the hook scan everything", "an
+existing ref whose remote_sha is unknown to this clone still gets scanned", "a
+merge commit whose resolution introduces a leak is refused", "a blob with a
+NUL byte is scanned instead of skipped as binary", "a patterns file that
+cannot do its job refuses the push").
 
 ## Headless runs, network and scheduling
 

@@ -187,3 +187,66 @@ test('an existing ref whose remote_sha is unknown to this clone still gets scann
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /possible leak in notes\.md/);
 });
+
+test('a merge commit whose resolution introduces a leak is refused', () => {
+  const { work, patterns } = setup();
+  commit(work, 'shared.txt', 'base\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+
+  // Two branches touch the same line, so the merge stops on a conflict and a
+  // human types the resolution.
+  assert.equal(git(work, ['checkout', '-q', '-b', 'side']).status, 0);
+  commit(work, 'shared.txt', 'side branch line\n', 'side');
+  assert.equal(git(work, ['checkout', '-q', 'main']).status, 0);
+  commit(work, 'shared.txt', 'main branch line\n', 'main change');
+  assert.notEqual(git(work, ['merge', 'side']).status, 0);
+
+  // The resolution introduces a personal pattern that exists in NEITHER
+  // parent, so nothing but the merge commit itself carries it.
+  commit(work, 'shared.txt', 'Meeting with Hunter2Corp tomorrow\n', 'merge side');
+  assert.equal(git(work, ['rev-list', '--parents', '-n', '1', 'HEAD']).stdout.trim().split(' ').length, 3);
+
+  const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /possible leak in shared\.txt/);
+  // `-m` lists the path once per parent it differs from; it is scanned once.
+  assert.equal(r.stderr.match(/possible leak in shared\.txt/g).length, 1);
+});
+
+test('a blob with a NUL byte is scanned instead of skipped as binary', () => {
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  // The NUL byte up front is what makes git and grep call this blob binary;
+  // the personal pattern sits on a later line.
+  commit(work, 'payload.bin', 'HDR \n\nMeeting with Hunter2Corp tomorrow\n', 'binary leak');
+  const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /possible leak in payload\.bin/);
+});
+
+test('a patterns file that cannot do its job refuses the push', () => {
+  // Readable but empty: it contributes no personal pattern at all, which used
+  // to look exactly like a clean scan.
+  {
+    const { work } = setup();
+    const empty = join(work, '..', 'empty-patterns.txt');
+    writeFileSync(empty, '');
+    commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'leak');
+    const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: empty });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /leak patterns file is empty/);
+  }
+  // A regex grep cannot compile: grep exits above 1, having said nothing at
+  // all about the content, so the push must be refused, not waved through.
+  {
+    const { work } = setup();
+    const broken = join(work, '..', 'broken-patterns.txt');
+    writeFileSync(broken, 'hunter2corp\n[unclosed\n');
+    commit(work, 'README.md', 'nothing secret here\n', 'clean');
+    const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: broken });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /could not scan README\.md/);
+    assert.match(r.stderr, /grep exited [2-9]/);
+  }
+});
