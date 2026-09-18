@@ -82,27 +82,36 @@
 // CONFORMANT on a reading the text does not plainly support is the
 // failure that gets a validator switched off.
 //
-// Section 11 also settles two questions this file no longer has to guess
-// at. First, quoted here rather than left as an inference: consumers
-// "MUST treat a bare `verified` mapping as a one-element list", which is
-// exactly what readVerifiedEvents below already did on this project's
-// own judgment before the citation existed. Second, and corrected in fix
-// round 3 (the sentence quoted here in an earlier round did not exist;
-// it spliced two real ones into a third): section 11 separately lists
-// what consumers "MUST NOT reject a bundle because of", one item being
-// "Unknown `type` values". That is why type-required below checks only
-// that `type` is non-empty and never enumerates what it may be; a closed
-// list of allowed types is a house rule (frontmatter.type_enum, task 5),
-// and never belongs here.
+// Two questions this file no longer has to guess at. First, from section
+// 11, quoted rather than left as an inference: consumers "MUST treat a
+// bare `verified` mapping as a one-element list", a bullet that then
+// cross-references section 5.2, where the format says it a second time
+// in its own words ("Consumers MUST treat a bare mapping as a
+// one-element list"). That is exactly what readVerifiedEvents below
+// already did on this project's own judgment before the citation
+// existed. Second, on why type-required never enumerates what a `type`
+// may be. Fix round 3 cited a section 11
+// bullet, one item in the list of what a consumer "MUST NOT reject a
+// bundle because of"; fix round 4 replaces it with section 4.1's own
+// direct sentence, which is both stronger and about the thing being
+// claimed rather than about rejection: "Producers SHOULD pick values
+// that are descriptive and self-explanatory; consumers MUST tolerate
+// unknown types gracefully, typically by treating them as generic
+// concepts." A closed list of allowed types is therefore a house rule
+// (frontmatter.type_enum, task 5), and never belongs here.
 //
-// Section 5, quoted rather than inferred: "Every timestamp-valued key in
-// OKF is an ISO 8601 datetime with an explicit UTC offset." This binds
-// generated.at and stale_after alike (fix round 2): a house rule cannot
-// widen a form the specification itself fixes to one, so stale_after no
-// longer accepts a plain date here at all, and a vault mid-migration off
-// plain dates declares that deviation to the house ruler instead
-// (validate.timestamp_deviation, task 5), which can downgrade a `should`
-// finding to a warning and can never touch a `must`.
+// Section 5, quoted rather than inferred, and from fix round 4 quoted
+// WHOLE: earlier rounds cut this sentence short inside its own quotation
+// marks, and an unmarked elision is an alteration, particularly in a
+// module whose entire argument is that you consult the source before you
+// assert. "Every timestamp-valued key in OKF is an ISO 8601 datetime
+// with an explicit UTC offset, for example `2026-06-30T14:00:00Z`."
+// This binds generated.at and stale_after alike (fix round 2): a house
+// rule cannot widen a form the specification itself fixes to one, so
+// stale_after no longer accepts a plain date here at all, and a vault
+// mid-migration off plain dates declares that deviation to the house
+// ruler instead (validate.timestamp_deviation, task 5), which can
+// downgrade a `should` finding to a warning and can never touch a `must`.
 //
 // Line numbers: a rule that is fundamentally about a whole FIELD (every
 // rule here except log-format, which is about heading LINES) reports the
@@ -153,10 +162,10 @@
 // its frontmatter parses fine and simply has no type key, which is the
 // commonest way this rule fires and had been miscast as the unterminated
 // case's message since fix round 1 narrowed that one branch without
-// revisiting the other; the offset ceiling on a datetime's UTC offset is
-// 14 hours, not 23 (the real range of UTC offsets in use, checked
-// against the offset's digits regardless of sign, so +14:00 and -12:00
-// both pass and +15:00 does not); frontmatterKeyLine now recognises a
+// revisiting the other; the offset ceiling on a datetime's UTC offset
+// dropped from 23 hours to 14 (but only partly: round 3 wrote the real
+// range into this comment and then checked a single unsigned ceiling,
+// which fix round 4 had to finish, see below); frontmatterKeyLine now recognises a
 // quoted key the same way findKeyLine in src/frontmatter.mjs already
 // does, since fix round 1 widened the shared lookup but left this
 // module's own line-number helper matching only the bare form, which
@@ -166,6 +175,43 @@
 // value that opens with a quote never has anything real following it on
 // the same line, which is what let a quoted, then commented, scalar
 // still misread.
+//
+// Fix round 4, five corrections, every one of them a correction to a
+// claim this project made about the format rather than to code that
+// misread a file:
+//
+// 1. Section 9 DOES state ordering. Its opening sentence is "The format
+//    is a flat list of date-grouped entries, newest first:", and section
+//    11 clause 3 makes following section 9 a matter of conformance, so
+//    the log ordering check is 'must', not 'should'. The claim that the
+//    section said nothing about ordering came from reading a window of
+//    lines that began one sentence too late; it is removed from this
+//    module and from the test file, not softened.
+// 2. The heading levels were backwards. The 'must' branch fired only for
+//    a well-formed date that failed the calendar, so "## 2026-5-22" and
+//    "## 22/05/2026", the commonest violations of section 9's one real
+//    MUST, were graded 'should' with a message that told a person their
+//    heading "is not a date" when it plainly was an attempt at one. See
+//    log-format below for the three-way split that replaces it.
+// 3. Two quotations were truncated inside their own quotation marks
+//    while being presented as whole sentences: section 5's closing "for
+//    example `2026-06-30T14:00:00Z`" was cut, and so was the trailing
+//    cross-reference to section 12 that ends section 8's sentence. An
+//    unmarked elision is an alteration. Both are quoted whole now. One
+//    substitution is made in every quotation in this file and is
+//    declared here rather than made silently: the format writes its
+//    cross-references with a section sign, which is not ASCII, and this
+//    file is ASCII only, so the sign is spelled out as the word
+//    "section" wherever a quotation contains it. Nothing else inside any
+//    quotation mark in this module differs from the source text.
+// 4. The no-type-enumeration decision now cites section 4.1's direct
+//    sentence about tolerating unknown types, not a section 11 bullet
+//    about what must not cause a bundle to be rejected.
+// 5. The UTC offset range is implemented, not merely described. Round 3
+//    wrote "so +14:00 and -12:00 both pass and +15:00 does not" in a
+//    comment and then compared a single unsigned ceiling of 14 hours,
+//    which accepted +14:59, -13:00 and -14:00. The real range is -12:00
+//    to +14:00 and the check is now sign-aware.
 import { posix } from 'node:path';
 import { readEntries, readMapping, readScalar, splitFrontmatter } from '../frontmatter.mjs';
 
@@ -218,22 +264,39 @@ const DATETIME_WITH_OFFSET_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(
 
 // A datetime with an explicit offset (a bare "Z" counts as one): right
 // shape, a calendar-valid date, a clock-valid time, and, when the offset
-// is not "Z", an offset hour of 0-14 and an offset minute of 0-59.
-// Fourteen, not twenty-four: a clock's own hour runs to 23, but a UTC
-// offset's real range in current use is -12:00 to +14:00, checked here
-// against the digits alone regardless of sign, so +14:00 and -12:00
-// both pass and +15:00 does not. Nothing asymmetric is coded for the
-// negative side on purpose: the format gives no distinct bound for it,
-// and a single ceiling checked against the unsigned digits already
-// accepts every real offset in use and rejects anything wider.
+// is not "Z", an offset inside the range UTC offsets actually occupy.
+//
+// That range is -12:00 to +14:00, and it is ASYMMETRIC, which is the
+// whole of fix round 4's correction here. Fix round 3 wrote the range
+// into this comment, in these words, and then implemented a single
+// unsigned ceiling of fourteen hours plus a minute bound of 59. Under
+// that check -13:00 and -14:00 passed, because their digits are no
+// larger than fourteen, and +14:59 passed too, because 14 and 59 are
+// each inside their own bound while the offset they make is not inside
+// anything. A comment describing the range is not the range being
+// checked; this now compares total minutes against the ceiling for the
+// offset's OWN sign, so +14:00 and -12:00 pass, and +14:59, +15:00,
+// -13:00 and -14:00 all fail.
+const MAX_OFFSET_MINUTES_EAST = 14 * 60; // +14:00, the eastern extreme in current use
+const MAX_OFFSET_MINUTES_WEST = 12 * 60; // -12:00, the western extreme in current use
+
+function isValidUtcOffset(zone) {
+  if (zone === 'Z') return true;
+  const sign = zone[0];
+  const hours = Number(zone.slice(1, 3));
+  const minutes = Number(zone.slice(4, 6));
+  if (minutes > 59) return false;
+  const total = hours * 60 + minutes;
+  return total <= (sign === '-' ? MAX_OFFSET_MINUTES_WEST : MAX_OFFSET_MINUTES_EAST);
+}
+
 function isValidIsoDatetimeWithOffset(value) {
   const match = DATETIME_WITH_OFFSET_PATTERN.exec(value);
   if (!match) return false;
   const [, yearStr, monthStr, dayStr, hourStr, minuteStr, secondStr, zone] = match;
   if (!isValidCalendarDate(Number(yearStr), Number(monthStr), Number(dayStr))) return false;
   if (!isValidTimeOfDay(Number(hourStr), Number(minuteStr), Number(secondStr))) return false;
-  if (zone === 'Z') return true;
-  return Number(zone.slice(1, 3)) <= 14 && Number(zone.slice(4, 6)) <= 59;
+  return isValidUtcOffset(zone);
 }
 
 // --- fenced code blocks, skipped before log-format reads headings -------------
@@ -364,11 +427,18 @@ function looksLikeUnterminatedFrontmatter(text) {
 
 // --- type-required (4.1) -------------------------------------------------------
 //
-// Non-empty, never enumerated: section 11 lists "Unknown `type` values"
-// among what consumers "MUST NOT reject a bundle because of", so this
-// check stops at "is type here and is it non-empty" on purpose. A closed
-// list of allowed types belongs to the house ruler's frontmatter.type_enum
-// (task 5), never here.
+// Non-empty, never enumerated. Section 4.1 is the direct authority, and
+// fix round 4 moved the citation to it from the section 11 bullet an
+// earlier round used: "Producers SHOULD pick values that are descriptive
+// and self-explanatory; consumers MUST tolerate unknown types
+// gracefully, typically by treating them as generic concepts." That is a
+// requirement on a consumer about types themselves, where the section 11
+// bullet ("Unknown `type` values", one item in the list of what a
+// consumer "MUST NOT reject a bundle because of") only said that an
+// unknown type cannot sink a whole bundle. Same conclusion, stronger and
+// better-aimed authority: this check stops at "is type here and is it
+// non-empty" on purpose, and a closed list of allowed types belongs to
+// the house ruler's frontmatter.type_enum (task 5), never here.
 
 const typeRequired = {
   id: 'type-required',
@@ -427,10 +497,14 @@ function isCommentLine(trimmedLine) {
 
 // --- index-no-frontmatter (8, 12) -----------------------------------------------
 //
-// Two checks, two levels, quoted rather than inferred (fix round 3).
-// Section 8 states plainly: "Index files contain no frontmatter, with
-// one exception: a bundle-root `index.md` MAY carry an `okf_version`
-// key." A non-root index carrying any frontmatter is therefore 'must'
+// Two checks, two levels, quoted rather than inferred (fix round 3),
+// and from fix round 4 quoted to the end of the sentence rather than
+// stopped one clause short inside the quotation marks. Section 8 states
+// plainly: "Index files contain no frontmatter, with one exception: a
+// bundle-root `index.md` MAY carry an `okf_version` key (section 12)."
+// (The format writes that closing cross-reference with a section sign,
+// spelled out here for ASCII, as this file's header declares.)
+// A non-root index carrying any frontmatter is therefore 'must'
 // (section 8 plus section 11 clause 3, which makes the reserved
 // filenames conformance). What section 8's exception does NOT plainly
 // say is whether a key beyond `okf_version` on the root index breaks
@@ -489,21 +563,61 @@ const indexNoFrontmatter = {
 
 // --- log-format (9) -------------------------------------------------------------
 //
-// Four checks, two levels (fix round 3). Section 9's text, quoted rather
-// than inferred, states exactly one requirement: "Date headings MUST use
-// ISO 8601 `YYYY-MM-DD` form." Section 9 says nothing about ordering and
-// nothing about frontmatter in the log; those checks stay, since they
-// are real and useful, but at 'should', the level for a reading the text
-// does not plainly support. The date-form check itself splits in two: a
-// heading whose text has the shape of an attempt at YYYY-MM-DD (four
-// digits, dash, two digits, dash, two digits) but fails the calendar is
-// squarely what section 9's MUST is about, since a calendar-impossible
-// date is not a real ISO 8601 date under any form, so that is 'must'. A
-// heading that does not even have that shape (an arbitrary prose
-// heading, "## Notes") is a WIDER claim, that every level-two heading in
-// the log ought to be a date at all, which section 9 never states, so
-// that is 'should'.
+// Four checks, two levels, regraded in fix round 4 against section 9
+// read from its own heading rather than from a window of lines.
+//
+// Section 9 carries two things this rule enforces. Its opening sentence:
+// "The format is a flat list of date-grouped entries, newest first:".
+// And its one sentence with a requirement keyword: "Date headings MUST
+// use ISO 8601 `YYYY-MM-DD` form." Section 11 clause 3 makes following
+// section 9 a matter of conformance ("Every reserved filename
+// (`index.md`, `log.md`) follows the structure in section 8 and section
+// 9 respectively when present"), so both of those are 'must'. ORDERING
+// IN PARTICULAR IS STATED, not merely shown by the example: fix rounds 1
+// to 3 graded it 'should' and said in this very comment that the section
+// was silent on it, which was false, and the false claim is deleted here
+// rather than softened. Section 9 IS silent on frontmatter in the log,
+// so that check alone stays 'should'.
+//
+// The heading check is three-way, and fix round 4 reversed two thirds of
+// it. What section 9's MUST is actually about is a DATE HEADING, so:
+//
+// - A heading that is an attempt at a date but is not in YYYY-MM-DD form
+//   ("## 2026-5-22", "## 22/05/2026") is 'must'. These are the commonest
+//   violations of the one MUST section 9 has, and earlier rounds graded
+//   them 'should' and told the person their heading "is not a date",
+//   which is both the wrong level and a message that teaches nothing.
+// - A heading in YYYY-MM-DD form naming a day that cannot exist
+//   ("## 2026-02-30") is also 'must': a date that cannot exist is not an
+//   ISO 8601 date.
+// - A heading that is plainly prose rather than any attempt at a date
+//   ("## Notes") is 'should'. Reading section 9's MUST as a claim that
+//   every level-two heading in a log must be a date is the wider reading
+//   the text does not plainly support, and on an arguable reading a
+//   validator takes the lower claim.
+//
+// The three messages say three different things on purpose: a person
+// reading "section 9 requires the YYYY-MM-DD form" about a heading whose
+// form is already fine learns nothing about what is wrong with it.
+
+// A heading is an ATTEMPT at a date when its whole text is digit groups
+// joined by date separators: "2026-5-22", "22/05/2026", "2026.05.22",
+// "2026-05-22-1". That is deliberately a narrow test. Anything looser
+// (any heading containing a number, say) would promote ordinary prose
+// headings to 'must', which is precisely the over-claim this rule's
+// levels exist to avoid, and the cost of being narrow is only that a
+// heading such as "## 22 May 2026" is reported at 'should' instead of
+// 'must', which is the safe direction to be wrong in.
+const DATE_ATTEMPT_PATTERN = /^[0-9]+(?:[-/.][0-9]+)+$/;
+
 function looksLikeDateAttempt(text) {
+  return DATE_ATTEMPT_PATTERN.test(text);
+}
+
+// The narrower question, asked only of a heading that is already an
+// attempt: is it in YYYY-MM-DD form, so that any remaining problem is
+// the calendar rather than the form?
+function hasIsoDateForm(text) {
   return DATE_PATTERN.test(text);
 }
 
@@ -531,19 +645,26 @@ const logFormat = {
       for (const heading of headings) {
         if (isValidIsoDate(heading.text)) {
           dated.push(heading);
+        } else if (hasIsoDateForm(heading.text)) {
+          findings.push({
+            file,
+            line: heading.line,
+            level: 'must',
+            message: `log heading "## ${heading.text}" is in YYYY-MM-DD form but names a day that does not exist; section 9 requires a real ISO 8601 date`,
+          });
         } else if (looksLikeDateAttempt(heading.text)) {
           findings.push({
             file,
             line: heading.line,
             level: 'must',
-            message: `log heading "## ${heading.text}" is not a valid ISO 8601 date; section 9 requires the YYYY-MM-DD form`,
+            message: `log heading "## ${heading.text}" is a date written in another form; section 9 requires date headings in ISO 8601 YYYY-MM-DD form`,
           });
         } else {
           findings.push({
             file,
             line: heading.line,
             level: 'should',
-            message: `log heading "## ${heading.text}" is not a date`,
+            message: `log heading "## ${heading.text}" is not a date heading; a log groups its entries under dates`,
           });
         }
       }
@@ -552,8 +673,8 @@ const logFormat = {
           findings.push({
             file,
             line: dated[i].line,
-            level: 'should',
-            message: `log dates should run from most recent to oldest; "${dated[i].text}" comes after "${dated[i - 1].text}"`,
+            level: 'must',
+            message: `log dates must run from most recent to oldest; "${dated[i].text}" comes after "${dated[i - 1].text}"`,
           });
         }
       }
@@ -565,9 +686,10 @@ const logFormat = {
 // --- generated-actor (5.2) -------------------------------------------------------
 //
 // generated.at, when present, must carry an explicit offset (a bare "Z"
-// counts as one). Section 5 of the format states this outright: "Every
-// timestamp-valued key in OKF is an ISO 8601 datetime with an explicit
-// UTC offset." That is a should-level trust-signal requirement, not a
+// counts as one). Section 5 of the format states this outright, quoted
+// whole: "Every timestamp-valued key in OKF is an ISO 8601 datetime with
+// an explicit UTC offset, for example `2026-06-30T14:00:00Z`." That is a
+// should-level trust-signal requirement, not a
 // house preference quietly promoted to a specification badge, so this
 // rule declares it in its own finding message and cites the section,
 // rather than leaving it implicit in which regex happened to be reused
@@ -673,15 +795,16 @@ const statusEnum = {
 // a datetime with an offset, on the assumption that narrowing to one
 // form was a house-level choice. Reading section 5 directly settled this
 // the other way: "Every timestamp-valued key in OKF is an ISO 8601
-// datetime with an explicit UTC offset" is the format's own text, with
-// no alternative on offer, so a plain date was leniency wearing a
-// specification badge, the precise confusion this module exists to
-// prevent. stale_after is a timestamp-valued key like any other; a plain
-// date is now a finding here, full stop. A vault mid-migration off plain
-// dates declares that deviation to the house ruler instead
-// (validate.timestamp_deviation, task 5), which downgrades this
-// should-level finding to a warning for that vault and can never touch a
-// must-level one.
+// datetime with an explicit UTC offset, for example
+// `2026-06-30T14:00:00Z`." is the format's own text, quoted whole since
+// fix round 4, with no alternative on offer, so a plain date was
+// leniency wearing a specification badge, the precise confusion this
+// module exists to prevent. stale_after is a timestamp-valued key like
+// any other; a plain date is now a finding here, full stop. A vault
+// mid-migration off plain dates declares that deviation to the house
+// ruler instead (validate.timestamp_deviation, task 5), which downgrades
+// this should-level finding to a warning for that vault and can never
+// touch a must-level one.
 
 const staleAfterFormat = {
   id: 'stale-after-format',

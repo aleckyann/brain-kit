@@ -418,32 +418,61 @@ test('log-format flags a log.md that carries frontmatter, at line 1, but allows 
   assert.equal(bad[0].level, 'should');
 });
 
-// Fix round 3: this single check splits into two, by level. A heading
-// that does not even have the shape of a date attempt ("## not a date")
-// is the WIDER, should-level claim (section 9 never says every heading
-// must be a date); a heading that HAS the shape but fails the calendar
-// ("## 2026-02-30") is squarely section 9's own must-level requirement,
-// since a calendar-impossible value is not YYYY-MM-DD form under any
-// reading. Both pinned down together, alongside a well-formed date
-// heading that must produce neither.
-test('log-format flags a heading with no date shape at should-level, and a heading with the shape but a bad calendar at must-level, but allows a well-formed date heading', () => {
+// Fix round 4: the heading check is three-way, and the two levels fix
+// round 3 assigned were backwards. Section 9's one MUST is "Date
+// headings MUST use ISO 8601 `YYYY-MM-DD` form", so a heading that is
+// plainly an attempt at a date and is NOT in that form ("## 2026-5-22",
+// "## 22/05/2026") is the most direct violation the section has, and was
+// being reported at 'should' with a message saying it "is not a date".
+// A well-formed date that fails the calendar ("## 2026-02-30") is 'must'
+// too, since a day that cannot exist is not an ISO 8601 date. Only a
+// heading that is not an attempt at a date at all ("## Notes") is
+// 'should', because reading the MUST as a rule that every level-two
+// heading in a log must be a date is the wider claim the text does not
+// plainly support.
+test('log-format grades a malformed date heading and an impossible date heading at must-level, and a prose heading at should-level, with three distinct messages', () => {
   const files = {
     ...cleanVaultFiles(),
-    'memory/log.md': ['## 2026-09-18', '', 'ok', '', '## not a date', '', '## 2026-02-30', '', 'bad', ''].join('\n'),
+    'memory/log.md': [
+      '## 2026-09-18', // line 1: well formed and real, no finding
+      '',
+      'ok',
+      '',
+      '## Notes', // line 5: prose, not an attempt at a date
+      '',
+      '## 2026-02-30', // line 7: right form, impossible day
+      '',
+      '## 2026-5-22', // line 9: a date, wrong form
+      '',
+      '## 22/05/2026', // line 11: a date, wrong form again
+      '',
+    ].join('\n'),
   };
   const findings = findingsFor(files).filter((f) => isSpec('log-format')(f) && f.file === 'memory/log.md');
-  assert.equal(findings.length, 2);
+  assert.equal(findings.length, 4);
 
-  const notShaped = findings.find((f) => f.line === 5);
-  assert.equal(notShaped.level, 'should');
-  assert.match(notShaped.message, /is not a date/);
+  const prose = findings.find((f) => f.line === 5);
+  assert.equal(prose.level, 'should');
+  assert.match(prose.message, /is not a date heading/);
 
-  const shapedButImpossible = findings.find((f) => f.line === 7);
-  assert.equal(shapedButImpossible.level, 'must');
-  assert.match(shapedButImpossible.message, /is not a valid ISO 8601 date/);
+  const impossible = findings.find((f) => f.line === 7);
+  assert.equal(impossible.level, 'must');
+  assert.match(impossible.message, /names a day that does not exist/);
+
+  for (const line of [9, 11]) {
+    const wrongForm = findings.find((f) => f.line === line);
+    assert.equal(wrongForm.level, 'must', `the heading on line ${line} violates section 9's only MUST`);
+    assert.match(wrongForm.message, /requires date headings in ISO 8601 YYYY-MM-DD form/);
+  }
+
+  // The three messages must not be interchangeable: telling someone
+  // "section 9 requires the YYYY-MM-DD form" about "## 2026-02-30",
+  // whose form is already fine, teaches them nothing about what is
+  // wrong, which is the defect fix round 4 was called in to fix.
+  assert.equal(new Set(findings.map((f) => f.message.replace(/"## [^"]*"/, ''))).size, 3);
 });
 
-test('log-format flags dates that run oldest-first instead of most-recent-first, at the line of the entry that breaks the order', () => {
+test('log-format flags dates that run oldest-first instead of most-recent-first, at must-level, at the line of the entry that breaks the order', () => {
   const files = {
     ...cleanVaultFiles(),
     'memory/log.md': ['## 2026-09-17', '', 'older, listed first', '', '## 2026-09-18', '', 'newer, listed second: wrong', ''].join('\n'),
@@ -452,8 +481,12 @@ test('log-format flags dates that run oldest-first instead of most-recent-first,
   assert.equal(findings.length, 1);
   assert.equal(findings[0].line, 5);
   assert.match(findings[0].message, /most recent to oldest/);
-  // Section 9 shows newest first and never states it as a requirement.
-  assert.equal(findings[0].level, 'should');
+  // Section 9 opens "The format is a flat list of date-grouped entries,
+  // newest first:", so ordering is STATED, not merely shown by the
+  // example, and section 11 clause 3 makes following section 9 a matter
+  // of conformance. Fix rounds 1 to 3 graded this 'should' on the false
+  // claim that the section was silent about order.
+  assert.equal(findings[0].level, 'must');
 });
 
 // Two consecutive headings dated the same day (more than one entry
@@ -520,9 +553,9 @@ test('log-format survives malformed and binary-ish content without throwing, and
 
   const messy = findings.filter((f) => isSpec('log-format')(f) && f.file === 'd/log.md');
   assert.equal(messy.length, 2);
-  assert.equal(messy[0].level, 'should');
-  assert.match(messy[0].message, /is not a date/);
-  assert.equal(messy[1].level, 'should');
+  assert.equal(messy[0].level, 'should'); // "## not-a-real-date" is prose, not an attempt at a date
+  assert.match(messy[0].message, /is not a date heading/);
+  assert.equal(messy[1].level, 'must'); // ordering: section 9 states "newest first"
   assert.match(messy[1].message, /most recent to oldest/);
 });
 
@@ -530,7 +563,7 @@ test('log-format survives malformed and binary-ish content without throwing, and
 // a fenced code block was read as a real heading or a real entry. Both
 // defects reproduced together here, inside a fence sandwiched between
 // two real, correctly ordered headings, so a regression back to reading
-// fences would reintroduce a "not an ISO date" finding for the comment
+// fences would reintroduce a "not a date heading" finding for the comment
 // AND a bogus out-of-order finding for the quoted future date, pointing
 // at lines that are only ever example text.
 test('log-format never reads a heading or a date from inside a fenced code block, but still reads one right outside it', () => {
@@ -561,7 +594,7 @@ test('log-format never reads a heading or a date from inside a fenced code block
   const findings = findingsFor(files).filter((f) => isSpec('log-format')(f) && f.file === 'memory/log.md');
   assert.equal(findings.length, 1, 'only the heading outside the fence should be flagged, not the two decoys inside it');
   assert.equal(findings[0].level, 'should');
-  assert.match(findings[0].message, /is not a date/);
+  assert.match(findings[0].message, /is not a date heading/);
   assert.match(findings[0].message, /OUTSIDE the fence/);
 });
 
@@ -613,19 +646,23 @@ test('withoutFencedBlocks recognises a tilde fence, does not close a longer fenc
   assert.deepEqual(findings.filter((f) => f.file === 'b/log.md'), []);
   const cFindings = findings.filter((f) => isSpec('log-format')(f) && f.file === 'c/log.md');
   assert.equal(cFindings.length, 1, 'the heading after the indented code block must still be read and flagged');
-  assert.match(cFindings[0].message, /is not a date/);
+  assert.match(cFindings[0].message, /is not a date heading/);
 });
 
 // log-format's own heading check shares the same calendar-valid date
 // function as stale-after-format (fix round 1): a heading with the right
-// shape but an impossible date is "not an ISO date", the same message a
-// malformed heading gets, since neither is a real date.
+// shape but an impossible date is still a must-level violation of
+// section 9, since a day that never happened is not an ISO 8601 date.
+// Its message says the form is fine and the day is not, which is a
+// different message from the one a wrongly-formed date gets (fix round
+// 4): the two were interchangeable before, and the interchangeable one
+// told a person their form was wrong when it was not.
 test('log-format checks the calendar on its headings too, not just their shape', () => {
   const files = { ...cleanVaultFiles(), 'memory/log.md': ['## 2026-02-29', '', 'a leap day that never happened in 2026', ''].join('\n') };
   const findings = findingsFor(files).filter((f) => isSpec('log-format')(f) && f.file === 'memory/log.md');
   assert.equal(findings.length, 1);
   assert.equal(findings[0].level, 'must');
-  assert.match(findings[0].message, /is not a valid ISO 8601 date/);
+  assert.match(findings[0].message, /names a day that does not exist/);
 });
 
 // --- generated-actor ---------------------------------------------------------
@@ -783,8 +820,11 @@ test('status-enum does not fire when status is absent, but does fire, against PA
 
 // --- stale-after-format ----------------------------------------------------------
 
-// Fix round 2: section 5 of the format states "Every timestamp-valued
-// key in OKF is an ISO 8601 datetime with an explicit UTC offset", with
+// Fix round 2: section 5 of the format states, quoted whole since fix
+// round 4 (earlier rounds stopped this sentence short inside its own
+// quotation marks, which is an alteration, not a shortening), "Every
+// timestamp-valued key in OKF is an ISO 8601 datetime with an explicit
+// UTC offset, for example `2026-06-30T14:00:00Z`.", with
 // no alternative on offer, so the plan's earlier "a plain date is
 // accepted too" was leniency wearing a specification badge. This is
 // still the case that matters most, in the opposite direction from
@@ -873,20 +913,53 @@ test('generated-actor checks the calendar and the clock on at, not just the shap
   }
 });
 
-// Fix round 3: the offset ceiling is 14 hours (the real range of UTC
-// offsets in use), not 24. Plus fourteen and minus twelve, the two
-// examples the review named, must both pass; plus fifteen must not.
-test('generated-actor accepts an offset up to plus fourteen hours and down to minus twelve, but not beyond plus fourteen', () => {
+// The UTC offset range, fix round 4. Fix round 3 wrote the real range
+// (-12:00 to +14:00) into the module's comment and then implemented a
+// single unsigned ceiling of fourteen hours with a separate minute bound
+// of 59, which is not that range: it accepted +14:59, because 14 and 59
+// each sit inside their own bound while the offset they compose does
+// not, and it accepted -13:00 and -14:00, because their digits are no
+// larger than fourteen. The range is ASYMMETRIC, and the four cases the
+// old check let through are pinned down here beside the two that must
+// pass, since a test that only tried +15:00 was satisfied by the
+// unsigned ceiling and could never have caught any of them.
+test('generated-actor accepts the real UTC offset range, plus fourteen hours to minus twelve, rejecting plus fourteen fifty-nine, plus fifteen, minus thirteen and minus fourteen', () => {
+  const accepted = { 'plus 14:00, the eastern extreme': '+14:00', 'minus 12:00, the western extreme': '-12:00' };
+  const rejected = {
+    'plus 15:00, beyond the eastern extreme': '+15:00',
+    'plus 14:59, inside the hour ceiling but beyond the offset it composes': '+14:59',
+    'minus 13:00, beyond the western extreme though inside an unsigned ceiling of 14': '-13:00',
+    'minus 14:00, the mirror of the eastern extreme, which the west does not reach': '-14:00',
+  };
+
+  for (const [label, offset] of Object.entries(accepted)) {
+    const files = { ...cleanVaultFiles(), 'people/offset.md': CLEAN_NOTE.replace('at: 2026-09-18T09:30:00Z }', `at: 2026-09-18T09:30:00${offset} }`) };
+    const findings = findingsFor(files).filter((f) => isSpec('generated-actor')(f) && f.file === 'people/offset.md');
+    assert.deepEqual(findings, [], `${label} is a real offset and must pass`);
+  }
+
+  for (const [label, offset] of Object.entries(rejected)) {
+    const files = { ...cleanVaultFiles(), 'people/offset.md': CLEAN_NOTE.replace('at: 2026-09-18T09:30:00Z }', `at: 2026-09-18T09:30:00${offset} }`) };
+    const findings = findingsFor(files).filter((f) => isSpec('generated-actor')(f) && f.file === 'people/offset.md');
+    assert.equal(findings.length, 1, `${label} is not a real offset and must be flagged`);
+  }
+});
+
+// The same range, checked on stale_after rather than generated.at: both
+// read the one isValidIsoDatetimeWithOffset, and nothing else pins that
+// down, so a future rule reading timestamps through a second path would
+// go unnoticed here.
+test('stale-after-format applies the same UTC offset range as generated.at does', () => {
   const files = {
     ...cleanVaultFiles(),
-    'people/plus14.md': CLEAN_NOTE.replace('at: 2026-09-18T09:30:00Z }', 'at: 2026-09-18T09:30:00+14:00 }'),
-    'people/minus12.md': CLEAN_NOTE.replace('at: 2026-09-18T09:30:00Z }', 'at: 2026-09-18T09:30:00-12:00 }'),
-    'people/plus15.md': CLEAN_NOTE.replace('at: 2026-09-18T09:30:00Z }', 'at: 2026-09-18T09:30:00+15:00 }'),
+    'people/east-extreme.md': CLEAN_NOTE.replace('stale_after: 2026-12-18T00:00:00-03:00', 'stale_after: 2026-12-18T00:00:00+14:00'),
+    'people/west-extreme.md': CLEAN_NOTE.replace('stale_after: 2026-12-18T00:00:00-03:00', 'stale_after: 2026-12-18T00:00:00-12:00'),
+    'people/too-far-west.md': CLEAN_NOTE.replace('stale_after: 2026-12-18T00:00:00-03:00', 'stale_after: 2026-12-18T00:00:00-13:00'),
   };
   const findings = findingsFor(files);
-  assert.deepEqual(findings.filter((f) => isSpec('generated-actor')(f) && f.file === 'people/plus14.md'), []);
-  assert.deepEqual(findings.filter((f) => isSpec('generated-actor')(f) && f.file === 'people/minus12.md'), []);
-  assert.equal(findings.filter((f) => isSpec('generated-actor')(f) && f.file === 'people/plus15.md').length, 1);
+  assert.deepEqual(findings.filter((f) => isSpec('stale-after-format')(f) && f.file === 'people/east-extreme.md'), []);
+  assert.deepEqual(findings.filter((f) => isSpec('stale-after-format')(f) && f.file === 'people/west-extreme.md'), []);
+  assert.equal(findings.filter((f) => isSpec('stale-after-format')(f) && f.file === 'people/too-far-west.md').length, 1);
 });
 
 // Leap-day handling itself is untouched by this round; re-confirmed here
