@@ -412,7 +412,7 @@ const typeEnum = {
       }
       if (isBlank(value)) continue; // an empty type is type-required's finding, not this one's
       if (!allowed.includes(value)) {
-        findings.push({ file, line, check: 'type-allowed', messageKey: 'house.type_enum.invalid', params: { value, allowed: allowed.join(', ') } });
+        findings.push({ file, line, check: 'type-allowed', messageKey: 'house.type_enum.invalid', params: { value, allowed } });
       }
     }
     return findings;
@@ -524,7 +524,7 @@ const extensionFields = {
               line,
               check: 'enum-value',
               messageKey: 'house.extension_fields.enum',
-              params: { field: fieldName, value, allowed: allowed.join(', ') },
+              params: { field: fieldName, value, allowed },
             });
           }
         }

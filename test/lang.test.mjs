@@ -39,6 +39,17 @@ test('interpolate replaces known placeholders and keeps unknown ones', () => {
   assert.equal(interpolate('a {x} b {y}', { x: 1 }), 'a 1 b {y}');
 });
 
+// An array param joins with ", ": the one list-formatting decision this
+// module owns so no rule module has to make it (src/rules/house.mjs's
+// type-enum and extension-fields rules used to call `.join(', ')`
+// themselves before passing an already-formed string; they now pass
+// the array through and this is where it becomes text).
+test('interpolate joins an array param with ", ", but stringifies a non-array value plainly', () => {
+  assert.equal(interpolate('allowed: {list}', { list: ['a', 'b', 'c'] }), 'allowed: a, b, c');
+  assert.equal(interpolate('allowed: {list}', { list: [] }), 'allowed: ');
+  assert.equal(interpolate('count: {n}', { n: 3 }), 'count: 3');
+});
+
 test('translator returns the requested language', () => {
   const t = createTranslator('en');
   assert.match(t('cli.unknown_command', { command: 'zzz' }), /zzz/);

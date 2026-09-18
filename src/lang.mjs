@@ -19,8 +19,20 @@ export function loadMessages(lang) {
   return cache.get(lang);
 }
 
+// An array value joins with ", " (a list of allowed types or values,
+// today's only array-shaped param); anything else stringifies plainly.
+// This is the one place that decision is made: it used to be made
+// twice, independently, inside src/rules/house.mjs's own type-enum and
+// extension-fields rules (`allowed.join(', ')`, a presentation choice
+// this task's whole point was to remove from the rule modules), so a
+// rule module could still shape how a list reads on screen even after
+// every OTHER piece of prose had moved to the language pack.
+function formatValue(value) {
+  return Array.isArray(value) ? value.join(', ') : String(value);
+}
+
 export function interpolate(text, vars = {}) {
-  return text.replace(/\{(\w+)\}/g, (match, key) => (key in vars ? String(vars[key]) : match));
+  return text.replace(/\{(\w+)\}/g, (match, key) => (key in vars ? formatValue(vars[key]) : match));
 }
 
 // createTranslator(lang, { warn, packs })

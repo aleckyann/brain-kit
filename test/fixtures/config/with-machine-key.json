@@ -227,9 +227,9 @@
   "curate": {
     "enabled": true,
     "schedule": [
-      "09:30",
-      "14:00",
-      "20:00"
+      "06:00",
+      "12:00",
+      "18:00"
     ],
     "prompt": ".brain-kit/prompts/curate.md",
     "signature": "Second brain curator (example)",
@@ -274,7 +274,7 @@
       ],
       "exclude_path_patterns": [
         "/-tmp-",
-        "--claude-worktrees-"
+        "/-scratch-"
       ],
       "sample_strategy": "tail-first"
     },
@@ -325,7 +325,7 @@
   },
   "briefing": {
     "enabled": true,
-    "schedule": "40 8 * * 1-5",
+    "schedule": "0 9 * * 1-5",
     "prompt": ".brain-kit/prompts/briefing.md",
     "signature": "Second brain morning briefing (example)",
     "max_words": 500,

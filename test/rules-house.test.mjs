@@ -435,13 +435,14 @@ test('type-enum flags a type outside the configured list, but allows one inside 
   const bad = findings.filter((f) => isHouseCheck('type-enum', 'type-allowed')(f) && f.file === 'people/robot.md');
   assert.equal(bad.length, 1);
   assert.match(renderedMessage(bad[0]), /robot/);
-  // The allowed list is joined by the RULE, into a plain string param
-  // (interpolate has no array handling of its own), so the exact
-  // separator is this rule's own choice, not messages.json's: pinned
-  // down here rather than left to a substring match that would pass
-  // just the same whether the list rendered as "person, project" or
-  // some other separator entirely.
-  assert.equal(bad[0].params.allowed, 'person, project');
+  // The allowed list is passed through as the raw array it already
+  // is: how a list reads on screen (the ", " separator) is
+  // interpolate()'s own decision now (src/lang.mjs), not this rule's,
+  // so the rule's own param is pinned as the array, and the rendered
+  // separator is pinned separately rather than left to a substring
+  // match that would pass just the same whether the list rendered as
+  // "person, project" or some other separator entirely.
+  assert.deepEqual(bad[0].params.allowed, ['person', 'project']);
   assert.match(renderedMessage(bad[0]), /person, project/);
   assert.deepEqual(findings.filter((f) => isHouse('type-enum')(f) && f.file === 'people/ana.md'), []);
 
@@ -517,9 +518,10 @@ test('extension-fields flags an enum field outside its declared values, but allo
   const findings = findingsFor({ files, config });
   const bad = findings.filter((f) => isHouseCheck('extension-fields', 'enum-value')(f) && f.file === 'people/bad-enum.md');
   assert.equal(bad.length, 1);
-  // Same join, same rule as type-enum's own (frontmatter.type_enum),
-  // pinned down here too rather than left to a substring match.
-  assert.equal(bad[0].params.allowed, 'team, external');
+  // Same array-typed param, same rule as type-enum's own
+  // (frontmatter.type_enum), pinned down here too rather than left to
+  // a substring match.
+  assert.deepEqual(bad[0].params.allowed, ['team', 'external']);
   assert.match(renderedMessage(bad[0]), /team, external/);
   assert.deepEqual(findings.filter((f) => isHouse('extension-fields')(f) && f.file === 'people/good-enum.md'), []);
 });
