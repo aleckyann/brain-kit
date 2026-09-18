@@ -11,7 +11,7 @@
 // satisfied by a reader that never reads anything at all.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { PARSER_LIMITS, readEntries, readList, readMapping, readScalar, splitFrontmatter } from '../src/frontmatter.mjs';
+import { PARSER_LIMITS, frontmatterKeyLine, readEntries, readList, readMapping, readScalar, splitFrontmatter } from '../src/frontmatter.mjs';
 
 // --- splitFrontmatter --------------------------------------------------------
 
@@ -534,5 +534,51 @@ test('every reader is safe to call on an empty or missing frontmatter, and repor
     assert.equal(readMapping(frontmatter, 'generated'), null);
     assert.equal(readList(frontmatter, 'tags'), null);
     assert.equal(readEntries(frontmatter, 'sources'), null);
+  }
+});
+
+// --- frontmatterKeyLine ------------------------------------------------------
+//
+// Shared by both rules modules, which used to each carry their own copy:
+// one dropped the quoted-key alternative findKeyLine already recognises,
+// the other built a RegExp from the key text without escaping it, which
+// throws for a config-supplied field name containing a metacharacter.
+// Sharing this one implementation is what makes both bugs impossible by
+// construction rather than fixed twice.
+
+test('frontmatterKeyLine finds a bare key\x27s line, and null for an absent one', () => {
+  const frontmatter = 'type: note\ndescription: an example';
+  assert.equal(frontmatterKeyLine(frontmatter, 'description'), 3); // line 1 is "---", line 2 is "type", line 3 is "description"
+  assert.equal(frontmatterKeyLine(frontmatter, 'missing'), null);
+});
+
+test('frontmatterKeyLine finds a double- or single-quoted key at its own line, not null as if it were absent', () => {
+  const doubleQuoted = 'type: note\n"description": an example';
+  const singleQuoted = "type: note\n'description': an example";
+  assert.equal(frontmatterKeyLine(doubleQuoted, 'description'), 3);
+  assert.equal(frontmatterKeyLine(singleQuoted, 'description'), 3);
+});
+
+test('frontmatterKeyLine never throws for a key containing a regular-expression metacharacter, and still finds its real line', () => {
+  const frontmatter = 'type: note\n"a(b": v';
+  let line;
+  assert.doesNotThrow(() => {
+    line = frontmatterKeyLine(frontmatter, 'a(b');
+  });
+  assert.equal(line, 3);
+});
+
+test('frontmatterKeyLine does not match a key that merely appears as a word inside another line\x27s value', () => {
+  const frontmatter = 'description: see also description-of-thing\ndescription: real one';
+  assert.equal(frontmatterKeyLine(frontmatter, 'description'), 2); // the first, top-level "description:" line, not the mention inside the value
+});
+
+test('frontmatterKeyLine returns null for null or empty frontmatter, never throwing', () => {
+  for (const frontmatter of [null, '']) {
+    let line;
+    assert.doesNotThrow(() => {
+      line = frontmatterKeyLine(frontmatter, 'type');
+    });
+    assert.equal(line, null);
   }
 });

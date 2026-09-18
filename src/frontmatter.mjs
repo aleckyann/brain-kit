@@ -515,6 +515,39 @@ export function readEntries(frontmatter, key) {
   return entries;
 }
 
+// --- frontmatterKeyLine -----------------------------------------------------
+
+// Finds the 1-based line, in the WHOLE FILE, of the top-level frontmatter
+// line "key:" (column 0, quoted or bare, inside the frontmatter block
+// only), using the exact same lookup every reader above already shares.
+// Returns null when the key's own line cannot be found, which callers
+// use for "the key is absent, so there is no line to point at".
+// `frontmatter` is the exact string splitFrontmatter returns (never the
+// whole file, never the body): its line 0 is always the file's line 2,
+// since splitFrontmatter's own opening delimiter match consumes exactly
+// one line ("---" plus its own newline) before frontmatter begins,
+// whatever the block's content is.
+//
+// Exported once, here, rather than duplicated in each rules module. Two
+// independent copies of exactly this helper (src/rules/spec.mjs and
+// src/rules/house.mjs) diverged from each other in two different ways at
+// once: the house copy rebuilt its own RegExp from the key text without
+// escaping it first, which throws outright for a config-supplied field
+// name containing a regular-expression metacharacter such as "a(b", and
+// separately dropped the quoted-key alternative findKeyLine already
+// recognises, so a quoted key read correctly by every OTHER reader in
+// this file still reported a null line from that copy, as if it were
+// absent. Sharing findKeyLine directly, instead of re-deriving its
+// pattern a third time, means a future fix to how a key is found (a new
+// quoting form, a new escaping rule) reaches every caller by construction,
+// which is the same lesson src/markdown.mjs's own header states of
+// itself for fenced code.
+export function frontmatterKeyLine(frontmatter, key) {
+  if (!frontmatter) return null;
+  const found = findKeyLine(frontmatter.split('\n'), key);
+  return found ? found.index + 2 : null;
+}
+
 // --- PARSER_LIMITS -----------------------------------------------------------
 
 // What this reader cannot see, or what it can see but might still

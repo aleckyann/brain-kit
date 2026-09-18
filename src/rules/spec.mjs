@@ -212,8 +212,50 @@
 //    comment and then compared a single unsigned ceiling of 14 hours,
 //    which accepted +14:59, -13:00 and -14:00. The real range is -12:00
 //    to +14:00 and the check is now sign-aware.
+//
+// Fix round 5, three corrections, none of them a misread file this time
+// either:
+//
+// 1. `check`. A finding now carries a `check` field naming the specific
+//    assertion inside its rule, stable and unique within that rule. A
+//    rule id was not fine enough: generated-actor emits an actor-presence
+//    check and a timestamp-form check under one id, and the house
+//    ruler's timestamp deviation step used to select by id alone, so
+//    declaring "we have not migrated our timestamps" quietly also
+//    downgraded a missing-actor finding that has nothing to do with a
+//    timestamp. Every check below is named for what it asserts, not for
+//    its rule, and `runSpecRules` stamps it on every finding alongside
+//    `id`.
+// 2. Fenced, indented and inline code are no longer stripped by a copy
+//    of this rule kept independently in this file. They are stripped by
+//    src/markdown.mjs, imported here and by the house ruler alike: see
+//    that module's own header for why an independent copy is how this
+//    exact rule came to be reimplemented, weaker, in src/rules/house.mjs,
+//    and never fixed there across three rounds of fixing it here.
+//    withoutFencedBlocks and FENCE_LINE are gone from this file; log-format
+//    below calls stripCode instead.
+// 3. This module quoted section 5 as binding "every timestamp-valued
+//    key" and then checked the form of only two of them: generated.at
+//    and stale_after. verified[].at was checked for presence and not
+//    for form, and sources[].last_modified was not checked at all. A
+//    citation that claims more than the code enforces is the same
+//    defect as a `must` claimed on a `should`, pointed the other way,
+//    so verified-events now validates verified[].at's form the same way
+//    generated-actor validates generated.at's, and sources-resource
+//    gains a check for sources[].last_modified, when present, on the
+//    same terms. Neither field is required to be present (section 5.1
+//    and 5.2 require only `resource` and `by`/`at` respectively where
+//    this file already required them; `last_modified` is not named as
+//    required anywhere), so both new checks, like generated.at's, apply
+//    only when the field is present.
+//
+// Also shared, and no longer duplicated: frontmatterKeyLine now lives in
+// src/frontmatter.mjs, exported once and imported here and by the house
+// ruler, rather than kept as two copies that had already, separately,
+// diverged from each other (see that export's own comment).
 import { posix } from 'node:path';
-import { readEntries, readMapping, readScalar, splitFrontmatter } from '../frontmatter.mjs';
+import { frontmatterKeyLine, readEntries, readMapping, readScalar, splitFrontmatter } from '../frontmatter.mjs';
+import { stripCode } from '../markdown.mjs';
 
 const RESERVED_FILENAMES = Object.freeze(['index.md', 'log.md']);
 const STATUS_ENUM = new Set(['draft', 'stable', 'deprecated']);
@@ -299,60 +341,6 @@ function isValidIsoDatetimeWithOffset(value) {
   return isValidUtcOffset(zone);
 }
 
-// --- fenced code blocks, skipped before log-format reads headings -------------
-//
-// A "## " line inside a fenced code block is an example, not a heading,
-// and a date quoted inside a fence is not a real log entry: this is the
-// third defect carried over from the original validator (its own log
-// check scanned the raw file text for headings with no fence awareness
-// at all), and it lands specifically in the one rule that works from raw
-// text instead of the frontmatter split, which is exactly the hazard
-// src/frontmatter.mjs's own header names as something its design removes
-// (a "---" inside a fenced block is never mistaken for a delimiter there,
-// for the same reason). Blanking each fenced line, rather than deleting
-// it, keeps every line NUMBER after the fence exactly where it was: a
-// heading reported after a multi-line fence must still point at its own
-// real line, not at a line shifted up by however long the fence was.
-//
-// Fix round 3: matches the fence rule the review handed down, not a bare
-// "```" prefix. A fence marker is up to three leading spaces, then three
-// or more backticks OR three or more tildes (never mixed), with nothing
-// but the rest of the line after it (an info string on an OPENING fence
-// is allowed and ignored; a CLOSING fence allows only trailing
-// whitespace). The four leading spaces of a real indented code block
-// never match "at most three", so a fence-shaped line inside one is
-// plain text here, not a toggle: this is what fixed the false negative
-// where such a line silently opened a fence that swallowed every real
-// heading after it. Closing requires the SAME character and a marker at
-// LEAST as long as the one that opened it, tracked in `fence`, so a
-// shorter same-character fence nested inside a longer one (three
-// backticks inside four) is content, not a close, and a tilde fence is
-// recognised on the same terms as a backtick one instead of being
-// missed entirely.
-const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})[ \t]*(.*)$/;
-
-function withoutFencedBlocks(text) {
-  let fence = null; // { char, length } of the open fence, or null
-  return text
-    .split('\n')
-    .map((line) => {
-      const match = FENCE_LINE.exec(line);
-      if (!match) return fence ? '' : line;
-
-      const marker = match[1];
-      const rest = match[2];
-      if (!fence) {
-        fence = { char: marker[0], length: marker.length };
-        return '';
-      }
-      if (marker[0] === fence.char && marker.length >= fence.length && rest.trim() === '') {
-        fence = null;
-      }
-      return ''; // a marker line while inside a fence is always blanked, whether it closes the fence or is merely content that happens to look like one
-    })
-    .join('\n');
-}
-
 // A value read back from a mapping or entries object counts as blank when
 // the key was never there at all (undefined) or was there with nothing
 // but whitespace: the format has no reason to tell those two apart, since
@@ -361,33 +349,6 @@ function withoutFencedBlocks(text) {
 // than a string or undefined for a leaf value; today it never does.
 function isBlank(value) {
   return value === undefined || value === null || String(value).trim() === '';
-}
-
-// Finds the 1-based line, in the whole file, of the top-level frontmatter
-// line "key:" (column 0, inside the frontmatter block only). Returns null
-// when the key's own line cannot be found, which callers use for "the key
-// is absent, so there is no line to point at". `frontmatter` is the exact
-// string splitFrontmatter returns (never the whole file, never the body):
-// its line 0 is always the file's line 2, since splitFrontmatter's own
-// opening delimiter match consumes exactly one line ("---" plus its own
-// newline) before frontmatter begins, whatever the block's content is.
-//
-// The key may be written bare or quoted ("key": value, 'key': value),
-// matching findKeyLine in src/frontmatter.mjs on the same three
-// alternatives: fix round 1 widened that shared lookup so every reader
-// finds a quoted key, but left this helper matching only the bare form,
-// so a quoted key was read correctly and then reported at a null line,
-// as if it were absent. Fixed here rather than by exporting and reusing
-// findKeyLine itself, which is private to that module on purpose (this
-// helper only needs WHERE a key's line is, never how its value reads).
-function frontmatterKeyLine(frontmatter, key) {
-  if (!frontmatter) return null;
-  const pattern = new RegExp(`^(?:"${key}"|'${key}'|${key})[ \t]*:`);
-  const lines = frontmatter.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    if (pattern.test(lines[i])) return i + 2;
-  }
-  return null;
 }
 
 // Reads `verified` in either shape the format allows: a single event
@@ -467,18 +428,19 @@ const typeRequired = {
             findings.push({
               file,
               line: null,
+              check: 'type-present',
               message: 'frontmatter opens with "---" but is never closed with a second one, so type cannot be confirmed; close the block',
             });
           } else {
-            findings.push({ file, line: null, message: 'type is required but missing (the file has no frontmatter at all)' });
+            findings.push({ file, line: null, check: 'type-present', message: 'type is required but missing (the file has no frontmatter at all)' });
           }
         } else {
-          findings.push({ file, line: null, message: 'type is required but missing (this file has frontmatter, but no type key in it)' });
+          findings.push({ file, line: null, check: 'type-present', message: 'type is required but missing (this file has frontmatter, but no type key in it)' });
         }
       } else if (value === undefined) {
-        findings.push({ file, line, message: 'type is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' });
+        findings.push({ file, line, check: 'shape-readable', message: 'type is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' });
       } else if (isBlank(value)) {
-        findings.push({ file, line, message: 'type is present but empty; it must be a non-empty string' });
+        findings.push({ file, line, check: 'type-non-empty', message: 'type is present but empty; it must be a non-empty string' });
       }
     }
     return findings;
@@ -527,6 +489,7 @@ const indexNoFrontmatter = {
           file,
           line: 1,
           level: 'must',
+          check: 'no-frontmatter-outside-root',
           message: 'index.md is reserved and must carry no frontmatter (only the root index may declare okf_version)',
         });
         continue;
@@ -553,6 +516,7 @@ const indexNoFrontmatter = {
           file,
           line: extraIndex + 2,
           level: 'should',
+          check: 'root-okf-version-only',
           message: `the root index may declare only okf_version and nothing else; found "${lines[extraIndex].trim()}"`,
         });
       }
@@ -631,11 +595,11 @@ const logFormat = {
       const text = context.readFile(file);
       const { hasFrontmatter } = splitFrontmatter(text);
       if (hasFrontmatter) {
-        findings.push({ file, line: 1, level: 'should', message: 'log.md is reserved and should carry no frontmatter' });
+        findings.push({ file, line: 1, level: 'should', check: 'no-frontmatter', message: 'log.md is reserved and should carry no frontmatter' });
       }
 
       const headings = [];
-      const lines = withoutFencedBlocks(text).split('\n');
+      const lines = stripCode(text).split('\n');
       for (let i = 0; i < lines.length; i++) {
         const match = /^## (.+)$/.exec(lines[i]);
         if (match) headings.push({ text: match[1].trim(), line: i + 1 });
@@ -650,6 +614,7 @@ const logFormat = {
             file,
             line: heading.line,
             level: 'must',
+            check: 'heading-calendar',
             message: `log heading "## ${heading.text}" is in YYYY-MM-DD form but names a day that does not exist; section 9 requires a real ISO 8601 date`,
           });
         } else if (looksLikeDateAttempt(heading.text)) {
@@ -657,6 +622,7 @@ const logFormat = {
             file,
             line: heading.line,
             level: 'must',
+            check: 'heading-form',
             message: `log heading "## ${heading.text}" is a date written in another form; section 9 requires date headings in ISO 8601 YYYY-MM-DD form`,
           });
         } else {
@@ -664,6 +630,7 @@ const logFormat = {
             file,
             line: heading.line,
             level: 'should',
+            check: 'heading-not-a-date',
             message: `log heading "## ${heading.text}" is not a date heading; a log groups its entries under dates`,
           });
         }
@@ -674,6 +641,7 @@ const logFormat = {
             file,
             line: dated[i].line,
             level: 'must',
+            check: 'ordering',
             message: `log dates must run from most recent to oldest; "${dated[i].text}" comes after "${dated[i - 1].text}"`,
           });
         }
@@ -708,16 +676,17 @@ const generatedActor = {
       if (generated === null) continue; // absent: this rule only applies when generated is present
       const line = frontmatterKeyLine(frontmatter, 'generated');
       if (generated === undefined) {
-        findings.push({ file, line, message: 'generated is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' });
+        findings.push({ file, line, check: 'shape-readable', message: 'generated is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' });
         continue;
       }
       if (isBlank(generated.by)) {
-        findings.push({ file, line, message: 'generated.by is required but missing or empty' });
+        findings.push({ file, line, check: 'actor-present', message: 'generated.by is required but missing or empty' });
       }
       if (!isBlank(generated.at) && !isValidIsoDatetimeWithOffset(generated.at)) {
         findings.push({
           file,
           line,
+          check: 'timestamp-form',
           message: `generated.at "${generated.at}" is not an ISO 8601 datetime with an explicit UTC offset, which section 5 requires for every timestamp-valued key`,
         });
       }
@@ -727,6 +696,20 @@ const generatedActor = {
 };
 
 // --- verified-events (5.2) -------------------------------------------------------
+//
+// Fix round 5: verified[].at used to be checked only for presence, the
+// same way verified[].by is, even though it is exactly as timestamp-
+// valued as generated.at, which this file already validates for FORM
+// and not merely presence. This module quotes section 5 as binding
+// "every timestamp-valued key"; checking one of them for presence alone
+// while quoting a sentence that promises form for all of them is the
+// same defect as a `must` claimed on a `should`, pointed the other way.
+// event-actor (by) and event-timestamp-form (at) are now two separate
+// checks, not one combined message, for the same reason generated-actor
+// already keeps actor-present and timestamp-form apart: a downstream
+// step that selects by check (the house ruler's timestamp deviation,
+// task 5) must be able to touch the timestamp-shaped failure without
+// also touching the actor-shaped one.
 
 const verifiedEvents = {
   id: 'verified-events',
@@ -741,7 +724,7 @@ const verifiedEvents = {
       if (events === null) continue; // absent: this rule only applies when verified is present
       const line = frontmatterKeyLine(frontmatter, 'verified');
       if (events === undefined) {
-        findings.push({ file, line, message: 'verified is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' });
+        findings.push({ file, line, check: 'shape-readable', message: 'verified is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' });
         continue;
       }
       if (events.length === 0) {
@@ -752,12 +735,22 @@ const verifiedEvents = {
         // NOT this case: readVerifiedEvents normalises it into a single
         // one-element list instead, which already fails the by/at check
         // below on its own, the same way it did before this round.
-        findings.push({ file, line, message: 'verified is present but carries no events; remove the key or add at least one with by and at' });
+        findings.push({ file, line, check: 'has-events', message: 'verified is present but carries no events; remove the key or add at least one with by and at' });
         continue;
       }
       events.forEach((event, index) => {
-        if (isBlank(event.by) || isBlank(event.at)) {
-          findings.push({ file, line, message: `verified[${index}] must carry both a non-empty by and a non-empty at` });
+        if (isBlank(event.by)) {
+          findings.push({ file, line, check: 'event-actor', message: `verified[${index}].by is required but missing or empty` });
+        }
+        if (isBlank(event.at)) {
+          findings.push({ file, line, check: 'event-timestamp-form', message: `verified[${index}].at is required but missing or empty` });
+        } else if (!isValidIsoDatetimeWithOffset(event.at)) {
+          findings.push({
+            file,
+            line,
+            check: 'event-timestamp-form',
+            message: `verified[${index}].at "${event.at}" is not an ISO 8601 datetime with an explicit UTC offset, which section 5 requires for every timestamp-valued key`,
+          });
         }
       });
     }
@@ -780,9 +773,9 @@ const statusEnum = {
       if (status === null) continue; // absent: this rule only applies when status is present
       const line = frontmatterKeyLine(frontmatter, 'status');
       if (status === undefined) {
-        findings.push({ file, line, message: 'status is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' });
+        findings.push({ file, line, check: 'shape-readable', message: 'status is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' });
       } else if (!STATUS_ENUM.has(status)) {
-        findings.push({ file, line, message: `status "${status}" is not one of draft, stable, deprecated` });
+        findings.push({ file, line, check: 'status-enum', message: `status "${status}" is not one of draft, stable, deprecated` });
       }
     }
     return findings;
@@ -819,11 +812,12 @@ const staleAfterFormat = {
       if (staleAfter === null) continue; // absent: this rule only applies when stale_after is present
       const line = frontmatterKeyLine(frontmatter, 'stale_after');
       if (staleAfter === undefined) {
-        findings.push({ file, line, message: 'stale_after is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' });
+        findings.push({ file, line, check: 'shape-readable', message: 'stale_after is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' });
       } else if (!isValidIsoDatetimeWithOffset(staleAfter)) {
         findings.push({
           file,
           line,
+          check: 'timestamp-form',
           message: `stale_after "${staleAfter}" must be an ISO 8601 datetime with an explicit UTC offset; section 5 requires this for every timestamp-valued key, so a plain date is no longer accepted here`,
         });
       }
@@ -833,6 +827,14 @@ const staleAfterFormat = {
 };
 
 // --- sources-resource (5.1) --------------------------------------------------------
+//
+// Fix round 5: sources[].last_modified is exactly as timestamp-valued as
+// generated.at or stale_after, and this rule never checked it at all,
+// against the same section 5 sentence the whole file quotes as binding
+// "every" such key. Checked now, on the same "when present" terms as
+// generated.at (section 5.1 requires only a non-empty `resource`;
+// `last_modified` is not named as required anywhere, so its absence is
+// not itself a finding, only its form when it is there).
 
 const sourcesResource = {
   id: 'sources-resource',
@@ -847,12 +849,20 @@ const sourcesResource = {
       if (sources === null) continue; // absent: this rule only applies when sources is present
       const line = frontmatterKeyLine(frontmatter, 'sources');
       if (sources === undefined) {
-        findings.push({ file, line, message: 'sources is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' });
+        findings.push({ file, line, check: 'shape-readable', message: 'sources is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' });
         continue;
       }
       sources.forEach((entry, index) => {
         if (isBlank(entry.resource)) {
-          findings.push({ file, line, message: `sources[${index}] is missing a non-empty resource` });
+          findings.push({ file, line, check: 'entry-resource', message: `sources[${index}] is missing a non-empty resource` });
+        }
+        if (!isBlank(entry.last_modified) && !isValidIsoDatetimeWithOffset(entry.last_modified)) {
+          findings.push({
+            file,
+            line,
+            check: 'entry-timestamp-form',
+            message: `sources[${index}].last_modified "${entry.last_modified}" is not an ISO 8601 datetime with an explicit UTC offset, which section 5 requires for every timestamp-valued key`,
+          });
         }
       });
     }
@@ -873,15 +883,26 @@ export const SPEC_RULES = Object.freeze([
 
 // Runs every rule over `files`, in order, and returns their findings
 // flattened into one array, each stamped with `ruler: 'spec'`, the id
-// and section carried by the rule that produced it, and a `level`. A
-// finding is identified by the PAIR of ruler and id, never by id alone:
-// this project's own plan briefly had the house ruler redefine
-// stale_after under its own id, before section 5 turned out to fix the
-// timestamp form outright and that idea was dropped, so no id currently
-// collides across the two rulers, but a rule filtering on id alone
-// would still be one rename away from silencing the wrong ruler's
-// finding, which is exactly the fragility stamping `ruler` on every
-// finding removes.
+// and section carried by the rule that produced it, a `level`, and,
+// since fix round 5, a `check`. A finding is identified by the TRIPLE of
+// ruler, id and check, never by id alone: this project's own plan
+// briefly had the house ruler redefine stale_after under its own id,
+// before section 5 turned out to fix the timestamp form outright and
+// that idea was dropped, so no id currently collides across the two
+// rulers, but a rule filtering on id alone would still be one rename
+// away from silencing the wrong ruler's finding, AND one rule id alone
+// is not fine enough even within this ruler: generated-actor's
+// actor-present and timestamp-form checks share an id but mean two
+// different things, which is exactly why a downstream step (the house
+// ruler's timestamp deviation, task 5) must select by `check`, not `id`.
+//
+// `check` is a stable English name for the specific assertion inside a
+// rule, always set by the rule itself (every `findings.push` above names
+// one), never defaulted or derived here: unlike `level`, which a rule
+// may leave to its own single value when every check it emits agrees,
+// `check` always differs from one assertion to the next within a rule
+// that has more than one, so there is no single default worth falling
+// back to.
 //
 // `level` ('must' or 'should') is a FINDING property, not only a rule
 // one (fix round 3): a rule's own `level`, when it has one, is the
@@ -905,6 +926,7 @@ export function runSpecRules(files, context) {
       findings.push({
         ruler: 'spec',
         id: rule.id,
+        check: partial.check,
         section: rule.section,
         level: partial.level ?? rule.level,
         file: partial.file,

@@ -236,14 +236,32 @@ test('every finding carries the same level its rule does', () => {
   assert.equal(should[0].level, 'should');
 });
 
-test('every finding carries ruler "spec" explicitly and the full Finding shape, since a finding is identified by the (ruler, id) pair and never by id alone', () => {
+test('every finding carries ruler "spec" explicitly, a check naming its own assertion, and the full Finding shape, since a finding is identified by the (ruler, id, check) triple and never by id alone', () => {
   const files = { ...cleanVaultFiles(), 'people/bad.md': 'no frontmatter at all here\n' };
   const findings = findingsFor(files);
   assert.ok(findings.length > 0, 'the fixture must produce at least one real finding for this assertion to mean anything');
   for (const finding of findings) {
     assert.equal(finding.ruler, 'spec');
-    assert.deepEqual(Object.keys(finding).sort(), ['file', 'id', 'level', 'line', 'message', 'ruler', 'section']);
+    assert.deepEqual(Object.keys(finding).sort(), ['check', 'file', 'id', 'level', 'line', 'message', 'ruler', 'section']);
+    assert.equal(typeof finding.check, 'string');
+    assert.ok(finding.check.length > 0);
   }
+});
+
+// One rule id carries several checks with different meanings
+// (generated-actor's actor-present and timestamp-form), so `check` must
+// distinguish them even though both share the same id: a filter that
+// only matches `id === 'generated-actor'` would reach a missing-actor
+// finding while meaning to touch only a timestamp-shaped one, which is
+// the exact defect the house ruler's timestamp deviation step had before
+// this field existed.
+test('check is unique within a rule that emits more than one, so a downstream step can select one specific assertion without reaching the others', () => {
+  const files = {
+    ...cleanVaultFiles(),
+    'people/bad-generated.md': CLEAN_NOTE.replace('generated: { by: human:ana, at: 2026-09-18T09:30:00Z }', 'generated: { by: , at: not-a-datetime }'),
+  };
+  const findings = findingsFor(files).filter((f) => isSpec('generated-actor')(f) && f.file === 'people/bad-generated.md');
+  assert.deepEqual(findings.map((f) => f.check).sort(), ['actor-present', 'timestamp-form']);
 });
 
 test('a single note can collect findings from more than one rule at once, each correctly identified by its own id', () => {
@@ -649,6 +667,29 @@ test('withoutFencedBlocks recognises a tilde fence, does not close a longer fenc
   assert.match(cFindings[0].message, /is not a date heading/);
 });
 
+// The review's addition to the fence contract: a fence quoted inside a
+// blockquote ("> ```") is still a fence, not prose, so a decoy heading
+// inside one must be exactly as invisible as an unquoted one, while a
+// real heading right after the blockquote closes must still be read.
+test('a fenced block inside a blockquote is skipped the same as an unquoted one, but a real heading right after the quote survives', () => {
+  const files = {
+    ...cleanVaultFiles(),
+    'memory/log.md': [
+      '## 2026-09-18',
+      '',
+      '> ```',
+      '> ## not a real heading, quoted and fenced',
+      '> ```',
+      '',
+      '## not a real date, right after the quote, must still be caught',
+      '',
+    ].join('\n'),
+  };
+  const findings = findingsFor(files).filter((f) => isSpec('log-format')(f) && f.file === 'memory/log.md');
+  assert.equal(findings.length, 1, 'only the heading after the blockquote should be flagged, not the one quoted and fenced inside it');
+  assert.match(findings[0].message, /is not a date heading/);
+});
+
 // log-format's own heading check shares the same calendar-valid date
 // function as stale-after-format (fix round 1): a heading with the right
 // shape but an impossible date is still a must-level violation of
@@ -750,6 +791,23 @@ test('verified-events requires both by and at on a single inline event, but allo
   // people/ana.md keeps its complete inline event and reports nothing (see the clean-baseline test).
 });
 
+// Fix round 5: this module quotes section 5 as binding "every
+// timestamp-valued key", and verified[].at used to be checked only for
+// presence, the same as by, even though it is exactly as timestamp-
+// valued as generated.at. A non-blank but malformed at (no offset, or a
+// plain date) must now be its own finding, distinct from a missing one,
+// under the event-timestamp-form check.
+test('verified-events requires at to be an ISO 8601 datetime with an explicit offset, not merely present, and reports it as event-timestamp-form', () => {
+  const files = {
+    ...cleanVaultFiles(),
+    'people/verified-bad-at-form.md': CLEAN_NOTE.replace('verified: { by: human:ana, at: 2026-09-18T10:00:00Z }', 'verified: { by: human:ana, at: 2026-09-18 }'),
+  };
+  const findings = findingsFor(files).filter((f) => isSpec('verified-events')(f) && f.file === 'people/verified-bad-at-form.md');
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].check, 'event-timestamp-form');
+  assert.match(findings[0].message, /UTC offset/);
+});
+
 test('verified-events reads a block list of multiple events and flags only the one missing a field, by index', () => {
   const files = {
     ...cleanVaultFiles(),
@@ -781,9 +839,15 @@ test('verified-events flags a key present with no events under it at all, but tr
   assert.equal(emptyBlock.length, 1);
   assert.match(emptyBlock[0].message, /no events/);
 
+  // An empty inline mapping is one event with BOTH fields blank, and
+  // fix round 5 split the by check and the at check apart (the same
+  // split generated-actor already had), so this now produces two
+  // findings, one per field, rather than the one combined message it
+  // used to.
   const emptyMapping = findings.filter((f) => isSpec('verified-events')(f) && f.file === 'people/verified-empty-mapping.md');
-  assert.equal(emptyMapping.length, 1);
-  assert.match(emptyMapping[0].message, /verified\[0\]/);
+  assert.equal(emptyMapping.length, 2);
+  assert.deepEqual(emptyMapping.map((f) => f.check).sort(), ['event-actor', 'event-timestamp-form']);
+  for (const finding of emptyMapping) assert.match(finding.message, /verified\[0\]/);
 });
 
 // --- status-enum ---------------------------------------------------------------
@@ -1009,6 +1073,34 @@ test('sources-resource requires every entry to carry a non-empty resource, flagg
     findings.map((f) => f.message.match(/sources\[\d+\]/)[0]),
     ['sources[1]', 'sources[2]'],
   );
+});
+
+// Fix round 5: sources[].last_modified is exactly as timestamp-valued
+// as generated.at, and this rule used to never check it at all, against
+// the same section 5 sentence the whole file quotes as binding "every"
+// such key. Absence is not itself a finding (last_modified is not named
+// as required anywhere); a malformed one, when present, is, and it is
+// the entry-timestamp-form check that reports it, distinct from
+// entry-resource.
+test('sources-resource checks last_modified\x27s form when present, but leaves it alone when absent, and names the check entry-timestamp-form', () => {
+  const files = {
+    ...cleanVaultFiles(),
+    'people/sources-good-last-modified.md': CLEAN_NOTE.replace(
+      'sources:\n  - resource: https://example.com/ana',
+      'sources:\n  - resource: https://example.com/ana\n    last_modified: 2026-09-01T00:00:00Z',
+    ),
+    'people/sources-bad-last-modified.md': CLEAN_NOTE.replace(
+      'sources:\n  - resource: https://example.com/ana',
+      'sources:\n  - resource: https://example.com/ana\n    last_modified: 2026-09-01',
+    ),
+  };
+  const findings = findingsFor(files);
+  assert.deepEqual(findings.filter((f) => isSpec('sources-resource')(f) && f.file === 'people/sources-good-last-modified.md'), []);
+
+  const bad = findings.filter((f) => isSpec('sources-resource')(f) && f.file === 'people/sources-bad-last-modified.md');
+  assert.equal(bad.length, 1);
+  assert.equal(bad[0].check, 'entry-timestamp-form');
+  assert.match(bad[0].message, /last_modified/);
 });
 
 test('sources-resource does not fire when sources is absent, but does fire, against PARSER_LIMITS, when present in an unreadable shape', () => {

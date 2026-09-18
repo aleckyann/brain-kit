@@ -11,12 +11,11 @@
 // section 11 (see spec.mjs's own header). A vault's own preference
 // belongs to neither tier, and stamping one on it would be a house rule
 // wearing a specification badge, which is the exact confusion this
-// module exists to prevent. `ruler: 'house'` plus a rule's `id` is
-// therefore the whole identity of a finding here: no level to sort by,
-// no section to cite. A consumer combining both rulers' output sees
-// three groups in order: specification `must`, specification `should`,
-// and house, never four, and never a house finding mistaken for either
-// specification tier.
+// module exists to prevent. `ruler`, `id` and `check` are the whole
+// identity of a finding here: no level to sort by, no section to cite.
+// A consumer combining both rulers' output sees three groups in order:
+// specification `must`, specification `should`, and house, never four,
+// and never a house finding mistaken for either specification tier.
 //
 // The ruler contract (identical for the spec ruler and the validate
 // command that will call both): this module never calls walkVault.
@@ -37,6 +36,74 @@
 // distinguishes the two explicitly, naming PARSER_LIMITS for the second
 // case rather than folding it into "missing".
 //
+// Fix round 1 (review of commit d0bc6b4), the shape of every correction
+// worth stating up front rather than only where its diff lands:
+//
+// 1. Fenced, indented and inline code are no longer stripped by a copy
+//    of this rule kept in this file. That copy was reviewed and found
+//    to disagree with the specification ruler's own fence handling in
+//    exactly the way that matters most: it trimmed a line before
+//    testing it for a fence marker, so a fence-shaped line at ANY
+//    indentation opened a fence, including one sitting inside a
+//    four-space indented block that was only there to document how to
+//    write a fence. That phantom fence never closed and blanked every
+//    remaining line of the file, including a genuinely broken link far
+//    below it, which then went unreported. spec.mjs had already been
+//    fixed for this exact shape of bug twice, and neither fix ever
+//    reached this file, because there was no shared code for a fix to
+//    reach: two independent implementations of one rule are two chances
+//    to disagree about what a fence is, and disagreeing about that is
+//    the same class of defect as two walks disagreeing about what a
+//    vault contains (src/vault.mjs's own header). Both rulers now
+//    import stripCode from src/markdown.mjs, once, including its new
+//    handling of a fence quoted inside a blockquote: `> ` `` ``` ``
+//    is still code, and a link that only exists as an example inside
+//    one is no longer reported as broken.
+// 2. `frontmatterKeyLine` is no longer a copy kept in this file either.
+//    The copy here built a RegExp from a config-supplied field name
+//    (frontmatter.required, .forbidden, or an extensions key) without
+//    escaping it, which threw a SyntaxError for a forbidden field named
+//    with a parenthesis and would have taken the whole ruler down; a
+//    comment 190 lines below in this same file already named exactly
+//    this hazard for `placeholderRegex` and called itself the one place
+//    it could happen, which was not true while this second, unguarded
+//    site existed. The copy here had also dropped the quoted-key
+//    alternative the sibling's own copy recognised, so a quoted key
+//    reported a real line there and null here, as if absent. Both bugs
+//    are gone by construction now that src/frontmatter.mjs exports one
+//    frontmatterKeyLine, built on the same escaped, quote-aware lookup
+//    every reader in that file already shares.
+// 3. `check`. A finding now carries a `check` field naming the specific
+//    assertion inside its rule, stable and unique within that rule (see
+//    the field's own explanation on runHouseRules below). `applyTimestampDeviation`
+//    used to select by `id` alone, and generated-actor (the spec ruler's
+//    rule this function reads) carries an actor-presence check and a
+//    timestamp-form check under that one id, so declaring "we have not
+//    migrated our timestamps" quietly also downgraded a missing-actor
+//    finding that has nothing to do with a timestamp. It now selects by
+//    the (id, check) pair.
+// 4. `classifyField` answered "present and non-empty" wrong for an
+//    explicitly empty INLINE collection: "tags: []" and "description: {}"
+//    read back from readScalar as the literal strings "[]" and "{}",
+//    both non-blank, so the collection-aware branches below (which read
+//    the real, structured answer) were never reached for that shape. A
+//    vault requiring a field was told nothing was wrong when a note
+//    supplied it empty. Fixed by asking a collection reader whenever the
+//    scalar looks like one, inline or block alike, rather than trusting
+//    a non-blank string on sight.
+// 5. The link scanner used to find a target's closing parenthesis at the
+//    first ")" character, so a target containing one of its own
+//    ("real(1).md") was reported under a truncated, garbled name rather
+//    than either resolved or declined. It used to find a link's own
+//    text at the first "]" character too, so bracketed link text
+//    ("[text [br]](url)") was never recognised as a link at all. Both
+//    are now found by BALANCED matching (the same technique
+//    src/frontmatter.mjs's own findMatchingClose uses for an inline
+//    mapping or list), which also changes what a link nested inside
+//    another link's text resolves to: see scanLinksInLine's own comment
+//    for the trade-off this makes on purpose, and the module's declared
+//    trade-offs below for what is still declined rather than handled.
+//
 // Two behaviours a naive port of the original validator got wrong, and
 // this module is built to get right on purpose:
 //
@@ -50,14 +117,35 @@
 //    placeholder-looking value is a normal finding, full stop.
 //
 // 2. Code, fenced and inline, is blanked out of the body before this
-//    module reads a single link or wikilink out of it. spec.mjs's own
-//    header names the sibling defect this generalises: a heading inside
-//    a fence, read as if it were real. The same hazard applies to a
-//    link or a wikilink shown as a documentation example. stripCodeForLinks
-//    below handles a backtick fence, a tilde fence, a fence longer than
-//    three characters, and a fence that never closes (blanking to the
-//    end of the file, never guessing where it might have ended, the same
-//    caution splitFrontmatter itself uses for an unterminated block).
+//    module reads a single link or wikilink out of it (src/markdown.mjs,
+//    see fix round 1 item 1 above).
+//
+// Declared trade-offs of the link scanner, honest rather than silent
+// about what it does not do:
+//
+// - A query string ("real.md?v=1") is stripped, and a percent-escaped
+//   path ("real%20file.md") is decoded, before a target is checked for
+//   existence: both are HANDLED, since both used to produce a confident
+//   WRONG finding on a link that was not actually broken. A malformed
+//   percent-escape is declined gracefully (the raw text is kept) rather
+//   than thrown.
+// - A target containing balanced parentheses, and link text containing
+//   balanced brackets, are HANDLED (fix round 1 item 5 above).
+// - A link nested inside another link's text (an image inside a link,
+//   "[![alt](img.png)](outer.md)") is read as ONE link, the OUTER one,
+//   once balanced matching is in place: the inner image's own brackets
+//   nest correctly inside the outer pair, so the outer target is now
+//   found, where it used to be invisible. The inner image's own target
+//   is, in exchange, no longer independently checked: it is now part of
+//   the outer link's TEXT, not a link of its own. This is a DECLINED
+//   case, not a silent gap: only the outer target is ever checked for a
+//   genuinely nested pair.
+// - A reference-style link ("[text][ref]" plus a separate "[ref]: target"
+//   definition elsewhere in the file) is DECLINED outright: resolving it
+//   needs a second pass over the whole file to collect every definition
+//   before a single usage can be read, which is a materially bigger
+//   feature than balancing two kinds of bracket on one line, and this
+//   ruler produces no finding, wrong or otherwise, for one.
 //
 // timestamp-deviation is the one entry in HOUSE_RULES that is not shaped
 // like the other eight, and it is worth saying why up front rather than
@@ -74,7 +162,8 @@
 // exported below, next to the one place that already knows what
 // "forbid" and "allow" mean for this setting.
 import { posix } from 'node:path';
-import { readEntries, readList, readMapping, readScalar, splitFrontmatter } from '../frontmatter.mjs';
+import { frontmatterKeyLine, readEntries, readList, readMapping, readScalar, splitFrontmatter } from '../frontmatter.mjs';
+import { stripCode } from '../markdown.mjs';
 
 const RESERVED_FILENAMES = Object.freeze(['index.md', 'log.md']);
 
@@ -86,22 +175,18 @@ function isBlank(value) {
   return value === undefined || value === null || String(value).trim() === '';
 }
 
-// Finds the 1-based line, in the whole file, of the top-level frontmatter
-// line "key:" (column 0, inside the frontmatter block only). Returns null
-// when the key's own line cannot be found. Mirrors spec.mjs's own
-// frontmatterKeyLine, which is not exported: duplicated here rather than
-// imported, since the two rulers are deliberately independent modules
-// that happen to share a small amount of line-finding arithmetic, not one
-// sharing a private helper across a module boundary that was never meant
-// to be public.
-function frontmatterKeyLine(frontmatter, key) {
-  if (!frontmatter) return null;
-  const pattern = new RegExp(`^${key}[ \t]*:`);
-  const lines = frontmatter.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    if (pattern.test(lines[i])) return i + 2;
-  }
-  return null;
+// Classifies a value already known to be a collection (an array from
+// readList, or a plain object from readMapping/readEntries) as 'blank'
+// when it has nothing in it, or 'present' otherwise. `undefined` means
+// the shape-aware reader declined too (PARSER_LIMITS): this happens for
+// an inline collection whose scalar text merely LOOKS like one
+// ("tags: [a, b" with no closing bracket) but is not actually readable
+// as one, and reporting that as blank would be exactly the confident
+// wrong answer classifyField exists to avoid.
+function classifyCollection(value) {
+  if (value === undefined) return { state: 'unreadable' };
+  const size = Array.isArray(value) ? value.length : Object.keys(value).length;
+  return { state: size === 0 ? 'blank' : 'present' };
 }
 
 // Classifies a named field's presence across every shape the format's
@@ -115,26 +200,38 @@ function frontmatterKeyLine(frontmatter, key) {
 // matches the same key text at the same column-0 anchor regardless of
 // what follows it, so readScalar returns null only when the key never
 // appears at all, and returns a string OR undefined (never null) for a
-// key that is there in ANY shape, scalar or not. Once presence is
-// established, readMapping / readList / readEntries are tried in turn to
-// answer "is it empty", for whichever one of them recognises the shape;
-// none of them can return null here (the key is already known to exist),
-// so a null is treated the same as undefined, defensively, rather than
-// trusted never to happen.
+// key that is there in ANY shape, scalar or not.
+//
+// Fix round 1: an inline collection reads back from readScalar as a
+// perfectly ordinary, non-blank STRING ("tags: []" reads as the string
+// "[]"), so trusting readScalar's own non-blankness answered "present
+// and non-empty" for a field a vault owner had actually left empty. A
+// scalar that looks like a collection (starts with "[" or "{") is now
+// handed to the matching collection reader instead of trusted on sight,
+// covering the inline case; the block case (a scalar value of
+// `undefined` because the real content is an indented block) already
+// worked this way and is unchanged.
 function classifyField(frontmatter, key) {
   const scalar = readScalar(frontmatter, key);
   if (scalar === null) return { state: 'absent' };
-  if (typeof scalar === 'string') return { state: scalar.trim() === '' ? 'blank' : 'present' };
 
+  if (typeof scalar === 'string') {
+    if (scalar.startsWith('[')) return classifyCollection(readList(frontmatter, key));
+    if (scalar.startsWith('{')) return classifyCollection(readMapping(frontmatter, key));
+    return { state: scalar.trim() === '' ? 'blank' : 'present' };
+  }
+
+  // scalar === undefined: present but not a plain inline scalar. Try
+  // each collection reader in turn for whichever shape recognises this
+  // key's block form; none of them can return null here (the key is
+  // already known to exist), so a null is treated the same as
+  // undefined, defensively, rather than trusted never to happen.
   const mapping = readMapping(frontmatter, key);
-  if (mapping !== null && mapping !== undefined) return { state: Object.keys(mapping).length === 0 ? 'blank' : 'present' };
-
+  if (mapping !== null && mapping !== undefined) return classifyCollection(mapping);
   const list = readList(frontmatter, key);
-  if (list !== null && list !== undefined) return { state: list.length === 0 ? 'blank' : 'present' };
-
+  if (list !== null && list !== undefined) return classifyCollection(list);
   const entries = readEntries(frontmatter, key);
-  if (entries !== null && entries !== undefined) return { state: entries.length === 0 ? 'blank' : 'present' };
-
+  if (entries !== null && entries !== undefined) return classifyCollection(entries);
   return { state: 'unreadable' };
 }
 
@@ -164,13 +261,19 @@ const requiredFields = {
       for (const key of required) {
         const { state } = classifyField(frontmatter, key);
         if (state === 'absent') {
-          findings.push({ file, line: null, message: `${key} is required by this vault's own configuration but is missing` });
+          findings.push({ file, line: null, check: 'field-present', message: `${key} is required by this vault's own configuration but is missing` });
         } else if (state === 'blank') {
-          findings.push({ file, line: frontmatterKeyLine(frontmatter, key), message: `${key} is required by this vault's own configuration but is empty` });
+          findings.push({
+            file,
+            line: frontmatterKeyLine(frontmatter, key),
+            check: 'field-non-empty',
+            message: `${key} is required by this vault's own configuration but is empty`,
+          });
         } else if (state === 'unreadable') {
           findings.push({
             file,
             line: frontmatterKeyLine(frontmatter, key),
+            check: 'shape-readable',
             message: `${key} is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)`,
           });
         }
@@ -194,9 +297,15 @@ const forbiddenFields = {
       for (const key of forbidden) {
         const { state } = classifyField(frontmatter, key);
         if (state === 'absent') continue;
+        // Present is present, whatever shape it is in: an unreadable
+        // shape still means the key is there (see classifyField above),
+        // and this rule's whole question is presence, not readability,
+        // so it is not reported against PARSER_LIMITS the way a rule
+        // that needs the VALUE would.
         findings.push({
           file,
           line: frontmatterKeyLine(frontmatter, key),
+          check: 'field-forbidden',
           message: `${key} is forbidden by this vault's own configuration but is present`,
         });
       }
@@ -225,12 +334,12 @@ const typeEnum = {
       if (value === null) continue; // absence is type-required's finding, not this one's
       const line = frontmatterKeyLine(frontmatter, 'type');
       if (value === undefined) {
-        findings.push({ file, line, message: 'type is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' });
+        findings.push({ file, line, check: 'shape-readable', message: 'type is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' });
         continue;
       }
       if (isBlank(value)) continue; // an empty type is type-required's finding, not this one's
       if (!allowed.includes(value)) {
-        findings.push({ file, line, message: `type "${value}" is not one of this vault's allowed types: ${allowed.join(', ')}` });
+        findings.push({ file, line, check: 'type-allowed', message: `type "${value}" is not one of this vault's allowed types: ${allowed.join(', ')}` });
       }
     }
     return findings;
@@ -275,10 +384,14 @@ function allowedEnumValues(spec, noteType) {
 
 // A malformed validate.placeholder_pattern (a vault owner's own typo in
 // a regular expression) must never crash this rule: RegExp construction
-// is the one place in this module that can throw on ordinary config
-// content rather than on file content, so it is the one place wrapped in
-// its own try/catch. Returning null (no exemption ever matches) is the
-// same answer as "no pattern configured at all".
+// from config text is guarded here. (Fix round 1: this used to be the
+// only site in this file making that claim about itself; it was not,
+// since frontmatterKeyLine also built a RegExp from config text,
+// unguarded and unescaped. That copy is gone now, sharing the escaped,
+// shared export from src/frontmatter.mjs instead, so this really is the
+// only remaining site that can throw on config content rather than file
+// content.) Returning null (no exemption ever matches) is the same
+// answer as "no pattern configured at all".
 function placeholderRegex(config) {
   const pattern = config?.validate?.placeholder_pattern;
   if (!pattern) return null;
@@ -307,7 +420,12 @@ const extensionFields = {
         if (value === null) continue; // this rule only applies when the field is present
         const line = frontmatterKeyLine(frontmatter, fieldName);
         if (value === undefined) {
-          findings.push({ file, line, message: `${fieldName} is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)` });
+          findings.push({
+            file,
+            line,
+            check: 'shape-readable',
+            message: `${fieldName} is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)`,
+          });
           continue;
         }
 
@@ -318,16 +436,16 @@ const extensionFields = {
         if (placeholder && isUnderDir(file, templatesDir) && placeholder.test(value)) continue;
 
         if (spec.type === 'boolean' && !isValidBooleanValue(value)) {
-          findings.push({ file, line, message: `${fieldName} "${value}" must be a boolean (true or false)` });
+          findings.push({ file, line, check: 'value-kind', message: `${fieldName} "${value}" must be a boolean (true or false)` });
         } else if (spec.type === 'number' && !isValidNumberValue(value)) {
-          findings.push({ file, line, message: `${fieldName} "${value}" must be a number` });
+          findings.push({ file, line, check: 'value-kind', message: `${fieldName} "${value}" must be a number` });
         } else if (spec.type === 'date' && !isValidCalendarDateValue(value)) {
-          findings.push({ file, line, message: `${fieldName} "${value}" must be an ISO calendar date (YYYY-MM-DD)` });
+          findings.push({ file, line, check: 'value-kind', message: `${fieldName} "${value}" must be an ISO calendar date (YYYY-MM-DD)` });
         } else if (spec.type === 'enum') {
           const noteType = readScalar(frontmatter, 'type');
           const allowed = allowedEnumValues(spec, typeof noteType === 'string' ? noteType : null);
           if (allowed !== null && !allowed.includes(value)) {
-            findings.push({ file, line, message: `${fieldName} "${value}" is not one of this vault's allowed values: ${allowed.join(', ')}` });
+            findings.push({ file, line, check: 'enum-value', message: `${fieldName} "${value}" is not one of this vault's allowed values: ${allowed.join(', ')}` });
           }
         }
         // spec.type === 'string' has no further shape to check: any
@@ -337,59 +455,6 @@ const extensionFields = {
     return findings;
   },
 };
-
-// --- fenced and inline code, blanked before either link rule reads a line ----------
-//
-// A fence opens with three or more backticks or three or more tildes,
-// and closes only on a later line carrying at least as many of the SAME
-// character and nothing else (CommonMark's own closing rule, not this
-// project's invention). Blanking each line inside a fence, rather than
-// removing it, keeps every later line number exactly where it was,
-// which every finding below depends on. An opened fence with no closing
-// line at all blanks every line to the end of the file, the same
-// caution splitFrontmatter itself takes for an unterminated frontmatter
-// block: guessing where it might have ended would be worse than
-// declining to look inside it at all.
-const FENCE_MARKER = /^(`{3,}|~{3,})/;
-
-function withoutFencedCodeBlocks(text) {
-  let fence = null; // { char, len } while a fence is open, else null
-  return text
-    .split('\n')
-    .map((line) => {
-      const trimmed = line.trim();
-      const marker = FENCE_MARKER.exec(trimmed);
-      if (fence === null) {
-        if (marker) {
-          fence = { char: marker[1][0], len: marker[1].length };
-          return '';
-        }
-        return line;
-      }
-      if (marker && marker[1][0] === fence.char && marker[1].length >= fence.len && trimmed === marker[1]) {
-        fence = null;
-      }
-      return '';
-    })
-    .join('\n');
-}
-
-// A single-backtick inline code span, blanked per line so a link-shaped
-// example written inline ("write it like `[text](url)`") is never read
-// either. A double-backtick span containing a literal backtick is not
-// recognised: this reader declines rather than guesses, the same trade
-// every reader in src/frontmatter.mjs already makes for its own harder
-// shapes.
-function withoutInlineCode(text) {
-  return text
-    .split('\n')
-    .map((line) => line.replace(/`[^`\n]*`/g, ''))
-    .join('\n');
-}
-
-function stripCodeForLinks(body) {
-  return withoutInlineCode(withoutFencedCodeBlocks(body));
-}
 
 // The line, in the WHOLE file, that body-relative line index `bodyLineIndex`
 // (0-based) falls on. `body` is always an exact suffix of `fullText` (both
@@ -401,36 +466,98 @@ function bodyPrefixLineCount(fullText, body) {
   return fullText.slice(0, prefixLength).split('\n').length;
 }
 
-// A standard markdown link or image: "[text](target)" or "![text](target)".
-// Deliberately simple (no nested-parenthesis handling in the target, no
-// multi-line link support): a regular-expression reader that declines the
-// hard cases rather than guessing at them is this project's own house
-// style (src/frontmatter.mjs's header says so of itself), and the two
-// behaviours this module is required to prove (fenced/inline code
-// excluded first, and the placeholder exemption) do not depend on either
-// hard case.
-const LINK_PATTERN = /\[[^\]]*\]\(([^)]*)\)/g;
-const WIKILINK_PATTERN = /\[\[([^\]]*)\]\]/g;
-
-function scanPattern(strippedBody, pattern) {
-  const results = [];
-  const lines = strippedBody.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    pattern.lastIndex = 0;
-    let match;
-    while ((match = pattern.exec(lines[i])) !== null) {
-      results.push({ target: match[1], lineIndex: i });
+// --- link scanning: markdown links, balanced brackets and parentheses -------------
+//
+// Fix round 1: the previous version found a link's own text at the
+// first "]" and its target at the first ")", both by regular expression
+// character class, so bracketed link text and a target containing its
+// own parenthesis were either invisible or reported under a garbled
+// name. Both are now found by BALANCED matching, tracking nesting depth
+// the same way src/frontmatter.mjs's own findMatchingClose does for an
+// inline mapping or list value: an inner matched pair of the same
+// character does not close the outer scan early.
+//
+// One consequence worth stating rather than leaving implicit: for a
+// link nested inside another link's text, such as an image inside a
+// link ("[![alt](img.png)](outer.md)"), balanced matching for the TEXT
+// span walks straight past the inner image's own "[alt]" (it nests
+// correctly inside the outer pair) and lands on the OUTER "]", so the
+// outer target ("outer.md") is now found correctly, where the previous,
+// unbalanced version found only the inner one ("img.png") and never saw
+// the outer link at all. The inner image is, in exchange, never
+// independently scanned: it is now simply part of the outer link's
+// text. This module's own header names this as a declared trade-off,
+// not a silent gap: only the outer link of a nested pair is ever
+// checked.
+//
+// Declining, not guessing: a "[" with no balanced closing "]" on the
+// same line, or one not immediately followed by "(...)" with a balanced
+// close of its own, is not a link at all here, and the scan simply
+// continues from the very next character, so one malformed bracket does
+// not blind the rest of the line to a later, well-formed link.
+function findBalancedClose(line, openIndex, open, close) {
+  let depth = 1;
+  for (let i = openIndex + 1; i < line.length; i++) {
+    if (line[i] === open) depth++;
+    else if (line[i] === close) {
+      depth--;
+      if (depth === 0) return i;
     }
+  }
+  return -1;
+}
+
+function findLinkAt(line, openIndex) {
+  const textEnd = findBalancedClose(line, openIndex, '[', ']');
+  if (textEnd === -1) return null;
+  if (line[textEnd + 1] !== '(') return null;
+  const targetOpen = textEnd + 1;
+  const targetEnd = findBalancedClose(line, targetOpen, '(', ')');
+  if (targetEnd === -1) return null;
+  return { target: line.slice(targetOpen + 1, targetEnd), nextIndex: targetEnd + 1 };
+}
+
+function scanLinksInLine(line) {
+  const results = [];
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] === '[') {
+      const found = findLinkAt(line, i);
+      if (found) {
+        results.push({ target: found.target, index: i });
+        i = found.nextIndex;
+        continue;
+      }
+    }
+    i++;
   }
   return results;
 }
 
 function scanLinks(strippedBody) {
-  return scanPattern(strippedBody, LINK_PATTERN);
+  const results = [];
+  const lines = strippedBody.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    for (const { target } of scanLinksInLine(lines[i])) {
+      results.push({ target, lineIndex: i });
+    }
+  }
+  return results;
 }
 
+const WIKILINK_PATTERN = /\[\[([^\]]*)\]\]/g;
+
 function scanWikilinks(strippedBody) {
-  return scanPattern(strippedBody, WIKILINK_PATTERN);
+  const results = [];
+  const lines = strippedBody.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    WIKILINK_PATTERN.lastIndex = 0;
+    let match;
+    while ((match = WIKILINK_PATTERN.exec(lines[i])) !== null) {
+      results.push({ target: match[1], lineIndex: i });
+    }
+  }
+  return results;
 }
 
 // Strips a trailing quoted title ("target \"title\"") and a surrounding
@@ -459,6 +586,33 @@ function splitFragment(target) {
   return index === -1 ? [target, ''] : [target.slice(0, index), target.slice(index + 1)];
 }
 
+// Strips a trailing query string ("?v=1"): a target this vault serves
+// through something that reads one (a generated page, a cache-busting
+// parameter) still names the same file, and the file existing is what
+// this rule checks, not the query. Fix round 1: this used to be
+// unhandled, so a link precisely this shape was reported broken though
+// the file it named was fine.
+function stripQueryString(pathPart) {
+  const index = pathPart.indexOf('?');
+  return index === -1 ? pathPart : pathPart.slice(0, index);
+}
+
+// Percent-decodes a path ("real%20file.md" -> "real file.md"), the
+// correct way to link a file whose name contains a character the
+// markdown link syntax cannot carry unescaped. Fix round 1: this used
+// to be unhandled too, so a correctly percent-encoded link to a real
+// file was reported broken. A malformed escape sequence is declined,
+// not thrown: decodeURIComponent throws on one, and the raw, undecoded
+// text is kept instead, which is never worse than the input already
+// was.
+function decodePathSafely(pathPart) {
+  try {
+    return decodeURIComponent(pathPart);
+  } catch {
+    return pathPart;
+  }
+}
+
 function resolveLinkPath(file, pathPart) {
   if (pathPart.startsWith('/')) return pathPart.slice(1);
   return posix.normalize(posix.join(posix.dirname(file), pathPart));
@@ -466,18 +620,21 @@ function resolveLinkPath(file, pathPart) {
 
 // Iterates every internal (non-external, non-fragment-only) link target
 // in `file`'s body, already stripped of fenced and inline code, handing
-// each to `visit(target, pathPart, fileLine)`. Shared by link-style and
-// link-target-exists so the two rules can never disagree about what
-// counts as an internal link in the first place.
+// each to `visit(target, pathPart, fileLine)`. `pathPart` has already
+// had its query string stripped and its percent-escapes decoded, so
+// neither link-style nor link-target-exists has to repeat that work or
+// risk disagreeing about it. Shared by both rules so they can never
+// disagree about what counts as an internal link in the first place.
 function forEachInternalLink(file, context, visit) {
   const text = context.readFile(file);
   const { body } = splitFrontmatter(text);
-  const stripped = stripCodeForLinks(body);
+  const stripped = stripCode(body);
   const prefixLineCount = bodyPrefixLineCount(text, body);
   for (const { target, lineIndex } of scanLinks(stripped)) {
     const parsed = parseLinkTarget(target);
     if (isExternalLink(parsed) || isFragmentOnly(parsed)) continue;
-    const [pathPart] = splitFragment(parsed);
+    const [rawPathPart] = splitFragment(parsed);
+    const pathPart = decodePathSafely(stripQueryString(rawPathPart));
     if (pathPart === '') continue;
     visit(target, pathPart, prefixLineCount + lineIndex);
   }
@@ -498,10 +655,11 @@ const linkStyle = {
           findings.push({
             file,
             line,
+            check: 'file-relative',
             message: `link "${target}" starts with a slash, which resolves against the host, not the repository, and breaks where a human reviews the change; this vault requires file-relative links`,
           });
         } else if (style === 'bundle-absolute' && !isAbsolute) {
-          findings.push({ file, line, message: `link "${target}" does not start with a slash; this vault requires bundle-absolute links` });
+          findings.push({ file, line, check: 'bundle-absolute', message: `link "${target}" does not start with a slash; this vault requires bundle-absolute links` });
         }
       });
     }
@@ -524,7 +682,7 @@ const linkTargetExists = {
       forEachInternalLink(file, context, (target, pathPart, line) => {
         const resolved = resolveLinkPath(file, pathPart);
         if (!context.all.has(resolved)) {
-          findings.push({ file, line, message: `link target "${target}" does not resolve to a file in this vault (resolved to "${resolved}")` });
+          findings.push({ file, line, check: 'target-exists', message: `link target "${target}" does not resolve to a file in this vault (resolved to "${resolved}")` });
         }
       });
     }
@@ -543,12 +701,13 @@ const noWikilinks = {
     for (const file of files) {
       const text = context.readFile(file);
       const { body } = splitFrontmatter(text);
-      const stripped = stripCodeForLinks(body);
+      const stripped = stripCode(body);
       const prefixLineCount = bodyPrefixLineCount(text, body);
       for (const { target, lineIndex } of scanWikilinks(stripped)) {
         findings.push({
           file,
           line: prefixLineCount + lineIndex,
+          check: 'wikilink-forbidden',
           message: `[[${target}]] is a wikilink, which this vault forbids; use a standard markdown link instead`,
         });
       }
@@ -568,14 +727,28 @@ const rootOkfVersion = {
     const value = readScalar(frontmatter, 'okf_version');
     const line = frontmatterKeyLine(frontmatter, 'okf_version');
     if (value === null) {
-      return [{ file: 'index.md', line: null, message: 'the root index does not declare okf_version, which this vault requires' }];
+      return [{ file: 'index.md', line: null, check: 'declared', message: 'the root index does not declare okf_version, which this vault requires' }];
     }
     if (value === undefined) {
-      return [{ file: 'index.md', line, message: 'okf_version is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' }];
+      return [
+        {
+          file: 'index.md',
+          line,
+          check: 'shape-readable',
+          message: 'okf_version is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)',
+        },
+      ];
     }
     const expected = context.config.okf_version;
     if (value !== expected) {
-      return [{ file: 'index.md', line, message: `the root index declares okf_version "${value}" but this vault is configured for "${expected}"` }];
+      return [
+        {
+          file: 'index.md',
+          line,
+          check: 'matches-configured',
+          message: `the root index declares okf_version "${value}" but this vault is configured for "${expected}"`,
+        },
+      ];
     }
     return [];
   },
@@ -594,11 +767,33 @@ const timestampDeviation = {
   },
 };
 
-// The specification `should`-level rules whose finding a vault may
-// downgrade: the two timestamp-shaped ids from spec.mjs, generated-actor
-// and stale-after-format. Nothing else is ever eligible, whatever the
-// setting says.
-const TIMESTAMP_FINDING_IDS = Object.freeze(['generated-actor', 'stale-after-format']);
+// The specification `should`-level checks a vault may downgrade,
+// identified by the (id, check) pair rather than by id alone (fix round
+// 1: an id is not fine enough on its own, since generated-actor and
+// verified-events each carry an actor-shaped check and a timestamp-
+// shaped check under one id). Every one of these is section 5's own
+// "every timestamp-valued key" claim, made good by spec.mjs's own fix
+// round 5: generated.at, stale_after, verified[].at and
+// sources[].last_modified.
+//
+// log-format is deliberately excluded, and this is a ratified choice,
+// not an oversight left to be inferred from a frozen array: log-format's
+// date headings are governed by section 9, not section 5, and they are
+// plain ISO 8601 DATES ("## YYYY-MM-DD"), not datetimes with a UTC
+// offset at all, so they are not "timestamp-valued keys" in the sense
+// this deviation exists for, which is a vault mid-migration off a plain
+// date onto the offset form section 5 requires. A log heading was never
+// in that form to begin with. Separately, and sufficient on its own:
+// every one of log-format's checks is 'must' or, where 'should'
+// (frontmatter, non-date headings), about something with no timestamp
+// shape either, and this function already refuses to touch a `must`
+// finding no matter what the setting says.
+const TIMESTAMP_ELIGIBLE = Object.freeze([
+  { id: 'generated-actor', check: 'timestamp-form' },
+  { id: 'stale-after-format', check: 'timestamp-form' },
+  { id: 'verified-events', check: 'event-timestamp-form' },
+  { id: 'sources-resource', check: 'entry-timestamp-form' },
+]);
 
 // Downgrades a specification `should`-level timestamp finding to a
 // warning (a `warning: true` field added alongside its own, unchanged
@@ -608,19 +803,22 @@ const TIMESTAMP_FINDING_IDS = Object.freeze(['generated-actor', 'stale-after-for
 // "allow". Defaults to "forbid", so an unconfigured vault gets the
 // format's own answer, with every finding passed through untouched.
 //
-// Matches on the PAIR of `ruler === 'spec'` and one of the two timestamp
-// ids, exactly the caution spec.mjs's own header names: an id is not
-// unique across rulers on its own. A `must`-level finding is never
-// touched, whatever the setting says: a house declaration can widen
-// leniency for a `should`, never silence a conformance failure.
+// Matches on the TRIPLE of `ruler === 'spec'`, `level === 'should'` and
+// the finding's own `check` being one of TIMESTAMP_ELIGIBLE's (id,
+// check) pairs: `id` alone was tried first and found wanting (see fix
+// round 1 above), and `check` alone would still risk a coincidental
+// name collision across two different rules' own vocabularies, so both
+// are matched together, the same caution spec.mjs's own header applies
+// to `ruler` and `id`. A `must`-level finding is never touched,
+// whatever the setting says: a house declaration can widen leniency for
+// a `should`, never silence a conformance failure.
 export function applyTimestampDeviation(findings, config) {
   const setting = config?.validate?.timestamp_deviation ?? 'forbid';
   if (setting !== 'allow') return findings;
   return findings.map((finding) => {
-    if (finding.ruler === 'spec' && finding.level === 'should' && TIMESTAMP_FINDING_IDS.includes(finding.id)) {
-      return { ...finding, warning: true };
-    }
-    return finding;
+    if (finding.ruler !== 'spec' || finding.level !== 'should') return finding;
+    const eligible = TIMESTAMP_ELIGIBLE.some((e) => e.id === finding.id && e.check === finding.check);
+    return eligible ? { ...finding, warning: true } : finding;
   });
 }
 
@@ -637,11 +835,15 @@ export const HOUSE_RULES = Object.freeze([
 ]);
 
 // Runs every rule over `files`, in order, and returns their findings
-// flattened into one array, each stamped with `ruler: 'house'` plus the
-// id that produced it. No `level`, no `section`: see this file's own
-// header for why their absence is the point. Rules are data (HOUSE_RULES
-// is a plain array of { id, check }), and this loop is the entire
-// runner, mirroring runSpecRules in every way that matters: no rule is
+// flattened into one array, each stamped with `ruler: 'house'`, the id
+// that produced it, and, since fix round 1, a `check`: a stable English
+// name for the specific assertion inside the rule, unique within it (a
+// required-fields finding names 'field-present', 'field-non-empty' or
+// 'shape-readable', for instance, not just "required-fields" three
+// times over). No `level`, no `section`: see this file's own header for
+// why their absence is the point. Rules are data (HOUSE_RULES is a
+// plain array of { id, check }), and this loop is the entire runner,
+// mirroring runSpecRules in every way that matters: no rule is
 // special-cased, so a future house rule is one array entry away.
 export function runHouseRules(files, context) {
   const findings = [];
@@ -650,6 +852,7 @@ export function runHouseRules(files, context) {
       findings.push({
         ruler: 'house',
         id: rule.id,
+        check: partial.check,
         file: partial.file,
         line: partial.line,
         message: partial.message,

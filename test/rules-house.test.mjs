@@ -8,20 +8,31 @@
 // House findings carry no `level` and no `section`: those two belong to
 // the format's own two conformance tiers (see spec.mjs), and a vault's
 // own preference belongs to neither. A finding here is identified by
-// `ruler: 'house'` plus its `id`, and nothing else about severity.
+// `ruler: 'house'` plus its `id` and, since fix round 1, its `check`:
+// the specific assertion inside the rule, since one id is not always
+// fine enough (extension-fields' value-kind and enum-value checks, for
+// instance, share an id but mean two different things).
 //
-// This module never calls walkVault: the validate command (a later task)
-// walks the vault exactly once and hands both rulers the same `files`
-// and `context`, exactly as rules-spec.test.mjs's own header explains.
-// These tests build that same shape through the real makeVault fixture
-// and a real loadConfig + walkVault pass, since every rule here reads a
-// different corner of the config, unlike the spec ruler, which never
-// reads config at all.
+// This module never calls walkVault: the validate command (a later
+// task) walks the vault exactly once and hands both rulers the same
+// `files` and `context`. These tests build that same shape through the
+// real makeVault fixture and a real loadConfig + walkVault pass, since
+// every rule here reads a different corner of the config, unlike the
+// spec ruler, which never reads config at all.
 //
 // The reader contract this ruler leans on throughout: null means a key
 // is ABSENT; undefined means the key is PRESENT but written in a shape
 // src/frontmatter.mjs's regular-expression readers cannot see, and must
 // never be reported as missing.
+//
+// Example data: the fictional owner Ana, example.com, and the actors
+// human:ana and brain-kit-curator/claude-opus-5, per this project's own
+// standing rule. Fix round 1 also corrected two of this file's OWN
+// leaks: a Portuguese placeholder value and a Portuguese extension
+// field name, both replaced with English ones that mean the same thing
+// for these tests' purposes (they are just field names the tests
+// declare and read back, not values with meaning drawn from any other
+// fixture).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -71,6 +82,10 @@ function isHouse(id) {
   return (f) => f.ruler === 'house' && f.id === id;
 }
 
+function isHouseCheck(id, check) {
+  return (f) => f.ruler === 'house' && f.id === id && f.check === check;
+}
+
 // A clean note that satisfies every house rule at once, when the config
 // below is in force: required fields present and non-empty, no forbidden
 // field, an allowed type, an allowed extension field value, a
@@ -79,7 +94,7 @@ const CLEAN_NOTE = [
   '---',
   'type: person',
   'description: an example person',
-  'confidencial: false',
+  'confidential: false',
   '---',
   '# Ana',
   '',
@@ -103,7 +118,7 @@ const STRICT_CONFIG = {
     forbidden: ['timestamp'],
     type_enum: ['person', 'project'],
     extensions: {
-      confidencial: { type: 'boolean' },
+      confidential: { type: 'boolean' },
     },
   },
   validate: {
@@ -137,7 +152,31 @@ test('a vault with an empty frontmatter.required and link_style: any reports not
   assert.deepEqual(findings.filter(isHouse('link-style')), []);
 });
 
-// --- HOUSE_RULES and runHouseRules: shape and the ruler+id identity -----------
+// Pinned literally, not only verified by hand (review finding 12 of the
+// previous round): a vault that configures NOTHING at all still gets
+// link-target-exists (the one rule that is always on) and nothing else,
+// even from a note that would fail every other rule in this file if any
+// of them were on.
+// Pinned literally against context.config being {} OR undefined
+// directly, not through makeVault's own base-fixture deep merge (which
+// itself configures several of these settings, so passing an override
+// object through it is never actually "nothing configured"). Bytes
+// still come from a real vault on disk; only the config object handed
+// to runHouseRules is replaced.
+test('a vault whose config is {} or undefined reports only link-target-exists, whichever is passed', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/ana.md': '---\ntype: robot\n---\nSee [[Bruno]] and [ghost](/nowhere.md), <fill-in-not-used-here>.\n',
+  };
+  const root = makeVault({ files });
+  for (const config of [{}, undefined]) {
+    const { files: mdFiles, context } = rulerArgsFor(root, config);
+    const findings = runHouseRules(mdFiles, context);
+    assert.deepEqual(findings.map((f) => f.id), ['link-target-exists']);
+  }
+});
+
+// --- HOUSE_RULES and runHouseRules: shape and the ruler+id+check identity ----
 
 test('HOUSE_RULES is a plain array of nine rule objects, each with a stable id and a check function, and none carries a level or a section', () => {
   assert.ok(Array.isArray(HOUSE_RULES));
@@ -163,15 +202,40 @@ test('HOUSE_RULES is a plain array of nine rule objects, each with a stable id a
   }
 });
 
-test('every finding carries ruler "house" explicitly and exactly the house Finding shape, with no level and no section', () => {
+test('every finding carries ruler "house" explicitly, a non-empty check, and exactly the house Finding shape, with no level and no section', () => {
   const files = { ...cleanVaultFiles(), 'people/bad.md': '---\ntype: robot\ndescription: x\n---\nBody.\n' };
   const config = { ...STRICT_CONFIG, frontmatter: { ...STRICT_CONFIG.frontmatter, type_enum: ['person'] } };
   const findings = findingsFor({ files, config });
   assert.ok(findings.length > 0, 'the fixture must produce at least one real finding for this assertion to mean anything');
   for (const finding of findings) {
     assert.equal(finding.ruler, 'house');
-    assert.deepEqual(Object.keys(finding).sort(), ['file', 'id', 'line', 'message', 'ruler']);
+    assert.deepEqual(Object.keys(finding).sort(), ['check', 'file', 'id', 'line', 'message', 'ruler']);
+    assert.equal(typeof finding.check, 'string');
+    assert.ok(finding.check.length > 0);
   }
+});
+
+// extension-fields' value-kind and enum-value checks share the rule id,
+// exactly the shape that made applyTimestampDeviation's old id-only
+// selector unsafe on the spec side: `check` must tell them apart even
+// though `id` does not.
+test('check is unique within a rule that emits more than one, so a downstream consumer can select one specific assertion without reaching the others', () => {
+  const files = {
+    ...cleanVaultFiles(),
+    'people/bad-kind-and-enum.md': '---\ntype: person\ndescription: x\nconfidential: maybe\nvinculo: nobody\n---\nBody.\n',
+  };
+  const config = {
+    frontmatter: {
+      required: [],
+      forbidden: [],
+      extensions: {
+        confidential: { type: 'boolean' },
+        vinculo: { type: 'enum', values: ['team', 'external'] },
+      },
+    },
+  };
+  const findings = findingsFor({ files, config }).filter((f) => isHouse('extension-fields')(f) && f.file === 'people/bad-kind-and-enum.md');
+  assert.deepEqual(findings.map((f) => f.check).sort(), ['enum-value', 'value-kind']);
 });
 
 // --- required-fields -----------------------------------------------------------
@@ -185,12 +249,12 @@ test('required-fields flags a missing field and, separately, one present but emp
   const config = { frontmatter: { required: ['description'], forbidden: [] } };
   const findings = findingsFor({ files, config });
 
-  const missing = findings.filter((f) => isHouse('required-fields')(f) && f.file === 'people/missing.md');
+  const missing = findings.filter((f) => isHouseCheck('required-fields', 'field-present')(f) && f.file === 'people/missing.md');
   assert.equal(missing.length, 1);
   assert.match(missing[0].message, /missing/);
   assert.equal(missing[0].line, null);
 
-  const empty = findings.filter((f) => isHouse('required-fields')(f) && f.file === 'people/empty.md');
+  const empty = findings.filter((f) => isHouseCheck('required-fields', 'field-non-empty')(f) && f.file === 'people/empty.md');
   assert.equal(empty.length, 1);
   assert.match(empty[0].message, /empty/);
 
@@ -202,6 +266,7 @@ test('required-fields treats a present but unreadable field (a block scalar head
   const config = { frontmatter: { required: ['description'], forbidden: [] } };
   const findings = findingsFor({ files, config }).filter((f) => isHouse('required-fields')(f) && f.file === 'people/unreadable.md');
   assert.equal(findings.length, 1);
+  assert.equal(findings[0].check, 'shape-readable');
   assert.match(findings[0].message, /PARSER_LIMITS/);
   assert.ok(!/missing/.test(findings[0].message), 'an unreadable shape must not be reported as missing');
 });
@@ -222,6 +287,30 @@ test('required-fields recognises a non-empty mapping field as present, and an em
   const empty = findings.filter((f) => isHouse('required-fields')(f) && f.file === 'people/empty-generated.md');
   assert.equal(empty.length, 1);
   assert.match(empty[0].message, /empty/);
+});
+
+// Fix round 1, finding 6: an INLINE empty collection ("tags: []",
+// "tags: {}") used to read back from readScalar as the non-blank string
+// "[]" or "{}" and was never handed to the collection-aware readers that
+// would have answered correctly, so a required field left empty this
+// way was reported as fine. Paired against a non-empty inline list,
+// which must still pass, and the already-correct block-empty case,
+// which must not regress.
+test('required-fields treats an explicitly empty inline list or mapping as empty, not as a non-empty value, but still allows a non-empty inline list', () => {
+  const files = {
+    ...cleanVaultFiles(),
+    'people/empty-inline-list.md': '---\ntype: person\ntags: []\n---\nBody.\n',
+    'people/empty-inline-mapping.md': '---\ntype: person\ntags: {}\n---\nBody.\n',
+    'people/nonempty-inline-list.md': '---\ntype: person\ntags: [a, b]\n---\nBody.\n',
+  };
+  const config = { frontmatter: { required: ['tags'], forbidden: [] } };
+  const findings = findingsFor({ files, config });
+
+  for (const file of ['people/empty-inline-list.md', 'people/empty-inline-mapping.md']) {
+    const bad = findings.filter((f) => isHouseCheck('required-fields', 'field-non-empty')(f) && f.file === file);
+    assert.equal(bad.length, 1, `${file} should be reported empty`);
+  }
+  assert.deepEqual(findings.filter((f) => isHouse('required-fields')(f) && f.file === 'people/nonempty-inline-list.md'), []);
 });
 
 test('required-fields does nothing at all when frontmatter.required is empty, but the identical file under a non-empty list is a finding', () => {
@@ -264,7 +353,7 @@ test('forbidden-fields flags a present forbidden field, even when it is empty or
   const config = { frontmatter: { required: [], forbidden: ['timestamp'] } };
   const findings = findingsFor({ files, config });
 
-  const has = findings.filter((f) => isHouse('forbidden-fields')(f) && f.file === 'people/has-it.md');
+  const has = findings.filter((f) => isHouseCheck('forbidden-fields', 'field-forbidden')(f) && f.file === 'people/has-it.md');
   assert.equal(has.length, 1);
   assert.match(has[0].message, /forbidden/);
   assert.equal(has[0].line, 3); // line 1 "---", line 2 "type: person", line 3 "timestamp: ..."
@@ -281,6 +370,18 @@ test('forbidden-fields does nothing at all when frontmatter.forbidden is empty, 
   assert.equal(findingsFor({ files, config: on }).filter((f) => isHouse('forbidden-fields')(f) && f.file === 'people/has-it.md').length, 1);
 });
 
+test('forbidden-fields flags a field named with a regular-expression metacharacter without throwing, and still reports the real line', () => {
+  const files = { ...cleanVaultFiles(), 'people/has-paren-field.md': '---\ntype: person\n"a(b": v\n---\nBody.\n' };
+  const config = { frontmatter: { required: [], forbidden: ['a(b'] } };
+  let findings;
+  assert.doesNotThrow(() => {
+    findings = findingsFor({ files, config });
+  });
+  const bad = findings.filter((f) => isHouse('forbidden-fields')(f) && f.file === 'people/has-paren-field.md');
+  assert.equal(bad.length, 1);
+  assert.equal(bad[0].line, 3);
+});
+
 // --- type-enum -------------------------------------------------------------------
 
 test('type-enum flags a type outside the configured list, but allows one inside it, and does nothing when the list is null', () => {
@@ -290,7 +391,7 @@ test('type-enum flags a type outside the configured list, but allows one inside 
   };
   const strict = { frontmatter: { required: [], forbidden: [], type_enum: ['person', 'project'] } };
   const findings = findingsFor({ files, config: strict });
-  const bad = findings.filter((f) => isHouse('type-enum')(f) && f.file === 'people/robot.md');
+  const bad = findings.filter((f) => isHouseCheck('type-enum', 'type-allowed')(f) && f.file === 'people/robot.md');
   assert.equal(bad.length, 1);
   assert.match(bad[0].message, /robot/);
   assert.deepEqual(findings.filter((f) => isHouse('type-enum')(f) && f.file === 'people/ana.md'), []);
@@ -310,7 +411,7 @@ test('type-enum does not fire when type is absent or blank, since those are the 
   const findings = findingsFor({ files, config });
   assert.deepEqual(findings.filter((f) => isHouse('type-enum')(f) && f.file === 'people/no-type.md'), []);
   assert.deepEqual(findings.filter((f) => isHouse('type-enum')(f) && f.file === 'people/blank-type.md'), []);
-  const unreadable = findings.filter((f) => isHouse('type-enum')(f) && f.file === 'people/unreadable-type.md');
+  const unreadable = findings.filter((f) => isHouseCheck('type-enum', 'shape-readable')(f) && f.file === 'people/unreadable-type.md');
   assert.equal(unreadable.length, 1);
   assert.match(unreadable[0].message, /PARSER_LIMITS/);
 });
@@ -320,13 +421,13 @@ test('type-enum does not fire when type is absent or blank, since those are the 
 test('extension-fields flags a boolean field with a non-boolean value, but allows a true or false one, and does nothing when the field is absent', () => {
   const files = {
     ...cleanVaultFiles(),
-    'people/bad-bool.md': '---\ntype: person\nconfidencial: yes\n---\nBody.\n',
-    'people/good-bool.md': '---\ntype: person\nconfidencial: true\n---\nBody.\n',
+    'people/bad-bool.md': '---\ntype: person\nconfidential: yes\n---\nBody.\n',
+    'people/good-bool.md': '---\ntype: person\nconfidential: true\n---\nBody.\n',
     'people/no-field.md': '---\ntype: person\n---\nBody.\n',
   };
-  const config = { frontmatter: { required: [], forbidden: [], extensions: { confidencial: { type: 'boolean' } } } };
+  const config = { frontmatter: { required: [], forbidden: [], extensions: { confidential: { type: 'boolean' } } } };
   const findings = findingsFor({ files, config });
-  const bad = findings.filter((f) => isHouse('extension-fields')(f) && f.file === 'people/bad-bool.md');
+  const bad = findings.filter((f) => isHouseCheck('extension-fields', 'value-kind')(f) && f.file === 'people/bad-bool.md');
   assert.equal(bad.length, 1);
   assert.match(bad[0].message, /boolean/);
   assert.deepEqual(findings.filter((f) => isHouse('extension-fields')(f) && f.file === 'people/good-bool.md'), []);
@@ -341,58 +442,50 @@ test('extension-fields flags a number field with a non-numeric value, but allows
   };
   const config = { frontmatter: { required: [], forbidden: [], extensions: { rating: { type: 'number' } } } };
   const findings = findingsFor({ files, config });
-  assert.equal(findings.filter((f) => isHouse('extension-fields')(f) && f.file === 'people/bad-number.md').length, 1);
+  assert.equal(findings.filter((f) => isHouseCheck('extension-fields', 'value-kind')(f) && f.file === 'people/bad-number.md').length, 1);
   assert.deepEqual(findings.filter((f) => isHouse('extension-fields')(f) && f.file === 'people/good-number.md'), []);
 });
 
 test('extension-fields flags a date field that is not a calendar-valid ISO date, checking the calendar and not only the shape', () => {
   const files = {
     ...cleanVaultFiles(),
-    'people/bad-date.md': '---\ntype: person\nlido: 2026-02-30\n---\nBody.\n',
-    'people/good-date.md': '---\ntype: person\nlido: 2026-09-18\n---\nBody.\n',
+    'people/bad-date.md': '---\ntype: person\nlast_read: 2026-02-30\n---\nBody.\n',
+    'people/good-date.md': '---\ntype: person\nlast_read: 2026-09-18\n---\nBody.\n',
   };
-  const config = { frontmatter: { required: [], forbidden: [], extensions: { lido: { type: 'date' } } } };
+  const config = { frontmatter: { required: [], forbidden: [], extensions: { last_read: { type: 'date' } } } };
   const findings = findingsFor({ files, config });
-  assert.equal(findings.filter((f) => isHouse('extension-fields')(f) && f.file === 'people/bad-date.md').length, 1);
+  assert.equal(findings.filter((f) => isHouseCheck('extension-fields', 'value-kind')(f) && f.file === 'people/bad-date.md').length, 1);
   assert.deepEqual(findings.filter((f) => isHouse('extension-fields')(f) && f.file === 'people/good-date.md'), []);
 });
 
 test('extension-fields flags an enum field outside its declared values, but allows one inside them', () => {
   const files = {
     ...cleanVaultFiles(),
-    'people/bad-enum.md': '---\ntype: person\nvinculo: desconhecido\n---\nBody.\n',
-    'people/good-enum.md': '---\ntype: person\nvinculo: equipe\n---\nBody.\n',
+    'people/bad-enum.md': '---\ntype: person\nvinculo: unknown-value\n---\nBody.\n',
+    'people/good-enum.md': '---\ntype: person\nvinculo: team\n---\nBody.\n',
   };
-  const config = { frontmatter: { required: [], forbidden: [], extensions: { vinculo: { type: 'enum', values: ['equipe', 'externo'] } } } };
+  const config = { frontmatter: { required: [], forbidden: [], extensions: { vinculo: { type: 'enum', values: ['team', 'external'] } } } };
   const findings = findingsFor({ files, config });
-  assert.equal(findings.filter((f) => isHouse('extension-fields')(f) && f.file === 'people/bad-enum.md').length, 1);
+  assert.equal(findings.filter((f) => isHouseCheck('extension-fields', 'enum-value')(f) && f.file === 'people/bad-enum.md').length, 1);
   assert.deepEqual(findings.filter((f) => isHouse('extension-fields')(f) && f.file === 'people/good-enum.md'), []);
 });
 
-// "fase" is a field name the base config fixture (test/fixtures/config/valid.json)
-// never declares, deliberately: that fixture already declares a real
-// per-type enum field ("situacao") of its own, and makeVault's deepMerge
-// merges an override's nested object onto it key by key rather than
-// replacing it outright, so reusing "situacao" here would leave the
-// fixture's own "decision" and "project" lists in the merged result and
-// mask exactly the "no declared list for this type" case this test
-// exists to prove.
 test('extension-fields resolves an enum field\x27s per-type values by the note\x27s own type, and skips the check when that type has no declared list', () => {
   const files = {
     ...cleanVaultFiles(),
-    'people/wrong-for-type.md': '---\ntype: person\nfase: arquivado\n---\nBody.\n',
-    'people/right-for-type.md': '---\ntype: person\nfase: ativo\n---\nBody.\n',
-    'decisions/no-list-for-type.md': '---\ntype: decision\nfase: whatever-goes\n---\nBody.\n',
+    'people/wrong-for-type.md': '---\ntype: person\nstage: archived\n---\nBody.\n',
+    'people/right-for-type.md': '---\ntype: person\nstage: active\n---\nBody.\n',
+    'decisions/no-list-for-type.md': '---\ntype: decision\nstage: whatever-goes\n---\nBody.\n',
   };
   const config = {
     frontmatter: {
       required: [],
       forbidden: [],
-      extensions: { fase: { type: 'enum', values_by_type: { person: ['ativo', 'inativo'] } } },
+      extensions: { stage: { type: 'enum', values_by_type: { person: ['active', 'inactive'] } } },
     },
   };
   const findings = findingsFor({ files, config });
-  assert.equal(findings.filter((f) => isHouse('extension-fields')(f) && f.file === 'people/wrong-for-type.md').length, 1);
+  assert.equal(findings.filter((f) => isHouseCheck('extension-fields', 'enum-value')(f) && f.file === 'people/wrong-for-type.md').length, 1);
   assert.deepEqual(findings.filter((f) => isHouse('extension-fields')(f) && f.file === 'people/right-for-type.md'), []);
   assert.deepEqual(
     findings.filter((f) => isHouse('extension-fields')(f) && f.file === 'decisions/no-list-for-type.md'),
@@ -402,10 +495,11 @@ test('extension-fields resolves an enum field\x27s per-type values by the note\x
 });
 
 test('extension-fields reports a present but unreadable field against PARSER_LIMITS rather than checking its kind', () => {
-  const files = { ...cleanVaultFiles(), 'people/unreadable.md': '---\ntype: person\nconfidencial: |\n---\nBody.\n' };
-  const config = { frontmatter: { required: [], forbidden: [], extensions: { confidencial: { type: 'boolean' } } } };
+  const files = { ...cleanVaultFiles(), 'people/unreadable.md': '---\ntype: person\nconfidential: |\n---\nBody.\n' };
+  const config = { frontmatter: { required: [], forbidden: [], extensions: { confidential: { type: 'boolean' } } } };
   const findings = findingsFor({ files, config }).filter((f) => isHouse('extension-fields')(f) && f.file === 'people/unreadable.md');
   assert.equal(findings.length, 1);
+  assert.equal(findings[0].check, 'shape-readable');
   assert.match(findings[0].message, /PARSER_LIMITS/);
 });
 
@@ -414,11 +508,11 @@ test('extension-fields reports a present but unreadable field against PARSER_LIM
 test('the placeholder exemption excuses an unparseable dated value under taxonomy.templates_dir, but the identical value elsewhere is a finding', () => {
   const files = {
     ...cleanVaultFiles(),
-    'templates/template-person.md': '---\ntype: person\nlido: <preencher>\n---\nPlaceholder template.\n',
-    'people/leaked-placeholder.md': '---\ntype: person\nlido: <preencher>\n---\nA real note that forgot to fill this in.\n',
+    'templates/template-person.md': '---\ntype: person\nlast_read: <fill-in>\n---\nPlaceholder template.\n',
+    'people/leaked-placeholder.md': '---\ntype: person\nlast_read: <fill-in>\n---\nA real note that forgot to fill this in.\n',
   };
   const config = {
-    frontmatter: { required: [], forbidden: [], extensions: { lido: { type: 'date' } } },
+    frontmatter: { required: [], forbidden: [], extensions: { last_read: { type: 'date' } } },
     validate: { placeholder_pattern: '<[^>]+>' },
   };
   const findings = findingsFor({ files, config });
@@ -428,14 +522,14 @@ test('the placeholder exemption excuses an unparseable dated value under taxonom
 });
 
 test('the placeholder exemption never fires without validate.placeholder_pattern configured, even under templates_dir', () => {
-  const files = { ...cleanVaultFiles(), 'templates/template-person.md': '---\ntype: person\nlido: <preencher>\n---\nPlaceholder template.\n' };
+  const files = { ...cleanVaultFiles(), 'templates/template-person.md': '---\ntype: person\nlast_read: <fill-in>\n---\nPlaceholder template.\n' };
   // The base config fixture sets its own placeholder_pattern; an explicit
   // `undefined` here overrides makeVault's deepMerge with a key that
   // JSON.stringify then drops entirely, which is the only way to test
   // this rule's own default (no pattern at all) against a fixture that
   // otherwise always configures one.
   const config = {
-    frontmatter: { required: [], forbidden: [], extensions: { lido: { type: 'date' } } },
+    frontmatter: { required: [], forbidden: [], extensions: { last_read: { type: 'date' } } },
     validate: { placeholder_pattern: undefined },
   };
   const findings = findingsFor({ files, config }).filter((f) => isHouse('extension-fields')(f) && f.file === 'templates/template-person.md');
@@ -451,7 +545,7 @@ test('link-style flags a slash-leading link under file-relative, but allows a re
     'people/bruno.md': '---\ntype: person\n---\nBody.\n',
   };
   const strict = { validate: { link_style: 'file-relative' } };
-  const findings = findingsFor({ files, config: strict }).filter((f) => isHouse('link-style')(f) && f.file === 'people/ana.md');
+  const findings = findingsFor({ files, config: strict }).filter((f) => isHouseCheck('link-style', 'file-relative')(f) && f.file === 'people/ana.md');
   assert.equal(findings.length, 1);
   assert.match(findings[0].message, /slash/);
   assert.match(findings[0].message, /host/);
@@ -467,7 +561,7 @@ test('link-style flags a relative link under bundle-absolute, but allows a slash
     'people/bruno.md': '---\ntype: person\n---\nBody.\n',
   };
   const config = { validate: { link_style: 'bundle-absolute' } };
-  const findings = findingsFor({ files, config }).filter((f) => isHouse('link-style')(f) && f.file === 'people/ana.md');
+  const findings = findingsFor({ files, config }).filter((f) => isHouseCheck('link-style', 'bundle-absolute')(f) && f.file === 'people/ana.md');
   assert.equal(findings.length, 1);
   assert.match(findings[0].message, /bundle-absolute/);
 });
@@ -524,6 +618,99 @@ test('link-target-exists is on even when the vault configures nothing at all', (
   assert.equal(findings.length, 1);
 });
 
+// --- link honesty: query strings, percent-encoding, parens, brackets, nesting -----
+
+// Fix round 1, finding 8 of the previous review: a query string or a
+// percent-escaped path used to be reported broken even though the file
+// it named was real. Both are now HANDLED.
+test('link-target-exists strips a query string and decodes a percent-escaped path before checking existence, but still flags the same shapes when the file genuinely does not exist', () => {
+  const realFiles = {
+    'index.md': '# Welcome\n',
+    'people/ana.md': [
+      '---',
+      'type: person',
+      '---',
+      'See [with query](bruno.md?v=1) and [percent-escaped](my%20notes.md).',
+    ].join('\n'),
+    'people/bruno.md': '---\ntype: person\n---\nBody.\n',
+    'people/my notes.md': '---\ntype: person\n---\nBody.\n',
+  };
+  assert.deepEqual(findingsFor({ files: realFiles }).filter((f) => isHouse('link-target-exists')(f) && f.file === 'people/ana.md'), []);
+
+  const ghostFiles = {
+    'index.md': '# Welcome\n',
+    'people/ana.md': '---\ntype: person\n---\nSee [ghost](nowhere.md?v=1) and [ghost too](no%20file.md).\n',
+  };
+  const findings = findingsFor({ files: ghostFiles }).filter((f) => isHouse('link-target-exists')(f) && f.file === 'people/ana.md');
+  assert.equal(findings.length, 2, 'the identical query-string and percent-escaped shapes must still be flagged when the target genuinely does not exist');
+});
+
+test('link-target-exists never throws on a malformed percent-escape, and declines to decode it rather than guessing', () => {
+  const files = { 'index.md': '# Welcome\n', 'people/ana.md': '---\ntype: person\n---\n[bad escape](nowhere%zz.md)\n' };
+  let findings;
+  assert.doesNotThrow(() => {
+    findings = findingsFor({ files });
+  });
+  const bad = findings.filter((f) => isHouse('link-target-exists')(f) && f.file === 'people/ana.md');
+  assert.equal(bad.length, 1);
+  assert.match(bad[0].message, /nowhere%zz\.md/);
+});
+
+// Fix round 1, finding 9: a target containing balanced parentheses used
+// to be reported under a garbled, truncated name. HANDLED now, by
+// balanced matching.
+test('link-target-exists resolves a target containing balanced parentheses by its real, whole name, but still flags the identical shape when that file does not exist, naming it whole rather than mangled', () => {
+  const realFiles = {
+    'index.md': '# Welcome\n',
+    'people/ana.md': '---\ntype: person\n---\nSee [scan](real(1).md).\n',
+    'people/real(1).md': '---\ntype: person\n---\nBody.\n',
+  };
+  assert.deepEqual(findingsFor({ files: realFiles }).filter((f) => isHouse('link-target-exists')(f) && f.file === 'people/ana.md'), []);
+
+  const ghostFiles = { 'index.md': '# Welcome\n', 'people/ana.md': '---\ntype: person\n---\n[ghost](real(1).md)\n' };
+  const findings = findingsFor({ files: ghostFiles }).filter((f) => isHouse('link-target-exists')(f) && f.file === 'people/ana.md');
+  assert.equal(findings.length, 1);
+  assert.match(findings[0].message, /real\(1\)\.md/);
+});
+
+// Fix round 1, finding 10: bracketed link text used to make the whole
+// link invisible to this scanner. HANDLED now, by balanced matching on
+// the text span too.
+test('link-target-exists recognises a link whose own text contains brackets', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/ana.md': '---\ntype: person\n---\nSee [text [with brackets]](ghost.md).\n',
+  };
+  const findings = findingsFor({ files }).filter((f) => isHouse('link-target-exists')(f) && f.file === 'people/ana.md');
+  assert.equal(findings.length, 1, 'the link must be recognised at all, or this would report nothing instead of a broken target');
+  assert.match(findings[0].message, /ghost\.md/);
+});
+
+// Fix round 1, declared trade-off: a link nested inside another link's
+// text (an image inside a link) is read as ONE link, the outer one, and
+// the inner image's own target is no longer independently checked.
+test('link-target-exists checks the outer target of a nested link-in-a-link pair, and does not independently check the inner one', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/ana.md': '---\ntype: person\n---\n[![alt](inner-ghost.png)](outer-ghost.md)\n',
+  };
+  const findings = findingsFor({ files }).filter((f) => isHouse('link-target-exists')(f) && f.file === 'people/ana.md');
+  assert.equal(findings.length, 1, 'only the outer target is checked for a nested pair');
+  assert.match(findings[0].message, /outer-ghost\.md/);
+  assert.ok(!findings.some((f) => f.message.includes('inner-ghost.png')), 'the inner image is declined, not independently reported');
+});
+
+// Fix round 1, declared trade-off: a reference-style link is declined
+// outright, and produces no finding at all, right or wrong.
+test('link-target-exists declines a reference-style link outright: it produces no finding, not a wrong one', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/ana.md': ['---', 'type: person', '---', 'See [Bruno][ref] for more.', '', '[ref]: nowhere-real.md', ''].join('\n'),
+  };
+  const findings = findingsFor({ files }).filter((f) => isHouse('link-target-exists')(f) && f.file === 'people/ana.md');
+  assert.deepEqual(findings, [], 'a reference-style link is declined, producing neither a right nor a wrong finding');
+});
+
 // --- code exclusion: fenced (backtick and tilde, including malformed) and inline ---
 
 test('a link-shaped example inside a fenced code block is never read as a real link, whether the fence is backtick or tilde, longer than three characters, or never closed', () => {
@@ -557,6 +744,21 @@ test('a link-shaped example inside inline code is never read as a real link, but
   };
   const findings = findingsFor({ files }).filter((f) => isHouse('link-target-exists')(f) && f.file === 'people/ana.md');
   assert.equal(findings.length, 1);
+});
+
+// Fix round 1: the shared review's own addition to the fence contract.
+// A fence quoted inside a blockquote is still code, and the review
+// showed this ruler turning that into a wrong link finding, which is
+// exactly the "confident wrong finding" the module's own header
+// declares it will not produce.
+test('a link inside a fenced block quoted with ">" is never read as a real link, but a real link right after the quote closes still is', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/ana.md': ['---', 'type: person', '---', '> ```', '> [x](ghost.md)', '> ```', '[real](nowhere-real.md)', ''].join('\n'),
+  };
+  const findings = findingsFor({ files }).filter((f) => isHouse('link-target-exists')(f) && f.file === 'people/ana.md');
+  assert.equal(findings.length, 1, 'only the real link after the blockquote should be flagged, not the quoted-and-fenced example');
+  assert.match(findings[0].message, /nowhere-real\.md/);
 });
 
 // --- no-wikilinks ------------------------------------------------------------------
@@ -598,10 +800,12 @@ test('root-okf-version flags a root index with no okf_version, and one with the 
 
   const missingFindings = findingsFor({ files: missing, config }).filter(isHouse('root-okf-version'));
   assert.equal(missingFindings.length, 1);
+  assert.equal(missingFindings[0].check, 'declared');
   assert.match(missingFindings[0].message, /does not declare/);
 
   const wrongFindings = findingsFor({ files: wrong, config }).filter(isHouse('root-okf-version'));
   assert.equal(wrongFindings.length, 1);
+  assert.equal(wrongFindings[0].check, 'matches-configured');
   assert.match(wrongFindings[0].message, /0\.1/);
 
   assert.deepEqual(findingsFor({ files: right, config }).filter(isHouse('root-okf-version')), []);
@@ -627,7 +831,7 @@ test('the timestamp-deviation rule never produces a house finding of its own, wh
 });
 
 test('applyTimestampDeviation downgrades a should-level timestamp finding to a warning when the vault declares "allow", but leaves it untouched by default ("forbid")', () => {
-  const shouldFinding = { ruler: 'spec', id: 'stale-after-format', section: '5.5', level: 'should', file: 'people/ana.md', line: 6, message: 'stale_after is a plain date' };
+  const shouldFinding = { ruler: 'spec', id: 'stale-after-format', check: 'timestamp-form', section: '5.5', level: 'should', file: 'people/ana.md', line: 6, message: 'stale_after is a plain date' };
 
   const allowed = applyTimestampDeviation([shouldFinding], { validate: { timestamp_deviation: 'allow' } });
   assert.equal(allowed.length, 1);
@@ -641,15 +845,34 @@ test('applyTimestampDeviation downgrades a should-level timestamp finding to a w
   assert.deepEqual(defaulted, [shouldFinding], 'an unconfigured vault gets the format\x27s own answer: forbid');
 });
 
-test('applyTimestampDeviation never touches a must-level finding or a should-level finding under a different id, even while it downgrades the one eligible finding in the same batch', () => {
-  const mustFinding = { ruler: 'spec', id: 'type-required', section: '4.1', level: 'must', file: 'people/ana.md', line: null, message: 'type is required but missing' };
-  const otherShould = { ruler: 'spec', id: 'sources-resource', section: '5.1', level: 'should', file: 'people/ana.md', line: 8, message: 'sources[0] is missing a resource' };
-  const eligible = { ruler: 'spec', id: 'generated-actor', section: '5.2', level: 'should', file: 'people/ana.md', line: 4, message: 'generated.at is not an ISO 8601 datetime' };
+test('applyTimestampDeviation never touches a must-level finding or a should-level finding under a different check, even while it downgrades the one eligible finding in the same batch', () => {
+  const mustFinding = { ruler: 'spec', id: 'type-required', check: 'type-present', section: '4.1', level: 'must', file: 'people/ana.md', line: null, message: 'type is required but missing' };
+  const otherShould = { ruler: 'spec', id: 'sources-resource', check: 'entry-resource', section: '5.1', level: 'should', file: 'people/ana.md', line: 8, message: 'sources[0] is missing a resource' };
+  const eligible = { ruler: 'spec', id: 'generated-actor', check: 'timestamp-form', section: '5.2', level: 'should', file: 'people/ana.md', line: 4, message: 'generated.at is not an ISO 8601 datetime' };
 
   const result = applyTimestampDeviation([mustFinding, otherShould, eligible], { validate: { timestamp_deviation: 'allow' } });
   assert.deepEqual(result[0], mustFinding);
   assert.deepEqual(result[1], otherShould);
   assert.equal(result[2].warning, true, 'the one eligible finding in the batch must still be downgraded, or this "leaves the others alone" test would pass against a stub that changes nothing at all');
+});
+
+// Fix round 1, finding 5 of the previous review, the reason `check`
+// exists at all: generated-actor and verified-events each carry an
+// actor-shaped check under the SAME id as their timestamp-shaped check.
+// Selecting by id alone would downgrade a missing-actor finding just
+// because it shares an id with a real timestamp finding; selecting by
+// the (id, check) pair must not.
+test('applyTimestampDeviation never downgrades an actor-presence or shape-readable finding sharing an id with an eligible timestamp-form check, but still downgrades the real timestamp-form finding for that same id in the same batch', () => {
+  const actorMissing = { ruler: 'spec', id: 'generated-actor', check: 'actor-present', section: '5.2', level: 'should', file: 'people/ana.md', line: 4, message: 'generated.by is required but missing or empty' };
+  const shapeUnreadable = { ruler: 'spec', id: 'generated-actor', check: 'shape-readable', section: '5.2', level: 'should', file: 'people/ana.md', line: 4, message: 'generated is present but its shape could not be read' };
+  const eventActor = { ruler: 'spec', id: 'verified-events', check: 'event-actor', section: '5.2', level: 'should', file: 'people/ana.md', line: 6, message: 'verified[0].by is required but missing or empty' };
+  const timestampForm = { ruler: 'spec', id: 'generated-actor', check: 'timestamp-form', section: '5.2', level: 'should', file: 'people/ana.md', line: 4, message: 'generated.at is not an ISO 8601 datetime' };
+
+  const result = applyTimestampDeviation([actorMissing, shapeUnreadable, eventActor, timestampForm], { validate: { timestamp_deviation: 'allow' } });
+  assert.deepEqual(result[0], actorMissing);
+  assert.deepEqual(result[1], shapeUnreadable);
+  assert.deepEqual(result[2], eventActor);
+  assert.equal(result[3].warning, true, 'the real timestamp-form finding sharing the same id must still be downgraded, or this test would pass against a stub that changes nothing at all');
 });
 
 // --- a rule must never throw: malformed, truncated, empty and binary-ish files -----
@@ -661,7 +884,7 @@ test('a rule never throws on malformed input: empty, only the opening delimiter,
     'people/only-open.md': '---\n',
     'people/unterminated.md': '---\ntype: note\ndescription: this frontmatter block is never closed\n',
   };
-  const config = { frontmatter: { required: ['description'], forbidden: [], extensions: { confidencial: { type: 'boolean' } } } };
+  const config = { frontmatter: { required: ['description'], forbidden: [], extensions: { confidential: { type: 'boolean' } } } };
   let findings;
   assert.doesNotThrow(() => {
     findings = findingsFor({ files, config });
@@ -677,9 +900,9 @@ test('a rule never throws on malformed input: empty, only the opening delimiter,
 
 test('a rule never throws on binary-ish content, or on a malformed validate.placeholder_pattern that is not a valid regular expression, and still reports the missing extension field rather than silently passing', () => {
   const binaryish = String.fromCharCode(0, 1, 2, 255, 254) + 'not really frontmatter' + String.fromCharCode(7);
-  const files = { ...cleanVaultFiles(), 'people/binary.md': binaryish, 'people/has-bad-bool.md': '---\ntype: person\nconfidencial: yes\n---\nBody.\n' };
+  const files = { ...cleanVaultFiles(), 'people/binary.md': binaryish, 'people/has-bad-bool.md': '---\ntype: person\nconfidential: yes\n---\nBody.\n' };
   const config = {
-    frontmatter: { required: [], forbidden: [], extensions: { confidencial: { type: 'boolean' } } },
+    frontmatter: { required: [], forbidden: [], extensions: { confidential: { type: 'boolean' } } },
     validate: { placeholder_pattern: '(unclosed' },
   };
   let findings;
@@ -691,4 +914,26 @@ test('a rule never throws on binary-ish content, or on a malformed validate.plac
     1,
     'a malformed placeholder pattern must not silently grant an exemption it cannot evaluate',
   );
+});
+
+test('a rule never throws on adversarial link-shaped text: thousands of unmatched brackets, deeply nested links, or a very long single link, and still flags a real broken link placed right after each one', () => {
+  const manyOpenBrackets = '['.repeat(5000);
+  const deeplyNested = '['.repeat(200) + 'text' + ']('.repeat(0) + 'x.md)'.repeat(1); // 200 opens, one real close far short of matching them all
+  const longLinkTarget = `[x](${'a'.repeat(40000)}.md)`;
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/brackets.md': `---\ntype: person\n---\n${manyOpenBrackets}\n[real-ghost](nowhere-real.md)\n`,
+    'people/nested.md': `---\ntype: person\n---\n${deeplyNested}\n[real-ghost](nowhere-real.md)\n`,
+    'people/long.md': `---\ntype: person\n---\n${longLinkTarget}\n[real-ghost](nowhere-real.md)\n`,
+  };
+  let findings;
+  assert.doesNotThrow(() => {
+    findings = findingsFor({ files });
+  });
+  for (const file of ['people/brackets.md', 'people/nested.md', 'people/long.md']) {
+    assert.ok(
+      findings.some((f) => isHouse('link-target-exists')(f) && f.file === file && f.message.includes('nowhere-real.md')),
+      `${file} should still report the real broken link placed after the adversarial text`,
+    );
+  }
 });
