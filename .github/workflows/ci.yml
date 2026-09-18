@@ -28,8 +28,6 @@ jobs:
   plugin-validate:
     name: claude plugin validate --strict
     runs-on: ubuntu-latest
-    # Unverified whether the CLI validates without a login; do not block on it yet.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
