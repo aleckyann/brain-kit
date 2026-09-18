@@ -4,6 +4,11 @@
 // frontmatter string alone. See src/frontmatter.mjs for why this is a
 // regular-expression reader and not a YAML parser, and what that means for
 // the three-way null/undefined/value contract every reader below shares.
+//
+// Fix round 1: every refusal assertion (an expected `undefined`) is paired
+// in the same test with its nearest positive, the almost-identical shape
+// that must still be read. A test that only checks for `undefined` is
+// satisfied by a reader that never reads anything at all.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { PARSER_LIMITS, readEntries, readList, readMapping, readScalar, splitFrontmatter } from '../src/frontmatter.mjs';
@@ -55,6 +60,71 @@ test('a --- that appears later in the body, inside a fenced code block, is not t
   assert.ok(result.body.includes('type: nested-example'), 'the later --- pair must stay in the body untouched');
 });
 
+// --- line ending and byte-order mark normalization --------------------------
+
+// Reads every field a real note would carry, through every one of this
+// module's readers, so a single deep comparison shows whether a line
+// ending or byte-order-mark difference changed any answer at all.
+function readAllFields(text) {
+  const { frontmatter, body, hasFrontmatter } = splitFrontmatter(text);
+  return {
+    hasFrontmatter,
+    body,
+    type: readScalar(frontmatter, 'type'),
+    title: readScalar(frontmatter, 'title'),
+    generated: readMapping(frontmatter, 'generated'),
+    tags: readList(frontmatter, 'tags'),
+    sources: readEntries(frontmatter, 'sources'),
+  };
+}
+
+const SAMPLE_NOTE_LF = [
+  '---',
+  'type: note',
+  'title: Example',
+  'generated: { by: brain-kit-curator/claude-opus-5, at: 2026-09-18T09:30:00Z }',
+  'tags: [okf, spec]',
+  'sources:',
+  '  - resource: /docs/a.md',
+  '    title: A',
+  '---',
+  '# Body',
+  '',
+  'More text.',
+  '',
+].join('\n');
+
+test('a file with Windows line endings (CRLF) reads type and title correctly, not just generated, the last key', () => {
+  // This is the exact defect found in review: with CRLF, every internal
+  // line kept a trailing \r once split on "\n" alone, and only the LAST
+  // key (with no trailing \r, since the outer strip removes exactly one
+  // trailing line break) still read back correctly.
+  const crlf = SAMPLE_NOTE_LF.replace(/\n/g, '\r\n');
+  const lfResult = readAllFields(SAMPLE_NOTE_LF);
+  const crlfResult = readAllFields(crlf);
+
+  assert.equal(lfResult.type, 'note');
+  assert.equal(crlfResult.type, 'note');
+  assert.equal(lfResult.title, 'Example');
+  assert.equal(crlfResult.title, 'Example');
+  assert.deepEqual(crlfResult, lfResult);
+});
+
+test('a leading byte-order mark does not make a note read as having no frontmatter, and every field still matches the same file without one', () => {
+  const bom = String.fromCharCode(0xfeff) + SAMPLE_NOTE_LF;
+  const lfResult = readAllFields(SAMPLE_NOTE_LF);
+  const bomResult = readAllFields(bom);
+
+  assert.equal(lfResult.hasFrontmatter, true);
+  assert.equal(bomResult.hasFrontmatter, true); // this is exactly what a leading BOM used to flip to false
+  assert.deepEqual(bomResult, lfResult);
+});
+
+test('a byte-order mark combined with Windows line endings still reads identically to plain LF', () => {
+  const bomCrlf = String.fromCharCode(0xfeff) + SAMPLE_NOTE_LF.replace(/\n/g, '\r\n');
+  assert.deepEqual(readAllFields(bomCrlf), readAllFields(SAMPLE_NOTE_LF));
+});
+
 // --- readScalar ---------------------------------------------------------------
 
 test('readScalar reads a plain value', () => {
@@ -78,9 +148,25 @@ test('readScalar does not match a key that merely appears inside another line', 
   assert.equal(readScalar(frontmatter, 'type'), 'note');
 });
 
-test('readScalar returns undefined for a block or folded scalar header instead of the bare marker', () => {
-  const frontmatter = 'description: |\n  line one\n  line two';
-  assert.equal(readScalar(frontmatter, 'description'), undefined);
+test('a key with a space before its colon still reads, the same as one with no space', () => {
+  assert.equal(readScalar('type : note', 'type'), 'note');
+  assert.equal(readScalar('type: note', 'type'), 'note');
+});
+
+test('readScalar returns undefined for a block or folded scalar header, but still reads a plain one-line value for the same key', () => {
+  assert.equal(readScalar('description: |\n  line one\n  line two', 'description'), undefined);
+  assert.equal(readScalar('description: a plain one-line value', 'description'), 'a plain one-line value');
+});
+
+test('readScalar returns undefined for a plain value folded across indented continuation lines with no block marker, but still reads a single-line value for the same key', () => {
+  const folded = 'description:\n  first line\n  second line';
+  const singleLine = 'description: first line only';
+  assert.equal(readScalar(folded, 'description'), undefined);
+  assert.equal(readScalar(singleLine, 'description'), 'first line only');
+});
+
+test('readScalar reads an empty string for a key with truly nothing after it and nothing indented underneath, distinct from the folded case above', () => {
+  assert.equal(readScalar('description:', 'description'), '');
 });
 
 test('readScalar returns the raw line text, marker included, for a value carrying a YAML anchor', () => {
@@ -137,41 +223,57 @@ test('readMapping reads an empty indented block (key present, nothing under it) 
   assert.deepEqual(readMapping('generated:', 'generated'), {});
 });
 
-test('readMapping returns undefined for a nested mapping value rather than a flattened or partial result', () => {
-  const frontmatter = 'generated: { by: { kind: human, handle: ana }, at: 2026-01-01T00:00:00Z }';
-  assert.equal(readMapping(frontmatter, 'generated'), undefined);
+test('readMapping returns undefined for a nested mapping value, but still reads the flat mapping when nothing is nested', () => {
+  const flat = 'generated: { by: brain-kit-curator/claude-opus-5, at: 2026-01-01T00:00:00Z }';
+  const nested = 'generated: { by: { kind: human, handle: ana }, at: 2026-01-01T00:00:00Z }';
+  assert.deepEqual(readMapping(flat, 'generated'), { by: 'brain-kit-curator/claude-opus-5', at: '2026-01-01T00:00:00Z' });
+  assert.equal(readMapping(nested, 'generated'), undefined);
 });
 
-test('readMapping returns undefined for a block form where one line nests a mapping on itself, even though every line shares one indentation', () => {
-  const frontmatter = 'generated:\n  by: { nested: true }\n  at: 2026-01-01T00:00:00Z';
-  assert.equal(readMapping(frontmatter, 'generated'), undefined);
+test('readMapping returns undefined for a block form where one line nests a mapping on itself, but still reads the same block when that one line is flat', () => {
+  const flat = 'generated:\n  by: brain-kit-curator/claude-opus-5\n  at: 2026-01-01T00:00:00Z';
+  const nested = 'generated:\n  by: { nested: true }\n  at: 2026-01-01T00:00:00Z';
+  assert.deepEqual(readMapping(flat, 'generated'), { by: 'brain-kit-curator/claude-opus-5', at: '2026-01-01T00:00:00Z' });
+  assert.equal(readMapping(nested, 'generated'), undefined);
 });
 
-test('readMapping returns undefined for a block form with inconsistent indentation (a nested value)', () => {
-  const frontmatter = 'generated:\n  by:\n    kind: human\n    handle: ana\n  at: 2026-01-01T00:00:00Z';
-  assert.equal(readMapping(frontmatter, 'generated'), undefined);
+test('readMapping returns undefined for a block form with inconsistent indentation, but still reads it when every line shares one indentation', () => {
+  const uniform = 'generated:\n  by: brain-kit-curator/claude-opus-5\n  at: 2026-01-01T00:00:00Z';
+  const nested = 'generated:\n  by:\n    kind: human\n    handle: ana\n  at: 2026-01-01T00:00:00Z';
+  assert.deepEqual(readMapping(uniform, 'generated'), { by: 'brain-kit-curator/claude-opus-5', at: '2026-01-01T00:00:00Z' });
+  assert.equal(readMapping(nested, 'generated'), undefined);
 });
 
-test('readMapping returns undefined when the block under the key is a list, not a mapping', () => {
-  const frontmatter = 'verified:\n  - by: human:ana\n    at: 2026-01-01T00:00:00Z';
-  assert.equal(readMapping(frontmatter, 'verified'), undefined);
+test('readMapping returns undefined when the block under the key is a list, but still reads the same fields written as a mapping', () => {
+  const asMapping = 'verified:\n  by: human:ana\n  at: 2026-01-01T00:00:00Z';
+  const asList = 'verified:\n  - by: human:ana\n    at: 2026-01-01T00:00:00Z';
+  assert.deepEqual(readMapping(asMapping, 'verified'), { by: 'human:ana', at: '2026-01-01T00:00:00Z' });
+  assert.equal(readMapping(asList, 'verified'), undefined);
 });
 
-test('readMapping returns undefined for a single-level block whose one line is a list entry, not a mapping pair', () => {
+test('readMapping returns undefined for a single-level block whose one line is a list entry, but still reads it when that one line is a mapping pair', () => {
   // Unlike the case above, this block has only one line, so it cannot be
-  // caught by the indentation-uniformity check: it is the entry-marker
-  // check alone that must reject it.
-  const frontmatter = 'verified:\n  - by: human:ana';
-  assert.equal(readMapping(frontmatter, 'verified'), undefined);
+  // caught by the indentation-uniformity check: the entry-marker check
+  // alone must reject it.
+  const asMapping = 'verified:\n  by: human:ana';
+  const asList = 'verified:\n  - by: human:ana';
+  assert.deepEqual(readMapping(asMapping, 'verified'), { by: 'human:ana' });
+  assert.equal(readMapping(asList, 'verified'), undefined);
 });
 
-test('readMapping returns undefined for a value carrying a YAML anchor', () => {
-  const frontmatter = 'generated: &g1 { by: human:ana, at: 2026-01-01T00:00:00Z }';
-  assert.equal(readMapping(frontmatter, 'generated'), undefined);
+test('readMapping returns undefined for a value carrying a YAML anchor, but still reads the identical value once the anchor is removed', () => {
+  const withAnchor = 'generated: &g1 { by: human:ana, at: 2026-01-01T00:00:00Z }';
+  const withoutAnchor = 'generated: { by: human:ana, at: 2026-01-01T00:00:00Z }';
+  assert.equal(readMapping(withAnchor, 'generated'), undefined);
+  assert.deepEqual(readMapping(withoutAnchor, 'generated'), { by: 'human:ana', at: '2026-01-01T00:00:00Z' });
 });
 
-test('readMapping returns undefined when the key holds a plain scalar instead of a mapping', () => {
+test('readMapping returns undefined when the key holds a plain scalar instead of a mapping, but still reads a real mapping under a different key', () => {
   assert.equal(readMapping('type: note', 'type'), undefined);
+  assert.deepEqual(readMapping('generated: { by: human:ana, at: 2026-01-01T00:00:00Z }', 'generated'), {
+    by: 'human:ana',
+    at: '2026-01-01T00:00:00Z',
+  });
 });
 
 // --- readList --------------------------------------------------------------
@@ -197,13 +299,23 @@ test('readList reads a key with nothing under it (no inline value, no block line
   assert.deepEqual(readList('tags:', 'tags'), []);
 });
 
-test('readList returns undefined when the key holds a plain scalar instead of a list', () => {
+test('readList returns undefined when the key holds a plain scalar instead of a list, but still reads a real list under a different key', () => {
   assert.equal(readList('type: note', 'type'), undefined);
+  assert.deepEqual(readList('tags: [okf, spec]', 'tags'), ['okf', 'spec']);
 });
 
-test('readList returns undefined when the block under the key is not plain list entries', () => {
-  const frontmatter = 'tags:\n  color: blue';
-  assert.equal(readList(frontmatter, 'tags'), undefined);
+test('readList returns undefined when the block under the key is not plain list entries, but still reads it once the entries are plain values', () => {
+  const asMapping = 'tags:\n  color: blue';
+  const asList = 'tags:\n  - blue';
+  assert.equal(readList(asMapping, 'tags'), undefined);
+  assert.deepEqual(readList(asList, 'tags'), ['blue']);
+});
+
+test('readList returns undefined for a block of single-field mapping entries, the exact shape sources takes in real notes, but still reads plain scalar entries the same way', () => {
+  const asMappingEntries = 'sources:\n  - resource: /docs/a.md\n  - resource: /docs/b.md';
+  const asPlainEntries = 'sources:\n  - /docs/a.md\n  - /docs/b.md';
+  assert.equal(readList(asMappingEntries, 'sources'), undefined);
+  assert.deepEqual(readList(asPlainEntries, 'sources'), ['/docs/a.md', '/docs/b.md']);
 });
 
 // --- readEntries -----------------------------------------------------------
@@ -240,13 +352,46 @@ test('readEntries reads a key with nothing under it as an empty array', () => {
   assert.deepEqual(readEntries('sources:', 'sources'), []);
 });
 
-test('readEntries returns undefined when the key holds an inline value instead of a block', () => {
+test('readEntries returns undefined when the key holds an inline value instead of a block, but still reads the block form under the same key name', () => {
   assert.equal(readEntries('sources: nothing-useful', 'sources'), undefined);
+  assert.deepEqual(readEntries('sources:\n  - resource: /docs/a.md', 'sources'), [{ resource: '/docs/a.md' }]);
 });
 
-test('readEntries returns undefined when the block does not open with an entry marker', () => {
-  const frontmatter = 'sources:\n  resource: /docs/example.md';
-  assert.equal(readEntries(frontmatter, 'sources'), undefined);
+test('readEntries returns undefined when the block does not open with an entry marker, but still reads it once it does', () => {
+  const noMarker = 'sources:\n  resource: /docs/example.md';
+  const withMarker = 'sources:\n  - resource: /docs/example.md';
+  assert.equal(readEntries(noMarker, 'sources'), undefined);
+  assert.deepEqual(readEntries(withMarker, 'sources'), [{ resource: '/docs/example.md' }]);
+});
+
+// --- escaped quotes inside an inline mapping or list value -------------------
+
+// A backslash before a quote is not treated as an escape (PARSER_LIMITS).
+// These pin down the actual, verified consequence, reproduced directly
+// against the implementation before being written here: no value is ever
+// silently truncated. An EVEN number of quote characters in the value
+// still finds the real closing brace or bracket (the toggling in and out
+// of "inside a quote" cancels out), and the value comes back whole, with
+// the backslash preserved literally rather than interpreted. An ODD
+// number leaves the scanner "inside a quote" when it reaches the real
+// closing brace or bracket, which is therefore never found, and the whole
+// field is undefined rather than a partial or corrupted value.
+
+test('an even number of quote characters in an inline mapping value still finds the closing brace and reads the value back whole, backslash included, but an odd number never finds it and the whole field is undefined instead of a truncated value', () => {
+  const even = 'note: { label: "she said \\"hi\\" to me", at: 2026-01-01T00:00:00Z }';
+  const odd = 'note: { label: "she said \\"hi to me", at: 2026-01-01T00:00:00Z }';
+  assert.deepEqual(readMapping(even, 'note'), {
+    label: 'she said \\"hi\\" to me',
+    at: '2026-01-01T00:00:00Z',
+  });
+  assert.equal(readMapping(odd, 'note'), undefined);
+});
+
+test('the same even/odd rule applies to an inline list: an even count reads the value back whole, an odd count returns undefined for the whole list', () => {
+  const even = 'tags: ["a \\"b\\" c", d]';
+  const odd = 'tags: ["a \\"b c", d]';
+  assert.deepEqual(readList(even, 'tags'), ['a \\"b\\" c', 'd']);
+  assert.equal(readList(odd, 'tags'), undefined);
 });
 
 // --- PARSER_LIMITS -----------------------------------------------------------
@@ -259,6 +404,24 @@ test('PARSER_LIMITS is non-empty and every entry is a short, concrete, ASCII sen
     assert.ok(entry.length > 0 && entry.length < 320, `entry should be a short sentence: ${entry}`);
     assert.ok(/^[\x00-\x7F]*$/.test(entry), `entry must be ASCII only: ${entry}`);
     assert.ok(!entry.includes(String.fromCharCode(0x2014)), `entry must not contain an em dash: ${entry}`);
+  }
+});
+
+const READER_FUNCTION_NAMES = ['readScalar', 'readMapping', 'readList', 'readEntries'];
+
+test('PARSER_LIMITS entries are concrete, not vague: each names a reader function and the return value it produces for the shape it describes', () => {
+  // A vague entry like "some values may not be read correctly" would pass
+  // every check above (it is short, ASCII, no em dash) and still tell a
+  // reader of the validator's output nothing about what actually happens.
+  // This is what let the two wrong entries in fix round 1 ship in the
+  // first place: nothing checked that PARSER_LIMITS said anything
+  // specific enough to be wrong.
+  for (const entry of PARSER_LIMITS) {
+    assert.ok(
+      READER_FUNCTION_NAMES.some((name) => entry.includes(name)),
+      `entry does not name a reader function, so a vague sentence would pass this check: ${entry}`,
+    );
+    assert.ok(entry.includes('undefined'), `entry does not say what it returns: ${entry}`);
   }
 });
 

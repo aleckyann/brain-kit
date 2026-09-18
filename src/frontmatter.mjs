@@ -40,8 +40,28 @@
 // line are the SAME character when the frontmatter block is empty ("---"
 // directly followed by "---"), and a pattern asking for that one newline
 // twice could never match that case.
-const OPEN_DELIMITER = /^---[ \t]*\r?\n/;
-const CLOSE_DELIMITER = /^---[ \t]*(?:\r?\n|$)/m;
+//
+// Neither pattern carries an optional \r: normalize() below removes every
+// carriage return before either pattern ever runs, so there is exactly one
+// place in this file that knows Windows line endings exist. Fix round 1
+// found the alternative (an optional \r sprinkled into each pattern that
+// might see one) already causing a real defect: a file with CRLF line
+// endings still opened its frontmatter correctly, but every INTERNAL line
+// of it kept a trailing \r once split on "\n" alone, and `.` in a
+// JavaScript regex never matches \r (it is a line terminator, excluded
+// like \n), so `(.*)$` in findKeyLine's pattern had no way to reach the
+// true end of such a line and every key but the last read back as
+// absent. One normalisation point, tested once here, is what this project
+// chose after its phase 0 push gate needed five rounds of fixes for
+// exactly the opposite habit: the same rule, remembered separately in
+// nine patterns, forgotten in one of them.
+function normalize(text) {
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1); // a leading byte-order mark, stripped before anything else looks at position 0
+  return text.replace(/\r\n?/g, '\n'); // CRLF, and a lone CR on its own, both become LF
+}
+
+const OPEN_DELIMITER = /^---[ \t]*\n/;
+const CLOSE_DELIMITER = /^---[ \t]*(?:\n|$)/m;
 
 // Splits `text` into { frontmatter, body, hasFrontmatter }. `hasFrontmatter`
 // is true only when the very first line is a bare "---": a "---" anywhere
@@ -54,7 +74,15 @@ const CLOSE_DELIMITER = /^---[ \t]*(?:\r?\n|$)/m;
 // nothing calls the search again. An opened block with no closing line at
 // all (malformed) is reported as no frontmatter, with the whole text as
 // the body, rather than guessing where it might have ended.
+//
+// `text` is normalized FIRST, before either delimiter pattern runs, so a
+// byte-order mark never hides the opening "---" from OPEN_DELIMITER
+// (which matches only at position 0), and `body` is exactly as line-ending
+// free as `frontmatter`: both come from the same normalized string, so a
+// reader downstream never has to ask which kind of file it came from.
 export function splitFrontmatter(text) {
+  text = normalize(text);
+
   const open = OPEN_DELIMITER.exec(text);
   if (!open) return { frontmatter: null, body: text, hasFrontmatter: false };
 
@@ -63,7 +91,7 @@ export function splitFrontmatter(text) {
   if (!close) return { frontmatter: null, body: text, hasFrontmatter: false };
 
   return {
-    frontmatter: rest.slice(0, close.index).replace(/\r?\n$/, ''),
+    frontmatter: rest.slice(0, close.index).replace(/\n$/, ''),
     body: rest.slice(close.index + close[0].length),
     hasFrontmatter: true,
   };
@@ -178,15 +206,34 @@ function afterMarker(trimmedLine) {
   return trimmedLine.slice(1).replace(/^[ \t]+/, '');
 }
 
+// True when `text` (already stripped of its "- " marker) itself opens with
+// a "field:" of its own: a bare token with no internal space or colon,
+// then ":", then either a space or the end of the text. This is the same
+// shape findKeyLine looks for, generalised to an unknown key, and it is
+// also the real rule YAML itself uses to tell a mapping key from a plain
+// scalar that merely contains a colon (a URL like "https://example.com"
+// has no space after its colon, so it does not match). It is what lets
+// readList refuse a block of single-field mapping entries ("- resource:
+// /a.md") on purpose, instead of reading each one back as a plain string
+// that happens to contain a colon.
+function looksLikeMappingField(text) {
+  return /^[^\s:]+:(\s|$)/.test(text);
+}
+
 // Finds the top-level line (no leading indentation, so a same-named key
 // nested under a different field is never mistaken for this one) that
 // opens with "key:", and returns its line index plus whatever follows the
-// colon on that same line. Anchoring the match to the exact key text
-// followed immediately by ":" is also what keeps a key that merely
-// appears as a word inside another line's value from ever matching: that
-// line does not start with "key:", so it is skipped, not matched.
+// colon on that same line. Anchoring the match to the exact key text,
+// followed by an optional run of spaces or tabs and then ":", is also what
+// keeps a key that merely appears as a word inside another line's value
+// from ever matching: that line does not start with "key" at column 0, so
+// it is skipped, not matched. The optional whitespace before the colon
+// (allowing "type : note" as well as "type: note") is a real fix, not
+// leniency for its own sake: without it, a hand-written space before the
+// colon made the key read as ABSENT, the one value guaranteed to produce a
+// "missing field" finding, for a key that is plainly on screen.
 function findKeyLine(lines, key) {
-  const pattern = new RegExp(`^${escapeRegExp(key)}:(.*)$`);
+  const pattern = new RegExp(`^${escapeRegExp(key)}[ \\t]*:(.*)$`);
   for (let i = 0; i < lines.length; i++) {
     const match = pattern.exec(lines[i]);
     if (match) return { index: i, head: match[1] };
@@ -217,10 +264,16 @@ function collectBlock(lines, keyLineIndex) {
 // colon of its own (the value is everything after the key's OWN first
 // colon, taken as-is, so a further colon inside it is never re-split).
 // null means the key is absent. undefined means the key is present but
-// its value is a block or folded scalar header, whose real content lives
-// on lines this function never reads (PARSER_LIMITS); no other shape is
-// currently declared undefined here, since a scalar reader has nothing
-// nested to refuse.
+// its value is one of two shapes this function does not join back
+// together: a block or folded scalar header ("|" or ">", PARSER_LIMITS),
+// or a PLAIN value folded across indented continuation lines with no
+// marker at all - real YAML allows this, and it is exactly the shape a
+// person writing a long description by hand produces without ever
+// intending any special syntax. Without this second check, an empty head
+// followed by unrelated indented lines read back as the empty string: a
+// confident, wrong, and plausible-looking value, since "" is a value a
+// real note could also have on purpose. Checking whether anything is
+// indented underneath is what tells the two cases apart.
 export function readScalar(frontmatter, key) {
   const lines = (frontmatter ?? '').split('\n');
   const found = findKeyLine(lines, key);
@@ -228,6 +281,7 @@ export function readScalar(frontmatter, key) {
 
   const value = found.head.trim();
   if (isBlockScalarHeader(value)) return undefined;
+  if (value === '' && collectBlock(lines, found.index).length > 0) return undefined;
   return unquote(value);
 }
 
@@ -305,10 +359,13 @@ function readBlockMapping(lines, keyLineIndex) {
 // Reads `key` as a list of plain scalars, in either spelling: the inline
 // bracket form ("key: [a, b]") or the indented block form ("key:"
 // followed by "  - a" / "  - b"). null means the key is absent; undefined
-// means it is present but is not one of those two shapes (a bare scalar,
-// or a block whose lines are not all plain "- value" entries at the same
-// indentation, which is what a list of mappings looks like: use
-// readEntries for that shape instead).
+// means it is present but is not one of those two shapes: a bare scalar,
+// a block whose lines are not all plain "- value" entries at the same
+// indentation, or a block whose entries each look like "- field: value"
+// (a single-field mapping, checked on PURPOSE via looksLikeMappingField,
+// not left to fall out of the indentation check by accident) - which is
+// what a list of mappings looks like, `sources` being the real example:
+// use readEntries for that shape instead.
 export function readList(frontmatter, key) {
   const lines = (frontmatter ?? '').split('\n');
   const found = findKeyLine(lines, key);
@@ -339,7 +396,9 @@ function readBlockList(lines, keyLineIndex) {
   for (const line of block) {
     const trimmed = line.slice(base);
     if (!isEntryMarker(trimmed)) return undefined; // not a plain list entry
-    items.push(unquote(afterMarker(trimmed).trim()));
+    const item = afterMarker(trimmed).trim();
+    if (looksLikeMappingField(item)) return undefined; // "- field: value": a mapping entry, not a plain scalar
+    items.push(unquote(item));
   }
   return items;
 }
@@ -411,6 +470,7 @@ export const PARSER_LIMITS = Object.freeze([
   'A mapping value that is itself a mapping or a list (a nested structure) is not parsed: readMapping returns undefined for the whole field rather than a flattened or partial result.',
   'A block or folded scalar (a value written as just "|" or ">", with the real content on the following indented lines) is not read: readScalar returns undefined for that field instead of the bare marker character.',
   'A YAML anchor (&name) or alias (*name) is not recognized: readMapping and readList return undefined for a field that carries one, and readScalar returns the raw line text, marker included, since it never tries to interpret the value at all.',
-  'An inline mapping or list whose closing brace or bracket is not on the same line as the key is not read: it is treated as absent rather than joined with the following lines.',
-  'A backslash-escaped quote inside a quoted value is not recognized: the quoted span is read as closing at that character, not at the real end of the value.',
+  'An inline mapping or list whose closing brace or bracket is not on the same line as the key is not read: readMapping and readList both return undefined for that field, the same as any other shape they cannot see.',
+  'A backslash before a quote inside an inline mapping or list is not an escape: an even count of quote characters still finds the closing brace or bracket and reads the value whole, backslash included; an odd count never finds it, and readMapping or readList returns undefined instead of a truncated value.',
+  'A plain value folded across indented continuation lines, with no "|" or ">" marker on the key line, is not joined back together: readScalar returns undefined for that field instead of just its first, empty line.',
 ]);
