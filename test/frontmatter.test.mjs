@@ -198,6 +198,28 @@ test('readScalar returns the raw line text, marker included, for a value carryin
   assert.equal(readScalar(frontmatter, 'generated'), '&g1 { by: human:ana, at: 2026-01-01T00:00:00Z }');
 });
 
+// A quoted key ("type": note or 'type': note) is legal YAML. Fix round 1
+// of task 4 found it read as absent, which is exactly the wrong outcome
+// under the two-absences contract for a key that is plainly on screen.
+test('readScalar finds a key written with double or single quotes around it, the same as the bare key', () => {
+  assert.equal(readScalar('"type": note', 'type'), 'note');
+  assert.equal(readScalar("'type': note", 'type'), 'note');
+  assert.equal(readScalar('type: note', 'type'), 'note');
+});
+
+// A "#" preceded by a space starts a YAML comment in an unquoted value,
+// and readScalar strips it (fix round 1 of task 4): a status or a date
+// with a trailing comment used to read as an unreadable, folded value,
+// when the value was plainly a single line with a note attached to it.
+test('readScalar strips a trailing comment from an unquoted value, but leaves a quoted value untouched even when it contains a hash', () => {
+  assert.equal(readScalar('status: stable # confirmed after the last review', 'status'), 'stable');
+  assert.equal(readScalar('title: "issue #42"', 'title'), 'issue #42');
+});
+
+test('readScalar treats a "#" with no preceding space as part of the value, not as a comment marker', () => {
+  assert.equal(readScalar('tag: item#5', 'tag'), 'item#5');
+});
+
 // --- readMapping ---------------------------------------------------------------
 
 test('readMapping reads an inline mapping and tolerates extra spaces', () => {
@@ -237,6 +259,16 @@ test('readMapping keeps a quoted value containing a comma intact', () => {
 
 test('readMapping returns null for an absent key', () => {
   assert.equal(readMapping('type: note', 'generated'), null);
+});
+
+// findKeyLine is the one function every reader calls to find a key's
+// line, so fixing quoted-key support there (see readScalar's own test)
+// means readMapping finds the same key with no change of its own.
+test('readMapping finds a key written with quotes around it too, since quoted-key support lives in the one shared line finder', () => {
+  assert.deepEqual(readMapping('"generated": { by: human:ana, at: 2026-01-01T00:00:00Z }', 'generated'), {
+    by: 'human:ana',
+    at: '2026-01-01T00:00:00Z',
+  });
 });
 
 test('readMapping reads an empty inline mapping as an empty object', () => {
@@ -445,7 +477,17 @@ test('PARSER_LIMITS entries are concrete, not vague: each names a reader functio
       READER_FUNCTION_NAMES.some((name) => entry.includes(name)),
       `entry does not name a reader function, so a vague sentence would pass this check: ${entry}`,
     );
-    assert.ok(entry.includes('undefined'), `entry does not say what it returns: ${entry}`);
+    // Almost every entry here describes a decline, and says so with the
+    // word "undefined". Fix round 1 of task 4 added one entry of a
+    // different kind: a correct, non-declining behaviour (readScalar
+    // stripping a trailing comment) that is still worth naming because it
+    // can surprise. That entry says "returns" instead, so this check
+    // accepts either word rather than only the one every entry happened
+    // to use before this kind of entry existed.
+    assert.ok(
+      entry.includes('undefined') || entry.includes('returns'),
+      `entry does not say what it returns: ${entry}`,
+    );
   }
 });
 

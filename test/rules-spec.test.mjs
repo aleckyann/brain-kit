@@ -116,7 +116,7 @@ const CLEAN_NOTE = [
   'type: person',
   'generated: { by: human:ana, at: 2026-09-18T09:30:00Z }',
   'verified: { by: human:ana, at: 2026-09-18T10:00:00Z }',
-  'status: stable',
+  'status: stable # confirmed after the latest review',
   'stale_after: 2026-12-18T00:00:00-03:00',
   'sources:',
   '  - resource: https://example.com/ana',
@@ -127,11 +127,40 @@ const CLEAN_NOTE = [
   '',
 ].join('\n');
 
-const CLEAN_LOG = ['## 2026-09-18', '', 'Second entry, most recent.', '', '## 2026-09-17', '', 'First entry.', ''].join('\n');
+// Broadened in fix round 1: this is the only test certifying the absence
+// of a false positive across all eight rules AT ONCE, and a narrower one
+// (a single field-free log) would not have caught any of the three
+// review findings that live in this exact area (a fenced heading/date
+// pair read as real, a comment in the root index read as a declaration,
+// a trailing comment on a scalar read as an unreadable fold). The fence
+// below sandwiches its decoy heading and its decoy, out-of-order date
+// between two real, correctly ordered ones on purpose, so a regression
+// back to reading it would surface as a finding right here, not only in
+// the dedicated fence test.
+const CLEAN_LOG = [
+  '## 2026-09-18',
+  '',
+  'Second entry, most recent.',
+  '',
+  'Example of what a log entry looks like, shown for documentation,',
+  'never read as a real heading or a real date:',
+  '',
+  '```',
+  '## not a real heading, just an example',
+  '## 2099-01-01',
+  '```',
+  '',
+  '## 2026-09-17',
+  '',
+  'First entry.',
+  '',
+].join('\n');
 
 function cleanVaultFiles() {
   return {
-    'index.md': '',
+    // A comment annotating okf_version, not a declaration: index-no-frontmatter
+    // must not confuse the two (fix round 1).
+    'index.md': '---\n# a note for humans about this key, not a declaration\nokf_version: "0.2"\n---\n# Welcome\n',
     'memory/log.md': CLEAN_LOG,
     'people/ana.md': CLEAN_NOTE,
   };
@@ -210,6 +239,30 @@ test('type-required flags a note with no frontmatter at all and, separately, one
   assert.deepEqual(findings.filter((f) => f.file === 'people/ana.md'), []);
 });
 
+// Fix round 1: an unterminated frontmatter block used to report "type is
+// required but missing" even though a type line sits in plain sight
+// inside the never-closed block, which is the precise confident-wrong
+// finding this whole module exists to avoid. Paired against a file whose
+// frontmatter DOES close and genuinely has no type key, which must still
+// say "missing", not the new unterminated-block message.
+test('type-required never says a type is missing when its frontmatter is merely unterminated, but still says missing for a properly closed block with no type key', () => {
+  const files = {
+    ...cleanVaultFiles(),
+    'people/unterminated.md': '---\ntype: note\ndescription: this block never closes\n',
+    'people/closed-no-type.md': '---\ndescription: this block closes but has no type\n---\nBody.\n',
+  };
+  const findings = findingsFor(files);
+
+  const unterminated = findings.filter((f) => isSpec('type-required')(f) && f.file === 'people/unterminated.md');
+  assert.equal(unterminated.length, 1);
+  assert.ok(!/missing/.test(unterminated[0].message), 'must not claim the type is missing when it is plainly on screen');
+  assert.match(unterminated[0].message, /never closed|not closed/);
+
+  const closed = findings.filter((f) => isSpec('type-required')(f) && f.file === 'people/closed-no-type.md');
+  assert.equal(closed.length, 1);
+  assert.match(closed[0].message, /missing/);
+});
+
 test('type-required treats a present but unreadable type (a block scalar header) as a distinct finding from an absent one, naming PARSER_LIMITS rather than calling the field missing', () => {
   const files = { ...cleanVaultFiles(), 'people/unreadable-type.md': CLEAN_NOTE.replace('type: person', 'type: |') };
   const findings = findingsFor(files).filter((f) => isSpec('type-required')(f) && f.file === 'people/unreadable-type.md');
@@ -262,6 +315,29 @@ test('index-no-frontmatter allows the root index to have no frontmatter at all, 
   assert.match(bad[0].message, /okf_version/);
 });
 
+// Fix round 1, two defects in the same check: a YAML comment annotating
+// okf_version was read as a forbidden declaration (a person's own note
+// should never be told it is a declaration), and the mirror defect this
+// port had introduced, an indented line was silently allowed no matter
+// what it said, where the original validator caught it. Both pinned
+// down together, against the same almost-clean root index.
+test('index-no-frontmatter exempts a YAML comment annotating okf_version, but still flags an indented extra line, not only a column-0 one', () => {
+  const withComment = {
+    ...cleanVaultFiles(),
+    'index.md': '---\n# a note for humans about this key, not a declaration\nokf_version: "0.2"\n---\n# Welcome\n',
+  };
+  assert.deepEqual(findingsFor(withComment).filter(isSpec('index-no-frontmatter')), []);
+
+  const withIndentedExtra = {
+    ...cleanVaultFiles(),
+    'index.md': '---\nokf_version: "0.2"\n  title: My Vault\n---\n# Welcome\n',
+  };
+  const bad = findingsFor(withIndentedExtra).filter(isSpec('index-no-frontmatter'));
+  assert.equal(bad.length, 1);
+  assert.equal(bad[0].line, 3);
+  assert.match(bad[0].message, /title/);
+});
+
 test('index-no-frontmatter flags any non-root index.md that carries frontmatter at all, at line 1, but allows one with none', () => {
   const files = {
     ...cleanVaultFiles(),
@@ -305,6 +381,42 @@ test('log-format flags dates that run oldest-first instead of most-recent-first,
   assert.match(findings[0].message, /most recent to oldest/);
 });
 
+// Two consecutive headings dated the same day (more than one entry
+// logged the same date) must NOT be flagged: the order check is "not
+// more recent than the one before it" (a plain ">"), not "strictly
+// older" (which an off-by-one mutant to ">=" would enforce instead).
+// Pinned down directly, since the earlier order test alone cannot
+// distinguish the two: neither an equal-dates run nor a genuinely
+// descending one ever exercises the ">=" branch differently from ">".
+test('log-format allows two consecutive headings dated the same day, not just strictly descending ones, but still flags a same-day run followed by a newer one', () => {
+  const files = {
+    ...cleanVaultFiles(),
+    'memory/log.md': ['## 2026-09-18', '', 'second entry that day', '', '## 2026-09-18', '', 'first entry that day', ''].join('\n'),
+    // Two entries share a day, correctly, and then a THIRD, newer date
+    // follows them: the same-day pair must not by itself excuse what
+    // comes after it from the ordering check.
+    'archive/log.md': [
+      '## 2026-09-17',
+      '',
+      'older, same day as the next one',
+      '',
+      '## 2026-09-17',
+      '',
+      'same day again',
+      '',
+      '## 2026-09-18',
+      '',
+      'newer, listed last: wrong',
+      '',
+    ].join('\n'),
+  };
+  const findings = findingsFor(files);
+  assert.deepEqual(findings.filter((f) => f.file === 'memory/log.md'), []);
+  const bad = findings.filter((f) => isSpec('log-format')(f) && f.file === 'archive/log.md');
+  assert.equal(bad.length, 1);
+  assert.match(bad[0].message, /most recent to oldest/);
+});
+
 test('log-format survives malformed and binary-ish content without throwing, and still finds the bad-format and out-of-order defects mixed in with garbage', () => {
   const messyLog = [
     String.fromCharCode(0, 1, 2) + 'binary preamble' + String.fromCharCode(255),
@@ -335,6 +447,55 @@ test('log-format survives malformed and binary-ish content without throwing, and
   assert.equal(messy.length, 2);
   assert.match(messy[0].message, /is not an ISO date/);
   assert.match(messy[1].message, /most recent to oldest/);
+});
+
+// Fix round 1, the critical finding: a "## " line or a quoted date inside
+// a fenced code block was read as a real heading or a real entry. Both
+// defects reproduced together here, inside a fence sandwiched between
+// two real, correctly ordered headings, so a regression back to reading
+// fences would reintroduce a "not an ISO date" finding for the comment
+// AND a bogus out-of-order finding for the quoted future date, pointing
+// at lines that are only ever example text.
+test('log-format never reads a heading or a date from inside a fenced code block, but still reads one right outside it', () => {
+  const files = {
+    ...cleanVaultFiles(),
+    'memory/log.md': [
+      '## 2026-09-18',
+      '',
+      'Example of what a log entry looks like, shown for documentation:',
+      '',
+      '```',
+      '## not a real heading, just an example',
+      '## 2099-01-01',
+      '```',
+      '',
+      // Same shape as the two lines inside the fence, placed right after
+      // it: if fence-skipping ever regressed to skipping too much (or
+      // reading too little outside the fence), this line would either
+      // disappear from the count below or be missed entirely.
+      '## not a real heading either, but this one is OUTSIDE the fence',
+      '',
+      '## 2026-09-17',
+      '',
+      'A real, older entry.',
+      '',
+    ].join('\n'),
+  };
+  const findings = findingsFor(files).filter((f) => isSpec('log-format')(f) && f.file === 'memory/log.md');
+  assert.equal(findings.length, 1, 'only the heading outside the fence should be flagged, not the two decoys inside it');
+  assert.match(findings[0].message, /is not an ISO date/);
+  assert.match(findings[0].message, /OUTSIDE the fence/);
+});
+
+// log-format's own heading check shares the same calendar-valid date
+// function as stale-after-format (fix round 1): a heading with the right
+// shape but an impossible date is "not an ISO date", the same message a
+// malformed heading gets, since neither is a real date.
+test('log-format checks the calendar on its headings too, not just their shape', () => {
+  const files = { ...cleanVaultFiles(), 'memory/log.md': ['## 2026-02-29', '', 'a leap day that never happened in 2026', ''].join('\n') };
+  const findings = findingsFor(files).filter((f) => isSpec('log-format')(f) && f.file === 'memory/log.md');
+  assert.equal(findings.length, 1);
+  assert.match(findings[0].message, /is not an ISO date/);
 });
 
 // --- generated-actor ---------------------------------------------------------
@@ -419,6 +580,29 @@ test('verified-events reads a block list of multiple events and flags only the o
   assert.match(findings[0].message, /verified\[1\]/);
 });
 
+// Fix round 1: a `verified` key present with nothing under it at all
+// (zero events) used to pass silently. Restored, matching the original
+// validator's own "verified vazio" finding. Paired against an empty
+// INLINE mapping ("verified: {}"), which is a different shape (one
+// event with no fields) that already fails the by/at check on its own
+// and must keep doing so, not be swept into this same "no events" path.
+test('verified-events flags a key present with no events under it at all, but treats an empty inline mapping as one incomplete event instead', () => {
+  const files = {
+    ...cleanVaultFiles(),
+    'people/verified-empty-block.md': CLEAN_NOTE.replace('verified: { by: human:ana, at: 2026-09-18T10:00:00Z }', 'verified:'),
+    'people/verified-empty-mapping.md': CLEAN_NOTE.replace('verified: { by: human:ana, at: 2026-09-18T10:00:00Z }', 'verified: {}'),
+  };
+  const findings = findingsFor(files);
+
+  const emptyBlock = findings.filter((f) => isSpec('verified-events')(f) && f.file === 'people/verified-empty-block.md');
+  assert.equal(emptyBlock.length, 1);
+  assert.match(emptyBlock[0].message, /no events/);
+
+  const emptyMapping = findings.filter((f) => isSpec('verified-events')(f) && f.file === 'people/verified-empty-mapping.md');
+  assert.equal(emptyMapping.length, 1);
+  assert.match(emptyMapping[0].message, /verified\[0\]/);
+});
+
 // --- status-enum ---------------------------------------------------------------
 
 test('status-enum accepts every value in the enum, but flags one outside it', () => {
@@ -440,7 +624,7 @@ test('status-enum accepts every value in the enum, but flags one outside it', ()
 test('status-enum does not fire when status is absent, but does fire, against PARSER_LIMITS, when it is present in an unreadable shape', () => {
   const files = {
     ...cleanVaultFiles(),
-    'people/no-status.md': CLEAN_NOTE.replace('status: stable\n', ''),
+    'people/no-status.md': CLEAN_NOTE.replace('status: stable # confirmed after the latest review\n', ''),
     'people/unreadable-status.md': CLEAN_NOTE.replace('status: stable', 'status:\n  folded on the next line'),
   };
   const findings = findingsFor(files);
@@ -487,6 +671,52 @@ test('stale-after-format flags a value that is neither a plain date nor a dateti
   for (const [label, content] of Object.entries(cases)) {
     const files = { ...cleanVaultFiles(), 'people/bad.md': content };
     const bad = findingsFor(files).filter((f) => isSpec('stale-after-format')(f) && f.file === 'people/bad.md');
+    assert.equal(bad.length, 1, `${label} should be flagged`);
+  }
+});
+
+// Fix round 1: the date and datetime patterns accepted a calendar-
+// impossible value as long as it had the right count of digits in the
+// right places. Every one of these has the correct SHAPE and an
+// impossible MEANING; each must still be flagged. Paired against the
+// calendar-valid neighbour that differs by the smallest possible margin
+// (a leap year for the 29th of February, a 30-day month for the 30th),
+// so this is checking the calendar, not merely rejecting big numbers.
+test('stale-after-format checks the calendar, not just the shape: a real date with impossible components is flagged, and its calendar-valid neighbour is not', () => {
+  const impossible = {
+    '29 February in a non-leap year': 'stale_after: 2026-02-29',
+    '31st of April': 'stale_after: 2026-04-31',
+    '13th month': 'stale_after: 2026-13-01',
+    '99th day': 'stale_after: 2026-01-99',
+  };
+  for (const [label, replacement] of Object.entries(impossible)) {
+    const files = { ...cleanVaultFiles(), 'people/bad.md': CLEAN_NOTE.replace('stale_after: 2026-12-18T00:00:00-03:00', replacement) };
+    const bad = findingsFor(files).filter((f) => isSpec('stale-after-format')(f) && f.file === 'people/bad.md');
+    assert.equal(bad.length, 1, `${label} should be flagged`);
+  }
+
+  // 2028 is a leap year: the 29th of February is a real, calendar-valid date.
+  const leapYear = { ...cleanVaultFiles(), 'people/leap.md': CLEAN_NOTE.replace('stale_after: 2026-12-18T00:00:00-03:00', 'stale_after: 2028-02-29') };
+  assert.deepEqual(findingsFor(leapYear).filter((f) => isSpec('stale-after-format')(f) && f.file === 'people/leap.md'), []);
+
+  // April has 30 days: the 30th is real, only the 31st is impossible.
+  const thirtyApril = { ...cleanVaultFiles(), 'people/april30.md': CLEAN_NOTE.replace('stale_after: 2026-12-18T00:00:00-03:00', 'stale_after: 2026-04-30') };
+  assert.deepEqual(findingsFor(thirtyApril).filter((f) => isSpec('stale-after-format')(f) && f.file === 'people/april30.md'), []);
+});
+
+// Fix round 1, the time-of-day and offset side of the same defect:
+// generated.at accepted an hour or minute of 99 and an offset of 99
+// hours, both matching "\d\d" perfectly while describing a time that
+// cannot exist.
+test('generated-actor checks the calendar and the clock on at, not just the shape', () => {
+  const impossible = {
+    'hour of 99': 'at: 2026-09-18T99:30:00Z }',
+    'minute of 99': 'at: 2026-09-18T09:99:00Z }',
+    'offset of 99 hours': 'at: 2026-09-18T09:30:00+99:00 }',
+  };
+  for (const [label, replacement] of Object.entries(impossible)) {
+    const files = { ...cleanVaultFiles(), 'people/bad.md': CLEAN_NOTE.replace('at: 2026-09-18T09:30:00Z }', replacement) };
+    const bad = findingsFor(files).filter((f) => isSpec('generated-actor')(f) && f.file === 'people/bad.md');
     assert.equal(bad.length, 1, `${label} should be flagged`);
   }
 });

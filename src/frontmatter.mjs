@@ -232,13 +232,43 @@ function looksLikeMappingField(text) {
 // leniency for its own sake: without it, a hand-written space before the
 // colon made the key read as ABSENT, the one value guaranteed to produce a
 // "missing field" finding, for a key that is plainly on screen.
+//
+// The key itself may also be quoted ("type": note or 'type': note), which
+// is legal YAML: the three alternatives (bare, double-quoted, single-
+// quoted) are tried in the same pattern, at the same anchor, so every
+// caller of this function, not just one, stops mistaking a legally quoted
+// key for an absent one. Fixed here rather than by teaching each reader
+// to strip a pair of quotes off the front of a line before matching: this
+// is the one function every reader already calls to find a key's line,
+// so it is the one place that needs to know a key can be quoted at all.
 function findKeyLine(lines, key) {
-  const pattern = new RegExp(`^${escapeRegExp(key)}[ \\t]*:(.*)$`);
+  const escaped = escapeRegExp(key);
+  const pattern = new RegExp(`^(?:"${escaped}"|'${escaped}'|${escaped})[ \\t]*:(.*)$`);
   for (let i = 0; i < lines.length; i++) {
     const match = pattern.exec(lines[i]);
     if (match) return { index: i, head: match[1] };
   }
   return null;
+}
+
+// Strips a trailing YAML comment from an UNQUOTED scalar value: a "#"
+// preceded by whitespace starts a comment that runs to the end of the
+// line. This is the format's own rule (plain YAML), not something this
+// reader adds on top of it, so `readScalar` applies it before anything
+// else looks at the value. A value that opens with a quote is returned
+// untouched, comment-looking "#" and all: what is inside a quoted span is
+// data, and `unquote` (called after this) is the one place that decides
+// where such a span ends, so this function must not also guess at it.
+// PARSER_LIMITS below names the one surprising consequence: an unquoted
+// value that was meant to contain a literal "#" preceded by a space loses
+// everything from that point on, silently and correctly, per the format.
+function stripTrailingComment(rawHead) {
+  const withoutLeadingSpace = rawHead.replace(/^[ \t]+/, '');
+  const first = withoutLeadingSpace[0];
+  if (first === '"' || first === "'") return rawHead.trim();
+  const commentStart = /[ \t]#/.exec(withoutLeadingSpace);
+  if (!commentStart) return rawHead.trim();
+  return withoutLeadingSpace.slice(0, commentStart.index).trim();
 }
 
 // Collects the lines that belong to the indented block following the line
@@ -292,7 +322,7 @@ export function readScalar(frontmatter, key) {
   const found = findKeyLine(lines, key);
   if (!found) return null;
 
-  const value = found.head.trim();
+  const value = stripTrailingComment(found.head);
   if (isBlockScalarHeader(value)) return undefined;
   if (collectBlock(lines, found.index).length > 0) return undefined;
   return unquote(value);
@@ -472,13 +502,18 @@ export function readEntries(frontmatter, key) {
 
 // --- PARSER_LIMITS -----------------------------------------------------------
 
-// What this reader cannot see, stated plainly so a consumer of the
+// What this reader cannot see, or what it can see but might still
+// surprise a reader of its output, stated plainly so a consumer of the
 // validator's JSON output is never misled about the depth of a check that
 // passed. Static and human-reviewed: nothing appends to this array at
-// runtime, and nothing above ever tries to. A shape found to be beyond
-// this reader either returns undefined at the call sites above, or, if it
-// silently produced a wrong answer instead, is a bug in this file rather
-// than a fact about the format.
+// runtime, and nothing above ever tries to. Most entries here describe a
+// decline (the call sites above return undefined for a shape this reader
+// will not guess at); one, the last, describes behaviour that is correct
+// per the format and still worth naming, because a rule built on top of
+// a correct answer can still be surprised by it. A shape found to be
+// beyond this reader either returns undefined at the call sites above,
+// or, if it silently produced a wrong answer instead, is a bug in this
+// file rather than a fact about the format.
 export const PARSER_LIMITS = Object.freeze([
   'A mapping value that is itself a mapping or a list (a nested structure) is not parsed: readMapping returns undefined for the whole field rather than a flattened or partial result.',
   'A block or folded scalar (a value written as just "|" or ">", with the real content on the following indented lines) is not read: readScalar returns undefined for that field instead of the bare marker character.',
@@ -486,4 +521,5 @@ export const PARSER_LIMITS = Object.freeze([
   'An inline mapping or list whose closing brace or bracket is not on the same line as the key is not read: readMapping and readList both return undefined for that field, the same as any other shape they cannot see.',
   'A backslash before a quote inside an inline mapping or list is not an escape: an even count of quote characters still finds the closing brace or bracket and reads the value whole, backslash included; an odd count never finds it, and readMapping or readList returns undefined instead of a truncated value.',
   'A plain value folded across indented continuation lines, with no "|" or ">" marker, is not joined back together, whether the key line is left empty or already carries the first line of the value: readScalar returns undefined either way instead of an empty string or a truncated first line.',
+  'A hash preceded by a space inside an UNQUOTED scalar value starts a YAML comment: readScalar strips it and returns the shortened value, correct per the format, which can still surprise a value meant to hold a literal "#" unquoted.',
 ]);

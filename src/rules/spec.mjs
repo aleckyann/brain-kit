@@ -66,17 +66,125 @@
 // verified event) is named by its index in the message instead of by its
 // own line, rather than re-deriving readEntries' block-scanning here a
 // second time for one extra digit of precision.
+//
+// Fix round 1 (review of commit 5486479/11356f8), five corrections that
+// matter beyond their own diff: log-format now reads headings from the
+// text with every fenced code block blanked out first (withoutFencedBlocks),
+// since a "## " or a quoted date inside a fence is documentation, not a
+// real heading or a real entry, and scanning raw text without that
+// exclusion is exactly the hazard src/frontmatter.mjs's own delimiter
+// design removes for "---"; index-no-frontmatter now exempts a YAML
+// comment in the root index from being read as an extra declaration, and
+// no longer exempts an indented line just for being indented (both
+// checked against the trimmed line, matching the original validator's
+// own filter); every date and datetime check (log-format, generated-actor,
+// stale-after-format) validates the calendar, not only the shape, so a
+// 29th of February in a non-leap year or a 13th month is a finding, not
+// eight digits that merely look right; type-required no longer reports
+// "missing" for a file whose frontmatter opens with "---" but never
+// closes, since a type line can be sitting in that unterminated block in
+// plain sight, which readScalar cannot see either way once
+// splitFrontmatter itself lost track of where the block ends; and
+// verified-events again reports a `verified` key present with no events
+// under it at all, restoring a finding the original validator also made
+// ("verified vazio") that this port had silently dropped.
 import { posix } from 'node:path';
 import { readEntries, readMapping, readScalar, splitFrontmatter } from '../frontmatter.mjs';
 
 const RESERVED_FILENAMES = Object.freeze(['index.md', 'log.md']);
-
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-const ISO_DATETIME_WITH_OFFSET = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
 const STATUS_ENUM = new Set(['draft', 'stable', 'deprecated']);
 
 function isReserved(file) {
   return RESERVED_FILENAMES.includes(posix.basename(file));
+}
+
+// --- calendar-valid dates and datetimes ---------------------------------------
+//
+// A date or datetime is checked against the calendar, not just against its
+// own shape: fix round 1 found the original two regexes accepted a 29th of
+// February in a year that is not a leap year, a 31st of April, a 13th
+// month, hours or minutes of 99, and an offset of 99 hours, all of which
+// match "\d\d" perfectly well while describing a moment that cannot exist.
+// A format rule that accepts a date that never happened is not checking
+// the date; it is checking that someone typed eight digits. Two-digit
+// years and a datetime with no offset were already rejected by the shape
+// alone (the pattern below still requires exactly four digits and an
+// explicit "Z" or "+HH:MM"/"-HH:MM"), and stay rejected here.
+
+function isLeapYear(year) {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
+const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+function isValidCalendarDate(year, month, day) {
+  if (month < 1 || month > 12) return false;
+  const maxDay = month === 2 && isLeapYear(year) ? 29 : DAYS_IN_MONTH[month - 1];
+  return day >= 1 && day <= maxDay;
+}
+
+function isValidTimeOfDay(hour, minute, second) {
+  return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 && second >= 0 && second <= 59;
+}
+
+const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+// A plain date: right shape AND a day that exists in that month and year.
+function isValidIsoDate(value) {
+  const match = DATE_PATTERN.exec(value);
+  if (!match) return false;
+  return isValidCalendarDate(Number(match[1]), Number(match[2]), Number(match[3]));
+}
+
+const DATETIME_WITH_OFFSET_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
+// A datetime with an explicit offset (a bare "Z" counts as one): right
+// shape, a calendar-valid date, a clock-valid time, and, when the offset
+// is not "Z", an offset hour of 0-23 and an offset minute of 0-59 (the
+// same bounds a clock's own hour and minute use, since an offset is a
+// difference of clock time from UTC, not a separate kind of number).
+function isValidIsoDatetimeWithOffset(value) {
+  const match = DATETIME_WITH_OFFSET_PATTERN.exec(value);
+  if (!match) return false;
+  const [, yearStr, monthStr, dayStr, hourStr, minuteStr, secondStr, zone] = match;
+  if (!isValidCalendarDate(Number(yearStr), Number(monthStr), Number(dayStr))) return false;
+  if (!isValidTimeOfDay(Number(hourStr), Number(minuteStr), Number(secondStr))) return false;
+  if (zone === 'Z') return true;
+  return Number(zone.slice(1, 3)) <= 23 && Number(zone.slice(4, 6)) <= 59;
+}
+
+// A plain date OR a datetime with an offset: the shape stale_after alone
+// accepts at the spec level (narrowing to one is a house rule).
+function isValidStaleAfter(value) {
+  return isValidIsoDate(value) || isValidIsoDatetimeWithOffset(value);
+}
+
+// --- fenced code blocks, skipped before log-format reads headings -------------
+//
+// A "## " line inside a fenced code block is an example, not a heading,
+// and a date quoted inside a fence is not a real log entry: this is the
+// third defect carried over from the original validator (its own log
+// check scanned the raw file text for headings with no fence awareness
+// at all), and it lands specifically in the one rule that works from raw
+// text instead of the frontmatter split, which is exactly the hazard
+// src/frontmatter.mjs's own header names as something its design removes
+// (a "---" inside a fenced block is never mistaken for a delimiter there,
+// for the same reason). Blanking each fenced line, rather than deleting
+// it, keeps every line NUMBER after the fence exactly where it was: a
+// heading reported after a multi-line fence must still point at its own
+// real line, not at a line shifted up by however long the fence was.
+function withoutFencedBlocks(text) {
+  let inFence = false;
+  return text
+    .split('\n')
+    .map((line) => {
+      if (/^```/.test(line.trim())) {
+        inFence = !inFence;
+        return '';
+      }
+      return inFence ? '' : line;
+    })
+    .join('\n');
 }
 
 // A value read back from a mapping or entries object counts as blank when
@@ -125,6 +233,19 @@ function readVerifiedEvents(frontmatter) {
   return [asMapping];
 }
 
+// True when `text` opens with a bare "---" line (splitFrontmatter's own
+// OPEN_DELIMITER shape) but splitFrontmatter still reported no
+// frontmatter, which only happens when no closing "---" was ever found.
+// This is a narrower question than "does this text have frontmatter": it
+// is "was frontmatter plainly ATTEMPTED", asked without re-deciding
+// anything splitFrontmatter already decided (it is not called again
+// here; the caller already has its result). Used by type-required alone,
+// to tell an unterminated block apart from a file that never had
+// frontmatter in mind at all, since those two need different messages.
+function looksLikeUnterminatedFrontmatter(text) {
+  return /^---[ \t]*\n/.test(text);
+}
+
 // --- type-required (4.1) -------------------------------------------------------
 
 const typeRequired = {
@@ -134,11 +255,28 @@ const typeRequired = {
     const findings = [];
     for (const file of files) {
       if (isReserved(file)) continue;
-      const { frontmatter } = splitFrontmatter(context.readFile(file));
+      const rawText = context.readFile(file);
+      const { frontmatter } = splitFrontmatter(rawText);
       const value = readScalar(frontmatter, 'type');
       const line = frontmatterKeyLine(frontmatter, 'type');
       if (value === null) {
-        findings.push({ file, line: null, message: 'type is required but missing (the file has no frontmatter, or none carries this key)' });
+        // frontmatter is null here either because the file never opened
+        // one at all, or because it opened one that never closed: those
+        // are different claims. Reporting "missing" for the second case
+        // would be the exact confident-wrong-finding this whole module
+        // exists to avoid, since a type line can be sitting in plain
+        // sight inside the unterminated block; readScalar cannot see it
+        // either way, once splitFrontmatter itself could not find where
+        // the block ends, so this is a shape problem, not an absence.
+        if (frontmatter === null && looksLikeUnterminatedFrontmatter(rawText)) {
+          findings.push({
+            file,
+            line: null,
+            message: 'frontmatter opens with "---" but is never closed with a second one, so type cannot be confirmed; close the block',
+          });
+        } else {
+          findings.push({ file, line: null, message: 'type is required but missing (the file has no frontmatter at all)' });
+        }
       } else if (value === undefined) {
         findings.push({ file, line, message: 'type is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' });
       } else if (isBlank(value)) {
@@ -149,11 +287,21 @@ const typeRequired = {
   },
 };
 
-// --- index-no-frontmatter (8/12) -----------------------------------------------
+// True for a line that is a YAML comment, once trimmed: a "#" is only a
+// comment marker when nothing but whitespace comes before it on the
+// line, distinct from stripTrailingComment's job inside a VALUE (a "#"
+// after other content there starts a trailing comment on that same
+// line, which is a different question this rule does not need to ask,
+// since it never reads okf_version's own value at all).
+function isCommentLine(trimmedLine) {
+  return trimmedLine.startsWith('#');
+}
+
+// --- index-no-frontmatter (8, 12) -----------------------------------------------
 
 const indexNoFrontmatter = {
   id: 'index-no-frontmatter',
-  section: '8/12',
+  section: '8, 12',
   check(files, context) {
     const findings = [];
     for (const file of files) {
@@ -166,8 +314,22 @@ const indexNoFrontmatter = {
         continue;
       }
 
+      // Every non-blank, non-comment line counts, indented or not: a
+      // human annotating okf_version with a "#" comment is not declaring
+      // anything, so a comment line is exempt (fix round 1), but nothing
+      // else is exempt just for being indented (the mirror defect fix
+      // round 1 also found: the original counted an indented line as an
+      // extra declaration too, since okf_version is a plain scalar with
+      // no legitimate continuation of its own, and an EARLIER version of
+      // this rule wrongly let any indented line slide on the assumption
+      // that it must be a harmless continuation).
       const lines = frontmatter.split('\n');
-      const extraIndex = lines.findIndex((line) => line.trim() !== '' && !/^[ \t]/.test(line) && !/^okf_version[ \t]*:/.test(line));
+      const extraIndex = lines.findIndex((line) => {
+        const trimmed = line.trim();
+        if (trimmed === '') return false;
+        if (isCommentLine(trimmed)) return false;
+        return !/^okf_version[ \t]*:/.test(trimmed);
+      });
       if (extraIndex !== -1) {
         findings.push({
           file,
@@ -196,7 +358,7 @@ const logFormat = {
       }
 
       const headings = [];
-      const lines = text.split('\n');
+      const lines = withoutFencedBlocks(text).split('\n');
       for (let i = 0; i < lines.length; i++) {
         const match = /^## (.+)$/.exec(lines[i]);
         if (match) headings.push({ text: match[1].trim(), line: i + 1 });
@@ -204,7 +366,7 @@ const logFormat = {
 
       const dated = [];
       for (const heading of headings) {
-        if (ISO_DATE.test(heading.text)) {
+        if (isValidIsoDate(heading.text)) {
           dated.push(heading);
         } else {
           findings.push({ file, line: heading.line, message: `log heading "## ${heading.text}" is not an ISO date (YYYY-MM-DD)` });
@@ -225,6 +387,15 @@ const logFormat = {
 };
 
 // --- generated-actor (5.2) -------------------------------------------------------
+//
+// generated.at, when present, must carry an explicit offset (a bare "Z"
+// counts as one). This is the format's own text, not a house preference
+// quietly promoted to a specification badge: unlike stale_after, whose
+// own section accepts a plain date as an alternative to a datetime with
+// an offset, section 5.2 is not offering generated.at that same choice,
+// so this rule declares the requirement in its own finding message
+// rather than leaving it implicit in which regex happened to be reused
+// from the original validator's port.
 
 const generatedActor = {
   id: 'generated-actor',
@@ -244,8 +415,12 @@ const generatedActor = {
       if (isBlank(generated.by)) {
         findings.push({ file, line, message: 'generated.by is required but missing or empty' });
       }
-      if (!isBlank(generated.at) && !ISO_DATETIME_WITH_OFFSET.test(generated.at)) {
-        findings.push({ file, line, message: `generated.at "${generated.at}" is not an ISO 8601 datetime with an offset` });
+      if (!isBlank(generated.at) && !isValidIsoDatetimeWithOffset(generated.at)) {
+        findings.push({
+          file,
+          line,
+          message: `generated.at "${generated.at}" is not an ISO 8601 datetime with an offset, which section 5.2 requires`,
+        });
       }
     }
     return findings;
@@ -267,6 +442,17 @@ const verifiedEvents = {
       const line = frontmatterKeyLine(frontmatter, 'verified');
       if (events === undefined) {
         findings.push({ file, line, message: 'verified is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' });
+        continue;
+      }
+      if (events.length === 0) {
+        // Present but carrying no events at all (the key is there with
+        // nothing indented underneath it): fix round 1 restored this
+        // finding, which the original validator also reported as
+        // "verified vazio". An empty inline mapping ("verified: {}") is
+        // NOT this case: readVerifiedEvents normalises it into a single
+        // one-element list instead, which already fails the by/at check
+        // below on its own, the same way it did before this round.
+        findings.push({ file, line, message: 'verified is present but carries no events; remove the key or add at least one with by and at' });
         continue;
       }
       events.forEach((event, index) => {
@@ -317,7 +503,7 @@ const staleAfterFormat = {
       const line = frontmatterKeyLine(frontmatter, 'stale_after');
       if (staleAfter === undefined) {
         findings.push({ file, line, message: 'stale_after is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' });
-      } else if (!ISO_DATE.test(staleAfter) && !ISO_DATETIME_WITH_OFFSET.test(staleAfter)) {
+      } else if (!isValidStaleAfter(staleAfter)) {
         findings.push({
           file,
           line,
