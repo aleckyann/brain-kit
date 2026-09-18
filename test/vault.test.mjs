@@ -88,6 +88,38 @@ test("findVaultRoot never returns a directory above the user's home, even if one
   }
 });
 
+// findVaultRoot(startDir, home) takes an injectable home as an optional
+// second argument (defaulting to the real os.homedir()) so the boundary
+// can be probed hermetically, with no process.env mutation to restore.
+// These two pin down the exact edge the ordering bug above would miss: the
+// boundary must be enforced before isVaultRoot ever gets to accept a
+// candidate, on the very first iteration, not only once the walk has
+// climbed there from below.
+
+test('findVaultRoot returns null when started exactly at an injected home that is not itself a vault, even though its parent looks like one', () => {
+  const fakeRoot = mkdtempSync(join(tmpdir(), 'brain-kit-boundary2-'));
+  writeVaultFile(fakeRoot, CONFIG_FILENAME, '{}');
+  writeVaultFile(fakeRoot, 'index.md', '');
+  const fakeHome = join(fakeRoot, 'someone');
+  mkdirSync(fakeHome, { recursive: true });
+
+  assert.equal(findVaultRoot(fakeHome, fakeHome), null);
+});
+
+test("findVaultRoot returns null when started at an injected home's parent, even though that parent looks like a vault itself", () => {
+  const fakeRoot = mkdtempSync(join(tmpdir(), 'brain-kit-boundary3-'));
+  writeVaultFile(fakeRoot, CONFIG_FILENAME, '{}');
+  writeVaultFile(fakeRoot, 'index.md', '');
+  const fakeHome = join(fakeRoot, 'someone');
+  mkdirSync(fakeHome, { recursive: true });
+  assert.equal(isVaultRoot(fakeRoot), true, 'fakeRoot must look like a vault for this test to mean anything');
+
+  // Starting directly at fakeRoot, which is fakeHome's parent: the old,
+  // buggy order checked isVaultRoot(fakeRoot) before ever comparing it to
+  // home, and returned fakeRoot even though it sits strictly above home.
+  assert.equal(findVaultRoot(fakeRoot, fakeHome), null);
+});
+
 // --- walkVault: basic listing --------------------------------------------------
 
 test('walkVault returns every markdown file as root-relative forward-slash paths, sorted', () => {
@@ -184,6 +216,21 @@ test('walkVault skips every prefix listed in validate.ignore_paths, matched agai
   const config = loadConfig(root);
   const expected = ['index.md', 'pendencias/follow-ups.md'].sort();
   assert.deepEqual(walkVault(root, config), expected);
+});
+
+test('validate.ignore_paths matches a path boundary, not a raw string prefix: "logs" ignores logs/ but keeps logs-2024/', () => {
+  const root = makeVault({
+    config: { validate: { ignore_paths: ['logs'] } },
+    files: {
+      'index.md': '',
+      'logs/run.md': '',
+      'logs-2024/jan.md': '',
+    },
+  });
+  const config = loadConfig(root);
+  const result = walkVault(root, config);
+  assert.ok(!result.includes('logs/run.md'), 'a bare "logs" prefix must ignore logs/');
+  assert.ok(result.includes('logs-2024/jan.md'), 'a bare "logs" prefix must not ignore logs-2024/');
 });
 
 test('a configured ignore prefix that does not exist in the vault is not an error', () => {

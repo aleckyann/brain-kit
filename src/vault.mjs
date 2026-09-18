@@ -63,16 +63,29 @@ export function isVaultRoot(dir) {
 }
 
 // Walks upward from startDir looking for a vault root. Stops, and returns
-// null, at the user's home directory (never returning anything above it,
-// even if something above it happens to look like a vault) or at the
-// filesystem root, whichever comes first. Never throws: an unrelated
-// directory simply yields null.
-export function findVaultRoot(startDir) {
-  const home = resolve(homedir());
+// null, at the home directory (never returning anything strictly above it,
+// even if something above it happens to look like a vault, and even when
+// the search starts there or above it) or at the filesystem root, whichever
+// comes first. Never throws: an unrelated directory simply yields null.
+//
+// The boundary is checked before a candidate is ever accepted, on every
+// iteration including the first: a directory strictly above home is
+// rejected outright, whether the walk arrived there by climbing from below
+// or started there directly. Checking isVaultRoot first would let a start
+// directory placed at or above home return something above home, which is
+// exactly what this order forbids.
+//
+// `home` defaults to the real os.homedir(), read fresh on every call so it
+// follows the live HOME/USERPROFILE environment; tests may inject a fake
+// one directly, so the boundary can be exercised hermetically with no
+// process-global state to mutate and restore.
+export function findVaultRoot(startDir, home = resolve(homedir())) {
+  home = resolve(home);
   let current = resolve(startDir);
   for (;;) {
+    if (current !== home && isPathInside(current, home)) return null;
     if (isVaultRoot(current)) return current;
-    if (current === home) return null;
+    if (current === home) return null; // at home, nothing found: don't climb past it
     const parent = dirname(current);
     if (parent === current) return null; // filesystem root: nowhere further to go
     current = parent;
@@ -86,8 +99,11 @@ export function relativePosix(root, file) {
   return relative(root, file).split(sep).join('/');
 }
 
-// True when `target` (an absolute, already-resolved path) is `root` itself
-// or lies under it.
+// True when `target` is `root` itself or lies under it. Both arguments must
+// already be absolute, and consistent with each other: either both real
+// (realpathSync'd, for the symlink-containment check below) or both merely
+// lexical (resolve()'d, for findVaultRoot's home-boundary check above).
+// Comparing one of each would be meaningless.
 function isPathInside(root, target) {
   if (target === root) return true;
   const rel = relative(root, target);
@@ -107,6 +123,17 @@ function resolveSymlinkTarget(fullPath) {
   }
 }
 
+// Single-walk contract: the validate command, and everything after it,
+// calls this exactly once, with { all: true }, and builds its rulers'
+// context from that one result. The markdown subset (the result filtered
+// to paths ending in .md) is what the spec and house rulers judge; the
+// full, unfiltered result is what the house ruler's link-target-exists
+// check resolves a link against, since a link may legitimately point at a
+// non-markdown attachment. Both views come from this one call so nobody is
+// tempted to add a second walk with different filtering later, which is
+// exactly how the original vault's separate tools ended up disagreeing
+// about what belongs to it.
+//
 // Walks `root`, returning file paths relative to it (forward-slash,
 // sorted). By default only `.md` files come back; pass `{ all: true }` to
 // get every file, which the link checker needs so it can tell a link to a
