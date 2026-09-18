@@ -210,11 +210,13 @@ The rules, each with a stable English id, and each carrying the section of the f
 
 Sentences from the format that settle questions this plan previously guessed at, quoted here so no task has to guess again. Each is verbatim and each is one sentence: do not splice two of them into a third, which an earlier draft of this plan did, and which the shipped source and a task report then repeated.
 
-- Section 5: "Every timestamp-valued key in OKF is an ISO 8601 datetime with an explicit UTC offset."
-- Section 8: "Index files contain no frontmatter, with one exception: a bundle-root `index.md` MAY carry an `okf_version` key."
-- Section 9, and it is the ONLY requirement that section states: "Date headings MUST use ISO 8601 `YYYY-MM-DD` form." Section 9 says nothing about ordering and nothing about frontmatter in the log.
+- Section 5: "Every timestamp-valued key in OKF is an ISO 8601 datetime with an explicit UTC offset, for example `2026-06-30T14:00:00Z`."
+- Section 8: "Index files contain no frontmatter, with one exception: a bundle-root `index.md` MAY carry an `okf_version` key (§12)."
+- Section 9, opening the section: "The format is a flat list of date-grouped entries, newest first:". Ordering is therefore STATED, not merely shown by the example. An earlier draft of this plan claimed the opposite, because its author read a window of lines that began after this sentence instead of reading the section from its heading. Reading an excerpt and calling it the section is the same error as splicing two quotations, and it reached shipped source the same way.
+- Section 9, its only sentence carrying a requirement keyword: "Date headings MUST use ISO 8601 `YYYY-MM-DD` form." The section says nothing about frontmatter in the log.
+- Section 4.1, on types: "consumers MUST tolerate unknown types gracefully". This is the direct authority for a type enumeration being a house rule and never a specification one; prefer it to the section 11 bullet.
 - Section 11, consumers: "MUST treat a bare `verified` mapping as a one-element list".
-- Section 11, separately, listing what consumers "MUST NOT reject a bundle because of", one item being "Unknown `type` values". That item, and not any sentence about concepts, is why a type enumeration is a house rule and never a specification one.
+- Section 11, separately, listing what consumers "MUST NOT reject a bundle because of", one item being "Unknown `type` values".
 
 **The level belongs to the CHECK, not to the rule.** Two rules bundle checks the format grades differently, so a single level per rule makes the ruler over-claim on precisely the point that matters most. A finding carries its own level; a rule may emit both kinds:
 
@@ -223,10 +225,11 @@ Sentences from the format that settle questions this plan previously guessed at,
 | A non-reserved file has frontmatter with a non-empty `type` | `must` | Section 11, clause 2, in those words |
 | A non-root `index.md` carries any frontmatter | `must` | Section 8 states it plainly, and section 11 clause 3 makes the reserved filenames conformance |
 | A root `index.md` carries a key beyond `okf_version` | `should` | Section 8's exception names only that key, but whether other keys break the structure is arguable, and on an arguable reading a validator takes the LOWER claim |
-| A log date heading is not `YYYY-MM-DD` | `must` | Section 9's only MUST |
-| Log dates run oldest to newest | `should` | Section 9 shows newest first and never states it |
+| A level-two heading in the log is not in `YYYY-MM-DD` form at all, for example `## 2026-5-22` or `## 22/05/2026` | `must` | Section 9's only MUST, and these are its commonest violations. The module currently grades these `should` and reserves `must` for a well-formed date that fails the calendar, which is backwards |
+| A log date heading is well formed but impossible, for example `## 2026-02-30` | `must` | Same MUST: a date that cannot exist is not an ISO 8601 date |
+| Log dates run oldest to newest | `must` | Section 9 states the format is date-grouped entries "newest first", and section 11 clause 3 makes following section 9 conformance. An earlier version of this table graded it `should` on a false claim that the section only showed it |
 | The log carries frontmatter | `should` | Section 9 is silent; the structure it shows has none |
-| A level-two heading in the log is not a date | `should` | Wider than section 9's MUST, which is about date headings |
+| A level-two heading in the log is prose rather than any attempt at a date | `should` | Section 9's MUST governs date headings; a heading that is plainly not one is outside it |
 | Every rule in section 5 | `should` | Section 11 puts sections 5 to 10 under what producers SHOULD do |
 
 The principle behind the arguable cases, and it is the one to apply to any future rule: telling a person their bundle is NOT CONFORMANT on a reading the format does not plainly support is the failure that gets a validator switched off. When the text is arguable, claim `should`.
