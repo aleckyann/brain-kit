@@ -1,0 +1,6 @@
+{
+  "cli.usage": "brain-kit {version}\n\nUsage: brain-kit <command> [options]\n\nCommands available in this version:\n  hook <stop|session-start>   entry point for the Claude Code plugin hooks (reads the event JSON from stdin)\n  --version                   print the version\n  --help                      print this help\n\nExit codes: 0 ok, 1 failure, 2 usage or not inside a vault, 3 degraded, 4 required source not read, 69 network or connector unavailable, 75 postponed (retry later).",
+  "cli.unknown_command": "brain-kit: unknown command \"{command}\".",
+  "hook.unknown_event": "brain-kit hook: unknown event \"{event}\" (expected: {events}).",
+  "lang.fallback_warning": "[brain-kit] missing translation for \"{key}\" in {lang}; using {reference}."
+}
