@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# brain-kit maintainer pre-push gate: refuse to push anything that looks like a
+# secret or like household data (the maintainer's company, colleagues, clients).
+#
+# Why a pre-push and not CI: CI runs after the push, when the content is already
+# in the public history of the repository. This hook runs before anything
+# leaves the machine.
+#
+# Personal patterns live OUTSIDE the repository, one extended regex per line,
+# because the list of names to protect is itself the data to protect:
+#   default file: ~/.config/brain-kit/leak-patterns.txt
+#   override:     BRAIN_KIT_LEAK_PATTERNS=/path/to/file
+# The hook fails closed: no patterns file, no push.
+#
+# Activate once per clone:  git config core.hooksPath .githooks
+set -u
+
+PATTERNS_FILE="${BRAIN_KIT_LEAK_PATTERNS:-$HOME/.config/brain-kit/leak-patterns.txt}"
+if [ ! -r "$PATTERNS_FILE" ]; then
+  echo "pre-push: leak patterns file not found: $PATTERNS_FILE" >&2
+  echo "pre-push: create it (one extended regex per line) or point BRAIN_KIT_LEAK_PATTERNS at it. Refusing to push." >&2
+  exit 1
+fi
+
+# Generic patterns, versioned here because they name no one: private keys and
+# well-known token prefixes.
+GENERIC_PATTERNS='-----BEGIN (RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY-----|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-ant-[A-Za-z0-9_-]{10,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}'
+
+ZERO='0000000000000000000000000000000000000000'
+failed=0
+
+scan_blob() {
+  # $1 = commit sha, $2 = path. Prints "line: match" for every hit.
+  local sha="$1" path="$2" hits
+  hits="$(git show "$sha:$path" 2>/dev/null | grep -n -I -i -E -f "$PATTERNS_FILE" -e "$GENERIC_PATTERNS" || true)"
+  if [ -n "$hits" ]; then
+    failed=1
+    echo "pre-push: possible leak in $path (at ${sha:0:7}):" >&2
+    printf '%s\n' "$hits" | sed 's/^/    /' >&2
+  fi
+}
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = "$ZERO" ] && continue   # branch deletion: nothing to scan
+  if [ "$remote_sha" = "$ZERO" ]; then
+    # New branch on the remote: every file in the pushed commit is new to it.
+    files="$(git ls-tree -r --name-only "$local_sha")"
+  else
+    files="$(git diff --name-only --diff-filter=AM "$remote_sha" "$local_sha")"
+  fi
+  while IFS= read -r path; do
+    [ -z "$path" ] && continue
+    scan_blob "$local_sha" "$path"
+  done <<< "$files"
+done
+
+if [ "$failed" -ne 0 ]; then
+  echo "pre-push: push refused. Remove the flagged content (and rewrite the commits that contain it) before pushing." >&2
+  exit 1
+fi
+exit 0
