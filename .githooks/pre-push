@@ -42,12 +42,18 @@ scan_blob() {
 
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ "$local_sha" = "$ZERO" ] && continue   # branch deletion: nothing to scan
-  if [ "$remote_sha" = "$ZERO" ]; then
-    # New branch on the remote: every commit reachable from the tip is new to it.
-    commits="$(git rev-list "$local_sha")"
-  else
-    commits="$(git rev-list "$remote_sha..$local_sha")"
-  fi
+  # 18/09/2026: a ref the remote does not have yet (remote_sha = zero) used to
+  # scan `git rev-list "$local_sha"`, the entire history. That is right for a
+  # brand new repository's first push, but wrong for any later new ref: pushing
+  # the release tag v0.0.1, which points at an already-published commit, made
+  # this re-scan all history and refuse the push over a fixture that lives in
+  # commits already public on the remote. Re-scanning published commits
+  # protects nothing and blocks routine pushes. Scope the scan to what the
+  # remote does not already have, via its remote-tracking refs, regardless of
+  # whether this particular ref is new or an update: a new branch still gets
+  # its own unpublished commits scanned, because those commits aren't reachable
+  # from any refs/remotes/origin/* ref either.
+  commits="$(git rev-list "$local_sha" --not --remotes=origin)"
   while IFS= read -r commit; do
     [ -z "$commit" ] && continue
     if ! git rev-parse -q --verify "$commit^" >/dev/null 2>&1; then

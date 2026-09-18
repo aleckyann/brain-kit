@@ -247,6 +247,25 @@ verification.
 **Where it lives in brain-kit.** `brain-kit verify` (owner only), pre-push template
 refusing an agent push to the default branch, generated CI workflow (Phase 1).
 
+### 18/09/2026: the leak gate blocked its own release tag
+**What happened.** The pre-push hook decides how much history to scan by whether
+the remote already has the ref being pushed. For a ref the remote does not have
+yet, it fell back to scanning everything reachable from that ref, which is right
+for a brand new repository's first push. Pushing an annotated release tag that
+pointed at an already-published commit hit that same fallback, because the tag
+itself was new to the remote even though the commit under it was not. The hook
+re-scanned the full twenty-commit history and refused the push over a test
+fixture literal (a private key header, used to exercise the generic patterns)
+that sat in three commits already public on the remote, with the literal removed
+from the tip further back.
+**Rule.** Scope the scan to what the remote does not already have. Re-scanning
+commits the remote already has cannot prevent a leak, since that content is
+already public, and it does block routine pushes such as tagging a release.
+**Where it lives in brain-kit.** `.githooks/pre-push` (range computed with `git
+rev-list <local_sha> --not --remotes=origin`), `test/pre-push-hook.test.mjs`
+("a tag pointing at already-pushed commits is allowed", "a new branch is still
+scanned for its own commits").
+
 ## Headless runs, network and scheduling
 
 ### 13/09/2026: four days with no curation while the scheduler reported success

@@ -80,3 +80,23 @@ test('a leak buried in an intermediate commit still blocks the push, even after 
   assert.match(r.stderr, /possible leak in notes\.md/);
   assert.match(r.stderr, new RegExp(leakSha.slice(0, 7)));
 });
+
+test('a tag pointing at already-pushed commits is allowed', () => {
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  assert.equal(git(work, ['tag', '-a', 'v1', '-m', 'v1']).status, 0);
+  const r = git(work, ['push', '-q', 'origin', 'v1'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 0, r.stderr);
+});
+
+test('a new branch is still scanned for its own commits', () => {
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  assert.equal(git(work, ['checkout', '-q', '-b', 'feature']).status, 0);
+  commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'leak');
+  const r = git(work, ['push', '-q', 'origin', 'feature'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /possible leak in notes\.md/);
+});
