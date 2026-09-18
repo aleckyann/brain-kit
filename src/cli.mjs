@@ -2,11 +2,13 @@ import { EXIT } from './exit-codes.mjs';
 import { kitVersion } from './version.mjs';
 import { createTranslator, REFERENCE_LANG } from './lang.mjs';
 import { runHook } from './commands/hook.mjs';
+import { runValidate } from './commands/validate.mjs';
 import { ConfigError } from './config.mjs';
 
 // command name -> async (argv, io, t) => exit code
 const BUILTIN_COMMANDS = new Map([
   ['hook', runHook],
+  ['validate', runValidate],
 ]);
 
 export async function main(argv, io, { commands = BUILTIN_COMMANDS } = {}) {
