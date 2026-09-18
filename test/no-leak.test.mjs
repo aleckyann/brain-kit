@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 
@@ -15,9 +15,19 @@ const SECRET_PATTERNS = [
   /AKIA[0-9A-Z]{16}/,
   /xox[baprs]-[A-Za-z0-9-]{10,}/,
 ];
-const ALLOWED_EMAIL_DOMAINS = /@(example\.(com|org|net|invalid)|anthropic\.com|users\.noreply\.github\.com|gmail\.com)$/;
+// gmail.com is not a public-author domain by itself: only this exact address
+// (the maintainer's public GitHub-linked address) is allowlisted, so a future
+// personal gmail.com address does not slip through as "just another gmail".
+const ALLOWED_ADDRESSES = new Set(['aleckyann@gmail.com']);
+const ALLOWED_EMAIL_DOMAINS = /@(example\.(com|org|net|invalid)|anthropic\.com|users\.noreply\.github\.com)$/;
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 const TEXT_EXT = /\.(mjs|js|json|md|yml|yaml|sh|cmd|txt)$/;
+const EXEMPT_FILES = new Set([
+  'test/no-leak.test.mjs',
+  '.githooks/pre-push',
+  'test/pre-push-hook.test.mjs',
+  'docs/superpowers/plans/2026-09-18-phase-0-foundation.md',
+]);
 
 function trackedTextFiles() {
   const r = spawnSync('git', ['ls-files', '-z'], { cwd: KIT_ROOT, encoding: 'utf8' });
@@ -27,19 +37,25 @@ function trackedTextFiles() {
 
 test('no tracked text file contains a secret-looking token', () => {
   for (const file of trackedTextFiles()) {
+    if (EXEMPT_FILES.has(file)) continue; // defines or exercises the patterns as fixtures/docs, not real leaks
     const text = readFileSync(join(KIT_ROOT, file), 'utf8');
     for (const pattern of SECRET_PATTERNS) {
-      if (file === 'test/no-leak.test.mjs' || file === '.githooks/pre-push' || file === 'test/pre-push-hook.test.mjs' || file === 'docs/superpowers/plans/2026-09-18-phase-0-foundation.md') continue; // they define or exercise the patterns as fixtures/docs, not real leaks
       assert.doesNotMatch(text, pattern, `${file} matches ${pattern}`);
     }
   }
 });
 
-test('every e-mail address in tracked files uses an example or public-author domain', () => {
+test('every e-mail address in tracked files uses an example domain, a public-author domain, or is explicitly allowlisted', () => {
   for (const file of trackedTextFiles()) {
     const text = readFileSync(join(KIT_ROOT, file), 'utf8');
     for (const email of text.match(EMAIL) ?? []) {
+      if (ALLOWED_ADDRESSES.has(email.toLowerCase())) continue;
       assert.match(email, ALLOWED_EMAIL_DOMAINS, `${file}: unexpected e-mail domain in ${email}`);
     }
   }
+});
+
+test('bin/brain-kit.mjs is executable', () => {
+  const mode = statSync(join(KIT_ROOT, 'bin', 'brain-kit.mjs')).mode;
+  assert.ok(mode & 0o111, 'bin/brain-kit.mjs must have the executable bit set');
 });
