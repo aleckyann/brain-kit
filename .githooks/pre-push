@@ -43,15 +43,27 @@ scan_blob() {
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ "$local_sha" = "$ZERO" ] && continue   # branch deletion: nothing to scan
   if [ "$remote_sha" = "$ZERO" ]; then
-    # New branch on the remote: every file in the pushed commit is new to it.
-    files="$(git ls-tree -r --name-only "$local_sha")"
+    # New branch on the remote: every commit reachable from the tip is new to it.
+    commits="$(git rev-list "$local_sha")"
   else
-    files="$(git diff --name-only --diff-filter=AM "$remote_sha" "$local_sha")"
+    commits="$(git rev-list "$remote_sha..$local_sha")"
   fi
-  while IFS= read -r path; do
-    [ -z "$path" ] && continue
-    scan_blob "$local_sha" "$path"
-  done <<< "$files"
+  while IFS= read -r commit; do
+    [ -z "$commit" ] && continue
+    if ! git rev-parse -q --verify "$commit^" >/dev/null 2>&1; then
+      # Root commit: it has no parent to diff against, so every file it
+      # introduces is new to the remote.
+      while IFS= read -r -d '' path; do
+        [ -z "$path" ] && continue
+        scan_blob "$commit" "$path"
+      done < <(git ls-tree -r -z --name-only "$commit")
+    else
+      while IFS= read -r -d '' path; do
+        [ -z "$path" ] && continue
+        scan_blob "$commit" "$path"
+      done < <(git diff-tree -r -z --no-commit-id --name-only --diff-filter=AM "$commit")
+    fi
+  done <<< "$commits"
 done
 
 if [ "$failed" -ne 0 ]; then

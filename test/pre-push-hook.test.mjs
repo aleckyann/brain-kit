@@ -67,3 +67,16 @@ test('a missing patterns file refuses the push (fail closed)', () => {
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /leak patterns file not found/);
 });
+
+test('a leak buried in an intermediate commit still blocks the push, even after a later commit removes it', () => {
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'leak');
+  const leakSha = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  commit(work, 'notes.md', 'Meeting with a partner tomorrow\n', 'scrub');
+  const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /possible leak in notes\.md/);
+  assert.match(r.stderr, new RegExp(leakSha.slice(0, 7)));
+});
