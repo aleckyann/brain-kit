@@ -50,7 +50,7 @@
     }
   },
   "stale_policy": { "key": "path", "months": { "people/": 6, "pending/": 3 } },
-  "validate": { "stale_after_format": "datetime", "link_style": "file-relative", "wikilinks": "forbid", "require_root_okf_version": false, "placeholder_pattern": "<[^>]+>", "ignore_paths": [] },
+  "validate": { "stale_after_format": "datetime", "link_style": "file-relative", "wikilinks": "forbid", "require_root_okf_version": false, "placeholder_pattern": "<[^>]+>", "ignore_paths": [], "timestamp_deviation": "forbid" },
   "lint": {
     "columns": "error", "tables": "error", "orphans": "warn", "index_completeness": "warn", "secrets": "error", "privacy": "error", "attribution": "warn",
     "style": { "forbidden_chars": ["—"], "base": "auto" },

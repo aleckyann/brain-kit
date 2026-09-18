@@ -113,7 +113,8 @@
         "wikilinks": { "type": "string", "enum": ["forbid", "allow"] },
         "require_root_okf_version": { "type": "boolean" },
         "placeholder_pattern": { "type": "string" },
-        "ignore_paths": { "type": "array", "items": { "type": "string" } }
+        "ignore_paths": { "type": "array", "items": { "type": "string" } },
+        "timestamp_deviation": { "type": "string", "enum": ["forbid", "allow"] }
       }
     },
     "lint": {
