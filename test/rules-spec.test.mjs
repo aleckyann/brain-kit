@@ -808,6 +808,27 @@ test('verified-events requires at to be an ISO 8601 datetime with an explicit of
   assert.match(findings[0].message, /UTC offset/);
 });
 
+// Fix round 2: a blank at and a malformed at used to share the same
+// check name (event-timestamp-form), which is the exact defect the
+// check field exists to prevent, one level down: a downgrade selecting
+// by that name would reach a finding about at being ABSENT, not merely
+// mis-shaped. Pinned directly, with both shapes in the same test, so a
+// future rename of either check cannot silently reintroduce this: a
+// blank at and a malformed at must never share a check name.
+test('verified-events names a blank at and a malformed at with two different checks, never the same one', () => {
+  const files = {
+    ...cleanVaultFiles(),
+    'people/verified-blank-at.md': CLEAN_NOTE.replace('verified: { by: human:ana, at: 2026-09-18T10:00:00Z }', 'verified: { by: human:ana, at: }'),
+    'people/verified-malformed-at.md': CLEAN_NOTE.replace('verified: { by: human:ana, at: 2026-09-18T10:00:00Z }', 'verified: { by: human:ana, at: 2026-09-18 }'),
+  };
+  const findings = findingsFor(files);
+  const blank = findings.filter((f) => isSpec('verified-events')(f) && f.file === 'people/verified-blank-at.md');
+  const malformed = findings.filter((f) => isSpec('verified-events')(f) && f.file === 'people/verified-malformed-at.md');
+  assert.equal(blank.length, 1);
+  assert.equal(malformed.length, 1);
+  assert.notEqual(blank[0].check, malformed[0].check, 'a missing at and a malformed at must never be named by the same check');
+});
+
 test('verified-events reads a block list of multiple events and flags only the one missing a field, by index', () => {
   const files = {
     ...cleanVaultFiles(),
@@ -843,10 +864,12 @@ test('verified-events flags a key present with no events under it at all, but tr
   // fix round 5 split the by check and the at check apart (the same
   // split generated-actor already had), so this now produces two
   // findings, one per field, rather than the one combined message it
-  // used to.
+  // used to. Fix round 2 split the at check again, into presence and
+  // form, so a blank at is event-timestamp-present here, not
+  // event-timestamp-form (see the invariant test below for why).
   const emptyMapping = findings.filter((f) => isSpec('verified-events')(f) && f.file === 'people/verified-empty-mapping.md');
   assert.equal(emptyMapping.length, 2);
-  assert.deepEqual(emptyMapping.map((f) => f.check).sort(), ['event-actor', 'event-timestamp-form']);
+  assert.deepEqual(emptyMapping.map((f) => f.check).sort(), ['event-actor', 'event-timestamp-present']);
   for (const finding of emptyMapping) assert.match(finding.message, /verified\[0\]/);
 });
 

@@ -710,6 +710,17 @@ const generatedActor = {
 // step that selects by check (the house ruler's timestamp deviation,
 // task 5) must be able to touch the timestamp-shaped failure without
 // also touching the actor-shaped one.
+//
+// Fix round 2: that split was not fine enough either, and put the same
+// defect back one level down. event-timestamp-form used to name BOTH
+// "at is missing" (a presence assertion, exactly like event-actor) and
+// "at is malformed" (the actual form assertion), so a vault declaring
+// validate.timestamp_deviation still had a required-but-missing at
+// downgraded to a mere warning, which is precisely the "a downgrade may
+// never reach a finding about something being ABSENT" invariant this
+// field exists to protect. event-timestamp-present (below) is the
+// presence half; event-timestamp-form is now the form half alone, and
+// only the form half is eligible for the house ruler's downgrade.
 
 const verifiedEvents = {
   id: 'verified-events',
@@ -743,7 +754,7 @@ const verifiedEvents = {
           findings.push({ file, line, check: 'event-actor', message: `verified[${index}].by is required but missing or empty` });
         }
         if (isBlank(event.at)) {
-          findings.push({ file, line, check: 'event-timestamp-form', message: `verified[${index}].at is required but missing or empty` });
+          findings.push({ file, line, check: 'event-timestamp-present', message: `verified[${index}].at is required but missing or empty` });
         } else if (!isValidIsoDatetimeWithOffset(event.at)) {
           findings.push({
             file,

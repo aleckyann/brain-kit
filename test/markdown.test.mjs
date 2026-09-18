@@ -114,6 +114,53 @@ test('an ordinary blockquote with no fence inside it is left alone', () => {
   assert.ok(stripCode(text).includes('[link](real.md)'));
 });
 
+// --- the container model: a fence belongs to the container that opened it ----
+//
+// Fix round 2: blockquote support was patched on as a fourth case
+// without a model, and got both directions wrong. These two tests
+// reproduce exactly what the coordinator described; round 1's own
+// blockquote tests above only ever used a CLOSED quoted fence, so
+// neither of these reached the suite until now.
+
+test('an unclosed fence inside a blockquote runs only to the end of ITS container, not to the end of the file, so a real link after the blockquote survives', () => {
+  const text = ['> ```', '> unclosed, still inside the quote', '', '[real](elsewhere.md)'].join('\n');
+  const result = stripCode(text);
+  assert.ok(!result.includes('unclosed, still inside the quote'), 'the quoted, unclosed fence content is still code');
+  assert.ok(result.includes('[real](elsewhere.md)'), 'the container ended at the blank line, so the fence must not run to the end of the file');
+});
+
+test('a fence opened outside a blockquote is not closed by a quoted marker, and vice versa: a link still inside either kind of fence is never read as real', () => {
+  const openedOutside = ['```', '[hidden](ghost.md)', '> ```', 'still inside the original fence: [also-hidden](ghost2.md)', '```'].join('\n');
+  const outsideResult = stripCode(openedOutside);
+  assert.ok(!outsideResult.includes('ghost.md'), 'a quoted marker must not close a fence that opened outside any quote');
+  assert.ok(!outsideResult.includes('ghost2.md'), 'content after the mismatched quoted marker is still inside the original, still-open fence');
+
+  const openedInside = ['> ```', '> [hidden](ghost.md)', '```', 'still inside the original fence: [also-hidden](ghost2.md)', '> ```'].join('\n');
+  const insideResult = stripCode(openedInside);
+  assert.ok(!insideResult.includes('ghost.md'), 'an unquoted marker must not close a fence that opened inside a quote');
+  assert.ok(!insideResult.includes('ghost2.md'), 'content after the mismatched unquoted marker is still inside the original, still-open fence');
+});
+
+// --- a loose list continuation is not indented code --------------------------
+
+test('a loose list item\x27s continuation paragraph, indented four spaces after a blank line, is not indented code, and a link inside it is still readable', () => {
+  const text = ['- an item', '', '    a loose continuation of the same item, with a [link](real.md) in it', 'more prose'].join('\n');
+  const result = stripCode(text);
+  assert.ok(result.includes('[link](real.md)'), 'the loose continuation must survive as ordinary text, not be blanked as code');
+});
+
+test('a block genuinely indented past a list item\x27s own content column, by four more spaces, is still code inside that item', () => {
+  const text = ['- an item', '', '      real code, six spaces in, four past the two-column item content', 'more prose'].join('\n');
+  const result = stripCode(text);
+  assert.ok(!result.includes('real code'), 'a block indented a further four columns past the item\x27s own content column is still code');
+});
+
+test('a plain indented code block outside any list item is unaffected by the list-awareness fix', () => {
+  const text = ['prose', '', '    real code, no list item involved at all', 'prose again'].join('\n');
+  const result = stripCode(text);
+  assert.ok(!result.includes('real code'));
+});
+
 // --- inline code: single and double backtick, by run length -----------------
 
 test('a single-backtick span hides a link-shaped example written inline', () => {

@@ -104,6 +104,46 @@
 //    for the trade-off this makes on purpose, and the module's declared
 //    trade-offs below for what is still declined rather than handled.
 //
+// Fix round 2 (review of commit fc951b4), five more corrections:
+//
+// 1. Fenced-code handling grew a real MODEL instead of a fourth patched
+//    case: see src/markdown.mjs's own header for "a fence belongs to
+//    the container that opened it", the sentence that replaces three
+//    rounds of case-by-case fixes here and there.
+// 2. `applyTimestampDeviation` selected by the (id, check) pair, and
+//    one round later `verified-events` still drew a single check name,
+//    `event-timestamp-form`, around both "at is missing" and "at is
+//    malformed", which put the original id-only defect back one level
+//    down under a declared deviation. Split into `event-timestamp-present`
+//    (presence, never eligible) and `event-timestamp-form` (form,
+//    eligible), and the underlying invariant, "a downgrade may never
+//    reach a finding about something being ABSENT", is now also
+//    asserted directly in the tests, end to end through the real
+//    specification ruler, without ever reading a check's name, so a
+//    future check name cannot reintroduce this by being drawn too
+//    coarsely again.
+// 3. `classifyField`'s round-1 fix guessed a value was an inline
+//    collection from the SHAPE of readScalar's own, already-unquoted
+//    answer, which could not tell a real "[a, b]" from a quoted string
+//    that merely reads back looking like one once its quotes are gone.
+//    It now asks readList/readMapping first, unconditionally, which
+//    look at the value's own raw, still-quoted head and correctly
+//    decline a quoted string instead of guessing it is unreadable.
+// 4. `link-style` judged `isAbsolute` against the decoded, query-
+//    stripped path but quoted only the raw target in its message, so a
+//    percent-encoded leading slash could be reported as "starts with a
+//    slash" while the quoted evidence did not show one. Both are named
+//    now whenever they differ.
+// 5. Two link shapes this module's own header once left in the
+//    unresolved middle (neither handled nor declared) are resolved:
+//    see the declared trade-offs below for a backslash-escaped bracket
+//    in link text and a raw space in a bare destination, both handled
+//    now, and for the reference-style-link test that used to argue a
+//    declined feature has no contrasting positive, which was wrong: the
+//    contrast is one ordinary link to the same nonexistent target in
+//    the same fixture, exactly the pairing this file already applies
+//    everywhere else.
+//
 // Two behaviours a naive port of the original validator got wrong, and
 // this module is built to get right on purpose:
 //
@@ -131,6 +171,18 @@
 //   than thrown.
 // - A target containing balanced parentheses, and link text containing
 //   balanced brackets, are HANDLED (fix round 1 item 5 above).
+// - A backslash-escaped bracket inside link text ("[a \] b](url)") is
+//   HANDLED (fix round 2): findBalancedClose skips the character right
+//   after any backslash, so an escaped "]" or "(" is never mistaken for
+//   real structure. Before this, an escaped bracket made the whole
+//   link invisible rather than merely mis-read.
+// - A bare (non-"<...>"-wrapped) destination containing a raw,
+//   unescaped space ("[x](my file.md)") is HANDLED by recognising it is
+//   not a valid link destination at all in this markup, and producing
+//   no finding for it, right or wrong (fix round 2): CommonMark
+//   requires such a destination to be angle-bracket-wrapped or to
+//   escape the space, and this reader recognises neither convention as
+//   ever legitimising a raw space in a bare destination.
 // - A link nested inside another link's text (an image inside a link,
 //   "[![alt](img.png)](outer.md)") is read as ONE link, the OUTER one,
 //   once balanced matching is in place: the inner image's own brackets
@@ -205,31 +257,42 @@ function classifyCollection(value) {
 // Fix round 1: an inline collection reads back from readScalar as a
 // perfectly ordinary, non-blank STRING ("tags: []" reads as the string
 // "[]"), so trusting readScalar's own non-blankness answered "present
-// and non-empty" for a field a vault owner had actually left empty. A
-// scalar that looks like a collection (starts with "[" or "{") is now
-// handed to the matching collection reader instead of trusted on sight,
-// covering the inline case; the block case (a scalar value of
-// `undefined` because the real content is an indented block) already
-// worked this way and is unchanged.
+// and non-empty" for a field a vault owner had actually left empty.
+//
+// Fix round 2: the first attempt at that fix guessed from the shape of
+// readScalar's own, already-UNQUOTED answer ("does the string start
+// with '['"), which cannot tell a real flow collection apart from an
+// ordinary QUOTED string that merely looks like one once its quotes are
+// gone: "tags: \"[a, b]\"" reads back from readScalar as the string
+// "[a, b]" too, indistinguishable at that point from a real list, so it
+// was reported against PARSER_LIMITS as unreadable even though
+// readScalar had read it perfectly well. The fix is to ask the
+// collection-aware readers FIRST, unconditionally, rather than guess
+// from readScalar's text at all: readList and readMapping look at the
+// value's own RAW head, quotes and all, and return a real array or
+// object only for genuine "[...]"/"{...}" syntax, undefined for
+// anything else, including a quoted string that starts with one of
+// those characters only after its quotes are stripped. An ordinary
+// scalar (quoted or not) therefore always leaves both of them
+// undefined and falls through to the plain-string branch unchanged.
 function classifyField(frontmatter, key) {
   const scalar = readScalar(frontmatter, key);
   if (scalar === null) return { state: 'absent' };
 
-  if (typeof scalar === 'string') {
-    if (scalar.startsWith('[')) return classifyCollection(readList(frontmatter, key));
-    if (scalar.startsWith('{')) return classifyCollection(readMapping(frontmatter, key));
-    return { state: scalar.trim() === '' ? 'blank' : 'present' };
-  }
-
-  // scalar === undefined: present but not a plain inline scalar. Try
-  // each collection reader in turn for whichever shape recognises this
-  // key's block form; none of them can return null here (the key is
-  // already known to exist), so a null is treated the same as
-  // undefined, defensively, rather than trusted never to happen.
   const mapping = readMapping(frontmatter, key);
   if (mapping !== null && mapping !== undefined) return classifyCollection(mapping);
   const list = readList(frontmatter, key);
   if (list !== null && list !== undefined) return classifyCollection(list);
+
+  if (typeof scalar === 'string') return { state: scalar.trim() === '' ? 'blank' : 'present' };
+
+  // scalar === undefined and neither flow-collection reader recognised
+  // the shape either: try readEntries for the one remaining collection
+  // shape (a block list of mappings, "sources" being the real
+  // example), then give up honestly. None of the three readers can
+  // return null here (the key is already known to exist via readScalar
+  // above), so a null is treated the same as undefined, defensively,
+  // rather than trusted never to happen.
   const entries = readEntries(frontmatter, key);
   if (entries !== null && entries !== undefined) return classifyCollection(entries);
   return { state: 'unreadable' };
@@ -495,9 +558,23 @@ function bodyPrefixLineCount(fullText, body) {
 // close of its own, is not a link at all here, and the scan simply
 // continues from the very next character, so one malformed bracket does
 // not blind the rest of the line to a later, well-formed link.
+// Fix round 2: a backslash-escaped bracket in link text ("[a \] b](url)")
+// used to be read as a real closing bracket, since depth tracking alone
+// does not know a "\]" is a literal character rather than structure.
+// That made the whole link invisible: the scanner found a false close
+// with no "(" right after it, judged the "[" not a link opener at all,
+// and moved on one character at a time, never finding the real link
+// this text describes. Skipping the character right after ANY
+// backslash, of either open or close, is CommonMark's own general
+// escaping rule for ASCII punctuation, not a bracket-specific patch, so
+// it applies here to both the text span and the target span alike.
 function findBalancedClose(line, openIndex, open, close) {
   let depth = 1;
   for (let i = openIndex + 1; i < line.length; i++) {
+    if (line[i] === '\\') {
+      i++; // the next character, open/close or not, is escaped: never structural
+      continue;
+    }
     if (line[i] === open) depth++;
     else if (line[i] === close) {
       depth--;
@@ -563,11 +640,31 @@ function scanWikilinks(strippedBody) {
 // Strips a trailing quoted title ("target \"title\"") and a surrounding
 // "<...>" wrapper, both legal markdown around a link target, so neither
 // is mistaken for part of the path itself.
+// A raw, unescaped space in a BARE (not "<...>"-wrapped) link
+// destination is not legal markup at all in this format: CommonMark
+// requires such a destination to be wrapped in angle brackets, or the
+// space itself backslash-escaped, and this reader recognises neither
+// convention beyond the one check below. Fix round 2: a target like
+// "my file.md" used to be read as a literal, real destination and
+// reported broken (or not), a confident claim either way about
+// something this markup does not parse as a link in the first place.
+// A space immediately preceded by a backslash is escaped, not raw.
+function hasRawSpace(text) {
+  return /(?<!\\) /.test(text);
+}
+
+// Returns the link's destination, or null when the raw text is not a
+// valid link destination at all (see hasRawSpace above), in which case
+// the caller must treat the whole thing as not being a link, producing
+// no finding, right or wrong, rather than a confident claim about text
+// this markup does not parse as a link.
 function parseLinkTarget(raw) {
   let target = raw.trim();
   const titled = /^(\S+)\s+(?:"[^"]*"|'[^']*')$/.exec(target);
   if (titled) target = titled[1];
-  if (target.length >= 2 && target.startsWith('<') && target.endsWith('>')) target = target.slice(1, -1);
+  const angleWrapped = target.length >= 2 && target.startsWith('<') && target.endsWith('>');
+  if (angleWrapped) target = target.slice(1, -1);
+  if (!angleWrapped && hasRawSpace(target)) return null;
   return target;
 }
 
@@ -632,6 +729,7 @@ function forEachInternalLink(file, context, visit) {
   const prefixLineCount = bodyPrefixLineCount(text, body);
   for (const { target, lineIndex } of scanLinks(stripped)) {
     const parsed = parseLinkTarget(target);
+    if (parsed === null) continue; // not a valid link destination in this markup at all: not a link
     if (isExternalLink(parsed) || isFragmentOnly(parsed)) continue;
     const [rawPathPart] = splitFragment(parsed);
     const pathPart = decodePathSafely(stripQueryString(rawPathPart));
@@ -649,17 +747,25 @@ const linkStyle = {
     if (style === 'any') return [];
     const findings = [];
     for (const file of files) {
+      // Fix round 2: this rule judges `isAbsolute` against `pathPart`
+      // (already query-stripped and percent-decoded), but used to quote
+      // only the raw `target` text in its own message, so a link like
+      // "%2Fetc/passwd" could be reported as "starts with a slash"
+      // while the quoted evidence in the message plainly does not show
+      // one. Both are named now, whenever they differ, so the message
+      // always shows the evidence for what was actually judged.
       forEachInternalLink(file, context, (target, pathPart, line) => {
         const isAbsolute = pathPart.startsWith('/');
+        const seen = pathPart === target ? `"${target}"` : `"${target}" (resolved path "${pathPart}")`;
         if (style === 'file-relative' && isAbsolute) {
           findings.push({
             file,
             line,
             check: 'file-relative',
-            message: `link "${target}" starts with a slash, which resolves against the host, not the repository, and breaks where a human reviews the change; this vault requires file-relative links`,
+            message: `link ${seen} starts with a slash, which resolves against the host, not the repository, and breaks where a human reviews the change; this vault requires file-relative links`,
           });
         } else if (style === 'bundle-absolute' && !isAbsolute) {
-          findings.push({ file, line, check: 'bundle-absolute', message: `link "${target}" does not start with a slash; this vault requires bundle-absolute links` });
+          findings.push({ file, line, check: 'bundle-absolute', message: `link ${seen} does not start with a slash; this vault requires bundle-absolute links` });
         }
       });
     }

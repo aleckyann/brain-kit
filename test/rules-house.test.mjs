@@ -40,6 +40,7 @@ import { join } from 'node:path';
 import { loadConfig } from '../src/config.mjs';
 import { walkVault } from '../src/vault.mjs';
 import { HOUSE_RULES, runHouseRules, applyTimestampDeviation } from '../src/rules/house.mjs';
+import { runSpecRules } from '../src/rules/spec.mjs';
 import { makeVault } from './helpers/vault-fixture.mjs';
 
 // --- test scaffolding --------------------------------------------------------
@@ -313,6 +314,33 @@ test('required-fields treats an explicitly empty inline list or mapping as empty
   assert.deepEqual(findings.filter((f) => isHouse('required-fields')(f) && f.file === 'people/nonempty-inline-list.md'), []);
 });
 
+// Fix round 2, a side effect of the round-1 fix above: a QUOTED string
+// that merely looks like a collection once its quotes are gone (a tags
+// value written as a quoted pair of brackets) used to be reported
+// against PARSER_LIMITS as unreadable, even though readScalar reads it
+// perfectly well as an ordinary string. Paired against the real,
+// unquoted empty collection right beside it, which must still be
+// reported empty.
+test('required-fields reads a quoted string that merely looks like a collection as an ordinary, non-empty value, not as unreadable, but still reports a real empty collection as empty', () => {
+  const files = {
+    ...cleanVaultFiles(),
+    'people/quoted-brackets.md': '---\ntype: person\ntags: "[a, b]"\n---\nBody.\n',
+    'people/quoted-braces.md': '---\ntype: person\ntags: "{a: 1}"\n---\nBody.\n',
+    'people/real-empty-list.md': '---\ntype: person\ntags: []\n---\nBody.\n',
+  };
+  const config = { frontmatter: { required: ['tags'], forbidden: [] } };
+  const findings = findingsFor({ files, config });
+
+  for (const file of ['people/quoted-brackets.md', 'people/quoted-braces.md']) {
+    assert.deepEqual(
+      findings.filter((f) => isHouse('required-fields')(f) && f.file === file),
+      [],
+      `${file}: a quoted string that merely looks like a collection reads fine and must not be reported at all`,
+    );
+  }
+  assert.equal(findings.filter((f) => isHouseCheck('required-fields', 'field-non-empty')(f) && f.file === 'people/real-empty-list.md').length, 1);
+});
+
 test('required-fields does nothing at all when frontmatter.required is empty, but the identical file under a non-empty list is a finding', () => {
   const files = { ...cleanVaultFiles(), 'people/anything.md': '---\ntype: person\n---\nNo description, no problem.\n' };
   const off = { frontmatter: { required: [], forbidden: [] } };
@@ -577,6 +605,22 @@ test('link-style ignores an external link and a same-page fragment link either w
   assert.match(findings[0].message, /ghost\.md/);
 });
 
+// Fix round 2: this rule judges isAbsolute against the decoded path,
+// not the raw target text, so a percent-encoded leading slash judged
+// "starts with a slash" must show a slash SOMEWHERE in its own message,
+// not just quote raw text that plainly does not.
+test('link-style names the resolved path alongside a raw target that does not itself show the slash it was judged by', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/ana.md': '---\ntype: person\n---\nSee [encoded](%2Fpeople%2Fghost.md).\n',
+  };
+  const config = { validate: { link_style: 'file-relative' } };
+  const findings = findingsFor({ files, config }).filter((f) => isHouse('link-style')(f) && f.file === 'people/ana.md');
+  assert.equal(findings.length, 1);
+  assert.match(findings[0].message, /%2Fpeople%2Fghost\.md/, 'the raw target must still be named');
+  assert.match(findings[0].message, /\/people\/ghost\.md/, 'the resolved path, which is what was actually judged, must also be named');
+});
+
 // --- link-target-exists (always on) ----------------------------------------------
 
 test('link-target-exists flags a link to a file that does not exist, but allows one to a real markdown file or a real attachment, resolved relative to the linking file', () => {
@@ -686,6 +730,45 @@ test('link-target-exists recognises a link whose own text contains brackets', ()
   assert.match(findings[0].message, /ghost\.md/);
 });
 
+// Fix round 2, finding: a backslash-escaped bracket in link text used
+// to make the whole link invisible (the escaped "]" was read as a real
+// close, no "(" followed, and the scanner never found the real link).
+// HANDLED now: the escaped bracket is skipped, not read as structure.
+test('link-target-exists recognises a link whose text contains a backslash-escaped bracket', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/ana.md': '---\ntype: person\n---\nSee [a \\] b](ghost.md).\n',
+  };
+  const findings = findingsFor({ files }).filter((f) => isHouse('link-target-exists')(f) && f.file === 'people/ana.md');
+  assert.equal(findings.length, 1, 'the link must be recognised at all, or this would report nothing instead of a broken target');
+  assert.match(findings[0].message, /ghost\.md/);
+});
+
+// Fix round 2, the other resolved middle-state shape: a bare
+// destination containing a raw, unescaped space is not a valid link at
+// all in this markup (CommonMark requires angle brackets or an
+// escaped space), so it must produce NO finding, right or wrong, not a
+// wrong one. Paired with the almost-identical shape one word over,
+// where the space IS escaped and the link is real and broken.
+test('link-target-exists declines a bare target containing a raw space outright, but still flags the identical target once its space is escaped', () => {
+  const rawSpaceFiles = { 'index.md': '# Welcome\n', 'people/ana.md': '---\ntype: person\n---\n[x](my file.md)\n' };
+  assert.deepEqual(findingsFor({ files: rawSpaceFiles }).filter((f) => isHouse('link-target-exists')(f) && f.file === 'people/ana.md'), []);
+
+  const escapedSpaceFiles = { 'index.md': '# Welcome\n', 'people/ana.md': '---\ntype: person\n---\n[x](my\\ file.md)\n' };
+  const findings = findingsFor({ files: escapedSpaceFiles }).filter((f) => isHouse('link-target-exists')(f) && f.file === 'people/ana.md');
+  assert.equal(findings.length, 1, 'an escaped space makes this a real, bare destination, which does not exist and must be flagged');
+});
+
+// A target wrapped in angle brackets is allowed to contain a raw
+// space: that is exactly what the wrapping is for, so this shape must
+// never be declined.
+test('link-target-exists still checks an angle-bracket-wrapped target containing a raw space, since the wrapping legitimises it', () => {
+  const files = { 'index.md': '# Welcome\n', 'people/ana.md': '---\ntype: person\n---\n[x](<my file.md>)\n' };
+  const findings = findingsFor({ files }).filter((f) => isHouse('link-target-exists')(f) && f.file === 'people/ana.md');
+  assert.equal(findings.length, 1);
+  assert.match(findings[0].message, /my file\.md/);
+});
+
 // Fix round 1, declared trade-off: a link nested inside another link's
 // text (an image inside a link) is read as ONE link, the outer one, and
 // the inner image's own target is no longer independently checked.
@@ -702,13 +785,28 @@ test('link-target-exists checks the outer target of a nested link-in-a-link pair
 
 // Fix round 1, declared trade-off: a reference-style link is declined
 // outright, and produces no finding at all, right or wrong.
-test('link-target-exists declines a reference-style link outright: it produces no finding, not a wrong one', () => {
+// Fix round 2: the previous round's justification for this being the
+// one unpaired survivor did not hold. A declined feature is not
+// contrast-free: the contrast is one ordinary inline link to the SAME
+// nonexistent target, in the SAME fixture, which must still produce a
+// finding, exactly the pairing this file already applies to five other
+// tests in this same round.
+test('link-target-exists declines a reference-style link outright, producing no finding, not a wrong one, but still flags an ordinary link to the identical nonexistent target right beside it', () => {
   const files = {
     'index.md': '# Welcome\n',
-    'people/ana.md': ['---', 'type: person', '---', 'See [Bruno][ref] for more.', '', '[ref]: nowhere-real.md', ''].join('\n'),
+    'people/ana.md': [
+      '---',
+      'type: person',
+      '---',
+      'See [Bruno][ref] for more, and also [Bruno again](nowhere-real.md) written plainly.',
+      '',
+      '[ref]: nowhere-real.md',
+      '',
+    ].join('\n'),
   };
   const findings = findingsFor({ files }).filter((f) => isHouse('link-target-exists')(f) && f.file === 'people/ana.md');
-  assert.deepEqual(findings, [], 'a reference-style link is declined, producing neither a right nor a wrong finding');
+  assert.equal(findings.length, 1, 'only the ordinary inline link should be flagged; the reference-style one is declined, not silently correct');
+  assert.match(findings[0].message, /nowhere-real\.md/);
 });
 
 // --- code exclusion: fenced (backtick and tilde, including malformed) and inline ---
@@ -873,6 +971,44 @@ test('applyTimestampDeviation never downgrades an actor-presence or shape-readab
   assert.deepEqual(result[1], shapeUnreadable);
   assert.deepEqual(result[2], eventActor);
   assert.equal(result[3].warning, true, 'the real timestamp-form finding sharing the same id must still be downgraded, or this test would pass against a stub that changes nothing at all');
+});
+
+// Fix round 2, the invariant itself, asserted directly rather than
+// through a check's name. Naming is a mechanism: this exact repository
+// drew one check name around both a presence assertion and a form
+// assertion in the very round that introduced the field meant to
+// prevent that, and put the original defect back one level down under
+// a declared deviation. The rule that must never break, whatever any
+// future check happens to be called, is stated here without reading a
+// single check field: a finding is filtered by what its own MESSAGE
+// says (something is missing/empty, an absence, versus something
+// present but malformed), through the REAL specification ruler end to
+// end, so a future round that reintroduces the bug by choosing a
+// convenient check name cannot make this test agree with it.
+test('the invariant: a downgrade never reaches a finding whose own message reports something ABSENT, verified through the real specification ruler and never by reading a check name', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/blank-at.md': '---\ntype: person\nverified: { by: human:ana, at: }\n---\nBody.\n',
+    'people/malformed-at.md': '---\ntype: person\nverified: { by: human:ana, at: 2026-09-18 }\n---\nBody.\n',
+  };
+  const root = makeVault({ files });
+  const config = loadConfig(root);
+  const { files: mdFiles, context } = rulerArgsFor(root, config);
+  const specFindings = runSpecRules(mdFiles, context);
+
+  const downgraded = applyTimestampDeviation(specFindings, { validate: { timestamp_deviation: 'allow' } });
+
+  const absent = downgraded.filter((f) => /missing or empty/.test(f.message));
+  const malformed = downgraded.filter((f) => f.id === 'verified-events' && /not an ISO 8601 datetime/.test(f.message));
+
+  assert.ok(absent.length > 0, 'the fixture must produce at least one absence finding for this assertion to mean anything');
+  for (const finding of absent) {
+    assert.notEqual(finding.warning, true, `a finding whose message reports something absent must never be downgraded: ${finding.message}`);
+  }
+  assert.ok(malformed.length > 0, 'the fixture must produce at least one malformed-but-present finding for this assertion to mean anything');
+  for (const finding of malformed) {
+    assert.equal(finding.warning, true, 'a finding about a malformed, present value must still be downgraded, or this test would pass against a stub that downgrades nothing at all');
+  }
 });
 
 // --- a rule must never throw: malformed, truncated, empty and binary-ish files -----

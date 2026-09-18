@@ -31,34 +31,75 @@
 // third rule that needs to read a heading or a link past code gets this
 // for free, correct, instead of a third chance to get it wrong.
 //
+// Fix round 2: blockquote support was added on top of the fence rule as
+// a fourth case (marker character, marker length, the four-space
+// indented block, and then "read a blockquote's content after its own
+// prefix"), and a fourth case is exactly what it was: patched onto what
+// closes a fence rather than derived from one model, so it got the
+// model wrong in both directions. A fence opened inside a blockquote
+// could be closed by an unquoted marker outside it, and vice versa, and
+// an unclosed quoted fence ran all the way to the end of the FILE
+// instead of stopping at the end of its own blockquote. The model,
+// stated once rather than patched a fourth time: A FENCE BELONGS TO THE
+// CONTAINER THAT OPENED IT. Every line has a blockquote DEPTH (how many
+// levels of ">" it is nested under, 0 at the top level). A fence
+// remembers the depth it opened at:
+// - a later line at a SHALLOWER depth means that container has ended
+//   (the blockquote the fence was inside has closed, or, for a
+//   top-level fence, there is no shallower depth to fall to and this
+//   case never fires), so the fence closes HERE, at its container's own
+//   boundary, and that line is read fresh, exactly as if no fence had
+//   been open, rather than being consumed as the fence's own content or
+//   left to run to the end of the file;
+// - a later line at the SAME depth is read in the ordinary way (does
+//   its marker close this fence, or is it content);
+// - a later line at a DEEPER depth (a blockquote marker appearing while
+//   a shallower fence is open) can neither close the fence nor be
+//   reinterpreted as a new container: a fence's content is never
+//   reinterpreted in real markdown either, so it is simply more content
+//   of the still-open fence, blanked the same as any other line inside
+//   it, with no marker check at all (its depth cannot match the
+//   fence's own, so it structurally cannot be the closing line).
+// This one rule is what stops a marker's depth from ever crossing a
+// container boundary in either direction, and is why an unclosed fence
+// now stops at its own container's edge: the file simply runs out of
+// lines at that depth before it runs out of lines at all.
+//
 // The contract, in full:
 //
 // - A FENCE opens on a line with at most three leading spaces carrying
 //   at least three backticks or at least three tildes (never a mix),
 //   with nothing else on the line but an optional info string; it
-//   closes only on a later line whose marker is the SAME character and
-//   AT LEAST as long as the one that opened it, with nothing else on
-//   that line. An unclosed fence runs to the end of the file: guessing
-//   where it might have ended would be worse than declining to look
-//   inside it, the same caution src/frontmatter.mjs takes for an
-//   unterminated frontmatter block.
+//   closes only on a later line, in the SAME container (see the model
+//   above), whose marker is the SAME character and AT LEAST as long as
+//   the one that opened it, with nothing else on that line. An unclosed
+//   fence runs to the end of ITS CONTAINER: guessing where it might
+//   have ended would be worse than declining to look inside it, the
+//   same caution src/frontmatter.mjs takes for an unterminated
+//   frontmatter block.
 // - A line inside a BLOCKQUOTE (prefixed with up to three spaces, a
 //   ">", and one optional following space, any number of times for a
 //   nested quote) is read for fence and indentation purposes as its
 //   content AFTER that prefix, exactly as a real markdown renderer
 //   parses a blockquote's content independently of the quote marker.
 //   A fenced code block quoted this way ("> ```", "> a line inside",
-//   "> ```") is therefore still code, not prose: the original defect
-//   above was never about quoting, but a vault entry that quotes an
-//   example is an ordinary thing to write, and the same hazard applies.
+//   "> ```") is therefore still code, not prose: a vault entry that
+//   quotes an example is an ordinary thing to write, and the same
+//   hazard applies as an unquoted one.
 // - A block of lines each indented four spaces or more (or starting
-//   with a tab), immediately following a blank line or the start of the
-//   text (an indented block cannot interrupt a paragraph, so it needs a
-//   blank line before it, exactly as it needs one in real markdown), is
-//   itself code, blanked the same as a fenced block. This is also the
-//   reason a fence-shaped line at that indentation never opens a fence:
-//   it is already inside a code region, and a marker character inside
-//   code is content, not structure.
+//   with a tab) beyond its own container's content column, immediately
+//   following a blank line or the start of the text (an indented block
+//   cannot interrupt a paragraph, so it needs a blank line before it,
+//   exactly as it needs one in real markdown), is itself code, blanked
+//   the same as a fenced block. This is also the reason a fence-shaped
+//   line at that indentation never opens a fence: it is already inside
+//   a code region, and a marker character inside code is content, not
+//   structure. "Its own container's content column" matters for a list
+//   item specifically (fix round 2): a loose list item's continuation
+//   paragraph, indented to the ITEM's own content column rather than to
+//   column 0, is not four spaces past THAT column and is therefore
+//   ordinary text, never code, however many spaces past column 0 it
+//   happens to sit at.
 // - An INLINE code span is delimited by a run of one or more backticks,
 //   closed by the NEXT run of the exact same length on the same line;
 //   a run of a different length is content, not a delimiter. The whole
@@ -79,84 +120,153 @@
 // but an inline code span is only ever recognised within a single
 // line - a span that opens on one line and closes on a later one is
 // not joined back together, the same trade-off src/frontmatter.mjs
-// makes for a folded scalar.
+// makes for a folded scalar. A nested list item's own, deeper content
+// column is not separately tracked: this module remembers only the most
+// recently seen list marker's column, which is the shape the reported
+// defect actually took and the shape most real vaults write, not a full
+// per-level list stack.
 
 const FENCE_MARKER = /^ {0,3}(`{3,}|~{3,})[ \t]*(.*)$/;
 const BLOCKQUOTE_PREFIX = /^ {0,3}>[ \t]?/;
-const INDENTED_CODE_PREFIX = /^(?: {4,}|\t)/;
+const LIST_MARKER = /^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]+|$)/;
 
 // The content of `line` after every leading blockquote marker (up to
 // three spaces, then ">", then one optional space, repeated for a
-// quote nested inside a quote) has been stripped, so a fence or an
-// indentation test below sees what a real renderer would see: the
-// quote's own content, not the marks that carry it.
-function stripBlockquoteMarkers(line) {
+// quote nested inside a quote) has been stripped, plus how many levels
+// were stripped: the DEPTH a fence or a list item's own container
+// tracking needs to tell one container from another.
+function splitBlockquotePrefix(line) {
+  let depth = 0;
   let rest = line;
   while (BLOCKQUOTE_PREFIX.test(rest)) {
     rest = rest.replace(BLOCKQUOTE_PREFIX, '');
+    depth++;
   }
-  return rest;
+  return { content: rest, depth };
+}
+
+function leadingSpaceCount(logical) {
+  return /^ */.exec(logical)[0].length;
+}
+
+// True when `logical` is indented at least four columns past
+// `baseColumn` (the content column of whatever container it is read
+// inside, 0 outside of a list item), or opens with a literal tab,
+// matching this module's own, deliberately simple tab handling
+// throughout.
+function isIndentedEnough(logical, baseColumn) {
+  if (/^\t/.test(logical)) return true;
+  return leadingSpaceCount(logical) >= baseColumn + 4;
+}
+
+// The column a list item's own content begins at ("- ", "12. ", each
+// with up to three leading spaces of their own), or null when `logical`
+// does not open with a list marker at all.
+function listMarkerColumn(logical) {
+  const match = LIST_MARKER.exec(logical);
+  return match ? match[0].length : null;
 }
 
 // Blanks every line that is part of a fenced code block or an indented
-// code block, tracking both kinds of block across the whole text in one
-// forward pass. `fence` holds the open fence's marker character and
-// length while one is open, or null; `inIndentedBlock` and
-// `precededByBlank` together decide whether an indented, non-blank line
-// starts or continues an indented block rather than being an ordinary
-// line that merely happens to be indented (a list item's continuation,
-// for instance, which this module does not otherwise need to recognise,
-// since it is never mistaken for code by this rule: it is never
-// preceded by a blank line the way a real indented code block must be).
+// code block, tracking both kinds of block, and the list item a loose
+// continuation might belong to, across the whole text in one forward
+// pass.
+//
+// `fence` holds the open fence's marker character, length and the
+// DEPTH it opened at, or null; see this module's own header for the
+// container model that depth serves. `indentedBlock` holds the base
+// column an open indented block was measured against, or null.
+// `precededByBlank` and `list` (the most recent list marker's own
+// content column and the depth it was seen at) together decide whether
+// an indented, non-blank line starts a new code block, continues a
+// loose list item instead, or is itself a fresh list marker.
 function blankFencedAndIndentedCode(text) {
+  const lines = text.split('\n');
+  const output = [];
   let fence = null;
+  let indentedBlock = null;
   let precededByBlank = true;
-  let inIndentedBlock = false;
+  let list = null;
 
-  return text
-    .split('\n')
-    .map((line) => {
-      const logical = stripBlockquoteMarkers(line);
+  for (const line of lines) {
+    const { content: logical, depth } = splitBlockquotePrefix(line);
 
-      if (fence) {
+    if (fence) {
+      if (depth < fence.depth) {
+        // Shallower depth: the container the fence opened in has
+        // ended (a blockquote it was inside just closed). The fence
+        // closes HERE, at its container's own boundary, not at the
+        // end of the file, and this line is read fresh below, exactly
+        // as if no fence had ever been open.
+        fence = null;
+      } else if (depth === fence.depth) {
         const marker = FENCE_MARKER.exec(logical);
-        if (marker && marker[1][0] === fence.char && marker[1].length >= fence.length && marker[2].trim() === '') {
-          fence = null;
-        }
+        if (marker && marker[1][0] === fence.char && marker[1].length >= fence.length && marker[2].trim() === '') fence = null;
         precededByBlank = false;
-        return ''; // every line while a fence is open is code, its own closing marker included
-      }
-
-      const opening = FENCE_MARKER.exec(logical);
-      if (opening) {
-        fence = { char: opening[1][0], length: opening[1].length };
-        inIndentedBlock = false; // a fence takes precedence over any indented run in progress
+        output.push('');
+        continue;
+      } else {
+        // Deeper depth: a blockquote marker appearing while a
+        // shallower fence is open cannot close it and is not a new
+        // container either, the same way a fence's content is never
+        // reinterpreted in real markdown; it is simply more content of
+        // the still-open fence.
         precededByBlank = false;
-        return '';
+        output.push('');
+        continue;
       }
+    }
 
-      if (logical.trim() === '') {
-        precededByBlank = true; // an indented block continues across a blank line untouched; there is nothing on it to blank
-        return line;
+    if (indentedBlock) {
+      if (logical.trim() === '' || isIndentedEnough(logical, indentedBlock.baseColumn)) {
+        const isBlank = logical.trim() === '';
+        precededByBlank = isBlank;
+        output.push(isBlank ? line : '');
+        continue;
       }
+      indentedBlock = null; // under-indented, non-blank: the block ends, and this line is read fresh below
+    }
 
-      const indented = INDENTED_CODE_PREFIX.test(logical);
-      if (inIndentedBlock) {
-        if (indented) {
-          precededByBlank = false;
-          return '';
-        }
-        inIndentedBlock = false; // under-indented, non-blank: the block ends, and this line is ordinary text
-      } else if (precededByBlank && indented) {
-        inIndentedBlock = true;
-        precededByBlank = false;
-        return '';
-      }
+    if (list && depth !== list.depth) list = null; // the list item's own container changed; it is no longer in scope
 
+    const opening = FENCE_MARKER.exec(logical);
+    if (opening) {
+      fence = { char: opening[1][0], length: opening[1].length, depth };
+      list = null;
       precededByBlank = false;
-      return line;
-    })
-    .join('\n');
+      output.push('');
+      continue;
+    }
+
+    if (logical.trim() === '') {
+      precededByBlank = true; // a code block (of either kind) continues across a blank line untouched; there is nothing on it to blank
+      output.push(line);
+      continue;
+    }
+
+    const markerColumn = listMarkerColumn(logical);
+    if (markerColumn !== null) {
+      list = { column: markerColumn, depth };
+      precededByBlank = false;
+      output.push(line);
+      continue;
+    }
+
+    if (list && leadingSpaceCount(logical) < list.column) list = null; // de-indented below the item's own content: it ends here
+
+    const baseColumn = list ? list.column : 0;
+    if (precededByBlank && isIndentedEnough(logical, baseColumn)) {
+      indentedBlock = { baseColumn };
+      precededByBlank = false;
+      output.push('');
+      continue;
+    }
+
+    precededByBlank = false;
+    output.push(line);
+  }
+
+  return output.join('\n');
 }
 
 // Blanks every inline code span in `line`: a run of backticks opens one,
