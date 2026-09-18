@@ -206,9 +206,30 @@ The rules, each with a stable English id, and each carrying the section of the f
 | `stale-after-format` | When `stale_after` is present it is a datetime with an explicit UTC offset. A plain date is a finding. |
 | `sources-resource` | Every entry of `sources` carries a non-empty `resource`. |
 
-**Conformance levels, read from the format's own text on 18/09/2026 and binding on tasks 5 and 6.** The specification defines two tiers, and a ruler that flattens them tells a person that a departure from guidance is a broken bundle. Section 11 makes exactly three things conformance: every non-reserved markdown file carries a parseable frontmatter block; every frontmatter block carries a non-empty `type`; and the reserved filenames follow their own sections. Everything in sections 5 to 10 is what a producer SHOULD do. So every rule object carries a `level` of `must` or `should` alongside its `section`, and the finding carries it too. `type-required`, `index-no-frontmatter` and `log-format` are `must`. The five trust and lifecycle rules are `should`.
+**Conformance levels, read from the format's own text on 18/09/2026 and binding on tasks 5 and 6.** The specification defines two tiers, and a ruler that flattens them tells a person that a departure from guidance is a broken bundle. Section 11 makes exactly three things conformance: every non-reserved markdown file carries a parseable frontmatter block; every frontmatter block carries a non-empty `type`; and the reserved filenames follow their own sections. Everything in sections 5 to 10 is what a producer SHOULD do. So every FINDING carries a `level` of `must` or `should`. A rule object carries the level of its checks where they agree, and emits the level per finding where they do not; the table below is the authority.
 
-Two verbatim sentences from the format that settle questions this plan previously guessed at, quoted here so no task has to guess again. Section 5: "Every timestamp-valued key in OKF is an ISO 8601 datetime with an explicit UTC offset." Section 11: consumers "MUST treat a bare `verified` mapping as a one-element list", and "MUST NOT reject a concept" for an unknown `type` value, which is why a type enumeration is a house rule and never a specification one.
+Sentences from the format that settle questions this plan previously guessed at, quoted here so no task has to guess again. Each is verbatim and each is one sentence: do not splice two of them into a third, which an earlier draft of this plan did, and which the shipped source and a task report then repeated.
+
+- Section 5: "Every timestamp-valued key in OKF is an ISO 8601 datetime with an explicit UTC offset."
+- Section 8: "Index files contain no frontmatter, with one exception: a bundle-root `index.md` MAY carry an `okf_version` key."
+- Section 9, and it is the ONLY requirement that section states: "Date headings MUST use ISO 8601 `YYYY-MM-DD` form." Section 9 says nothing about ordering and nothing about frontmatter in the log.
+- Section 11, consumers: "MUST treat a bare `verified` mapping as a one-element list".
+- Section 11, separately, listing what consumers "MUST NOT reject a bundle because of", one item being "Unknown `type` values". That item, and not any sentence about concepts, is why a type enumeration is a house rule and never a specification one.
+
+**The level belongs to the CHECK, not to the rule.** Two rules bundle checks the format grades differently, so a single level per rule makes the ruler over-claim on precisely the point that matters most. A finding carries its own level; a rule may emit both kinds:
+
+| Check | Level | Why |
+|---|---|---|
+| A non-reserved file has frontmatter with a non-empty `type` | `must` | Section 11, clause 2, in those words |
+| A non-root `index.md` carries any frontmatter | `must` | Section 8 states it plainly, and section 11 clause 3 makes the reserved filenames conformance |
+| A root `index.md` carries a key beyond `okf_version` | `should` | Section 8's exception names only that key, but whether other keys break the structure is arguable, and on an arguable reading a validator takes the LOWER claim |
+| A log date heading is not `YYYY-MM-DD` | `must` | Section 9's only MUST |
+| Log dates run oldest to newest | `should` | Section 9 shows newest first and never states it |
+| The log carries frontmatter | `should` | Section 9 is silent; the structure it shows has none |
+| A level-two heading in the log is not a date | `should` | Wider than section 9's MUST, which is about date headings |
+| Every rule in section 5 | `should` | Section 11 puts sections 5 to 10 under what producers SHOULD do |
+
+The principle behind the arguable cases, and it is the one to apply to any future rule: telling a person their bundle is NOT CONFORMANT on a reading the format does not plainly support is the failure that gets a validator switched off. When the text is arguable, claim `should`.
 
 - [ ] **Step 1: Write the failing test.** One fixture vault that passes every rule and reports nothing, and one focused fixture per rule that violates exactly that rule, asserting the finding's `id`, `file` and, where the rule is about a line, its `line`. Include the case that matters most: a note whose `stale_after` is a datetime with an offset must pass, because the original validator failed it, and a note whose `stale_after` is a plain date must now be a finding, because the format requires the offset.
 
