@@ -4,9 +4,25 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
+import { main } from '../src/cli.mjs';
+import { ConfigError } from '../src/config.mjs';
+import { EXIT } from '../src/exit-codes.mjs';
 
 const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
 const pkg = JSON.parse(readFileSync(join(KIT_ROOT, 'package.json'), 'utf8'));
+
+function fakeIo() {
+  let stdout = '';
+  let stderr = '';
+  return {
+    io: {
+      stdout: { write: (s) => { stdout += s; } },
+      stderr: { write: (s) => { stderr += s; } },
+    },
+    stdout: () => stdout,
+    stderr: () => stderr,
+  };
+}
 
 function run(args, input = '') {
   return spawnSync(process.execPath, [BIN, ...args], { input, encoding: 'utf8' });
@@ -59,4 +75,29 @@ test('hook with an unknown event exits 2', () => {
   const r = run(['hook', 'nope'], '{}');
   assert.equal(r.status, 2);
   assert.match(r.stderr, /nope/);
+});
+
+test('a ConfigError thrown by a command maps to exit 2 with the message on stderr and no stack', async () => {
+  const { io, stderr, stdout } = fakeIo();
+  const commands = new Map([['boom', async () => { throw new ConfigError('Not a brain-kit vault'); }]]);
+  const code = await main(['boom'], io, { commands });
+  assert.equal(code, EXIT.USAGE);
+  assert.equal(stderr(), 'Not a brain-kit vault\n');
+  assert.equal(stdout(), '');
+});
+
+test('any other error thrown by a command maps to exit 1, prefixed, without a stack unless BRAIN_KIT_DEBUG is set', async () => {
+  const prevDebug = process.env.BRAIN_KIT_DEBUG;
+  delete process.env.BRAIN_KIT_DEBUG;
+  try {
+    const { io, stderr, stdout } = fakeIo();
+    const commands = new Map([['boom', async () => { throw new Error('boom'); }]]);
+    const code = await main(['boom'], io, { commands });
+    assert.equal(code, EXIT.FAILURE);
+    assert.equal(stderr(), 'brain-kit: boom\n');
+    assert.equal(stdout(), '');
+  } finally {
+    if (prevDebug === undefined) delete process.env.BRAIN_KIT_DEBUG;
+    else process.env.BRAIN_KIT_DEBUG = prevDebug;
+  }
 });
