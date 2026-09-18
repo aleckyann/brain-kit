@@ -269,11 +269,24 @@ function collectBlock(lines, keyLineIndex) {
 // or a PLAIN value folded across indented continuation lines with no
 // marker at all - real YAML allows this, and it is exactly the shape a
 // person writing a long description by hand produces without ever
-// intending any special syntax. Without this second check, an empty head
-// followed by unrelated indented lines read back as the empty string: a
-// confident, wrong, and plausible-looking value, since "" is a value a
-// real note could also have on purpose. Checking whether anything is
-// indented underneath is what tells the two cases apart.
+// intending any special syntax, whether their editor wrapped the line for
+// them or they indented a continuation on purpose.
+//
+// The following-block check does not care whether the key's own line was
+// left empty or already carries the first line of the value: either way,
+// something is indented underneath that this function cannot safely fold
+// in, and refusing is the only answer that is never wrong. The two shapes
+// look different but fail the same way if only the empty-head one is
+// caught: fix round 2 found that a non-empty head with a continuation
+// underneath ("description: a long line" then "  continued here") still
+// returned just "a long line", silently dropping the continuation - a
+// confident value indistinguishable from a note whose description really
+// is one line, for the single field the whole vault's index is built
+// from. Checked directly against the neighbouring shapes while fixing
+// this: a key that is really a block mapping or a block list already
+// takes this same path (its own line is empty, and something is
+// indented underneath), so it was already declining before this fix and
+// still does after it.
 export function readScalar(frontmatter, key) {
   const lines = (frontmatter ?? '').split('\n');
   const found = findKeyLine(lines, key);
@@ -281,7 +294,7 @@ export function readScalar(frontmatter, key) {
 
   const value = found.head.trim();
   if (isBlockScalarHeader(value)) return undefined;
-  if (value === '' && collectBlock(lines, found.index).length > 0) return undefined;
+  if (collectBlock(lines, found.index).length > 0) return undefined;
   return unquote(value);
 }
 
@@ -472,5 +485,5 @@ export const PARSER_LIMITS = Object.freeze([
   'A YAML anchor (&name) or alias (*name) is not recognized: readMapping and readList return undefined for a field that carries one, and readScalar returns the raw line text, marker included, since it never tries to interpret the value at all.',
   'An inline mapping or list whose closing brace or bracket is not on the same line as the key is not read: readMapping and readList both return undefined for that field, the same as any other shape they cannot see.',
   'A backslash before a quote inside an inline mapping or list is not an escape: an even count of quote characters still finds the closing brace or bracket and reads the value whole, backslash included; an odd count never finds it, and readMapping or readList returns undefined instead of a truncated value.',
-  'A plain value folded across indented continuation lines, with no "|" or ">" marker on the key line, is not joined back together: readScalar returns undefined for that field instead of just its first, empty line.',
+  'A plain value folded across indented continuation lines, with no "|" or ">" marker, is not joined back together, whether the key line is left empty or already carries the first line of the value: readScalar returns undefined either way instead of an empty string or a truncated first line.',
 ]);

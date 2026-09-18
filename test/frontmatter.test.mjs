@@ -158,15 +158,39 @@ test('readScalar returns undefined for a block or folded scalar header, but stil
   assert.equal(readScalar('description: a plain one-line value', 'description'), 'a plain one-line value');
 });
 
-test('readScalar returns undefined for a plain value folded across indented continuation lines with no block marker, but still reads a single-line value for the same key', () => {
+test('readScalar returns undefined for a plain value folded across indented continuation lines with an empty key line, but still reads a single-line value for the same key', () => {
   const folded = 'description:\n  first line\n  second line';
   const singleLine = 'description: first line only';
   assert.equal(readScalar(folded, 'description'), undefined);
   assert.equal(readScalar(singleLine, 'description'), 'first line only');
 });
 
-test('readScalar reads an empty string for a key with truly nothing after it and nothing indented underneath, distinct from the folded case above', () => {
+// Fix round 2: the same fold, but the key's own line already carries the
+// first line of the value instead of being left empty. Before this round,
+// only the empty-key-line spelling above was caught; this one silently
+// dropped the continuation and returned just the first line, a confident
+// value indistinguishable from a note whose description really is one
+// line short.
+test('readScalar returns undefined for a plain value folded across continuation lines even when the key line already carries the first line of the value, but still reads a single-line value with no continuation at all', () => {
+  const folded = 'description: a long line\n  continued here';
+  const singleLine = 'description: a long line';
+  assert.equal(readScalar(folded, 'description'), undefined);
+  assert.equal(readScalar(singleLine, 'description'), 'a long line');
+});
+
+test('readScalar reads an empty string for a key with truly nothing after it and nothing indented underneath, distinct from both folded cases above', () => {
   assert.equal(readScalar('description:', 'description'), '');
+});
+
+// Fix round 2's neighbour check: a key that is really a block mapping or a
+// block list must decline through readScalar the same way a folded plain
+// scalar does, never returning just the fragment on the key's own line.
+test('readScalar returns undefined for a key that is really a block mapping or a block list, the same as a folded plain scalar, but still reads a simple scalar key normally', () => {
+  const asMapping = 'generated:\n  by: human:ana\n  at: 2026-01-01T00:00:00Z';
+  const asList = 'tags:\n  - okf\n  - spec';
+  assert.equal(readScalar(asMapping, 'generated'), undefined);
+  assert.equal(readScalar(asList, 'tags'), undefined);
+  assert.equal(readScalar('type: note', 'type'), 'note');
 });
 
 test('readScalar returns the raw line text, marker included, for a value carrying a YAML anchor', () => {
