@@ -150,6 +150,17 @@ This module is deliberately a regular-expression reader and not a YAML parser, b
 
 ---
 
+### The ruler contract (binding on tasks 4, 5 and 6)
+
+Both rulers share one signature, `run<X>Rules(files, context) -> Finding[]`, and both are handed the same two values by `validate`, which calls `walkVault` exactly once, with `{ all: true }`:
+
+- `files` is the markdown subset of that single walk: sorted, relative to the root, forward slashes. It is what a rule iterates, and neither ruler filters or re-walks it.
+- `context` is `{ root, config, all, readFile }`. `all` is the full walk including attachments, as a `Set`, so membership is a lookup and not a scan. `readFile(relPath)` returns the file's text and caches it, so a dozen rules reading one file cost one read.
+
+`link-target-exists` resolves against `context.all`, never against `files`, which is the only reason the walk asks for everything. One walk, one truth: a second walk would let two halves of the same command disagree about what the vault contains, and that disagreement is defect 4, the one this slice exists to remove.
+
+---
+
 ### Task 4: The specification ruler
 
 **Files:**
@@ -158,7 +169,14 @@ This module is deliberately a regular-expression reader and not a YAML parser, b
 - Create: `test/fixtures/vaults/` entries as needed by the tests
 
 **Interfaces:**
-- Consumes: `splitFrontmatter` and the readers from Task 3, `walkVault` from Task 2.
+- Consumes: `splitFrontmatter` and the readers from Task 3, plus the two arguments of the ruler contract below.
+
+**The ruler contract (identical for tasks 4, 5 and 6, and binding on all three).** `validate` calls `walkVault(root, config, { all: true })` exactly ONCE and hands both rulers the same two arguments:
+- `files`: the markdown subset of that single walk, sorted, relative to the root, forward slashes. A ruler iterates it and never filters or re-walks it.
+- `context`: `{ root, config, all, readFile }`. `all` is the full walk including attachments, as a `Set`, so membership is a lookup and not a scan. `readFile(relPath)` returns a file's text and caches it, so a dozen rules reading one file cost one read.
+
+`link-target-exists` resolves against `context.all`, never against `files`: that is the only reason the walk asks for everything. No rules module calls `walkVault` itself. One walk, one truth, because a second walk would let two halves of the same command disagree about what the vault contains, which is defect 4, the one this slice exists to remove.
+
 - Produces: `SPEC_RULES` (an array of rule objects `{ id, section, check }`) and `runSpecRules(files, context) -> Finding[]`, where a `Finding` is `{ ruler: 'spec', id, section, file, line, message }`.
 
 The rules, each with a stable English id, and each carrying the section of the format it comes from:
@@ -190,6 +208,13 @@ The rules, each with a stable English id, and each carrying the section of the f
 
 **Interfaces:**
 - Produces: `HOUSE_RULES` and `runHouseRules(files, context) -> Finding[]` with `ruler: 'house'`.
+
+**The ruler contract (identical for tasks 4, 5 and 6, and binding on all three).** `validate` calls `walkVault(root, config, { all: true })` exactly ONCE and hands both rulers the same two arguments:
+- `files`: the markdown subset of that single walk, sorted, relative to the root, forward slashes. A ruler iterates it and never filters or re-walks it.
+- `context`: `{ root, config, all, readFile }`. `all` is the full walk including attachments, as a `Set`, so membership is a lookup and not a scan. `readFile(relPath)` returns a file's text and caches it, so a dozen rules reading one file cost one read.
+
+`link-target-exists` resolves against `context.all`, never against `files`: that is the only reason the walk asks for everything. No rules module calls `walkVault` itself. One walk, one truth, because a second walk would let two halves of the same command disagree about what the vault contains, which is defect 4, the one this slice exists to remove.
+
 
 Every rule reads its setting from the config; none is hard-coded. Defaults are the permissive ones, so a vault that configures nothing gets the specification and little else.
 
@@ -229,8 +254,17 @@ Two behaviours the tests must pin down, because both were defects in the origina
 - Consumes: everything above.
 - Produces: `brain-kit validate [dir] [--only-problems] [--json]`.
 
+**The ruler contract (identical for tasks 4, 5 and 6, and binding on all three).** `validate` calls `walkVault(root, config, { all: true })` exactly ONCE and hands both rulers the same two arguments:
+- `files`: the markdown subset of that single walk, sorted, relative to the root, forward slashes. A ruler iterates it and never filters or re-walks it.
+- `context`: `{ root, config, all, readFile }`. `all` is the full walk including attachments, as a `Set`, so membership is a lookup and not a scan. `readFile(relPath)` returns a file's text and caches it, so a dozen rules reading one file cost one read.
+
+`link-target-exists` resolves against `context.all`, never against `files`: that is the only reason the walk asks for everything. No rules module calls `walkVault` itself. One walk, one truth, because a second walk would let two halves of the same command disagree about what the vault contains, which is defect 4, the one this slice exists to remove.
+
+This task is the side that BUILDS those two arguments, so it owns the single call.
+
 Behaviour:
 - Resolve the vault from the argument or the working directory. Outside a vault, exit `2` with a message naming what is missing, not a stack trace.
+- Call `walkVault(root, config, { all: true })` exactly ONCE and build the two values of the ruler contract from it: the markdown subset as `files`, and the whole list as `context.all`. A test must assert the single call, by counting reads or by spying, because the rule it protects is invisible in the output when it is broken.
 - Run both rulers. Print the spec findings and the house findings under separate headings, each finding as `path:line  id  message`, so the two rulers never blur into one verdict.
 - Notes whose `stale_after` has passed are an informational report, printed after the findings and **never** affecting the exit code. A build that fails as time passes is a build people switch off.
 - `--only-problems` prints only rules that have findings. `--json` prints one object with `findings`, `stale`, `counts`, `parserLimits` and the two ruler names, and prints nothing else on stdout.
