@@ -1,0 +1,17 @@
+{
+  "name": "brain-kit",
+  "description": "Second brain in OKF markdown, curated by Claude through pull requests.",
+  "owner": {
+    "name": "Aleck Yann"
+  },
+  "plugins": [
+    {
+      "name": "brain-kit",
+      "source": "./",
+      "description": "Second brain in OKF markdown, curated by Claude through pull requests.",
+      "version": "0.0.1",
+      "license": "MIT",
+      "keywords": ["second-brain", "okf", "knowledge-base"]
+    }
+  ]
+}

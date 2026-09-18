@@ -1,0 +1,27 @@
+{
+  "name": "brain-kit",
+  "displayName": "Brain Kit",
+  "version": "0.0.1",
+  "description": "Second brain in OKF markdown, curated by Claude through pull requests: validator, PR loop, Stop hook, scheduled curation and morning briefing. Phase 0: engine skeleton and hook wiring.",
+  "author": {
+    "name": "Aleck Yann",
+    "url": "https://github.com/aleckyann"
+  },
+  "homepage": "https://github.com/aleckyann/brain-kit",
+  "repository": "https://github.com/aleckyann/brain-kit",
+  "license": "MIT",
+  "keywords": ["second-brain", "okf", "knowledge-base", "curation", "pull-request", "markdown"],
+  "userConfig": {
+    "vault_dir": {
+      "type": "directory",
+      "title": "Default vault directory",
+      "description": "Vault used by brain-kit skills when the current directory is not a vault. Leave empty to require running inside the vault."
+    },
+    "lang": {
+      "type": "string",
+      "title": "Language",
+      "description": "Language for skill bodies and messages outside a vault (pt-BR or en). Inside a vault, brain-kit.config.json wins.",
+      "default": "pt-BR"
+    }
+  }
+}
