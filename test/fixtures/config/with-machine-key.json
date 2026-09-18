@@ -26,39 +26,27 @@
   },
   "taxonomy": {
     "collections": {
-      "pessoas": {
-        "type": "pessoa",
-        "template": "templates/template-pessoa.md"
+      "people": {
+        "type": "person",
+        "template": "templates/template-person.md"
       },
-      "organizacoes": {
-        "type": "organizacao",
-        "template": "templates/template-organizacao.md"
+      "projects": {
+        "type": "project",
+        "template": "templates/template-project.md"
       },
-      "projetos": {
-        "type": "projeto",
-        "template": "templates/template-projeto.md"
-      },
-      "decisoes": {
-        "type": "decisao",
-        "template": "templates/template-decisao.md",
+      "decisions": {
+        "type": "decision",
+        "template": "templates/template-decision.md",
         "filename_pattern": "YYYY-MM-<slug>"
-      },
-      "referencias/livros": {
-        "type": "livro",
-        "template": "templates/template-livro.md"
       }
     },
     "domains": [
-      "nucleo",
-      "empresa",
-      "memoria",
-      "pendencias",
-      "pessoal",
-      "reflexoes",
-      "referencias"
+      "core",
+      "memory",
+      "pending"
     ],
     "no_index": [],
-    "log": "memoria/log.md",
+    "log": "memory/log.md",
     "log_markers": {
       "capture": "Captura",
       "promoted": "Promovido",
@@ -66,16 +54,16 @@
       "creation": "Criação"
     },
     "templates_dir": "templates",
-    "attachments_dir": "anexos",
+    "attachments_dir": "attachments",
     "files": {
-      "followups": "pendencias/follow-ups.md",
-      "promises": "pendencias/promessas.md",
-      "rituals": "nucleo/ritmo-semanal.md",
-      "execution_system": "nucleo/sistema-de-execucao.md",
-      "style_guide": "nucleo/diretrizes-de-resposta.md",
+      "followups": "pending/follow-ups.md",
+      "promises": "pending/promessas.md",
+      "rituals": "core/ritmo-semanal.md",
+      "execution_system": "core/sistema-de-execucao.md",
+      "style_guide": "core/diretrizes-de-resposta.md",
       "bootstrap": "BOOTSTRAP.md",
-      "strategy_index": "decisoes/index.md",
-      "metrics": "empresa/metricas-e-metas.md",
+      "strategy_index": "decisions/index.md",
+      "metrics": null,
       "glossary": null
     },
     "columns": {
@@ -125,13 +113,13 @@
       "situacao": {
         "type": "enum",
         "values_by_type": {
-          "decisao": [
+          "decision": [
             "aberta",
             "em-execucao",
             "concluida",
             "revertida"
           ],
-          "projeto": [
+          "project": [
             "ativo",
             "ideia",
             "adiado",
@@ -167,9 +155,8 @@
   "stale_policy": {
     "key": "path",
     "months": {
-      "pessoas/": 6,
-      "organizacoes/": 12,
-      "pendencias/": 3
+      "people/": 6,
+      "pending/": 3
     }
   },
   "validate": {
@@ -201,8 +188,7 @@
   },
   "privacy": {
     "confidential_dirs": [
-      "pessoas/",
-      "pessoal/"
+      "people/"
     ],
     "require_private_repo": true,
     "secret_patterns": [
@@ -213,7 +199,7 @@
       "AKIA[0-9A-Z]{16}"
     ],
     "third_party_data_acknowledged": true,
-    "retention_note": "pessoas/ holds personal data about third parties; removal on request: see SECURITY.md",
+    "retention_note": "people/ holds personal data about third parties; removal on request: see SECURITY.md",
     "audiences": {}
   },
   "git": {
@@ -256,15 +242,14 @@
       "new_pending_items": 5
     },
     "promotion_map": {
-      "owner_action": "pendencias/follow-ups.md",
-      "owner_promise": "pendencias/promessas.md",
-      "third_party_strategic": "pendencias/follow-ups.md",
+      "owner_action": "pending/follow-ups.md",
+      "owner_promise": "pending/promessas.md",
+      "third_party_strategic": "pending/follow-ups.md",
       "third_party_operational": "log-only",
-      "strategic_decision": "decisoes/",
-      "decision_needs_talk": "pendencias/follow-ups.md",
-      "org_fact": "organizacoes/",
-      "person_fact": "pessoas/",
-      "ritual_change": "nucleo/ritmo-semanal.md"
+      "strategic_decision": "decisions/",
+      "decision_needs_talk": "pending/follow-ups.md",
+      "person_fact": "people/",
+      "ritual_change": "core/ritmo-semanal.md"
     },
     "sources": {
       "required": [
@@ -354,7 +339,7 @@
       "pending_changes": 3
     },
     "strategy_doc": {
-      "index": "decisoes/index.md",
+      "index": "decisions/index.md",
       "title_contains": "carta"
     },
     "main_metric": "MRR",
@@ -362,17 +347,16 @@
     "read": [
       "index.md",
       "AGENTS.md",
-      "decisoes/index.md",
-      "pendencias/promessas.md",
-      "projetos/index.md",
-      "nucleo/ritmo-semanal.md"
+      "decisions/index.md",
+      "pending/promessas.md",
+      "projects/index.md",
+      "core/ritmo-semanal.md"
     ],
     "never_read": [
-      "pessoas/",
-      "organizacoes/",
-      "anexos/",
+      "people/",
+      "attachments/",
       ".brain-kit/",
-      "memoria/log.md#inteiro"
+      "memory/log.md#inteiro"
     ]
   }
 }

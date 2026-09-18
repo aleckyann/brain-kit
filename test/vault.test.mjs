@@ -47,8 +47,8 @@ test('isVaultRoot does not require okf_version, or any frontmatter at all, in th
 // --- findVaultRoot -----------------------------------------------------------
 
 test('findVaultRoot walks upward from a subdirectory and returns the vault root', () => {
-  const root = makeVault({ files: { 'index.md': '', 'pessoas/joao.md': '' } });
-  assert.equal(findVaultRoot(join(root, 'pessoas')), root);
+  const root = makeVault({ files: { 'index.md': '', 'people/ana.md': '' } });
+  assert.equal(findVaultRoot(join(root, 'people')), root);
 });
 
 test('findVaultRoot returns the root itself when started there', () => {
@@ -91,10 +91,15 @@ test("findVaultRoot never returns a directory above the user's home, even if one
 // findVaultRoot(startDir, home) takes an injectable home as an optional
 // second argument (defaulting to the real os.homedir()) so the boundary
 // can be probed hermetically, with no process.env mutation to restore.
-// These two pin down the exact edge the ordering bug above would miss: the
-// boundary must be enforced before isVaultRoot ever gets to accept a
-// candidate, on the very first iteration, not only once the walk has
-// climbed there from below.
+// The test right below starts exactly at that injected home, which is
+// itself not a vault, and pins down the simple floor case: the walk must
+// stop there and never climb past it to the vault-looking fakeRoot one
+// level up. It does not by itself catch an ordering bug, because
+// isVaultRoot(home) is false there either way, before or after the
+// boundary is checked. The test after it starts one level above home, at
+// a directory that IS a vault, which is what actually forces the boundary
+// to be checked before a vault-looking candidate gets accepted: see its
+// own comment below.
 
 test('findVaultRoot returns null when started exactly at an injected home that is not itself a vault, even though its parent looks like one', () => {
   const fakeRoot = mkdtempSync(join(tmpdir(), 'brain-kit-boundary2-'));
@@ -122,25 +127,36 @@ test("findVaultRoot returns null when started at an injected home's parent, even
 
 // --- walkVault: basic listing --------------------------------------------------
 
+// Every other fixture in this file spells the taxonomy in English
+// (people/, projects/, decisions/, pending/, core/, memory/, attachments/)
+// because the kit's whole claim is that the taxonomy is configuration, not
+// something the engine hard-codes. This one test is the deliberate,
+// single exception: it keeps the original vault's own Portuguese folder
+// names (nucleo, pessoas) to prove that claim rather than just assert it,
+// showing that walkVault's core listing and sorting behaviour does not
+// care what the folders are called. Chosen here because this is
+// walkVault's most basic contract, with no symlink or ignore_paths
+// machinery entangled, so the proof stays legible as one clear
+// demonstration instead of looking like a leftover.
 test('walkVault returns every markdown file as root-relative forward-slash paths, sorted', () => {
   const root = makeVault({
     files: {
       'index.md': '',
       'nucleo/a.md': '',
-      'pessoas/joao.md': '',
-      'pessoas/maria.md': '',
+      'pessoas/ana.md': '',
+      'pessoas/note.md': '',
     },
   });
   const config = loadConfig(root);
-  const expected = ['index.md', 'nucleo/a.md', 'pessoas/joao.md', 'pessoas/maria.md'].sort();
+  const expected = ['index.md', 'nucleo/a.md', 'pessoas/ana.md', 'pessoas/note.md'].sort();
   assert.deepEqual(walkVault(root, config), expected);
 });
 
 test('walkVault never returns a directory, only files', () => {
-  const root = makeVault({ files: { 'index.md': '', 'pessoas/joao.md': '' } });
+  const root = makeVault({ files: { 'index.md': '', 'people/ana.md': '' } });
   const config = loadConfig(root);
   const result = walkVault(root, config);
-  assert.ok(!result.includes('pessoas'), 'a directory must never appear in the walk result');
+  assert.ok(!result.includes('people'), 'a directory must never appear in the walk result');
   for (const relPath of result) {
     assert.ok(statSync(join(root, relPath)).isFile(), `${relPath} must be a file`);
   }
@@ -153,15 +169,15 @@ test('walkVault always skips dot-entries, at any depth, whatever the configurati
     files: {
       'index.md': '',
       '.brain-kit/prompts/curate.md': '',
-      'pessoas/.hidden/joao.md': '',
-      'pessoas/visible.md': '',
+      'people/.hidden/ana.md': '',
+      'people/visible.md': '',
     },
   });
   const config = loadConfig(root);
   const result = walkVault(root, config);
   assert.ok(!result.includes('.brain-kit/prompts/curate.md'));
   assert.ok(!result.some((p) => p.includes('/.hidden/')));
-  assert.ok(result.includes('pessoas/visible.md'));
+  assert.ok(result.includes('people/visible.md'));
   assert.ok(result.includes('index.md'));
 });
 
@@ -170,14 +186,14 @@ test('walkVault always skips node_modules, at any depth, whatever the configurat
     files: {
       'index.md': '',
       'node_modules/pkg/readme.md': '',
-      'nucleo/node_modules/nested.md': '',
-      'nucleo/keep.md': '',
+      'core/node_modules/nested.md': '',
+      'core/keep.md': '',
     },
   });
   const config = loadConfig(root);
   const result = walkVault(root, config);
   assert.ok(!result.some((p) => p.split('/').includes('node_modules')));
-  assert.ok(result.includes('nucleo/keep.md'));
+  assert.ok(result.includes('core/keep.md'));
 });
 
 test('dot-entries and node_modules are skipped even with no config argument at all', () => {
@@ -204,17 +220,17 @@ test('ALWAYS_IGNORED is frozen so no other module can add or remove an entry', (
 
 test('walkVault skips every prefix listed in validate.ignore_paths, matched against the root-relative path', () => {
   const root = makeVault({
-    config: { validate: { ignore_paths: ['drafts/', 'pendencias/rascunho.md'] } },
+    config: { validate: { ignore_paths: ['drafts/', 'pending/draft.md'] } },
     files: {
       'index.md': '',
       'drafts/wip.md': '',
       'drafts/nested/also-wip.md': '',
-      'pendencias/rascunho.md': '',
-      'pendencias/follow-ups.md': '',
+      'pending/draft.md': '',
+      'pending/follow-ups.md': '',
     },
   });
   const config = loadConfig(root);
-  const expected = ['index.md', 'pendencias/follow-ups.md'].sort();
+  const expected = ['index.md', 'pending/follow-ups.md'].sort();
   assert.deepEqual(walkVault(root, config), expected);
 });
 
@@ -246,15 +262,15 @@ test('a configured ignore prefix that does not exist in the vault is not an erro
 // --- walkVault: { all: true } ---------------------------------------------------
 
 test('by default walkVault returns only markdown files', () => {
-  const root = makeVault({ files: { 'index.md': '', 'anexos/plano.pdf': 'x', 'notas.txt': 'x' } });
+  const root = makeVault({ files: { 'index.md': '', 'attachments/plan.pdf': 'x', 'notes.txt': 'x' } });
   const config = loadConfig(root);
   assert.deepEqual(walkVault(root, config), ['index.md']);
 });
 
 test('walkVault returns every file, markdown or not, when called with { all: true }', () => {
-  const root = makeVault({ files: { 'index.md': '', 'anexos/plano.pdf': 'x', 'notas.txt': 'x' } });
+  const root = makeVault({ files: { 'index.md': '', 'attachments/plan.pdf': 'x', 'notes.txt': 'x' } });
   const config = loadConfig(root);
-  const expected = [CONFIG_FILENAME, 'index.md', 'anexos/plano.pdf', 'notas.txt'].sort();
+  const expected = [CONFIG_FILENAME, 'index.md', 'attachments/plan.pdf', 'notes.txt'].sort();
   assert.deepEqual(walkVault(root, config, { all: true }), expected);
 });
 
@@ -300,39 +316,39 @@ test('two symbolic links pointing at each other are both skipped without throwin
 });
 
 test('a symbolic link inside the vault to a file inside the vault is included, at its own path', () => {
-  const root = makeVault({ files: { 'index.md': '', 'nucleo/real.md': 'real content' } });
-  mkdirSync(join(root, 'pessoas'), { recursive: true });
-  symlinkSync(join(root, 'nucleo', 'real.md'), join(root, 'pessoas', 'alias.md'), 'file');
+  const root = makeVault({ files: { 'index.md': '', 'core/real.md': 'real content' } });
+  mkdirSync(join(root, 'people'), { recursive: true });
+  symlinkSync(join(root, 'core', 'real.md'), join(root, 'people', 'alias.md'), 'file');
 
   const config = loadConfig(root);
-  const expected = ['index.md', 'nucleo/real.md', 'pessoas/alias.md'].sort();
+  const expected = ['index.md', 'core/real.md', 'people/alias.md'].sort();
   assert.deepEqual(walkVault(root, config), expected);
 });
 
 test('a symbolic link inside the vault to a directory inside the vault is not traversed', () => {
-  const root = makeVault({ files: { 'index.md': '', 'pessoas/joao.md': '' } });
-  symlinkSync(join(root, 'pessoas'), join(root, 'atalho'), 'dir');
+  const root = makeVault({ files: { 'index.md': '', 'people/ana.md': '' } });
+  symlinkSync(join(root, 'people'), join(root, 'shortcut'), 'dir');
 
   const config = loadConfig(root);
   const result = walkVault(root, config);
-  assert.ok(result.includes('pessoas/joao.md'));
-  assert.ok(!result.some((p) => p.startsWith('atalho')), `must not traverse the symlinked directory: ${result.join(', ')}`);
+  assert.ok(result.includes('people/ana.md'));
+  assert.ok(!result.some((p) => p.startsWith('shortcut')), `must not traverse the symlinked directory: ${result.join(', ')}`);
 });
 
 test('a self-referential symbolic link does not make walkVault recurse forever', () => {
-  const root = makeVault({ files: { 'index.md': '', 'pessoas/joao.md': '' } });
-  symlinkSync(join(root, 'pessoas'), join(root, 'pessoas', 'loop'), 'dir');
+  const root = makeVault({ files: { 'index.md': '', 'people/ana.md': '' } });
+  symlinkSync(join(root, 'people'), join(root, 'people', 'loop'), 'dir');
 
   const config = loadConfig(root);
   const result = walkVault(root, config); // must return, not hang
-  assert.ok(result.includes('pessoas/joao.md'));
+  assert.ok(result.includes('people/ana.md'));
   assert.ok(!result.some((p) => p.includes('loop')));
 });
 
 // --- relativePosix ---------------------------------------------------------------
 
 test('relativePosix returns the path relative to root, with forward slashes', () => {
-  const root = makeVault({ files: { 'pessoas/joao.md': '' } });
-  assert.equal(relativePosix(root, join(root, 'pessoas', 'joao.md')), 'pessoas/joao.md');
+  const root = makeVault({ files: { 'people/ana.md': '' } });
+  assert.equal(relativePosix(root, join(root, 'people', 'ana.md')), 'people/ana.md');
   assert.equal(relativePosix(root, join(root, 'index.md')), 'index.md');
 });
