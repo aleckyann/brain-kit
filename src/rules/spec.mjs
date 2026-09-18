@@ -53,6 +53,43 @@
 // house ruler, and only for files under the configured templates
 // directory. The spec ruler has no notion of a template at all.
 //
+// Conformance levels (fix round 2, reading section 11 of the format
+// itself rather than the plan's earlier guess at it): the specification
+// defines exactly two tiers, not one. Section 11 makes only three things
+// conformance: every non-reserved markdown file carries a parseable
+// frontmatter block; every frontmatter block carries a non-empty type;
+// and the reserved filenames follow their own sections. Everything in
+// sections 5 to 10, the trust and lifecycle fields this file otherwise
+// checks, is what a producer SHOULD do, not what makes a bundle
+// conformant. Flattening the two into one severity would tell a person
+// whose vault reports fifteen findings that they have a broken bundle
+// when they may only have an opinionated one, which is the wrong
+// direction to be wrong in: it is the answer that gets the tool switched
+// off. Every rule object below carries a `level` of 'must' (type-required
+// directly from section 11; index-no-frontmatter and log-format through
+// it, since section 11 defers to their own sections for the reserved
+// filenames) or 'should' (the five trust and lifecycle rules), and every
+// finding carries the same level its rule does.
+//
+// Section 11 also settles two questions this file no longer has to guess
+// at. First, quoted here rather than left as an inference: consumers
+// "MUST treat a bare `verified` mapping as a one-element list", which is
+// exactly what readVerifiedEvents below already did on this project's
+// own judgment before the citation existed. Second: consumers "MUST NOT
+// reject a concept for an unknown `type` value", which is why
+// type-required below checks only that `type` is non-empty and never
+// enumerates what it may be; a closed list of allowed types is a house
+// rule (frontmatter.type_enum, task 5), and never belongs here.
+//
+// Section 5, quoted rather than inferred: "Every timestamp-valued key in
+// OKF is an ISO 8601 datetime with an explicit UTC offset." This binds
+// generated.at and stale_after alike (fix round 2): a house rule cannot
+// widen a form the specification itself fixes to one, so stale_after no
+// longer accepts a plain date here at all, and a vault mid-migration off
+// plain dates declares that deviation to the house ruler instead
+// (validate.timestamp_deviation, task 5), which can downgrade a `should`
+// finding to a warning and can never touch a `must`.
+//
 // Line numbers: a rule that is fundamentally about a whole FIELD (every
 // rule here except log-format, which is about heading LINES) reports the
 // line of that field's own top-level "key:" line when the key exists, and
@@ -153,12 +190,6 @@ function isValidIsoDatetimeWithOffset(value) {
   return Number(zone.slice(1, 3)) <= 23 && Number(zone.slice(4, 6)) <= 59;
 }
 
-// A plain date OR a datetime with an offset: the shape stale_after alone
-// accepts at the spec level (narrowing to one is a house rule).
-function isValidStaleAfter(value) {
-  return isValidIsoDate(value) || isValidIsoDatetimeWithOffset(value);
-}
-
 // --- fenced code blocks, skipped before log-format reads headings -------------
 //
 // A "## " line inside a fenced code block is an example, not a heading,
@@ -223,7 +254,11 @@ function frontmatterKeyLine(frontmatter, key) {
 // readMapping recognises only a single mapping and returns undefined for
 // a list. Trying entries first and falling back to a single mapping,
 // normalised into a one-element list, means the rule below never has to
-// know which spelling a given note chose.
+// know which spelling a given note chose. Section 11 of the format
+// ratifies this in its own words: consumers "MUST treat a bare `verified`
+// mapping as a one-element list", which this function already did as an
+// engineering judgment (reviewed and approved in fix round 1) before that
+// citation was found; it is a quotation now, not an inference.
 function readVerifiedEvents(frontmatter) {
   const asEntries = readEntries(frontmatter, 'verified');
   if (asEntries === null) return null;
@@ -247,10 +282,16 @@ function looksLikeUnterminatedFrontmatter(text) {
 }
 
 // --- type-required (4.1) -------------------------------------------------------
+//
+// Non-empty, never enumerated: section 11 says consumers "MUST NOT reject
+// a concept for an unknown type value", so this check stops at "is type
+// here and is it non-empty" on purpose. A closed list of allowed types
+// belongs to the house ruler's frontmatter.type_enum (task 5), never here.
 
 const typeRequired = {
   id: 'type-required',
   section: '4.1',
+  level: 'must',
   check(files, context) {
     const findings = [];
     for (const file of files) {
@@ -302,6 +343,7 @@ function isCommentLine(trimmedLine) {
 const indexNoFrontmatter = {
   id: 'index-no-frontmatter',
   section: '8, 12',
+  level: 'must',
   check(files, context) {
     const findings = [];
     for (const file of files) {
@@ -347,6 +389,7 @@ const indexNoFrontmatter = {
 const logFormat = {
   id: 'log-format',
   section: '9',
+  level: 'must',
   check(files, context) {
     const findings = [];
     for (const file of files) {
@@ -389,17 +432,18 @@ const logFormat = {
 // --- generated-actor (5.2) -------------------------------------------------------
 //
 // generated.at, when present, must carry an explicit offset (a bare "Z"
-// counts as one). This is the format's own text, not a house preference
-// quietly promoted to a specification badge: unlike stale_after, whose
-// own section accepts a plain date as an alternative to a datetime with
-// an offset, section 5.2 is not offering generated.at that same choice,
-// so this rule declares the requirement in its own finding message
+// counts as one). Section 5 of the format states this outright: "Every
+// timestamp-valued key in OKF is an ISO 8601 datetime with an explicit
+// UTC offset." That is a should-level trust-signal requirement, not a
+// house preference quietly promoted to a specification badge, so this
+// rule declares it in its own finding message and cites the section,
 // rather than leaving it implicit in which regex happened to be reused
 // from the original validator's port.
 
 const generatedActor = {
   id: 'generated-actor',
   section: '5.2',
+  level: 'should',
   check(files, context) {
     const findings = [];
     for (const file of files) {
@@ -419,7 +463,7 @@ const generatedActor = {
         findings.push({
           file,
           line,
-          message: `generated.at "${generated.at}" is not an ISO 8601 datetime with an offset, which section 5.2 requires`,
+          message: `generated.at "${generated.at}" is not an ISO 8601 datetime with an explicit UTC offset, which section 5 requires for every timestamp-valued key`,
         });
       }
     }
@@ -432,6 +476,7 @@ const generatedActor = {
 const verifiedEvents = {
   id: 'verified-events',
   section: '5.2',
+  level: 'should',
   check(files, context) {
     const findings = [];
     for (const file of files) {
@@ -470,6 +515,7 @@ const verifiedEvents = {
 const statusEnum = {
   id: 'status-enum',
   section: '5.4',
+  level: 'should',
   check(files, context) {
     const findings = [];
     for (const file of files) {
@@ -489,10 +535,25 @@ const statusEnum = {
 };
 
 // --- stale-after-format (5.5) ------------------------------------------------------
+//
+// Fix round 2: a plain date used to be accepted here as an alternative to
+// a datetime with an offset, on the assumption that narrowing to one
+// form was a house-level choice. Reading section 5 directly settled this
+// the other way: "Every timestamp-valued key in OKF is an ISO 8601
+// datetime with an explicit UTC offset" is the format's own text, with
+// no alternative on offer, so a plain date was leniency wearing a
+// specification badge, the precise confusion this module exists to
+// prevent. stale_after is a timestamp-valued key like any other; a plain
+// date is now a finding here, full stop. A vault mid-migration off plain
+// dates declares that deviation to the house ruler instead
+// (validate.timestamp_deviation, task 5), which downgrades this
+// should-level finding to a warning for that vault and can never touch a
+// must-level one.
 
 const staleAfterFormat = {
   id: 'stale-after-format',
   section: '5.5',
+  level: 'should',
   check(files, context) {
     const findings = [];
     for (const file of files) {
@@ -503,11 +564,11 @@ const staleAfterFormat = {
       const line = frontmatterKeyLine(frontmatter, 'stale_after');
       if (staleAfter === undefined) {
         findings.push({ file, line, message: 'stale_after is present but its shape could not be read (see PARSER_LIMITS in src/frontmatter.mjs)' });
-      } else if (!isValidStaleAfter(staleAfter)) {
+      } else if (!isValidIsoDatetimeWithOffset(staleAfter)) {
         findings.push({
           file,
           line,
-          message: `stale_after "${staleAfter}" must be either a date (YYYY-MM-DD) or a datetime with an offset; both are accepted here, and narrowing to one is a house rule, not a spec rule`,
+          message: `stale_after "${staleAfter}" must be an ISO 8601 datetime with an explicit UTC offset; section 5 requires this for every timestamp-valued key, so a plain date is no longer accepted here`,
         });
       }
     }
@@ -520,6 +581,7 @@ const staleAfterFormat = {
 const sourcesResource = {
   id: 'sources-resource',
   section: '5.1',
+  level: 'should',
   check(files, context) {
     const findings = [];
     for (const file of files) {
@@ -555,20 +617,35 @@ export const SPEC_RULES = Object.freeze([
 
 // Runs every rule over `files`, in order, and returns their findings
 // flattened into one array, each stamped with `ruler: 'spec'` plus the
-// id and section carried by the rule that produced it. A finding is
-// identified by the PAIR of ruler and id, never by id alone: the house
-// ruler defines its own stale-after-format, on purpose, for the same
-// field under a stricter, vault-chosen setting, and a consumer that
-// filtered on id alone would silence both rulers' versions of that rule
-// at once. Rules are data (SPEC_RULES is a plain array of { id, section,
-// check }), and this loop is the entire runner: no rule is special-cased,
-// so a future suppression list can name one rule by id without this
-// function ever having to change.
+// id, section and level carried by the rule that produced it. A finding
+// is identified by the PAIR of ruler and id, never by id alone: this
+// project's own plan briefly had the house ruler redefine stale_after
+// under its own id, before section 5 turned out to fix the timestamp
+// form outright and that idea was dropped, so no id currently collides
+// across the two rulers, but a rule filtering on id alone would still be
+// one rename away from silencing the wrong ruler's finding, which is
+// exactly the fragility stamping `ruler` on every finding removes.
+// `level` ('must' or `should`, never computed here, always the rule's
+// own) lets a consumer group or filter by conformance tier without
+// re-deriving it, so a report can put every must-level finding ahead of
+// every should-level one instead of treating fifteen departures from
+// guidance as fifteen broken bundles. Rules are data (SPEC_RULES is a
+// plain array of { id, section, level, check }), and this loop is the
+// entire runner: no rule is special-cased, so a future suppression list
+// can name one rule by id without this function ever having to change.
 export function runSpecRules(files, context) {
   const findings = [];
   for (const rule of SPEC_RULES) {
     for (const partial of rule.check(files, context)) {
-      findings.push({ ruler: 'spec', id: rule.id, section: rule.section, file: partial.file, line: partial.line, message: partial.message });
+      findings.push({
+        ruler: 'spec',
+        id: rule.id,
+        section: rule.section,
+        level: rule.level,
+        file: partial.file,
+        line: partial.line,
+        message: partial.message,
+      });
     }
   }
   return findings;

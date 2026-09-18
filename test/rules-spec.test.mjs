@@ -178,7 +178,7 @@ test('a vault where every note satisfies every rule, the root index carries no f
 
 // --- SPEC_RULES and runSpecRules: shape and the ruler+id identity -------------
 
-test('SPEC_RULES is a plain array of eight rule objects, each with a stable id, a section string, and a check function', () => {
+test('SPEC_RULES is a plain array of eight rule objects, each with a stable id, a section string, a must-or-should level, and a check function', () => {
   assert.ok(Array.isArray(SPEC_RULES));
   assert.deepEqual(
     SPEC_RULES.map((rule) => rule.id),
@@ -197,8 +197,48 @@ test('SPEC_RULES is a plain array of eight rule objects, each with a stable id, 
     assert.equal(typeof rule.id, 'string');
     assert.equal(typeof rule.section, 'string');
     assert.ok(rule.section.length > 0);
+    assert.ok(['must', 'should'].includes(rule.level), `${rule.id} has an unexpected level: ${rule.level}`);
     assert.equal(typeof rule.check, 'function');
   }
+});
+
+// Section 11 makes exactly three things conformance (a parseable
+// frontmatter block, a non-empty type, and the reserved filenames
+// following their own sections): the three rules that speak for those
+// are 'must', and the five trust and lifecycle rules are 'should'. Pinned
+// down as its own data-driven assertion, since the loop above only
+// checks that a level is one of the two valid strings, not which rule
+// carries which one.
+test('type-required, index-no-frontmatter and log-format are must-level; the five trust and lifecycle rules are should-level', () => {
+  const levelById = Object.fromEntries(SPEC_RULES.map((rule) => [rule.id, rule.level]));
+  assert.deepEqual(
+    { ...levelById },
+    {
+      'type-required': 'must',
+      'index-no-frontmatter': 'must',
+      'log-format': 'must',
+      'generated-actor': 'should',
+      'verified-events': 'should',
+      'status-enum': 'should',
+      'stale-after-format': 'should',
+      'sources-resource': 'should',
+    },
+  );
+});
+
+test('every finding carries the same level its rule does', () => {
+  const files = {
+    ...cleanVaultFiles(),
+    'people/must-violation.md': 'no frontmatter at all, a must-level problem\n',
+    'people/should-violation.md': CLEAN_NOTE.replace('status: stable # confirmed after the latest review', 'status: pending'),
+  };
+  const findings = findingsFor(files);
+  const must = findings.filter((f) => isSpec('type-required')(f) && f.file === 'people/must-violation.md');
+  const should = findings.filter((f) => isSpec('status-enum')(f) && f.file === 'people/should-violation.md');
+  assert.equal(must.length, 1);
+  assert.equal(must[0].level, 'must');
+  assert.equal(should.length, 1);
+  assert.equal(should[0].level, 'should');
 });
 
 test('every finding carries ruler "spec" explicitly and the full Finding shape, since a finding is identified by the (ruler, id) pair and never by id alone', () => {
@@ -207,7 +247,7 @@ test('every finding carries ruler "spec" explicitly and the full Finding shape, 
   assert.ok(findings.length > 0, 'the fixture must produce at least one real finding for this assertion to mean anything');
   for (const finding of findings) {
     assert.equal(finding.ruler, 'spec');
-    assert.deepEqual(Object.keys(finding).sort(), ['file', 'id', 'line', 'message', 'ruler', 'section']);
+    assert.deepEqual(Object.keys(finding).sort(), ['file', 'id', 'level', 'line', 'message', 'ruler', 'section']);
   }
 });
 
@@ -637,28 +677,29 @@ test('status-enum does not fire when status is absent, but does fire, against PA
 
 // --- stale-after-format ----------------------------------------------------------
 
-test('stale-after-format accepts a plain date and a datetime with an offset equally, since narrowing to one is a house rule and not a spec rule', () => {
-  // This is the case that matters most: the original validator required a
-  // plain YYYY-MM-DD date under a [spec] label, while the canonical format
-  // accepts a datetime with an offset too, so a vault that followed the
-  // specification was failed by a ruler that claimed to speak for it.
+// Fix round 2: section 5 of the format states "Every timestamp-valued
+// key in OKF is an ISO 8601 datetime with an explicit UTC offset", with
+// no alternative on offer, so the plan's earlier "a plain date is
+// accepted too" was leniency wearing a specification badge. This is
+// still the case that matters most, in the opposite direction from
+// round 1: a datetime with an offset must pass (the original validator
+// failed exactly this under a [spec] label), and a plain date, once
+// accepted here, must now be a finding that says the format requires
+// the offset, not merely that the shape is unrecognised.
+test('stale-after-format requires an explicit UTC offset per section 5: a datetime with an offset passes, a plain date no longer does', () => {
   // people/ana.md, in cleanVaultFiles(), already carries the offset form
-  // (2026-12-18T00:00:00-03:00) and is asserted clean by the baseline test;
-  // this test additionally proves the plain-date form is accepted too.
+  // (2026-12-18T00:00:00-03:00) and is asserted clean by the baseline test.
   const files = {
     ...cleanVaultFiles(),
     'people/date-only.md': CLEAN_NOTE.replace('stale_after: 2026-12-18T00:00:00-03:00', 'stale_after: 2026-12-18'),
-    // Paired right here, not only in the dedicated "flags a value that is
-    // neither..." test below: a stub that never reports anything would
-    // otherwise satisfy this whole test on the two accepted forms alone.
-    'people/bad-format.md': CLEAN_NOTE.replace('stale_after: 2026-12-18T00:00:00-03:00', 'stale_after: not-a-date-at-all'),
   };
-  const findings = findingsFor(files);
-  assert.deepEqual(findings.filter((f) => isSpec('stale-after-format')(f) && f.file === 'people/date-only.md'), []);
-  assert.equal(findings.filter((f) => isSpec('stale-after-format')(f) && f.file === 'people/bad-format.md').length, 1);
+  const findings = findingsFor(files).filter((f) => isSpec('stale-after-format')(f) && f.file === 'people/date-only.md');
+  assert.equal(findings.length, 1);
+  assert.match(findings[0].message, /explicit UTC offset/);
+  assert.match(findings[0].message, /section 5/);
 });
 
-test('stale-after-format flags a value that is neither a plain date nor a datetime with an offset, including a placeholder-looking value, since the spec ruler has no notion of templates', () => {
+test('stale-after-format flags any value that is not a datetime with an explicit UTC offset, including a placeholder-looking value, since the spec ruler has no notion of templates', () => {
   // Placeholder exemption is a house-only concept (a documented defect of
   // the original validator this port deliberately does not reproduce): it
   // applies only under the configured templates directory, in the house
@@ -682,12 +723,17 @@ test('stale-after-format flags a value that is neither a plain date nor a dateti
 // calendar-valid neighbour that differs by the smallest possible margin
 // (a leap year for the 29th of February, a 30-day month for the 30th),
 // so this is checking the calendar, not merely rejecting big numbers.
-test('stale-after-format checks the calendar, not just the shape: a real date with impossible components is flagged, and its calendar-valid neighbour is not', () => {
+// Fix round 2 changed the accepted SHAPE (a datetime with an offset
+// only, no more plain date), but the calendar check underneath it is
+// the same one fix round 1 added, so every case here now carries the
+// offset that stale_after requires, isolating "is the calendar right"
+// from "is the offset there" instead of conflating the two.
+test('stale-after-format checks the calendar, not just the shape: a real datetime with impossible components is flagged, and its calendar-valid neighbour is not', () => {
   const impossible = {
-    '29 February in a non-leap year': 'stale_after: 2026-02-29',
-    '31st of April': 'stale_after: 2026-04-31',
-    '13th month': 'stale_after: 2026-13-01',
-    '99th day': 'stale_after: 2026-01-99',
+    '29 February in a non-leap year': 'stale_after: 2026-02-29T00:00:00Z',
+    '31st of April': 'stale_after: 2026-04-31T00:00:00Z',
+    '13th month': 'stale_after: 2026-13-01T00:00:00Z',
+    '99th day': 'stale_after: 2026-01-99T00:00:00Z',
   };
   for (const [label, replacement] of Object.entries(impossible)) {
     const files = { ...cleanVaultFiles(), 'people/bad.md': CLEAN_NOTE.replace('stale_after: 2026-12-18T00:00:00-03:00', replacement) };
@@ -696,11 +742,11 @@ test('stale-after-format checks the calendar, not just the shape: a real date wi
   }
 
   // 2028 is a leap year: the 29th of February is a real, calendar-valid date.
-  const leapYear = { ...cleanVaultFiles(), 'people/leap.md': CLEAN_NOTE.replace('stale_after: 2026-12-18T00:00:00-03:00', 'stale_after: 2028-02-29') };
+  const leapYear = { ...cleanVaultFiles(), 'people/leap.md': CLEAN_NOTE.replace('stale_after: 2026-12-18T00:00:00-03:00', 'stale_after: 2028-02-29T00:00:00Z') };
   assert.deepEqual(findingsFor(leapYear).filter((f) => isSpec('stale-after-format')(f) && f.file === 'people/leap.md'), []);
 
   // April has 30 days: the 30th is real, only the 31st is impossible.
-  const thirtyApril = { ...cleanVaultFiles(), 'people/april30.md': CLEAN_NOTE.replace('stale_after: 2026-12-18T00:00:00-03:00', 'stale_after: 2026-04-30') };
+  const thirtyApril = { ...cleanVaultFiles(), 'people/april30.md': CLEAN_NOTE.replace('stale_after: 2026-12-18T00:00:00-03:00', 'stale_after: 2026-04-30T00:00:00Z') };
   assert.deepEqual(findingsFor(thirtyApril).filter((f) => isSpec('stale-after-format')(f) && f.file === 'people/april30.md'), []);
 });
 
