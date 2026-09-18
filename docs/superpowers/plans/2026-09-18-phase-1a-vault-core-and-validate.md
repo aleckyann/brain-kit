@@ -378,6 +378,24 @@ Behaviour:
 
 ---
 
+### Task 8: Say what the kit claims, in the language it claims
+
+**Files:** `src/rules/spec.mjs`, `src/rules/house.mjs`, `src/commands/validate.mjs`, both `lang/*/messages.json`, `test/fixtures/config/valid.json`, a new `test/fixtures/config/valid-pt-BR.json`, `test/fixtures/config/with-machine-key.json`, `test/rules-house.test.mjs`, and their tests.
+
+This task exists because the plan states rules the code does not yet keep, and a claim the code does not keep is the defect this whole slice has spent its rounds removing, turned on the project itself.
+
+- **A finding carries a message KEY and PARAMS, never a formed sentence.** Today every rule builds an English string, so the report frames its sections in the vault's language and writes its findings in English underneath. That is not bilingual, it is broken, and the plan already says so. Both packs get every key. The rule modules stop containing user-facing prose entirely, which also removes the last place a Portuguese phrase could hide in English-only source, and there are two there now.
+- **The two configuration fixtures become coherent.** One is a generic adopter in English. A new sibling is deliberately and wholly pt-BR, labelled in a comment as existing to prove the configuration accepts non-English labels, file names and column headings, which is a claim the kit makes and has never tested. Today there is one mixed fixture carrying a real household's shape: its language and timezone, its curator and briefing signatures, and health words among its privacy exclusions.
+- **Every stray Portuguese string leaves source and tests.** Twelve occurrences across five files at the time of writing, including two in shipped source. A previous round reported cleaning one of these files and did not, so this task greps and reports the count rather than asserting a sweep.
+- **The literal em dash in the forbidden-characters list becomes its JSON escape.** Identical after parsing, keeps the file ASCII, and removes a standing violation from the place later fixtures copy.
+- **A finding with no line number prints its file alone**, not a bare hyphen where a number would be.
+
+- [ ] **Step 1:** write the failing tests first, including one asserting that no file under `src/` contains a non-ASCII byte or a word from a fixed Portuguese list, so this class cannot return silently.
+- [ ] **Step 2:** watch them fail, implement, watch them pass.
+- [ ] **Step 3:** commit with prefix `refactor:`.
+
+---
+
 ### Task 7: Agreement with the original validator
 
 **Files:**
