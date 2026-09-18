@@ -29,7 +29,7 @@ test('no tracked text file contains a secret-looking token', () => {
   for (const file of trackedTextFiles()) {
     const text = readFileSync(join(KIT_ROOT, file), 'utf8');
     for (const pattern of SECRET_PATTERNS) {
-      if (file === 'test/no-leak.test.mjs' || file === '.githooks/pre-push' || file === 'docs/superpowers/plans/2026-09-18-phase-0-foundation.md') continue; // they define the patterns (this plan doc quotes the hook and test source verbatim)
+      if (file === 'test/no-leak.test.mjs' || file === '.githooks/pre-push' || file === 'test/pre-push-hook.test.mjs' || file === 'docs/superpowers/plans/2026-09-18-phase-0-foundation.md') continue; // they define or exercise the patterns as fixtures/docs, not real leaks
       assert.doesNotMatch(text, pattern, `${file} matches ${pattern}`);
     }
   }
