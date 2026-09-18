@@ -17,7 +17,11 @@ test('package.json declares no runtime or dev dependencies', () => {
 test('package is ESM, targets Node 24 and exposes the brain-kit binary', () => {
   assert.equal(pkg.type, 'module');
   assert.equal(pkg.engines.node, '>=24');
-  assert.equal(pkg.bin['brain-kit'], './bin/brain-kit.mjs');
+  assert.equal(pkg.bin['brain-kit'], 'bin/brain-kit.mjs');
+  // the npm name differs from the command name because the registry refused
+  // brain-kit as too similar to an existing package
+  assert.equal(pkg.name, 'second-brain-kit');
+  assert.deepEqual(Object.keys(pkg.bin), ['brain-kit']);
 });
 
 test('the published tarball does not ship the internal superpowers docs', () => {

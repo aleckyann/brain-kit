@@ -47,7 +47,7 @@ git config user.email "aleckyann@gmail.com"
 
 ```json
 {
-  "name": "brain-kit",
+  "name": "second-brain-kit",
   "version": "0.0.1",
   "description": "Second brain kit: an OKF markdown vault curated by AI agents through pull requests, packaged as an npm CLI and a Claude Code plugin",
   "type": "module",
@@ -70,7 +70,7 @@ git config user.email "aleckyann@gmail.com"
     "claude-code-plugin"
   ],
   "bin": {
-    "brain-kit": "./bin/brain-kit.mjs"
+    "brain-kit": "bin/brain-kit.mjs"
   },
   "engines": {
     "node": ">=24"
@@ -2157,6 +2157,8 @@ Expected: `visibility: PUBLIC`, default branch `main`; a CI run appears. Wait fo
 
 ### Task 12: Reserve the npm name and final gate
 
+Note: the npm package name was forced to `second-brain-kit` by a registry rename on 18/09/2026; `brain-kit` stays the command, plugin and repository name.
+
 - [ ] **Step 1: Check npm login**
 
 Run: `npm whoami`
@@ -2167,14 +2169,14 @@ Expected: a username. If the output is `ENEEDAUTH`, STOP this task and ask the m
 ```bash
 npm pack --dry-run
 npm publish --access public
-npm view brain-kit version
+npm view second-brain-kit version
 ```
 Expected: `npm view` prints `0.0.1`.
 
 - [ ] **Step 3: Install from the registry in a clean directory**
 
 ```bash
-cd "$(mktemp -d)" && npx --yes brain-kit@0.0.1 --version
+cd "$(mktemp -d)" && npx --yes second-brain-kit@0.0.1 --version
 ```
 Expected: `0.0.1`.
 
@@ -2192,5 +2194,5 @@ git push origin v0.0.1
 - CI green on ubuntu and macos.
 - `claude --plugin-dir .` loads and `claude plugin validate --strict .` exits 0.
 - The pre-push gate refuses a commit containing a personal pattern (proven by `test/pre-push-hook.test.mjs` and by a manual attempt if desired).
-- `npm view brain-kit` shows `0.0.1`.
+- `npm view second-brain-kit` shows `0.0.1`.
 - `docs/incidents.md` has one entry per lesson with the date next to the rule, and contains no household term.

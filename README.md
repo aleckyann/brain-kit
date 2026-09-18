@@ -10,10 +10,15 @@ Your merge is the approval and the verification.
 
 brain-kit is one repository that is at the same time:
 
-- an npm package with a single executable, `brain-kit` (validator, PR loop, curator,
-  briefing pre-flight, scheduler templates, doctor);
+- an npm package, `second-brain-kit`, with a single executable, `brain-kit` (validator,
+  PR loop, curator, briefing pre-flight, scheduler templates, doctor);
 - a Claude Code plugin (skills, Stop hook, read-only subagent) that calls the same engine;
 - a plugin marketplace of one, so `claude plugin marketplace add aleckyann/brain-kit` works.
+
+The npm registry refused the name `brain-kit`: an unrelated package named `brainkit`
+already exists there, and the two were judged too similar. So the package is published
+as `second-brain-kit` (`npm install -g second-brain-kit`), while the repository, the
+plugin, the marketplace and the command you type afterwards are all `brain-kit`.
 
 The engine is Node.js 24 with zero runtime dependencies. The vault it generates is yours:
 markdown, YAML frontmatter and a declarative config file, nothing else.

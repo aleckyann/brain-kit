@@ -1,5 +1,5 @@
 {
-  "name": "brain-kit",
+  "name": "second-brain-kit",
   "version": "0.0.1",
   "description": "Second brain kit: an OKF markdown vault curated by AI agents through pull requests, packaged as an npm CLI and a Claude Code plugin",
   "type": "module",
@@ -22,7 +22,7 @@
     "claude-code-plugin"
   ],
   "bin": {
-    "brain-kit": "./bin/brain-kit.mjs"
+    "brain-kit": "bin/brain-kit.mjs"
   },
   "engines": {
     "node": ">=24"

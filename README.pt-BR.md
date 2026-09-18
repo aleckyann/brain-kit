@@ -10,10 +10,15 @@ agente de IA que o lê pelo índice, o alimenta todo dia a partir do seu própri
 
 O brain-kit é um repositório que é, ao mesmo tempo:
 
-- um pacote npm com um único executável, `brain-kit` (validador, loop de PR, curador,
-  pré-voo do briefing, templates de agendamento, doctor);
+- um pacote npm, `second-brain-kit`, com um único executável, `brain-kit` (validador,
+  loop de PR, curador, pré-voo do briefing, templates de agendamento, doctor);
 - um plugin do Claude Code (skills, hook Stop, subagente só de leitura) que chama o mesmo motor;
 - um marketplace de um plugin só, para `claude plugin marketplace add aleckyann/brain-kit` funcionar.
+
+O registro do npm recusou o nome `brain-kit`: já existe lá um pacote sem relação chamado
+`brainkit`, e os dois foram julgados parecidos demais. Por isso o pacote é publicado como
+`second-brain-kit` (`npm install -g second-brain-kit`), enquanto o repositório, o plugin,
+o marketplace e o comando digitado depois são todos `brain-kit`.
 
 O motor é Node.js 24 sem dependência de runtime. O vault que ele gera é seu: markdown,
 frontmatter YAML e um arquivo de configuração declarativo, nada mais.
