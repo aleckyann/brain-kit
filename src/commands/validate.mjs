@@ -97,8 +97,14 @@ function isMarkdown(path) {
 // the regex reader cannot see at all, PARSER_LIMITS), and reporting it a
 // second time here as "not stale" or "stale" would both be a guess this
 // function has no basis for.
-function computeStale(files, context) {
-  const now = new Date();
+// `now` defaults to the real clock but is a real parameter (fix round
+// 2), not a fixed default folded away: the boundary this function draws
+// (a note stale ON the moment it expires, not only strictly after) is a
+// deliberate `<=`, and the only way to pin that exact tie down in a test
+// is to hand this function a `now` equal to some note's own stale_after
+// and confirm it comes back stale, alongside a note one millisecond
+// later that does not. Exported for exactly that test.
+export function computeStale(files, context, now = new Date()) {
   const stale = [];
   for (const file of files) {
     const { frontmatter } = splitFrontmatter(context.readFile(file));
@@ -135,16 +141,36 @@ function sortFindings(findings) {
 // `unexpected` rather than nowhere. Exported so this partition can be
 // tested directly, with a hand-built finding no real rule would ever
 // produce, without needing either ruler to actually misbehave first.
+//
+// Fix round 2: a `must` finding that ALSO carries `warning: true` is
+// its own kind of incoherence, one level up from a stray ruler/level
+// combination. `must` is the format's own conformance tier; `warning`
+// exists so a `should` finding can be downgraded for a vault mid
+// migration, and applyTimestampDeviation is written to never touch a
+// `must` finding at all. Today that guard is the only thing keeping the
+// two apart, in a file this module does not own; trusting it, rather
+// than also refusing the combination here, is the exact one-forgetful-
+// rule-away shape this partition already exists to close for a stray
+// level. A `must`+`warning` finding goes to `unexpected` too, for the
+// same reason: printed under "not conformant" while also being excused
+// from the exit code is a contradiction no reader should ever see on
+// screen, whichever file forgets to prevent it first.
 export function partitionFindings(combined) {
   const must = [];
   const should = [];
   const house = [];
   const unexpected = [];
   for (const finding of combined) {
-    if (finding.ruler === 'spec' && finding.level === 'must') must.push(finding);
-    else if (finding.ruler === 'spec' && finding.level === 'should') should.push(finding);
-    else if (finding.ruler === 'house' && finding.level === undefined) house.push(finding);
-    else unexpected.push(finding);
+    if (finding.ruler === 'spec' && finding.level === 'must') {
+      if (finding.warning) unexpected.push(finding);
+      else must.push(finding);
+    } else if (finding.ruler === 'spec' && finding.level === 'should') {
+      should.push(finding);
+    } else if (finding.ruler === 'house' && finding.level === undefined) {
+      house.push(finding);
+    } else {
+      unexpected.push(finding);
+    }
   }
   return { must, should, house, unexpected };
 }
@@ -221,10 +247,17 @@ function renderStaleSection(t, stale, onlyProblems) {
 // exists to prevent, on its own last line). `hasBlocking` is that
 // predicate, computed once by the caller and passed in rather than
 // re-derived here, so the two can never read it differently again.
-function renderVerdict(t, { must, should, house, unexpected, hasBlocking }) {
+function renderVerdict(t, { must, should, house, unexpected, stale, hasBlocking }) {
   if (unexpected.length > 0) return t('validate.verdict_unexpected');
   const totalKnown = must.length + should.length + house.length;
-  if (totalKnown === 0) return t('validate.verdict_clean');
+  if (totalKnown === 0) {
+    // Fix round 2: "no departures" was said unconditionally, even right
+    // below a list of stale notes this same report just printed. Those
+    // notes ARE a departure from the vault's own review cadence, only
+    // not a conformance or house one, so the clean verdict says that
+    // instead of flatly denying what is still on screen above it.
+    return stale.length > 0 ? t('validate.verdict_clean_with_stale') : t('validate.verdict_clean');
+  }
   if (!hasBlocking) return t('validate.verdict_warnings_only');
   if (must.length > 0) return t('validate.verdict_broken');
   return t('validate.verdict_blocking');
@@ -236,10 +269,10 @@ function renderReport(t, { must, should, house, unexpected, stale, onlyProblems,
   lines.push(...renderGroup(t, 'must', must, onlyProblems));
   lines.push(...renderGroup(t, 'should', should, onlyProblems));
   lines.push(...renderGroup(t, 'house', house, onlyProblems));
-  lines.push(t('validate.counts_summary', { must: must.length, should: should.length, house: house.length }));
+  lines.push(t('validate.counts_summary', { must: must.length, should: should.length, house: house.length, unexpected: unexpected.length }));
   lines.push('');
   lines.push(...renderStaleSection(t, stale, onlyProblems));
-  lines.push(renderVerdict(t, { must, should, house, unexpected, hasBlocking }));
+  lines.push(renderVerdict(t, { must, should, house, unexpected, stale, hasBlocking }));
   return `${lines.join('\n')}\n`;
 }
 
@@ -252,12 +285,18 @@ function renderReport(t, { must, should, house, unexpected, stale, onlyProblems,
 // or making either ruler misbehave first.
 export function buildReport(combined, stale, { onlyProblems = false, t }) {
   const { must, should, house, unexpected } = partitionFindings(combined);
-  // The SAME predicate drives the exit code and the verdict line: a
-  // `should` finding downgraded to a warning by applyTimestampDeviation
-  // never blocks; a `must` finding, which the downgrade can never touch,
-  // always does; staleness never even reaches `combined`, so it is
-  // structurally incapable of affecting this.
-  const hasBlocking = combined.some((f) => !f.warning);
+  // The SAME predicate drives the exit code and the verdict line,
+  // computed from the PARTITIONED buckets (fix round 2), not from raw
+  // `combined`: `unexpected` always blocks, whatever its own `warning`
+  // flag says, since a finding this command cannot classify is never
+  // something it can also vouch for as safe to ignore. `must` always
+  // blocks too (and, after the partition fix above, never carries
+  // `warning` at all: a `must` finding that did was already moved into
+  // `unexpected`). `should` blocks unless every one of its findings was
+  // downgraded; `house` has no `warning` concept and always blocks.
+  // Staleness never even reaches `combined`, so it is structurally
+  // incapable of affecting this.
+  const hasBlocking = unexpected.length > 0 || must.length > 0 || house.length > 0 || should.some((f) => !f.warning);
   const warnings = should.filter((f) => f.warning).length;
   const counts = { must: must.length, should: should.length, house: house.length, unexpected: unexpected.length, warnings };
   const json = { findings: combined, stale, counts, parserLimits: PARSER_LIMITS, rulers: RULERS, blocking: hasBlocking };

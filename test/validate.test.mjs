@@ -31,14 +31,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { walkVault } from '../src/vault.mjs';
-import { runValidate, buildReport, partitionFindings, makeReadFile } from '../src/commands/validate.mjs';
+import { runValidate, buildReport, partitionFindings, makeReadFile, computeStale } from '../src/commands/validate.mjs';
 import { makeVault } from './helpers/vault-fixture.mjs';
 
 const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
@@ -597,6 +597,26 @@ test('buildReport: an unrecognised finding says the run cannot vouch for conform
   assert.match(report.text, /Tool defect/);
 });
 
+// A fourth clause the round-2 audit found, alongside -h/second-arg/bad
+// config: `unexpected` is checked FIRST in renderVerdict, ahead of
+// `must`, and nothing had ever exercised both at once to prove that
+// order matters. When both are present, the honest verdict is
+// verdict_unexpected, not verdict_broken: a must finding sitting next
+// to one the tool cannot classify is not something this run can vouch
+// for as "definitely broken and nothing else in question", since the
+// tool's own confusion casts doubt wider than the one finding it is
+// actually about.
+test('buildReport: a must finding alongside an unexpected one still says "cannot vouch", not "broken"', () => {
+  const t = createTranslator('en');
+  const both = [
+    { ruler: 'spec', id: 'x', check: 'y', level: 'must', file: 'a.md', line: 1, messageKey: 'spec.type_required.empty', params: {} },
+    { ruler: 'spec', id: 'z', check: 'y', level: 'somehow-else', file: 'b.md', line: 1, messageKey: 'spec.type_required.empty', params: {} },
+  ];
+  const report = buildReport(both, [], { t });
+  assert.match(report.text, /cannot say whether the vault is conformant/);
+  assert.doesNotMatch(report.text, /not conformant to the format/);
+});
+
 // formatDefect (the tool-defect section's own line formatter) takes `t`
 // for exactly the same reason formatFinding does: this finding's own
 // message is a key and params too, and nothing else in this file's
@@ -708,4 +728,202 @@ test('runValidate calls walkVault exactly once for a clean vault too', async () 
   const code = await runValidate([root], io, t, spy);
   assert.equal(calls, 1);
   assert.equal(code, EXIT.OK);
+});
+
+// --- fix round 2 --------------------------------------------------------------
+//
+// The coordinator's own correction, first: moving the real walkVault
+// reference up into src/cli.mjs does not remove the ability to import a
+// walk back into this module, only the bypass FROM THIS MODULE'S
+// CURRENT SCOPE. A reviewer proved that by adding an aliased import and
+// a second call, and every existing test (including both walkVault-spy
+// tests above) still passed, because none of them can see an import
+// statement. The fix is the same shape the anti-leak test already uses
+// for the source tree: read the file's own text and assert about it
+// directly, so a future import, aliased or not, shows up as a line in a
+// diff AND as a failing test, not only as a line in a diff.
+
+test('src/commands/validate.mjs imports no walk at all, from any module, under any name', () => {
+  const source = readFileSync(join(KIT_ROOT, 'src', 'commands', 'validate.mjs'), 'utf8');
+  const importLines = source.split('\n').filter((line) => /^\s*import\b/.test(line));
+  // Catches `import { walkVault } from '...'` and any alias of it
+  // (`import { walkVault as w } from '...'` or `import { real as
+  // walkVault } from '...'`: either spelling puts the literal word
+  // "walkVault" on the import line), from ANY module path, not only
+  // '../vault.mjs' - a re-export from somewhere else would be just as
+  // much of a second reference.
+  const namedImportOfWalk = importLines.filter((line) => /\bwalkVault\b/.test(line));
+  assert.deepEqual(namedImportOfWalk, [], `found an import naming walkVault: ${namedImportOfWalk.join(' | ')}`);
+  // Catches `import * as anything from '.../vault.mjs'`, which would
+  // reach walkVault as a property (`vaultModule.walkVault(...)`)
+  // without the word "walkVault" ever appearing on the import line
+  // itself.
+  const namespaceImportOfVaultModule = importLines.filter((line) => /import\s*\*\s*as\s+\w+\s*from\s*['"][^'"]*\bvault\.mjs['"]/.test(line));
+  assert.deepEqual(namespaceImportOfVaultModule, [], `found a namespace import of vault.mjs: ${namespaceImportOfVaultModule.join(' | ')}`);
+});
+
+// --- a `must` finding carrying `warning` is incoherent, not house-clean-away --
+
+// The same one-forgetful-rule-away argument the round 1 partition fix
+// accepted for a stray level: today only applyTimestampDeviation
+// (src/rules/house.mjs) can ever set `warning`, and it is written to
+// only ever touch a `should` finding. Trusting that guard alone, rather
+// than also refusing the combination here, is exactly the shape that
+// argument was about. A `must`+`warning` finding must never reach `must`
+// (printed as non-conformant, excused from the count and the exit
+// code); it goes to `unexpected`, and it still blocks.
+test('a must-level finding that also carries `warning: true` is incoherent, and is routed to unexpected rather than trusted as a clean must finding', () => {
+  const t = createTranslator('en');
+  const bogus = [{ ruler: 'spec', id: 'x', check: 'y', level: 'must', file: 'f.md', line: 1, messageKey: 'spec.type_required.empty', params: {}, warning: true }];
+  const { must, unexpected } = partitionFindings(bogus);
+  assert.deepEqual(must, []);
+  assert.deepEqual(unexpected, bogus);
+
+  const report = buildReport(bogus, [], { t });
+  assert.equal(report.exitCode, EXIT.FAILURE); // still blocks, despite carrying warning: true
+  assert.equal(report.json.blocking, true);
+  assert.match(report.text, /cannot say whether the vault is conformant/);
+});
+
+// --- the tool-defect section is never hidden by --only-problems -------------
+
+// Nothing tested this before: the existing "unrecognised finding" test
+// never passed onlyProblems at all, so a regression that started
+// treating the defect section like the other three groups (hidden when
+// --only-problems is set, which for THIS section is never correct: it
+// is never "clean", it either has nothing to report or names a real
+// tool defect) would have shipped silently.
+test('the tool-defect section is shown even with --only-problems, unlike the three ordinary groups', () => {
+  const t = createTranslator('en');
+  const bogus = [{ ruler: 'spec', id: 'x', check: 'y', level: 'somehow-else', file: 'f.md', line: 1, messageKey: 'spec.type_required.empty', params: {} }];
+  const report = buildReport(bogus, [], { onlyProblems: true, t });
+  assert.match(report.text, /Tool defect/);
+});
+
+// --- staleness: an unparseable date makes no claim either way ----------------
+
+test('a note whose stale_after cannot be parsed at all is never listed as stale, but the malformed shape is still caught elsewhere', () => {
+  const GARBLED_STALE_AFTER = [
+    '---',
+    'type: person',
+    'description: a note whose stale_after is not a date at all',
+    'generated: { by: human:ana, at: 2026-09-18T09:30:00Z }',
+    'stale_after: not-a-date-at-all',
+    '---',
+    '# Garbled',
+    '',
+  ].join('\n');
+  const root = makeVault({
+    files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/garbled.md': GARBLED_STALE_AFTER },
+    config: { lang: 'en' },
+  });
+  const result = run([root, '--json']);
+  const parsed = JSON.parse(result.stdout);
+  // never a confident claim either way from the staleness section itself
+  assert.deepEqual(parsed.stale, []);
+  // the value's own malformed shape is spec.mjs's finding to make, not
+  // this function's to guess at silently
+  assert.ok(parsed.findings.some((f) => f.id === 'stale-after-format'), JSON.stringify(parsed.findings));
+});
+
+// --- staleness: the boundary itself, and the order of the result -------------
+
+// deps.now was deleted in round 1 as dead weight (nothing called it with
+// a real override); round 2 restores it as a real, exported parameter,
+// specifically because THIS is the test that needed the seam: pinning
+// the exact tie (stale_after equal to `now`, to the millisecond) is not
+// reliably reachable through the real clock, and the round 1 rewrite
+// left this boundary with no test either way. A note due AT `now` is
+// stale (the day it expires, inclusive); one due one millisecond later
+// is not yet. The three input files are deliberately out of alphabetical
+// order, so this test also proves the result is sorted by file, not
+// merely filtered: an accidental no-op sort would still pass a test that
+// used already-sorted input.
+test('computeStale: a note is stale exactly at its stale_after moment, not only strictly after it, and the result is sorted by file', () => {
+  const now = new Date('2026-06-15T12:00:00.000Z');
+  const contents = {
+    'zebra.md': '---\nstale_after: 2026-06-15T12:00:00.000Z\n---\n', // exactly now: stale
+    'apple.md': '---\nstale_after: 2026-06-15T12:00:00.001Z\n---\n', // 1ms later: not yet
+    'mango.md': '---\nstale_after: 2020-01-01T00:00:00.000Z\n---\n', // long past: stale
+  };
+  const context = { readFile: (relPath) => contents[relPath] };
+  const stale = computeStale(Object.keys(contents), context, now);
+  assert.deepEqual(stale.map((entry) => entry.file), ['mango.md', 'zebra.md']); // sorted, and apple.md correctly excluded
+});
+
+// --- the order findings print in, within a group, is not incidental --------
+
+// Scrambled input order on purpose: a sort that quietly became a no-op
+// (or was removed) would still pass a test built from already-sorted
+// input, which is exactly the gap here before this test existed.
+test('buildReport prints findings within a group sorted by file then line, not in whatever order they arrived', () => {
+  const t = createTranslator('en');
+  const scrambled = [
+    { ruler: 'spec', id: 'z', check: 'c', level: 'must', file: 'zebra.md', line: 5, messageKey: 'spec.type_required.empty', params: {} },
+    { ruler: 'spec', id: 'a', check: 'c', level: 'must', file: 'apple.md', line: 9, messageKey: 'spec.type_required.empty', params: {} },
+    { ruler: 'spec', id: 'a2', check: 'c', level: 'must', file: 'apple.md', line: 2, messageKey: 'spec.type_required.empty', params: {} },
+  ];
+  const report = buildReport(scrambled, [], { t });
+  const fileOrder = report.text.split('\n').filter((line) => line.includes('.md') && line.includes('  ')).map((line) => line.split(':')[0]);
+  assert.deepEqual(fileOrder, ['apple.md', 'apple.md', 'zebra.md']); // apple.md:2 before apple.md:9, both before zebra.md:5
+});
+
+// --- the totals line names every bucket, including unexpected --------------
+
+test('the totals line names the unexpected count too, so the human-readable half agrees with --json\'s counts', () => {
+  const t = createTranslator('en');
+  const bogus = [{ ruler: 'spec', id: 'x', check: 'y', level: 'somehow-else', file: 'f.md', line: 1, messageKey: 'spec.type_required.empty', params: {} }];
+  const report = buildReport(bogus, [], { t });
+  assert.equal(report.json.counts.unexpected, 1);
+  assert.match(report.text, /Totals:.*1 unclassified/);
+});
+
+// --- the clean verdict stays true beside a listed stale note ----------------
+
+// --- three more clauses found by the same audit, fixed as cheaply -----------
+//
+// Deriving the clause list from the module as it stands (rather than
+// from the fix-round message that started this pass) turned up three
+// more gaps, none named above: `-h` as an alias for `--help`, a second
+// positional argument, and an invalid vault config reaching this
+// command specifically. All three were reachable, all three had zero
+// test coverage (confirmed by mutating each and watching every test
+// still pass before adding these), and all three were cheap to close.
+
+test('-h is recognised as the same alias --help is, not treated as an unrecognized flag', () => {
+  const help = run(['-h']);
+  assert.equal(help.status, EXIT.OK);
+  assert.match(help.stdout, /brain-kit validate/);
+});
+
+test('a second positional argument is a usage error, paired with the single-argument case that works', () => {
+  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': CLEAN_PERSON }, config: { lang: 'en' } });
+  const twoArgs = run([root, 'unexpected-second-argument']);
+  assert.equal(twoArgs.status, EXIT.USAGE);
+  assert.match(twoArgs.stderr, /unexpected-second-argument/);
+
+  const oneArg = run([root]);
+  assert.equal(oneArg.status, EXIT.OK);
+});
+
+test('an invalid vault config reaching validate specifically exits 2 with a message, not a stack trace', () => {
+  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': CLEAN_PERSON }, config: { lang: 'not-a-real-language' } });
+  const result = run([root]);
+  assert.equal(result.status, EXIT.USAGE);
+  assert.equal(result.stdout, '');
+  assert.doesNotMatch(result.stderr, /at Object|\.mjs:\d+:\d+/);
+});
+
+test('the clean verdict does not claim "no departures" right below a stale note it just listed', () => {
+  const t = createTranslator('en');
+  const stale = [{ file: 'people/old.md', line: 4, staleAfter: '2020-06-01T00:00:00Z' }];
+  const report = buildReport([], stale, { t });
+  assert.equal(report.exitCode, EXIT.OK);
+  const verdictLine = report.text.trim().split('\n').pop();
+  assert.doesNotMatch(verdictLine, /no departures/);
+  assert.match(verdictLine, /conformant/);
+
+  // paired positive: with no stale notes either, the original wording still stands
+  const fullyClean = buildReport([], [], { t });
+  assert.match(fullyClean.text.trim().split('\n').pop(), /no departures/);
 });
