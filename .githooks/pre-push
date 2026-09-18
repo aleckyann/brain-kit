@@ -29,6 +29,54 @@ GENERIC_PATTERNS='-----BEGIN (RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY-----|ghp_
 ZERO='0000000000000000000000000000000000000000'
 failed=0
 
+# 18/09/2026: a ref the remote does not have yet (remote_sha = zero) used to
+# scan `git rev-list "$local_sha"`, the entire history. That is right for a
+# brand new repository's first push, but wrong for any later new ref: pushing
+# the release tag v0.0.1, which points at an already-published commit, made
+# this re-scan all history and refuse the push over a fixture that lives in
+# commits already public on the remote. Re-scanning published commits
+# protects nothing and blocks routine pushes.
+#
+# 18/09/2026, second lesson: the first fix scoped every ref, new or update, to
+# `--not --remotes=origin`, trusting the local refs/remotes/origin/* tracking
+# refs as a stand-in for what the remote has. Those tracking refs are only a
+# cache, last written by this clone's own previous push or fetch. A remote
+# rewound or rewritten from another clone can leave that cache claiming
+# commits the remote does not hold any more, and excluding by it would let a
+# leak inside one of those commits reach the remote unscanned. Only two
+# sources are authoritative, because both come from asking the remote itself,
+# right now: the live push negotiation git already ran for us (the remote_sha
+# on stdin, for a ref the remote already has) and a live `git ls-remote`
+# against the remote (for a ref the remote does not have yet). The tracking
+# refs are never trusted for exclusion again. `query_remote` below runs that
+# `ls-remote` at most once per hook invocation, so a push carrying several new
+# refs (e.g. `git push --tags`) does not repeat the network call. If the
+# remote cannot be reached to ask, fail closed: scan the whole history rather
+# than assume it is safe to skip anything.
+remote_name="${1:-origin}"
+remote_queried=0
+remote_reachable=0
+remote_exclusions=()
+
+query_remote() {
+  [ "$remote_queried" -eq 1 ] && return 0
+  remote_queried=1
+  local raw sha ref resolved
+  if ! raw="$(git ls-remote --heads --tags "$remote_name" 2>/dev/null)"; then
+    remote_reachable=0
+    return 0
+  fi
+  remote_reachable=1
+  while IFS=$'\t' read -r sha ref; do
+    [ -z "$sha" ] && continue
+    resolved="$(git rev-parse -q --verify "${sha}^{commit}" 2>/dev/null)"
+    if [ -z "$resolved" ]; then
+      resolved="$(git rev-parse -q --verify "${sha}^{}" 2>/dev/null)"
+    fi
+    [ -n "$resolved" ] && remote_exclusions+=("^$resolved")
+  done <<< "$raw"
+}
+
 scan_blob() {
   # $1 = commit sha, $2 = path. Prints "line: match" for every hit.
   local sha="$1" path="$2" hits
@@ -42,18 +90,23 @@ scan_blob() {
 
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ "$local_sha" = "$ZERO" ] && continue   # branch deletion: nothing to scan
-  # 18/09/2026: a ref the remote does not have yet (remote_sha = zero) used to
-  # scan `git rev-list "$local_sha"`, the entire history. That is right for a
-  # brand new repository's first push, but wrong for any later new ref: pushing
-  # the release tag v0.0.1, which points at an already-published commit, made
-  # this re-scan all history and refuse the push over a fixture that lives in
-  # commits already public on the remote. Re-scanning published commits
-  # protects nothing and blocks routine pushes. Scope the scan to what the
-  # remote does not already have, via its remote-tracking refs, regardless of
-  # whether this particular ref is new or an update: a new branch still gets
-  # its own unpublished commits scanned, because those commits aren't reachable
-  # from any refs/remotes/origin/* ref either.
-  commits="$(git rev-list "$local_sha" --not --remotes=origin)"
+
+  if [ "$remote_sha" != "$ZERO" ]; then
+    # The remote already has this ref, and git just told us so, live, as part
+    # of this very push negotiation. Scan exactly what is new since then.
+    commits="$(git rev-list "$remote_sha..$local_sha")"
+  else
+    # A ref the remote does not have yet: ask the remote directly what it
+    # holds (once per hook run) instead of trusting the local tracking refs.
+    query_remote
+    if [ "$remote_reachable" -eq 1 ]; then
+      commits="$(git rev-list "$local_sha" "${remote_exclusions[@]}")"
+    else
+      echo "pre-push: could not query remote '$remote_name' (git ls-remote failed); scanning the entire history of $local_ref instead of trusting the local tracking refs." >&2
+      commits="$(git rev-list "$local_sha")"
+    fi
+  fi
+
   while IFS= read -r commit; do
     [ -z "$commit" ] && continue
     if ! git rev-parse -q --verify "$commit^" >/dev/null 2>&1; then

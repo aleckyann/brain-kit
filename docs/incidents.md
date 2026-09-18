@@ -258,13 +258,23 @@ re-scanned the full twenty-commit history and refused the push over a test
 fixture literal (a private key header, used to exercise the generic patterns)
 that sat in three commits already public on the remote, with the literal removed
 from the tip further back.
-**Rule.** Scope the scan to what the remote does not already have. Re-scanning
-commits the remote already has cannot prevent a leak, since that content is
-already public, and it does block routine pushes such as tagging a release.
-**Where it lives in brain-kit.** `.githooks/pre-push` (range computed with `git
-rev-list <local_sha> --not --remotes=origin`), `test/pre-push-hook.test.mjs`
-("a tag pointing at already-pushed commits is allowed", "a new branch is still
-scanned for its own commits").
+**Rule.** Scope the scan to what the remote really has, not to what it is
+assumed to have. Re-scanning commits the remote already has cannot prevent a
+leak, since that content is already public, and it blocks routine pushes such
+as tagging a release. The scope has to come from asking the remote directly,
+right now: the live push negotiation for a ref it already has, a live `git
+ls-remote` for one it does not. It must never come from the local
+`refs/remotes/origin/*` tracking refs, because those are only a cache, last
+written by this clone's own previous push or fetch, and a remote rewound or
+rewritten from another clone can leave that cache claiming commits the remote
+no longer holds, which would let a leak inside one of them through unscanned.
+**Where it lives in brain-kit.** `.githooks/pre-push` (`remote_sha..local_sha`
+for a ref the remote already has; `query_remote`'s live `git ls-remote`,
+cached per hook run, for one it does not; full-history fallback if the remote
+cannot be reached), `test/pre-push-hook.test.mjs` ("a tag pointing at
+already-pushed commits is allowed", "a new branch is still scanned for its
+own commits", "a stale-ahead tracking ref does not hide an unpublished
+commit", "the remote being unreachable makes the hook scan everything").
 
 ## Headless runs, network and scheduling
 

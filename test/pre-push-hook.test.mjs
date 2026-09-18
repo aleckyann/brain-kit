@@ -25,7 +25,7 @@ function setup() {
   git(work, ['remote', 'add', 'origin', bare]);
   const patterns = join(root, 'patterns.txt');
   writeFileSync(patterns, 'hunter2corp\nsecret[- ]partner\n');
-  return { work, patterns };
+  return { work, bare, patterns };
 }
 
 function commit(work, file, content, message) {
@@ -99,4 +99,63 @@ test('a new branch is still scanned for its own commits', () => {
   const r = git(work, ['push', '-q', 'origin', 'feature'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /possible leak in notes\.md/);
+});
+
+test('a stale-ahead tracking ref does not hide an unpublished commit', () => {
+  const { work, bare, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+
+  commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'leak');
+  const commit1 = git(work, ['rev-parse', 'HEAD^']).stdout.trim();
+  const commit2 = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+
+  // Simulate another clone pushing main forward to commit2 without this
+  // hook installed (--no-verify), so the objects genuinely land on the
+  // remote and this work tree's own refs/remotes/origin/main tracking ref
+  // advances to commit2 the normal way, via a successful push through the
+  // named remote, no fetch involved.
+  assert.equal(git(work, ['push', '--no-verify', '-q', 'origin', 'main']).status, 0);
+  assert.equal(git(work, ['rev-parse', 'refs/remotes/origin/main']).stdout.trim(), commit2);
+
+  // The remote maintainer (or a raw ref update from elsewhere) then rewinds
+  // the remote straight back to commit1, bypassing this work tree entirely.
+  // Nobody here ever fetches, so the local tracking ref is left stale-ahead,
+  // still claiming the remote has commit2.
+  assert.equal(git(bare, ['update-ref', 'refs/heads/main', commit1]).status, 0);
+
+  // The remote really only has commit1 now. The cache still claims commit2.
+  // Push a brand new ref that reaches commit2: the old `--not
+  // --remotes=origin` logic would exclude commit2 via the stale cache and
+  // let the leak through unscanned.
+  assert.equal(git(work, ['tag', 'leak-tag', commit2]).status, 0);
+  const r = git(work, ['push', '-q', 'origin', 'leak-tag'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /possible leak in notes\.md/);
+});
+
+test('the remote being unreachable makes the hook scan everything', () => {
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'leak');
+  const localSha = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  const bogusRemote = join(work, 'does-not-exist.git');
+  const ZERO = '0'.repeat(40);
+
+  // A real `git push` to a genuinely unreachable remote never gets as far as
+  // invoking pre-push: git needs a live ref advertisement from the remote to
+  // compute remote_sha before the hook runs at all, so an unreachable remote
+  // fails at that negotiation with git's own fatal error, not the hook's.
+  // Invoke the hook the way git would for a brand new ref reaching this
+  // commit, so the fallback branch (git ls-remote itself failing) is what
+  // gets exercised, deterministically.
+  const r = spawnSync(HOOK, [bogusRemote, bogusRemote], {
+    cwd: work,
+    input: `refs/heads/main ${localSha} refs/heads/main ${ZERO}\n`,
+    encoding: 'utf8',
+    env: { ...process.env, BRAIN_KIT_LEAK_PATTERNS: patterns },
+  });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /possible leak in notes\.md/);
+  assert.match(r.stderr, /could not query remote/);
 });
