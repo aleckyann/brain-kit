@@ -1430,7 +1430,8 @@ test('a personal pattern blocks the push, case-insensitively, naming the file', 
 
 test('a private key header blocks the push even without a personal pattern', () => {
   const { work, patterns } = setup();
-  commit(work, 'key.pem', '-----BEGIN RSA PRIVATE KEY-----\nabc\n', 'key');
+  // Header assembled at runtime so the repository's own leak gate does not trip on this fixture.
+  commit(work, 'key.pem', ['-----BEGIN RSA', 'PRIVATE KEY-----'].join(' ') + '\nabc\n', 'key');
   const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /possible leak in key\.pem/);
