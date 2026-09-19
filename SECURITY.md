@@ -13,13 +13,26 @@ repository). Do not open a public issue for a secret or a leak.
 ## The push gate, and what it does not cover
 
 This repository runs its own pre-push gate against a personal pattern list that lives
-outside the repository. It scans five channels of every commit a push carries: file
-content, file names, commit messages, annotated tag messages, and author and committer
-identities. A pushed reference that names a blob or a tree rather than a commit is
-scanned too, as an object: its content, or its paths and their contents. It fails
+outside the repository. It scans six channels of every push: file content, file names,
+commit messages, annotated tag messages, author and committer identities, and the
+destination NAME of every reference the push writes to. A pushed reference that names a
+blob or a tree rather than a commit is scanned too, as an object: its content, or its
+paths and their contents. It fails
 closed: a missing, empty, unreadable or invalid pattern list refuses
 the push rather than passing it, and so does a blob it cannot read. It never prints what
 it matched.
+
+The reference-name channel scans the DESTINATION name, which is the field that decides
+where a reference lands and the only one that crosses the wire; the source name stays on
+the machine, and scanning it would refuse
+`git push origin <a local branch>:refs/heads/<a clean name>`, which is the remedy this
+channel's own finding asks for. That remedy is complete for a BRANCH, whose name exists
+nowhere but the reference; for an annotated TAG it is not, because the tag object carries
+its own name in a header (see the limits below). Deletions are scanned too: a deletion carries no objects,
+but it still transmits its destination name, and git does not require that name to exist
+on the remote first, so pushing a deletion of a reference that was never there publishes
+the name and nothing else. A name that matched is never printed, by either half of the
+gate, and the reference is identified by its position in the push instead.
 
 **Install it once per clone with `.githooks/install-gate`**, and re-run that script
 whenever the gate itself changes. Do NOT point `core.hooksPath` at `.githooks`: the file
@@ -58,11 +71,21 @@ unstated gets trusted past them.
   19/09/2026 both ways, by pushing a file matching an active pattern from an orphan branch:
   accepted with exit 0 and no output when `core.hooksPath` pointed inside the working tree,
   refused when it pointed outside it.
+- **A commit or tag header other than the ones named above is not scanned.** The gate
+  reads a commit's message, author and committer, and a tag object's message and tagger.
+  Any other header travels with the object unexamined. Two shapes of this were measured on
+  19/09/2026, both accepted with exit 0 and both readable off the bare remote afterwards: a
+  commit object carrying an extra header written by hand, and, with ordinary commands only,
+  the `tag` header inside an annotated tag object, which records the name the tag was
+  created under even when it is pushed to a different one.
+- **Push options are invisible to the gate.** `git push --push-option=<text>` sends that
+  text to the receiving end, where it reaches the server's hooks and logs. Git does not
+  pass push options to a `pre-push` hook at all, so no client-side gate of this shape can
+  see one. Measured both halves on 19/09/2026: nothing in the hook's environment, and the
+  text arriving intact at a receiving hook.
 - **The gate can be skipped on purpose.** `--no-verify` exists, so does pushing from a
   second clone, and so does editing the installed copy by hand. Nothing client-side can
   prevent any of them.
-- **Reference names are not scanned.** A branch or tag name itself never reaches the
-  scanner, only the objects the push carries.
 - **The gate is only as trustworthy as where its code comes from, and this is settled
   now.** Running the engine found in the working tree let an uncommitted edit weaken it.
   Running the engine the push itself carries was worse: it handed arbitrary code execution

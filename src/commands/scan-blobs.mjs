@@ -17,7 +17,11 @@
 //     how a vault is organised;
 //   - a commit's MESSAGE;
 //   - a commit's AUTHOR and COMMITTER identity (name and address);
-//   - an annotated tag's MESSAGE and TAGGER identity.
+//   - an annotated tag's MESSAGE and TAGGER identity;
+//   - a REFERENCE's destination NAME, which is the field that decides
+//     where the push lands and which sits on the remote afterwards,
+//     readable by anyone who can list references, whether or not any
+//     object went with it.
 //
 // Every one of those goes through the same pattern list, the same scanner,
 // the same fail-closed behaviour and the same never-print contract, and
@@ -61,6 +65,12 @@
 // is safe precisely while it matches no pattern, so a path that DOES match
 // is replaced by a fixed label everywhere it would otherwise be printed,
 // for every message about that blob, not only for the finding itself.
+// A REFERENCE NAME is the same case taken further: there is no second
+// field to identify a reference by, so a name that matched is never
+// printed at all and the reference is named by its NUMBER in the push,
+// which .githooks/pre-push assigns and uses in its own messages for the
+// same reason. That number is the whole identification, and it is enough:
+// it points at one line of the push the maintainer just typed.
 import { spawnSync } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { EXIT } from '../exit-codes.mjs';
@@ -179,6 +189,30 @@ export function perScanBudgetMs(env) {
 //   blob   NUL <commit> NUL <mode> NUL <path> NUL
 //   commit NUL <commit> NUL
 //   tip    NUL <sha> NUL
+//   ref    NUL <number> NUL <destination name> NUL
+//
+// THE REFERENCE RECORD CARRIES THE DESTINATION NAME, AND ONLY THAT.
+// A push line gives the hook four fields, and two of them are names: the
+// SOURCE (what is being pushed, local to this machine) and the
+// DESTINATION (where it lands). Only the destination crosses the wire and
+// only the destination exists on the remote afterwards, so only the
+// destination is a channel. This gate has already learned once, the hard
+// way, to read the field that decides where something lands rather than
+// the one that says where it came from.
+//
+// Scanning the source as well was considered and rejected, and not only
+// because it publishes nothing. It would take away the remedy: renaming
+// on the way out, `git push origin <a local branch>:refs/heads/cleanup`,
+// is exactly what a person does once this gate tells them their branch
+// name is a problem, and a gate that refuses the fix it just asked for
+// teaches --no-verify. The source name is not printed either, for the
+// separate reason that it can be the same text as a destination name that
+// matched.
+//
+// The NUMBER is the reference's position in the push, counted by the
+// hook from 1 in the order git listed the lines. It exists because the
+// name cannot be printed once it has matched, and a finding nobody can
+// locate is a finding nobody acts on.
 //
 // The producer's own trailing NUL after the very last field is the only
 // thing that can leave an empty string at the end of the split; anything
@@ -197,9 +231,9 @@ export function perScanBudgetMs(env) {
 // out and refuse the push over hundreds of paths that do not exist, which
 // is fail-closed but tells whoever reads it nothing true; the hook checks
 // for this token first and refuses with one line that says what happened.
-export const RECORD_PROTOCOL = 'brain-kit-scan-blobs-records-v2';
+export const RECORD_PROTOCOL = 'brain-kit-scan-blobs-records-v3';
 
-const RECORD_FIELDS = new Map([['blob', 3], ['commit', 1], ['tip', 1]]);
+const RECORD_FIELDS = new Map([['blob', 3], ['commit', 1], ['tip', 1], ['ref', 2]]);
 
 export function parseEntries(raw) {
   if (raw.length === 0) return [];
@@ -219,6 +253,7 @@ export function parseEntries(raw) {
     const values = fields.slice(at + 1, at + 1 + arity);
     if (kind === 'blob') entries.push({ kind, commit: values[0], mode: values[1], path: values[2] });
     else if (kind === 'commit') entries.push({ kind, commit: values[0] });
+    else if (kind === 'ref') entries.push({ kind, number: values[0], name: values[1] });
     else entries.push({ kind, sha: values[0] });
     at += arity + 1;
   }
@@ -644,6 +679,35 @@ export async function runScanBlobs(argv, io, { metadataBatch = METADATA_BATCH } 
         seenCommits.add(entry.commit);
         commitQueue.push(entry.commit);
       }
+      continue;
+    }
+
+    if (entry.kind === 'ref') {
+      // THE NUMBER IS THE ONLY THING PRINTED ABOUT A REFERENCE, so the
+      // number is checked before it is printed. Everything else in this
+      // record is withheld the moment it matches, and a field that is
+      // always printed is exactly where a name would have to travel to
+      // survive that. The hook writes a decimal counter here; anything
+      // else means the record did not come from the hook, or did not come
+      // from it intact, and either way this module must not echo it back.
+      // Refusing rather than printing a placeholder is the same direction
+      // every other unreadable thing here takes.
+      if (!/^[0-9]+$/.test(entry.number)) {
+        failed = true;
+        io.stderr.write('pre-push: a reference record in this push carries something other than a reference number in its number field, so this gate cannot say which reference it describes without printing the field itself; refusing instead of calling that reference clean.\n');
+        continue;
+      }
+      // A push line with no destination name is not a push line this
+      // module knows how to reason about: the destination is the field
+      // that decides where everything else lands. It is the refusing side
+      // of the skip rule, because something that should have been
+      // readable was not.
+      if (entry.name === '') {
+        failed = true;
+        io.stderr.write(`pre-push: reference #${entry.number} of this push has no destination name, so this gate cannot tell where it lands or scan the name it lands under; refusing instead of calling it clean.\n`);
+        continue;
+      }
+      scan(entry.name, `the destination name of reference #${entry.number} of this push (REFERENCE NAME, the name itself is withheld)`);
       continue;
     }
 

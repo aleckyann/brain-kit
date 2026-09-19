@@ -234,6 +234,47 @@ set -u
 #       the ref and refuses to let rev-list stand in for the answer, and
 #       scan-blobs handles every terminal type by name and refuses one it
 #       does not know.
+#
+# 19/09/2026, tenth round. THE SIXTH AND LAST UNSCANNED CHANNEL.
+#   (q) A REFERENCE NAME REACHED THE REMOTE UNEXAMINED. Five channels were
+#       scanned (blob content, file names, commit messages, annotated tag
+#       messages, author and committer identities) and the name of the
+#       reference itself was not one of them. Reproduced on the previous
+#       tree: a branch named after an active pattern pushed with exit 0 and
+#       the name sat on the bare remote, readable by anyone who can list
+#       references. It is the same shape as the file-name channel and it
+#       matters for the same reason: a vault is full of people and
+#       organisations, and naming a branch after one of them is what a
+#       person does without thinking.
+#
+#       The DESTINATION name is scanned, because that is the field that
+#       decides where the reference lands and the only one that crosses
+#       the wire; the source name never leaves the machine (see the
+#       protocol note in scan-blobs for the rest of that argument, and for
+#       why scanning the source would take away the remedy).
+#
+#       Deletions are scanned too. A deletion carries no objects, but it
+#       still transmits its destination name, and git does NOT require
+#       that name to exist on the remote first: pushing a deletion of a
+#       reference that was never there is accepted, with a warning, and
+#       the name reaches the receiving end all the same. Measured, not
+#       assumed.
+#
+#       This file also stopped printing reference names of its own accord.
+#       A name that matched is withheld by the scanner, so a message here
+#       that echoed the same name back would hand the finding to whatever
+#       reads this output; every message below names a reference by its
+#       NUMBER in the push instead.
+#   (r) THE FIFTH "A COMMAND SUCCEEDED AND SAID NOTHING", found by going
+#       looking rather than by being told, and this one is in the
+#       reference loop's own condition rather than in any command. A
+#       `while read` loop drops a final line that has no newline after
+#       it, having already assigned its fields, so the last reference of
+#       such an input was skipped entirely: all six channels of it, exit
+#       0, no output. Git terminates its lines, so it was latent, and it
+#       is guarded now anyway. The same pass made a push with no
+#       references at all say so instead of being silent, for the reason
+#       every other skip in this gate says so.
 PATTERNS_FILE_LABEL="${BRAIN_KIT_LEAK_PATTERNS:-$HOME/.config/brain-kit/leak-patterns.txt}"
 
 if ! command -v node >/dev/null 2>&1; then
@@ -528,14 +569,66 @@ full_history() {
   return 0
 }
 
-while read -r local_ref local_sha remote_ref remote_sha; do
-  # A deletion carries no objects, so there is genuinely nothing here to
-  # read: it is the skipping side of this gate's own rule, and like the
+ref_number=0
+
+# THE FIFTH TIME, AND IT IS THIS LOOP'S OWN CONDITION.
+#
+# `while read ... ; do` stops when `read` returns non-zero, and `read`
+# returns non-zero for a final line that has no newline after it, AFTER
+# having assigned the fields it managed to read. So an input whose last
+# line is unterminated is one whose last reference is silently dropped:
+# not one channel of it, all six, with exit 0 and no output at all. This
+# is the same shape as the four empty-means-nothing findings this file's
+# own history already records, and it is the widest of them, because it
+# skips a whole reference rather than one thing about one.
+#
+# Measured on this gate before the guard: an unterminated line naming a
+# reference that matches a pattern exits 0 and says nothing, while the
+# same line with a newline after it refuses. Git itself terminates every
+# line it writes here, so this is latent rather than live, and it is
+# guarded anyway, because "the producer always does X" is what the other
+# four findings all assumed about something.
+#
+# `|| [ -n "${local_ref:-}" ]` runs the body one last time for that
+# partial line. A partial line with fewer than four fields leaves the
+# later variables empty, and an empty destination name is something the
+# engine refuses outright rather than scans, so a truncation cannot turn
+# into a reference that passes.
+while read -r local_ref local_sha remote_ref remote_sha || [ -n "${local_ref:-}" ]; do
+  # (q). Every reference gets a NUMBER, and from here down this file names
+  # references by that number and never by their text. The number is what
+  # makes a finding actionable without printing the thing that was found:
+  # "reference #2 of this push" tells the maintainer which line of their
+  # own push to look at, and tells a log reader nothing. Numbering starts
+  # at 1 and counts the lines git wrote on this hook's standard input, in
+  # the order git wrote them, which is the order the maintainer's own
+  # refspecs produced.
+  ref_number=$((ref_number + 1))
+  ref_label="reference #$ref_number of this push"
+
+  # (q). THE DESTINATION NAME IS A CHANNEL, and it is emitted before every
+  # other record for this reference, because it is the one field that
+  # reaches the remote whatever else this line turns out to carry. It is
+  # the DESTINATION ($remote_ref), not the source: see the note above the
+  # record protocol in scan-blobs for why the source is deliberately not
+  # scanned. Deletions included, and that is not a formality: a deletion
+  # transmits its destination name with no objects behind it at all, and
+  # git does not require the ref to exist remotely first, so
+  # `git push origin :refs/heads/<a name>` publishes that name to the
+  # receiving end (its logs, its receive hooks) and nothing else. It is
+  # the cheapest leak this gate has ever had to cover, which is exactly
+  # why it is covered before the deletion skip below rather than after it.
+  printf 'ref\0%s\0%s\0' "$ref_number" "$remote_ref" >> "$PAIRS_FILE" || work_list_write_failed
+
+  # A deletion carries no OBJECTS, so there is genuinely nothing more here
+  # to read: it is the skipping side of this gate's own rule, and like the
   # other one (a gitlink, in scan-blobs) it says so out loud rather than
   # passing in silence. A skip nobody can see reads exactly like a scan
   # that found nothing, and this gate has shipped that confusion before.
+  # The destination NAME of this same deletion was recorded just above and
+  # is scanned like any other, so this skip is about objects only.
   if [ "$local_sha" = "$ZERO" ]; then
-    echo "pre-push: skipping $remote_ref: this push deletes it, and a deletion carries no objects, so there is nothing here to read." >&2
+    echo "pre-push: skipping the objects of $ref_label: this push deletes that reference, and a deletion carries no objects, so there is nothing here to read. Its destination name is still scanned." >&2
     continue
   fi
 
@@ -567,7 +660,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     peel_type="$(git cat-file -t "$peeled" 2>/dev/null || true)"
   fi
   if [ "$peel_type" != "commit" ]; then
-    echo "pre-push: $local_ref does not point at a commit (it names $(if [ -n "$peel_type" ]; then echo "a $peel_type"; else echo "an object this clone cannot resolve"; fi)), so there is no commit range to scan here; the object itself is examined directly." >&2
+    echo "pre-push: $ref_label does not point at a commit (it names $(if [ -n "$peel_type" ]; then echo "a $peel_type"; else echo "an object this clone cannot resolve"; fi)), so there is no commit range to scan here; the object itself is examined directly." >&2
     continue
   fi
 
@@ -587,7 +680,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     # computed is. Capture the exit status and fail closed into a full scan
     # when the range itself could not be computed.
     if ! commits="$(git rev-list "$remote_sha..$local_sha" 2>/dev/null)"; then
-      echo "pre-push: the remote's reported commit for $local_ref ($remote_sha) is unknown to this clone; scanning the entire history of $local_ref instead of trusting that range." >&2
+      echo "pre-push: the remote's reported commit for $ref_label ($remote_sha) is unknown to this clone; scanning the entire history of that reference instead of trusting that range." >&2
       if ! commits="$(full_history "$local_sha")"; then
         exit 1
       fi
@@ -600,11 +693,11 @@ while read -r local_ref local_sha remote_ref remote_sha; do
       # The ${arr[@]+"${arr[@]}"} form, not "${arr[@]}": an empty array under
       # `set -u` aborts the script in bash 3.2 (fifth lesson, (f)).
       if ! commits="$(git rev-list "$local_sha" ${remote_exclusions[@]+"${remote_exclusions[@]}"})"; then
-        echo "pre-push: could not list what $local_ref adds to remote '$remote_name' (git rev-list failed); refusing rather than scanning nothing." >&2
+        echo "pre-push: could not list what $ref_label adds to remote '$remote_name' (git rev-list failed); refusing rather than scanning nothing." >&2
         exit 1
       fi
     else
-      echo "pre-push: could not query remote '$remote_name' (git ls-remote failed); scanning the entire history of $local_ref instead of trusting the local tracking refs." >&2
+      echo "pre-push: could not query remote '$remote_name' (git ls-remote failed); scanning the entire history of $ref_label instead of trusting the local tracking refs." >&2
       if ! commits="$(full_history "$local_sha")"; then
         exit 1
       fi
@@ -696,6 +789,16 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     done < "$PATHS_FILE"
   done <<< "$commits"
 done
+
+# A push git described with no references at all. Nothing is updated, so
+# nothing is published and nothing is the right answer; it is the skipping
+# side of this gate's own rule and it says so, because every other time
+# this gate has let an empty result stand in silence it turned out to be
+# standing in for something. It is also the one line that would appear if
+# git ever handed this hook an empty list for a push that does something.
+if [ "$ref_number" -eq 0 ]; then
+  echo "pre-push: git listed no references for this push, so there is nothing here to scan; the patterns file is still checked below." >&2
+fi
 
 # Called exactly once, even when the work list is empty (a push that deletes
 # branches only, or otherwise touches nothing): `brain-kit scan-blobs` checks

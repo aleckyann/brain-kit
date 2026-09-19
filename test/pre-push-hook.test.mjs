@@ -1484,7 +1484,16 @@ test('a push that only deletes a ref still enforces the patterns file, and passe
 
   const fine = git(work, ['push', '-q', 'origin', ':doomed'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
   assert.equal(fine.status, 0, fine.stderr);
-  assert.match(fine.stderr, /skipping refs\/heads\/doomed: this push deletes it/);
+  assert.match(fine.stderr, /skipping the objects of reference #1 of this push/);
+  // The skip is about OBJECTS only. The destination name of the same
+  // deletion is a channel of its own and is scanned; the message says so,
+  // because a reader who took "nothing here to read" to cover the name
+  // would be reading the old, weaker gate.
+  assert.match(fine.stderr, /destination name is still scanned/);
+  // And the message names the reference by NUMBER, never by text. This
+  // assertion is the redaction contract for this channel: the hook half
+  // cannot scan, so it must not print a name it has not had scanned.
+  assert.doesNotMatch(fine.stderr, /doomed/);
 });
 
 test('a stray field in the raw diff output refuses loudly instead of mis-pairing entries', () => {
@@ -2281,4 +2290,275 @@ test('a commit record that does not name its object exactly refuses, rather than
   const r = scanBlobsDirect(work, gateDir, `commit\0${short}\0`, patterns);
   assert.notEqual(r.status, 0, r.stderr);
   assert.match(r.stderr, /returned the object [0-9a-f]{40} where/);
+});
+
+// --- (q) THE REFERENCE NAME, THE SIXTH CHANNEL --------------------------
+//
+// Five channels were scanned and the name of the reference itself was not
+// one of them: a branch named after an active pattern pushed with exit 0
+// and the name sat on the remote, readable by anyone who can list
+// references. The tests below are the reproduction, the control that the
+// channel bans nothing it should not, the two shapes this round had to get
+// right (a deletion, and a name that is not ASCII), and the case built to
+// defeat the redaction rather than to confirm it.
+
+// Only the gate's own lines. Git prints the source refspec in its own
+// progress output, which is git talking to the person at the terminal
+// about the command they just typed; the never-print contract is about
+// what THIS gate writes.
+function gateLines(stderr) {
+  return stderr.split('\n').filter((line) => line.startsWith('pre-push:')).join('\n');
+}
+
+test('a branch named after a pattern is refused, and the name never reaches the remote', () => {
+  const { root, work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  assert.equal(git(work, ['checkout', '-q', '-b', 'hunter2corp-migration']).status, 0);
+  commit(work, 'notes.md', 'nothing unusual in here at all\n', 'an ordinary commit');
+
+  const r = git(work, ['push', '-q', 'origin', 'hunter2corp-migration'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in the destination name of reference #1 of this push \(REFERENCE NAME, the name itself is withheld\)/);
+  const refs = spawnSync('git', ['--git-dir', join(root, 'origin.git'), 'for-each-ref', '--format=%(refname)'], { encoding: 'utf8' });
+  assert.doesNotMatch(refs.stdout, /hunter2corp/, 'the reference name reached the remote');
+});
+
+test('the content and the commit of a badly named branch are clean, so the NAME is the only thing refusing it', () => {
+  // Without this, the test above would pass just as well if the gate were
+  // refusing that push for some entirely different reason.
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  assert.equal(git(work, ['checkout', '-q', '-b', 'hunter2corp-migration']).status, 0);
+  commit(work, 'notes.md', 'nothing unusual in here at all\n', 'an ordinary commit');
+
+  const r = git(work, ['push', '-q', 'origin', 'hunter2corp-migration'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  const findings = r.stderr.split('\n').filter((line) => line.includes('possible leak in'));
+  assert.equal(findings.length, 1, r.stderr);
+  assert.match(findings[0], /REFERENCE NAME/);
+});
+
+test('an ordinary branch name still pushes: the channel scans names, it does not restrict them', () => {
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['checkout', '-q', '-b', 'feature/some-ordinary-work']).status, 0);
+  commit(work, 'notes.md', 'nothing unusual in here at all\n', 'an ordinary commit');
+  const r = git(work, ['push', '-q', 'origin', 'feature/some-ordinary-work'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 0, r.stderr);
+});
+
+test('the DESTINATION name is what is scanned, so renaming on the way out is still a remedy', () => {
+  // The source name never crosses the wire, and refusing it would take
+  // away the exact fix this channel's own finding asks a person to make.
+  const { root, work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['checkout', '-q', '-b', 'hunter2corp-migration']).status, 0);
+  commit(work, 'notes.md', 'nothing unusual in here at all\n', 'an ordinary commit');
+
+  const r = git(work, ['push', '-q', 'origin', 'hunter2corp-migration:refs/heads/migration'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 0, r.stderr);
+  const refs = spawnSync('git', ['--git-dir', join(root, 'origin.git'), 'for-each-ref', '--format=%(refname)'], { encoding: 'utf8' });
+  assert.match(refs.stdout, /refs\/heads\/migration/);
+  assert.doesNotMatch(refs.stdout, /hunter2corp/);
+  // And the gate did not print the source name either: it can be the same
+  // text as a destination name that matched.
+  assert.doesNotMatch(gateLines(r.stderr), /hunter2corp/);
+});
+
+test('a DELETION is refused on its name too: it carries no objects but it still publishes the name', () => {
+  // Measured, not assumed: git does not require the reference to exist on
+  // the remote first. A deletion of a name that was never there is
+  // accepted, with a warning, and the name reaches the receiving end all
+  // the same, which makes this the cheapest leak the gate covers.
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+
+  const r = git(work, ['push', '-q', 'origin', ':refs/heads/hunter2corp-ghost'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in the destination name of reference #1 of this push/);
+  assert.doesNotMatch(gateLines(r.stderr), /ghost/);
+});
+
+test('an ordinary deletion still passes, and says the skip is about objects and not about the name', () => {
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  assert.equal(git(work, ['push', '-q', 'origin', 'main:refs/heads/spare'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  const r = git(work, ['push', '-q', 'origin', ':refs/heads/spare'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /skipping the objects of reference #1 of this push/);
+  assert.match(r.stderr, /destination name is still scanned/);
+});
+
+test('a reference name that is not ASCII is decoded the way every other channel decodes bytes', () => {
+  // A reference name can carry any byte above 0x7f. The hook writes those
+  // bytes through unchanged and the engine decodes its whole standard
+  // input as latin1, the same decoding a file name gets, so a pattern
+  // written against those bytes matches here exactly as it does there. If
+  // this channel ever grew a decoding of its own, this is the test that
+  // would go red.
+  const { root, work } = setup();
+  const patterns = join(root, 'byte-patterns.txt');
+  // The branch name's two non-ASCII bytes are 0xc3 0xa7 (the UTF-8 of
+  // U+00E7, which is what git will carry). Decoded as latin1 those are the
+  // two characters below, and the patterns file is read as UTF-8, so
+  // writing them here puts exactly those two bytes in front of the
+  // scanner.
+  writeFileSync(patterns, 'caf\u00c3\u00a7\n');
+  commit(work, 'README.md', 'hello world\n', 'init');
+  const branch = 'caf\u00e7-notes';
+  assert.equal(git(work, ['checkout', '-q', '-b', branch]).status, 0);
+
+  const r = git(work, ['push', '-q', 'origin', branch], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in the destination name of reference #1 of this push/);
+  const refs = spawnSync('git', ['--git-dir', join(root, 'origin.git'), 'for-each-ref', '--format=%(refname)'], { encoding: 'utf8' });
+  assert.doesNotMatch(refs.stdout, /caf/);
+});
+
+test('a push carrying several references scans every one of them, and one bad name refuses all of it', () => {
+  // Git offers the whole push to one hook run. A refusal is a refusal of
+  // all of it, so a clean reference travelling beside a bad one does not
+  // land either; and every reference is still scanned, so the maintainer
+  // learns about all of them in one go instead of one per attempt.
+  const { root, work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  for (const name of ['aaa-tidy', 'hunter2corp-one', 'bbb-tidy', 'hunter2corp-two']) {
+    assert.equal(git(work, ['checkout', '-q', '-b', name, 'main']).status, 0);
+  }
+  const r = git(work, ['push', '-q', 'origin', 'aaa-tidy', 'hunter2corp-one', 'bbb-tidy', 'hunter2corp-two'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  const findings = r.stderr.split('\n').filter((line) => line.includes('REFERENCE NAME'));
+  assert.equal(findings.length, 2, r.stderr);
+  // Numbered, so two findings are two references rather than one reported
+  // twice, and the numbers are the positions git listed them in.
+  assert.match(findings[0], /reference #2 of this push/);
+  assert.match(findings[1], /reference #4 of this push/);
+  const refs = spawnSync('git', ['--git-dir', join(root, 'origin.git'), 'for-each-ref', '--format=%(refname)'], { encoding: 'utf8' });
+  assert.doesNotMatch(refs.stdout, /tidy/, 'a clean reference landed although the push was refused');
+});
+
+test('the reference NUMBER is checked before it is printed, because it is the one field always printed', () => {
+  // THE CASE BUILT TO DEFEAT THE REDACTION. Every other field of a
+  // reference record is withheld the moment it matches, so a name that
+  // wanted to be printed would have to travel in the field that is never
+  // withheld. It cannot: a number field that is not a number refuses, and
+  // the refusal does not echo the field.
+  const { work, patterns, gateDir } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  const r = scanBlobsDirect(work, gateDir, 'ref\u0000Hunter2Corp\u0000refs/heads/main\u0000', patterns);
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /something other than a reference number in its number field/);
+  assert.doesNotMatch(r.stderr, /Hunter2Corp/i);
+});
+
+test('a reference record with no destination name refuses, rather than scanning an empty string clean', () => {
+  // An empty destination is the refusing side of the skip rule: the field
+  // that decides where everything else lands should have been readable
+  // and was not.
+  const { work, patterns, gateDir } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  const r = scanBlobsDirect(work, gateDir, 'ref\u00007\u0000\u0000', patterns);
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /reference #7 of this push has no destination name/);
+});
+
+test('a reference record takes exactly two fields, and a truncated one refuses', () => {
+  const { work, patterns, gateDir } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  const r = scanBlobsDirect(work, gateDir, 'ref\u00001\u0000', patterns);
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /"ref" record with 1 field\(s\) instead of 2/);
+});
+
+// --- the fifth "empty means nothing to do", found by looking ------------
+
+test('a final line with no newline after it is still a reference, not a reference to skip', () => {
+  // `while read ...; do` stops on a final unterminated line AFTER
+  // assigning the fields it read, so that reference used to be dropped
+  // entirely: not one channel of it, all six, with exit 0 and no output.
+  // Git terminates its own lines, so this is latent rather than live, and
+  // it is guarded anyway, because "the producer always does that" is what
+  // every one of the four earlier findings of this shape assumed about
+  // something.
+  const { work, patterns, installedHook, bare } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  const sha = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  const r = spawnSync(installedHook, ['origin', bare], {
+    cwd: work,
+    input: `refs/heads/x ${sha} refs/heads/hunter2corp-last ${sha}`,
+    encoding: 'utf8',
+    env: { ...process.env, BRAIN_KIT_LEAK_PATTERNS: patterns },
+  });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in the destination name of reference #1 of this push/);
+});
+
+test('an unterminated line that is also truncated refuses, rather than being read as a whole one', () => {
+  // The guard runs the body one last time for a partial line, and a
+  // partial line leaves the later fields empty. An empty destination is
+  // refused outright, so a truncation cannot become a reference that
+  // passes.
+  const { work, patterns, installedHook, bare } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  const sha = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  const r = spawnSync(installedHook, ['origin', bare], {
+    cwd: work,
+    input: `refs/heads/x ${sha}`,
+    encoding: 'utf8',
+    env: { ...process.env, BRAIN_KIT_LEAK_PATTERNS: patterns },
+  });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /reference #1 of this push has no destination name/);
+});
+
+test('an unterminated DELETION line does not spin the loop forever', () => {
+  // The loop body reaches `continue` from several places, and the guard
+  // has to terminate from every one of them. A deletion is the earliest.
+  const { work, patterns, installedHook, bare } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  const zero = '0'.repeat(40);
+  const r = spawnSync(installedHook, ['origin', bare], {
+    cwd: work,
+    input: `refs/heads/x ${zero} refs/heads/an-ordinary-name ${zero}`,
+    encoding: 'utf8',
+    timeout: 60000,
+    env: { ...process.env, BRAIN_KIT_LEAK_PATTERNS: patterns },
+  });
+  assert.equal(r.signal, null, 'the hook did not terminate');
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /skipping the objects of reference #1 of this push/);
+});
+
+test('a push git describes with no references at all says so, instead of passing in silence', () => {
+  // Nothing is updated, so nothing is published and nothing is the right
+  // answer. It is said out loud anyway: every other time this gate let an
+  // empty result stand in silence, the empty result turned out to be
+  // standing in for something.
+  const { work, patterns, installedHook, bare } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  const r = spawnSync(installedHook, ['origin', bare], {
+    cwd: work,
+    input: '',
+    encoding: 'utf8',
+    env: { ...process.env, BRAIN_KIT_LEAK_PATTERNS: patterns },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /git listed no references for this push/);
+});
+
+test('a push with no references at all still enforces the patterns file', () => {
+  const { root, work, installedHook, bare } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  const r = spawnSync(installedHook, ['origin', bare], {
+    cwd: work,
+    input: '',
+    encoding: 'utf8',
+    env: { ...process.env, BRAIN_KIT_LEAK_PATTERNS: join(root, 'no-such-file.txt') },
+  });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /leak patterns file not found/);
 });
