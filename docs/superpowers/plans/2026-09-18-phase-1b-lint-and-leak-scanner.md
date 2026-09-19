@@ -30,6 +30,10 @@ The stub audit, which guts a module and counts surviving tests, is a smoke check
 
 **The sharper form of the question, earned on this slice and better than the one it replaces.** For any contract, do not ask whether the code holds. Attack it and the code will very likely survive, because it was just written to survive exactly that. Ask instead: WHAT SINGLE EDIT MAKES THIS BREAK WITHOUT TURNING THE SUITE RED? On this slice the redaction of secrets survived eight adversarial geometries and twenty-four thousand randomised cases, and then one deleted line, a sort, made a neighbouring secret print in full with every test still green. The defect was never in the code; it was in the tests, and only mutating AFTER attacking revealed it.
 
+**Establish a control before trusting a mutation run.** A `git archive` copy has no version-control directory, so any test that asks version control a question fails in it before a single mutation is applied. A reviewer on this slice ran a full pass that way and reported every mutant killed; the run was false and it said so. Run the suite on the unmutated copy FIRST and require zero failures, or every survivor you count is noise.
+
+**A number inside a guard is a claim about throughput, so measure it.** Two budgets on this slice went three rounds being called judgment calls. One was measurably wrong: the scanner refused two megabytes of ordinary secret-free prose, roughly twenty-two thousand lines, because ninety-nine point eight percent of its time on clean input went to sandbox setup rather than to matching, at five hundred times the cost of the same work in plain code. Nobody had measured it, including me, because a constant reads like taste. Ask what the number implies about the largest input the feature must accept, and check.
+
 **And do not walk a fix round's own item list.** Verifying the items a round was told to close systematically misses the hole that round opened. Three of the most serious findings on this slice were on nobody's list, including the one above.
 
 ## What slice A established, which this slice reuses rather than reinvents
