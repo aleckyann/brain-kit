@@ -275,6 +275,31 @@ set -u
 #       is guarded now anyway. The same pass made a push with no
 #       references at all say so instead of being silent, for the reason
 #       every other skip in this gate says so.
+# THE GATE ASKS GIT WHAT THE PUSH CONTAINS, AND GIT CAN BE TOLD TO LIE.
+#
+# `git replace <a commit> <another commit>` installs a ref under
+# refs/replace/ and from then on every ordinary git read, rev-list,
+# diff-tree, cat-file, show, reports the REPLACEMENT wherever the original
+# was asked about. `git push` does not: it sends the object that is really
+# there. So the gate scanned one commit and the remote received a different
+# one. Measured on 19/09/2026 against a throwaway bare remote with the real
+# installed gate, no --no-verify and no edit to the gate at all: a commit
+# whose file matched an active pattern was pushed with exit 0, no output,
+# and the pattern in plaintext on the remote.
+#
+# This is the third time this component has been defeated by editing
+# something the gate TRUSTED rather than the gate itself, and it is the
+# cheapest of the three: one ordinary command, no configuration the
+# maintainer would notice, nothing left in the working tree.
+#
+# Exported here, so it reaches every git this hook runs AND the git
+# processes the scanner runs as its child. The scanner passes
+# --no-replace-objects on its own calls as well rather than relying on
+# inheriting this, because the two halves are separately installable and a
+# guarantee that only holds when both are current is not a guarantee.
+GIT_NO_REPLACE_OBJECTS=1
+export GIT_NO_REPLACE_OBJECTS
+
 PATTERNS_FILE_LABEL="${BRAIN_KIT_LEAK_PATTERNS:-$HOME/.config/brain-kit/leak-patterns.txt}"
 
 if ! command -v node >/dev/null 2>&1; then

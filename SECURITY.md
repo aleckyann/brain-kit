@@ -13,22 +13,42 @@ repository). Do not open a public issue for a secret or a leak.
 ## The push gate, and what it does not cover
 
 This repository runs its own pre-push gate against a personal pattern list that lives
-outside the repository. It scans six channels of every push: file content, file names,
-commit messages, annotated tag messages, author and committer identities, and the
-destination NAME of every reference the push writes to. A pushed reference that names a
+outside the repository. It scans seven channels of every push: file content, file names,
+commit messages, annotated tag messages, author and committer identities, the
+destination NAME of every reference the push writes to, and the whole raw HEADER BLOCK of
+every commit and every annotated tag object.
+
+The header block is scanned AS A BLOCK, not as a further list of named fields. Six earlier
+channels were each added by naming one more field, and twice the naming was still
+incomplete in the round that did it; a block covers the headers nobody enumerated at the
+same time as the ones they did. Every byte of an object is scanned exactly once, by the
+most specific channel that covers it: the identity spans the author, committer and tagger
+channels read are removed from the block before it is scanned, so one leak is reported
+once, by the channel that names the remedy, and the identity exemption below still decides
+the case it was built for. A pushed reference that names a
 blob or a tree rather than a commit is scanned too, as an object: its content, or its
 paths and their contents. It fails
 closed: a missing, empty, unreadable or invalid pattern list refuses
 the push rather than passing it, and so does a blob it cannot read. It never prints what
 it matched.
 
+Every git call the gate makes refuses replacement objects, with `--no-replace-objects` on
+the scanner's own calls and `GIT_NO_REPLACE_OBJECTS` exported by the hook. `git replace`
+installs a ref under `refs/replace/` and every ordinary git read then reports the
+replacement wherever the original was asked about, while `git push` sends the object that
+is really there; measured on 19/09/2026, that made the gate scan a clean stand-in while
+the remote received a commit whose content matched an active pattern, with exit 0 and no
+output, using one ordinary command and no edit to the gate.
+
 The reference-name channel scans the DESTINATION name, which is the field that decides
 where a reference lands and the only one that crosses the wire; the source name stays on
 the machine, and scanning it would refuse
 `git push origin <a local branch>:refs/heads/<a clean name>`, which is the remedy this
 channel's own finding asks for. That remedy is complete for a BRANCH, whose name exists
-nowhere but the reference; for an annotated TAG it is not, because the tag object carries
-its own name in a header (see the limits below). Deletions are scanned too: a deletion carries no objects,
+nowhere but the reference. For an annotated TAG the reference name alone was not enough, because
+the tag object records the name it was created under in its own `tag` header and carried
+it to the remote inside the object; the header block channel is what closes that, and it
+is why renaming an annotated tag on the way out no longer publishes the old name. Deletions are scanned too: a deletion carries no objects,
 but it still transmits its destination name, and git does not require that name to exist
 on the remote first, so pushing a deletion of a reference that was never there publishes
 the name and nothing else. A name that matched is never printed, by either half of the
@@ -71,21 +91,34 @@ unstated gets trusted past them.
   19/09/2026 both ways, by pushing a file matching an active pattern from an orphan branch:
   accepted with exit 0 and no output when `core.hooksPath` pointed inside the working tree,
   refused when it pointed outside it.
-- **A commit or tag header other than the ones named above is not scanned.** The gate
-  reads a commit's message, author and committer, and a tag object's message and tagger.
-  Any other header travels with the object unexamined. Two shapes of this were measured on
-  19/09/2026, both accepted with exit 0 and both readable off the bare remote afterwards: a
-  commit object carrying an extra header written by hand, and, with ordinary commands only,
-  the `tag` header inside an annotated tag object, which records the name the tag was
-  created under even when it is pushed to a different one.
-- **Push options are invisible to the gate.** `git push --push-option=<text>` sends that
-  text to the receiving end, where it reaches the server's hooks and logs. Git does not
-  pass push options to a `pre-push` hook at all, so no client-side gate of this shape can
-  see one. Measured both halves on 19/09/2026: nothing in the hook's environment, and the
-  text arriving intact at a receiving hook.
+- **It is a literal pattern scanner, so content that does not look like the pattern passes.**
+  Measured on 19/09/2026, all three accepted with exit 0 and landed on the bare remote: the
+  same name base64-encoded, split across a line break, and written with a space between
+  every letter. Anything compressed, encrypted or encoded is in the same position. This is
+  not a defect to be fixed by a longer pattern list; it is what a pattern list is. The gate
+  is a guard against the accident, a name left in a note, and not against somebody who has
+  decided to publish.
 - **The gate can be skipped on purpose.** `--no-verify` exists, so does pushing from a
   second clone, and so does editing the installed copy by hand. Nothing client-side can
   prevent any of them.
+- **Push options are invisible to the gate, which puts them in the same class as
+  `--no-verify`.** `git push --push-option=<text>` sends that text to the receiving end,
+  where it reaches the server's hooks and logs. Git does not pass push options to a
+  `pre-push` hook at all, so there is nothing for this gate to read and no client-side gate
+  of this shape could read it either. Measured both halves on 19/09/2026: nothing about
+  them in the hook's environment, and the text arriving intact at a receiving hook. The
+  difference from `--no-verify` is that this one does not look like a bypass while you type
+  it.
+- **A reference already on the remote under a matching name cannot be removed through the
+  gate.** A deletion transmits its destination name, so the gate refuses it, and the only
+  ways out are the hosting provider's own interface, a clone without the gate, or a
+  deliberate bypass. That is the accepted cost of closing leak-by-deletion.
+- **The gate can only scan what git hands a `pre-push` hook, and that is a short list.**
+  Measured on 19/09/2026 with a hook that printed everything it received: the remote's
+  name, the remote's URL, and one line per reference with the local and remote names and
+  hashes. Nothing else. Whatever else a push puts on the wire, the protocol capability
+  list, a user agent over HTTP or SSH, a proxy or credential helper's own traffic, never
+  reaches this hook and so cannot be scanned by it from here.
 - **The gate is only as trustworthy as where its code comes from, and this is settled
   now.** Running the engine found in the working tree let an uncommitted edit weaken it.
   Running the engine the push itself carries was worse: it handed arbitrary code execution

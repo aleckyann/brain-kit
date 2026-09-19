@@ -18,6 +18,11 @@
 //   - a commit's MESSAGE;
 //   - a commit's AUTHOR and COMMITTER identity (name and address);
 //   - an annotated tag's MESSAGE and TAGGER identity;
+//   - the whole raw HEADER BLOCK of every commit and of every tag object,
+//     minus the identity spans the two channels above already scanned, so
+//     that a header nobody enumerated (a tag object's own `tag` name, an
+//     `encoding`, a `mergetag`, anything git grows next) is scanned by the
+//     same clause as the ones that were enumerated;
 //   - a REFERENCE's destination NAME, which is the field that decides
 //     where the push lands and which sits on the remote afterwards,
 //     readable by anyone who can list references, whether or not any
@@ -270,10 +275,21 @@ export function parseEntries(raw) {
 // mapping has no locale to depend on in the first place. The paths arriving
 // on standard input are decoded the same way, for the same reason and so
 // that both halves of this module agree about what a byte is.
+//
+// AND EVERY ONE PASSES --no-replace-objects, FIRST, BEFORE THE SUBCOMMAND.
+// `git replace` installs a ref under refs/replace/ and every ordinary git
+// read then reports the replacement wherever the original was asked about,
+// while `git push` sends the object that is really there: the gate scanned
+// one commit and the remote received another, with exit 0 and no output.
+// The hook exports GIT_NO_REPLACE_OBJECTS for the same reason, and this is
+// not redundant with it: the hook and this engine are one installation but
+// two files, and a guarantee that holds only while both are current is not
+// a guarantee. It is a FLAG rather than a second read of the environment
+// because the environment is the thing being defended against here.
 function git(args, input = undefined) {
   const options = { encoding: 'latin1', maxBuffer: GIT_MAX_BUFFER };
   if (input !== undefined) options.input = input;
-  return spawnSync('git', args, options);
+  return spawnSync('git', ['--no-replace-objects', ...args], options);
 }
 
 // Every way a per-invocation flag or an environment variable can inject
@@ -350,7 +366,54 @@ export function parseCommitObject(sha, body) {
     if (line.startsWith('author ')) author = identityFromHeader(line.slice('author '.length));
     else if (line.startsWith('committer ')) committer = identityFromHeader(line.slice('committer '.length));
   }
-  return { sha, author, committer, message };
+  return { sha, author, committer, message, headerText };
+}
+
+// THE WHOLE HEADER BLOCK, minus the spans a more specific channel already
+// scanned.
+//
+// Six rounds of this gate answered "what else does an object publish?" by
+// naming one more FIELD, and the naming has now been wrong twice inside
+// the round that did the naming. An annotated tag records the name it was
+// created under in its own `tag` header, so `git tag -a <a bad name>`
+// followed by `git push origin <it>:refs/tags/<a clean name>` passed the
+// reference-name channel and put the bad name on the remote inside the
+// object, where cat-file prints it. A commit can carry `encoding`, any
+// number of `parent` lines, a `gpgsig` with its continuation lines, and a
+// `mergetag` that embeds an entire tag object; nothing bounds the set, and
+// a list of fields is only ever as long as somebody's imagination on the
+// day. So the block is scanned AS A WHOLE, which closes the named case and
+// the unnamed ones in the same clause, and it is fewer clauses than the
+// list it replaces.
+//
+// It scans the RESIDUE, not the raw block, and the difference is the whole
+// design: every byte of the object is scanned exactly ONCE, by the most
+// specific channel that covers it. The identity headers keep their own
+// channels (AUTHOR IDENTITY, COMMITTER IDENTITY, TAGGER IDENTITY), because
+// those findings name the remedy and because the identity exemption is
+// keyed on them; their exact text is removed here so this scan neither
+// reports the same leak twice under a vaguer name nor sees the pushing
+// identity in every commit and deadlocks the maintainer the exemption was
+// built for. Removal is by EXACT text on a line that declares that header,
+// so a second, different `author` line (which no dedicated scan read) stays
+// in the residue and is scanned here.
+//
+// The message is NOT part of this: the block ends at the first empty line
+// and the message begins after it, so the two channels are disjoint by
+// construction rather than by agreement, and there is nothing for them to
+// drift apart about.
+export function headerResidue(headerText, scannedIdentities) {
+  const wanted = scannedIdentities.filter((entry) => entry.value !== '');
+  if (wanted.length === 0) return headerText;
+  return headerText.split('\n').map((line) => {
+    for (const { key, value } of wanted) {
+      if (!line.startsWith(`${key} `)) continue;
+      const at = line.indexOf(value, key.length + 1);
+      if (at === -1) continue;
+      return line.slice(0, at) + line.slice(at + value.length);
+    }
+    return line;
+  }).join('\n');
 }
 
 // Reads message and identity for a list of commits in ONE git process.
@@ -425,13 +488,19 @@ function parseTagObject(text) {
   let target = null;
   let tagger = '';
   let at = 0;
+  let headerEnd = lines.length;
   for (; at < lines.length; at += 1) {
     const line = lines[at];
-    if (line === '') { at += 1; break; }
+    if (line === '') { headerEnd = at; at += 1; break; }
     if (line.startsWith('object ')) target = line.slice('object '.length).trim();
     else if (line.startsWith('tagger ')) tagger = line.slice('tagger '.length);
   }
-  return { target, tagger, message: lines.slice(at).join('\n') };
+  return {
+    target,
+    tagger,
+    message: lines.slice(at).join('\n'),
+    headerText: lines.slice(0, headerEnd).join('\n'),
+  };
 }
 
 // The identity this push is being made under, as `git show` would render an
@@ -471,8 +540,8 @@ function parseTagObject(text) {
 // owed an exemption for it.
 function readPushingIdentity() {
   const env = envWithoutConfigOverrides(process.env);
-  const name = spawnSync('git', ['config', '--get', 'user.name'], { encoding: 'latin1', maxBuffer: GIT_MAX_BUFFER, env });
-  const email = spawnSync('git', ['config', '--get', 'user.email'], { encoding: 'latin1', maxBuffer: GIT_MAX_BUFFER, env });
+  const name = spawnSync('git', ['--no-replace-objects', 'config', '--get', 'user.name'], { encoding: 'latin1', maxBuffer: GIT_MAX_BUFFER, env });
+  const email = spawnSync('git', ['--no-replace-objects', 'config', '--get', 'user.email'], { encoding: 'latin1', maxBuffer: GIT_MAX_BUFFER, env });
   if (name.error || name.status !== 0 || email.error || email.status !== 0) return null;
   const readName = (name.stdout ?? '').replace(/\n+$/, '');
   const readEmail = (email.stdout ?? '').replace(/\n+$/, '');
@@ -571,6 +640,35 @@ export async function runScanBlobs(argv, io, { metadataBatch = METADATA_BATCH } 
       io.stderr.write(`    ...and ${result.total - result.matches.length} more match(es) not shown.\n`);
     }
     return false;
+  };
+
+  // The catch-all channel: see headerResidue above for why it is a block
+  // and not a seventh field.
+  //
+  // WHAT IS WITHHELD, and the label says exactly that much and no more.
+  // This is the MESSAGE channels' shape, not the PATH channel's: nothing
+  // here re-derives or re-prints the block, and what the maintainer sees
+  // is only leak.mjs's own per-match line, whose excerpt already replaces
+  // the matched text with a fixed label and keeps the neutral pattern
+  // name. A path is different because a path is printed in FULL, by this
+  // module, in every later message about that blob, which is why that one
+  // channel carries its own redaction and says so. Claiming "the headers
+  // are withheld" here would have been false in the one direction that
+  // matters: the excerpt does show the bytes AROUND a match, exactly as it
+  // does for a commit message, and a label that oversells the contract is
+  // how somebody ends up trusting it for something it never promised.
+  //
+  // A header block can hold SEVERAL matches. Each gets its own line under
+  // this one channel, capped and counted by scanText exactly as every
+  // other channel here caps and counts (leak.mjs's DEFAULT_MAX, then the
+  // "...and N more" line). One match already refuses the push, so the cap
+  // decides how much is reported, never whether it is caught, and a header
+  // block is not special enough to deserve a second reporting rule.
+  const scanHeaderBlock = (headerText, scannedIdentities, objectLabel) => {
+    scan(
+      headerResidue(headerText, scannedIdentities),
+      `the header block of ${objectLabel} (OBJECT HEADER)`,
+    );
   };
 
   // A PUSHED REF DOES NOT HAVE TO NAME A COMMIT, and this is what happens
@@ -760,6 +858,17 @@ export async function runScanBlobs(argv, io, { metadataBatch = METADATA_BATCH } 
         const tag = parseTagObject(body.stdout ?? '');
         scan(tag.message, `the message of tag object ${short} (TAG MESSAGE)`);
         scan(tag.tagger, `the tagger of tag object ${short} (TAGGER IDENTITY)`);
+        // Every tag object git writes begins with `object`, `type` and
+        // `tag` headers, so an EMPTY block is not "a tag with nothing in
+        // its headers", it is a tag object this module failed to read.
+        // The refusing side of the skip rule, and the same answer the
+        // empty destination name gets.
+        if (tag.headerText === '') {
+          failed = true;
+          io.stderr.write(`pre-push: the tag object ${short} has no header block at all, so this gate cannot read the name it was created under or what it points at; refusing instead of calling it clean.\n`);
+          break;
+        }
+        scanHeaderBlock(tag.headerText, [{ key: 'tagger', value: tag.tagger }], `tag object ${short}`);
         if (tag.target === null) {
           // A tag object git printed, that this module read, and that names
           // no object at all. git does not produce this, which is exactly
@@ -835,6 +944,19 @@ export async function runScanBlobs(argv, io, { metadataBatch = METADATA_BATCH } 
           exemptIfMatched: pushingIdentity !== null && record.committer === pushingIdentity,
         });
       }
+      // Every commit object git writes begins with a `tree` header, so an
+      // empty block is an unread object rather than an object with nothing
+      // in it. Refuses, like the tag above.
+      if (record.headerText === '') {
+        failed = true;
+        io.stderr.write(`pre-push: commit ${short} has no header block at all, so this gate cannot read the headers it publishes; refusing instead of calling it clean.\n`);
+        continue;
+      }
+      scanHeaderBlock(
+        record.headerText,
+        [{ key: 'author', value: record.author }, { key: 'committer', value: record.committer }],
+        `commit ${short}`,
+      );
     }
   }
 

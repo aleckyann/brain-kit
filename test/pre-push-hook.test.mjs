@@ -789,6 +789,304 @@ test('a TAGGER identity carrying a pattern is refused', () => {
   assert.doesNotMatch(r.stderr, /hunter2corp/i);
 });
 
+// --- the whole HEADER BLOCK ----------------------------------------------
+//
+// The six channels before this one were each found by naming a FIELD, and
+// the naming was wrong twice: the round that added the reference name
+// discovered, inside itself, that an annotated tag records the name it was
+// created under inside the object, so renaming on the way out (the remedy
+// that round recommended) passed the reference-name channel and published
+// the bad name anyway. These pin the block scan that replaces the list.
+
+test('a tag created under a matching NAME is refused even when it is pushed to a clean destination name', () => {
+  // The exact shape that got through before this channel existed: the
+  // reference-name channel sees only "v9", which is clean, and the tag
+  // object carries "Hunter2Corp-release" in its own `tag` header, which
+  // lands on the remote where cat-file prints it.
+  const { work, patterns, bare } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  assert.equal(git(work, ['tag', '-a', 'Hunter2Corp-release', '-m', 'an ordinary release']).status, 0);
+
+  const r = git(work, ['push', '-q', 'origin', 'refs/tags/Hunter2Corp-release:refs/tags/v9'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in the header block of tag object [0-9a-f]{7} \(OBJECT HEADER\)/);
+  assert.doesNotMatch(r.stderr, /hunter2corp/i);
+  // And nothing reached the remote under either name.
+  const listed = spawnSync('git', ['--git-dir', bare, 'for-each-ref', '--format=%(refname)'], { encoding: 'utf8' });
+  assert.equal(listed.status, 0);
+  assert.doesNotMatch(listed.stdout, /v9|Hunter2Corp/i);
+});
+
+test('an unenumerated commit header carrying a pattern is refused, which is the point of scanning the block rather than a list of fields', () => {
+  // `encoding` is a real header git itself writes, and it was not on the
+  // list of fields this gate used to read. Nothing about the fix depends on
+  // it being THIS header: it stands in for every header nobody enumerated.
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+
+  const parent = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  const tree = git(work, ['rev-parse', 'HEAD^{tree}']).stdout.trim();
+  const object = [
+    `tree ${tree}`,
+    `parent ${parent}`,
+    'author t <t@example.com> 1700000000 +0000',
+    'committer t <t@example.com> 1700000000 +0000',
+    'encoding Hunter2Corp-1',
+    '',
+    'a perfectly ordinary message',
+    '',
+  ].join('\n');
+  const written = spawnSync('git', ['hash-object', '-t', 'commit', '-w', '--stdin', '--literally'], { cwd: work, input: object, encoding: 'utf8' });
+  assert.equal(written.status, 0, written.stderr);
+  const sha = written.stdout.trim();
+
+  const r = git(work, ['push', '-q', 'origin', `${sha}:refs/heads/side`], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in the header block of commit [0-9a-f]{7} \(OBJECT HEADER\)/);
+  assert.doesNotMatch(r.stderr, /hunter2corp/i);
+});
+
+test('the block scan does not deadlock the maintainer whose own name is in their own pattern list', () => {
+  // The exemption round two built lives on the AUTHOR and COMMITTER
+  // channels, and an identity line sits INSIDE the header block, so a naive
+  // whole-block scan would see the pushing identity in every commit and
+  // refuse every push forever with no remedy but --no-verify. The block
+  // scans the RESIDUE: the exact text those channels already scanned is
+  // taken out of it first, so the exemption still decides that case and
+  // still says so.
+  const { work, patterns } = setupSelfNamedMaintainer();
+  writeFileSync(join(work, 'README.md'), 'hello world\n');
+  assert.equal(gitAs(work, ['add', 'README.md']).status, 0);
+  assert.equal(gitAs(work, ['commit', '-q', '-m', 'a clean message']).status, 0);
+  const r = gitAs(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /the author of commit [0-9a-f]{7} \(AUTHOR IDENTITY\) matches a pattern, but it is exactly the identity this push is being made under/);
+  assert.doesNotMatch(r.stderr, /OBJECT HEADER/);
+  assert.doesNotMatch(r.stderr, /hunter2corp/i);
+});
+
+test('an identity that is NOT the pushing one is reported once, by the channel that names the remedy, and not a second time by the block', () => {
+  // Every byte of the object is scanned exactly once, by the most specific
+  // channel that covers it. Two findings for one leak would train whoever
+  // reads the output to skim it, and the vaguer of the two says less about
+  // what to do.
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'a clean message', {
+    GIT_AUTHOR_NAME: 'Hunter2Corp Admin', GIT_AUTHOR_EMAIL: 'admin@example.invalid',
+  });
+  const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in the author of commit [0-9a-f]{7} \(AUTHOR IDENTITY\)/);
+  assert.doesNotMatch(r.stderr, /OBJECT HEADER/);
+  assert.doesNotMatch(r.stderr, /hunter2corp/i);
+});
+
+test('a leak in the MESSAGE is reported by the message channel only, because the block ends where the message begins', () => {
+  // The other half of scanning each byte once. The block runs to the first
+  // empty line and the message starts after it, so the two are disjoint by
+  // construction; a block that ran to the end of the object would report
+  // every message leak twice, under a channel that says less about what to
+  // do than the one that already covers it.
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'cut for Hunter2Corp');
+  const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in the message of commit [0-9a-f]{7} \(COMMIT MESSAGE\)/);
+  assert.doesNotMatch(r.stderr, /OBJECT HEADER/);
+  assert.doesNotMatch(r.stderr, /hunter2corp/i);
+});
+
+test('the identity is removed only from the header line that declares it, so the same text elsewhere in the block is still scanned', () => {
+  // The narrow edge of the removal, and the only construction that tells
+  // an anchored removal from an unanchored one. The pushing identity is
+  // exempt on the AUTHOR channel because no rewrite can change who
+  // authored a commit. A header that merely CONTAINS the same text is not
+  // that: it is ordinary content, it is rewritable, and it is owed no
+  // exemption. An unanchored removal would take it out of the block on the
+  // strength of a match elsewhere and the push would pass in silence.
+  const { work, patterns } = setupSelfNamedMaintainer();
+  writeFileSync(join(work, 'README.md'), 'hello world\n');
+  assert.equal(gitAs(work, ['add', 'README.md']).status, 0);
+  assert.equal(gitAs(work, ['commit', '-q', '-m', 'a clean message']).status, 0);
+  assert.equal(gitAs(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+
+  const identity = 'Hunter2Corp Admin <hunter2corp-admin@example.invalid>';
+  const parent = gitAs(work, ['rev-parse', 'HEAD']).stdout.trim();
+  const tree = gitAs(work, ['rev-parse', 'HEAD^{tree}']).stdout.trim();
+  const object = [
+    `tree ${tree}`,
+    `parent ${parent}`,
+    `author ${identity} 1700000000 +0000`,
+    `committer ${identity} 1700000000 +0000`,
+    `encoding ${identity}`,
+    '',
+    'a perfectly ordinary message',
+    '',
+  ].join('\n');
+  const written = spawnSync('git', ['hash-object', '-t', 'commit', '-w', '--stdin', '--literally'], { cwd: work, input: object, encoding: 'utf8' });
+  assert.equal(written.status, 0, written.stderr);
+
+  const r = gitAs(work, ['push', '-q', 'origin', `${written.stdout.trim()}:refs/heads/edge`], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in the header block of commit [0-9a-f]{7} \(OBJECT HEADER\)/);
+  // And the author line itself is still exempt, so this is the edge and
+  // not the exemption quietly ceasing to work.
+  assert.match(r.stderr, /\(AUTHOR IDENTITY\) matches a pattern, but it is exactly the identity this push is being made under/);
+  assert.doesNotMatch(r.stderr, /hunter2corp/i);
+});
+
+test('a mergetag, whose continuation lines embed a whole tag object, is inside the block and is scanned', () => {
+  // The case built to break the "headers end at the first empty line"
+  // contract. A mergetag embeds an entire tag object, message and all, and
+  // a tag object has a blank line before its message; if that blank line
+  // reached the block splitter as a blank line, the header block would be
+  // cut short and everything after it read as the commit message instead.
+  // It does not, because git prefixes every continuation line with a
+  // space, so the "blank" line inside a mergetag is a line with one space
+  // on it. This is that contract measured rather than assumed, with the
+  // pattern past the point where a wrong split would have stopped.
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  const parent = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  const tree = git(work, ['rev-parse', 'HEAD^{tree}']).stdout.trim();
+  const object = [
+    `tree ${tree}`,
+    `parent ${parent}`,
+    'author t <t@example.com> 1700000000 +0000',
+    'committer t <t@example.com> 1700000000 +0000',
+    'mergetag object 0000000000000000000000000000000000000000',
+    ' type commit',
+    ' tag Hunter2Corp-cut',
+    ' tagger t <t@example.com> 1700000000 +0000',
+    ' ',
+    ' an ordinary release',
+    '',
+    'an ordinary merge',
+    '',
+  ].join('\n');
+  const written = spawnSync('git', ['hash-object', '-t', 'commit', '-w', '--stdin', '--literally'], { cwd: work, input: object, encoding: 'utf8' });
+  assert.equal(written.status, 0, written.stderr);
+
+  const r = git(work, ['push', '-q', 'origin', `${written.stdout.trim()}:refs/heads/merged`], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in the header block of commit [0-9a-f]{7} \(OBJECT HEADER\)/);
+  assert.doesNotMatch(r.stderr, /hunter2corp/i);
+});
+
+test('a tag object with no header block at all REFUSES rather than passing with nothing to scan', () => {
+  // Every tag object git writes opens with `object`, `type` and `tag`, so
+  // an empty block is not a tag with empty headers, it is a tag this module
+  // failed to read, and reading nothing is the one thing this gate must
+  // never call clean. Built with --literally because git will not write one
+  // of these on its own.
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  const written = spawnSync('git', ['hash-object', '-t', 'tag', '-w', '--stdin', '--literally'], {
+    cwd: work, input: '\n\na message with no headers before it\n', encoding: 'utf8',
+  });
+  assert.equal(written.status, 0, written.stderr);
+  const sha = written.stdout.trim();
+
+  const r = git(work, ['push', '-q', 'origin', `${sha}:refs/tags/broken`], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /has no header block at all/);
+});
+
+test('an ordinary annotated tag and an ordinary commit still push, so the block scan is a scanner and not a ban on headers', () => {
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['tag', '-a', 'v1', '-m', 'an ordinary release']).status, 0);
+  const r = git(work, ['push', '-q', 'origin', 'main', 'v1'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 0, r.stderr);
+  assert.doesNotMatch(r.stderr, /OBJECT HEADER/);
+});
+
+// --- what the gate ASKS, and whether git answers about the right object ---
+
+test('a replaced object does not let the gate scan one commit while the remote receives another', () => {
+  // `git replace` installs a ref under refs/replace/ and every ordinary git
+  // read then reports the replacement wherever the original was asked
+  // about; `git push` sends the object that is really there. So the gate
+  // scanned a clean stand-in and the remote received the real thing, with
+  // exit 0 and no output, using one ordinary command and no edit to the
+  // gate at all. Both halves pass --no-replace-objects now, and this is the
+  // measurement that says so.
+  const { work, patterns, bare } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+
+  commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'a clean message');
+  const dirty = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  assert.equal(git(work, ['reset', '-q', '--hard', 'HEAD~1']).status, 0);
+  commit(work, 'notes.md', 'nothing of interest here\n', 'a clean message');
+  const stand = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  assert.equal(git(work, ['reset', '-q', '--hard', dirty]).status, 0);
+  assert.equal(git(work, ['replace', dirty, stand]).status, 0);
+  // The replacement really is in force for an ordinary read, or this test
+  // would pass for the wrong reason.
+  assert.match(git(work, ['show', `${dirty}:notes.md`]).stdout, /nothing of interest/);
+
+  const r = git(work, ['push', '-q', 'origin', `${dirty}:refs/heads/side`], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in notes\.md \(CONTENT/);
+  assert.doesNotMatch(r.stderr, /hunter2corp/i);
+  const listed = spawnSync('git', ['--git-dir', bare, 'for-each-ref', '--format=%(refname)'], { encoding: 'utf8' });
+  assert.doesNotMatch(listed.stdout, /side/);
+});
+
+test('a replaced object whose stand-in changes NOTHING is still scanned, which only the hook half can save', () => {
+  // The scanner's own --no-replace-objects cannot save this one, because
+  // the scanner is never asked. The HOOK is what runs diff-tree to decide
+  // which files a commit changed, and under a replacement whose stand-in
+  // changes nothing at all, diff-tree lists nothing, the work list is
+  // empty, and an empty work list is a clean push. So the hook's own
+  // export is load-bearing on its own, and this is the shape that says so.
+  const { work, patterns, bare } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  const base = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+
+  commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'a clean message');
+  const dirty = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  assert.equal(git(work, ['reset', '-q', '--hard', base]).status, 0);
+  // An EMPTY commit on the same parent: same tree as the base, so
+  // diff-tree against its parent produces no entries at all.
+  assert.equal(git(work, ['commit', '-q', '--allow-empty', '-m', 'a clean message']).status, 0);
+  const stand = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  assert.equal(git(work, ['replace', dirty, stand]).status, 0);
+  assert.equal(git(work, ['diff-tree', '-r', '--name-only', '--no-commit-id', dirty]).stdout.trim(), '');
+
+  const r = git(work, ['push', '-q', 'origin', `${dirty}:refs/heads/quiet`], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in notes\.md \(CONTENT/);
+  assert.doesNotMatch(r.stderr, /hunter2corp/i);
+  const listed = spawnSync('git', ['--git-dir', bare, 'for-each-ref', '--format=%(refname)'], { encoding: 'utf8' });
+  assert.doesNotMatch(listed.stdout, /quiet/);
+});
+
+test('a replaced TAG object does not hide the name the tag was really created under', () => {
+  // The same trick aimed at the channel this round added: replace the
+  // dirty tag object with a clean one so cat-file reports clean headers,
+  // and push the dirty one.
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  assert.equal(git(work, ['tag', '-a', 'Hunter2Corp-cut', '-m', 'an ordinary release']).status, 0);
+  assert.equal(git(work, ['tag', '-a', 'ordinary-cut', '-m', 'an ordinary release']).status, 0);
+  const dirty = git(work, ['rev-parse', 'refs/tags/Hunter2Corp-cut']).stdout.trim();
+  const stand = git(work, ['rev-parse', 'refs/tags/ordinary-cut']).stdout.trim();
+  assert.equal(git(work, ['replace', dirty, stand]).status, 0);
+
+  const r = git(work, ['push', '-q', 'origin', `${dirty}:refs/tags/v10`], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in the header block of tag object [0-9a-f]{7} \(OBJECT HEADER\)/);
+  assert.doesNotMatch(r.stderr, /hunter2corp/i);
+});
+
 // --- the toolchain the gate runs -----------------------------------------
 
 test('an uncommitted edit to the scanner does not weaken the gate', () => {
@@ -1308,6 +1606,33 @@ test('scan-blobs refuses a blob carrying a pattern and accepts one that does not
   // NEVER PRINT WHAT IT FOUND (leak.mjs's own contract): the personal
   // pattern's own matched text never reaches this output.
   assert.doesNotMatch(r.stderr, /Hunter2Corp/i);
+});
+
+test('scan-blobs refuses a replaced object on its own, without the hook having exported anything', () => {
+  // The two halves each carry this guarantee. The hook exports
+  // GIT_NO_REPLACE_OBJECTS, which the scanner would inherit as a child, so
+  // a test that goes through the hook cannot tell whether the scanner's
+  // own --no-replace-objects does anything. This one invokes the scanner
+  // directly, with nothing exported, which is also the real case of an
+  // engine snapshot newer or older than the hook beside it.
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'dirty');
+  const dirty = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  assert.equal(git(work, ['reset', '-q', '--hard', 'HEAD~1']).status, 0);
+  commit(work, 'notes.md', 'nothing of interest here\n', 'a clean stand-in');
+  const stand = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  assert.equal(git(work, ['replace', dirty, stand]).status, 0);
+  assert.match(git(work, ['show', `${dirty}:notes.md`]).stdout, /nothing of interest/);
+
+  // Nothing exported: this process never set GIT_NO_REPLACE_OBJECTS, so
+  // the only thing standing between the scanner and the stand-in is the
+  // flag on its own git calls.
+  assert.equal(process.env.GIT_NO_REPLACE_OBJECTS, undefined);
+  const r = scanBlobs(work, blobRecord(dirty, 'notes.md'), { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in notes\.md \(CONTENT/);
+  assert.doesNotMatch(r.stderr, /hunter2corp/i);
 });
 
 test('scan-blobs accepts a push where every blob is clean, printing nothing', () => {
