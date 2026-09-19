@@ -48,6 +48,10 @@ The reference vault's own guards, which exist as shell and as habit rather than 
 
 The lesson those five rounds taught, and the reason the scanner moves: **every hole was a status nobody read or a set nobody enumerated**, which is what shell makes easy. In Node, reading a blob or walking a set raises instead of returning empty.
 
+**The Node-shaped sequel to that lesson, written down the day this slice found it.** Moving to Node removes the unread status and nothing else. The holes that remain all have status ZERO: a command that succeeded while printing something the parser cannot read, or a reference that was valid and wrong. A diff of a file git decided is binary exits 0 with no hunk at all. A merge base against a branch that happens to be the current one exits 0 with an empty range. So the rule for this slice is stronger than checking a status: **when a command succeeds and returns nothing, prove that nothing is the right answer before believing it.**
+
+**And the scope is a UNION, never a choice between bases.** The automatic mode adds together what the branch committed, what the working tree changed and what is untracked. An either/or lets one unrelated scratch file flip the scope and hide every committed line on a branch, which is how a secret added today leaves the scope in the DEFAULT setting. A union can only over-include, and over-including is this project's stated direction when in doubt.
+
 ## File Structure
 
 | File | Responsibility |
