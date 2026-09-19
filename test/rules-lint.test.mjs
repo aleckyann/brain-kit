@@ -1558,10 +1558,15 @@ test('secrets reports a secret-shaped pattern only on the line this change added
   assert.equal(findings[0].line, 2);
   assert.equal(findings[0].check, 'secret-pattern');
   assert.equal(findings[0].params.pattern, 'AKIA[0-9A-Z]{16}', 'the param is the PATTERN definition (public, safe), never the matched text');
+  // Fix round 2: this file's scope IS a real added-lines Set (not the
+  // whole file), so the message correctly claims the narrower thing:
+  // an added line, specifically, matched.
+  assert.equal(findings[0].messageKey, 'lint.secrets.pattern_matched');
 
   const rendered = renderedMessage(findings[0]);
   const secretPattern = new RegExp(awsKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
   assert.doesNotMatch(rendered, secretPattern, 'the rendered message must never contain the matched secret text itself');
+  assert.match(rendered, /added line/, 'this file was scoped to added lines, and the message must say so');
   assert.match(rendered, /SECURITY\.md/, 'the message must point at the incident-response document');
 });
 
@@ -1572,6 +1577,12 @@ test('a secret on an untracked file is reported: an untracked file has every lin
   const config = { privacy: { secret_patterns: [] } }; // avoid double-counting against the example config's own overlapping AKIA pattern
   const findings = findingsFor({ files, scope, config }).filter(isLint('secrets'));
   assert.equal(findings.length, 1);
+  // Fix round 2: this file's scope is the WHOLE file (an untracked note,
+  // addedLines null), so the message must not claim the match sits on a
+  // line this change "added" - it says merely that a line matches,
+  // because that is all this run actually knows.
+  assert.equal(findings[0].messageKey, 'lint.secrets.pattern_matched_full');
+  assert.doesNotMatch(renderedMessage(findings[0]), /added line/);
 });
 
 test('a file with nothing added at all in this change is skipped entirely, even when it carries a secret-shaped pattern elsewhere', () => {

@@ -203,6 +203,8 @@ function scopeMessage(t, base) {
       return t('lint.scope.auto_no_default_branch');
     case 'auto-on-default-branch':
       return t('lint.scope.auto_on_default_branch');
+    case 'auto-on-default-branch-clean':
+      return t('lint.scope.auto_on_default_branch_clean');
     default:
       throw new Error(`brain-kit: unrecognised scope reason "${base.reason}"`);
   }

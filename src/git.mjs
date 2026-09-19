@@ -245,6 +245,21 @@ function resolveMergeBase(root, requested, reason) {
 // spaces, is what lets committed branch work and uncommitted worktree
 // work show up together correctly even when a file carries both.
 //
+// One exception, fix round 2: on the default branch, with a clean tree
+// and nothing untracked, `auto` resolves to `all` rather than a real but
+// EMPTY union. A union with nothing in it is not a narrower answer than
+// "everything", it is the SAME failure the union was built to fix, one
+// step removed: a vault whose only note already carries a committed
+// secret, checked from a clean default-branch checkout (a person's first
+// run), has nothing left to union over, and reporting that honestly as
+// "nothing changed" is indistinguishable on screen from a genuine clean
+// bill of health. Where there is no change to scope to, the honest scope
+// is everything, because that is what "lint my vault" means when there
+// is nothing more specific to mean. A real uncommitted edit or a new
+// untracked note on the default branch is still a genuine, narrower
+// change, and stays a real `auto` union exactly as before; only the
+// truly-nothing-to-union case widens.
+//
 // A repository with no commit yet, and a repository this reader cannot
 // even confirm is a git repository, both degrade to `all`, never an
 // error: a vault is markdown first and a repository second. `reason` is a
@@ -285,12 +300,32 @@ export function resolveBase(root, requested) {
     }
     return { kind: 'auto', requested, reason: 'auto-merge-base-unavailable', anchor: 'HEAD' };
   }
-  return {
-    kind: 'auto',
-    requested,
-    reason: defaultBranch === null ? 'auto-no-default-branch' : 'auto-on-default-branch',
-    anchor: 'HEAD',
-  };
+  if (defaultBranch === null) {
+    return { kind: 'auto', requested, reason: 'auto-no-default-branch', anchor: 'HEAD' };
+  }
+  // Genuinely on the default branch (not merely a checkout tool's
+  // mis-set symref claiming so, per the guard above). Fix round 2:
+  // measured against a vault whose only note carried an access key,
+  // committed on the default branch with a clean tree and nothing
+  // untracked. `auto` used to answer this exactly like every other
+  // "on the default branch" state, diffing HEAD against the worktree
+  // and finding nothing, because there WAS nothing left to diff: the
+  // secret was already fully committed. It reported that honestly
+  // ("checking what differs from HEAD, plus any untracked file") and
+  // the honesty was the problem, not the accuracy: a person's first run
+  // is exactly this shape, on their own main branch with nothing
+  // uncommitted, and a tool that answers "I checked nothing" to "lint my
+  // vault" is useless however truthfully it says so. Where there is no
+  // change to scope TO, the honest scope is everything, because that is
+  // what the question means. This is checked directly, not inferred from
+  // "on the default branch" alone: a real uncommitted edit or a new
+  // untracked note on the default branch is still a real, narrower
+  // change worth scoping to exactly as before, and stays `auto`.
+  const nothingChanged = diffNameOnly(root, ['HEAD']).length === 0 && untrackedPaths(root).length === 0;
+  if (nothingChanged) {
+    return { kind: 'all', requested, reason: 'auto-on-default-branch-clean' };
+  }
+  return { kind: 'auto', requested, reason: 'auto-on-default-branch', anchor: 'HEAD' };
 }
 
 // The de-duplicated, sorted union of several path lists, used wherever a

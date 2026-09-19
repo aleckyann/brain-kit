@@ -358,10 +358,19 @@ test('a default branch that turns out to be the branch already checked out degra
   assert.equal(explicit.kind, 'all');
   assert.equal(explicit.reason, 'merge-base-same-as-current');
 
+  // Fix round 2: a fresh single-branch clone is exactly a clean tree with
+  // nothing untracked, so auto's own "nothing left to compare against"
+  // rule (the fix for a person's first run on a genuine default branch)
+  // applies here too, for the identical reason: this mis-set symref is
+  // locally indistinguishable from genuinely standing on the default
+  // branch, and the same "checked nothing" failure would result either
+  // way. Falling back to "all" is a welcome side effect of that fix, not
+  // a separate one: it means this exact shape no longer silently reports
+  // an empty scope, it reports the whole vault instead.
   const auto = resolveBase(root, 'auto');
-  assert.equal(auto.kind, 'auto');
-  assert.equal(auto.anchor, 'HEAD');
-  assert.notEqual(auto.reason, 'auto-since-merge-base');
+  assert.equal(auto.kind, 'all');
+  assert.equal(auto.reason, 'auto-on-default-branch-clean');
+  assert.equal(changedPaths(root, auto), null); // everything is in scope, not merely nothing
 });
 
 // --- auto: a union, never a choice ---------------------------------------
@@ -420,19 +429,59 @@ test('auto anchors at the merge base when the tree is clean and the branch is no
   assert.ok(changedPaths(root, base).includes('notes.md'));
 });
 
-test('auto anchors at HEAD, and stays a real (non-"all") union, when the tree is clean and the branch is the default', () => {
+// Fix round 2, CRITICAL, corrects a mistake ratified in fix round 1's own
+// report: a clean checkout of the default branch, with nothing untracked
+// either, has nothing left for the union to be a union OF. Measured
+// directly: a vault whose only note already carries a committed secret,
+// checked from exactly this state (a person's first run), reported zero
+// findings and said so with no more caveat than a run that genuinely
+// checked everything. Falling back to "all" here is not a narrower
+// answer than the union, it is the honest one: there is no change to
+// scope to, so the scope the question actually means is everything.
+test('auto resolves to "all", not an empty union, when the tree is clean on the default branch with nothing untracked', () => {
   const root = initRepo();
   writeAndCommit(root, 'index.md', 'root\n', 'init');
   writeAndCommit(root, 'untouched.md', 'never touched again\n', 'seed');
 
   const base = resolveBase(root, 'auto');
+  assert.equal(base.kind, 'all');
+  assert.equal(base.reason, 'auto-on-default-branch-clean');
+  assert.equal(changedPaths(root, base), null);
+  assert.equal(addedLines(root, base, 'untouched.md'), null);
+});
+
+// The one-exception is exactly that narrow: a REAL uncommitted edit or a
+// new untracked note on the default branch is still a genuine, narrower
+// change, and must stay a real `auto` union exactly as fix round 1 built
+// it, not widen to "all" just because the branch happens to be the
+// default one.
+test('auto stays a real union on the default branch when there IS an uncommitted change to scope to', () => {
+  const root = initRepo();
+  writeAndCommit(root, 'index.md', 'root\n', 'init');
+  writeAndCommit(root, 'untouched.md', 'never touched again\n', 'seed');
+  writeFileSync(join(root, 'index.md'), 'root\nan uncommitted edit\n');
+
+  const base = resolveBase(root, 'auto');
   assert.equal(base.kind, 'auto');
   assert.equal(base.reason, 'auto-on-default-branch');
   assert.equal(base.anchor, 'HEAD');
-  // Nothing has changed, so the union is empty, not "everything": this is
-  // the fix for the pre-review design, which used to fall back to
-  // scanning the whole vault here and would have flagged "untouched.md".
-  assert.deepEqual(changedPaths(root, base), []);
+  const changed = changedPaths(root, base);
+  assert.ok(changed.includes('index.md'));
+  assert.ok(!changed.includes('untouched.md'), 'a file this edit never touched must stay out of scope');
+});
+
+test('auto stays a real union on the default branch when there is nothing uncommitted but a new file is untracked', () => {
+  const root = initRepo();
+  writeAndCommit(root, 'index.md', 'root\n', 'init');
+  writeAndCommit(root, 'untouched.md', 'never touched again\n', 'seed');
+  writeFileSync(join(root, 'fresh.md'), 'a brand new untracked note\n');
+
+  const base = resolveBase(root, 'auto');
+  assert.equal(base.kind, 'auto');
+  assert.equal(base.reason, 'auto-on-default-branch');
+  const changed = changedPaths(root, base);
+  assert.ok(changed.includes('fresh.md'));
+  assert.ok(!changed.includes('untouched.md'));
 });
 
 test('auto falls back to a plain HEAD anchor, not "all", when the tree is clean but no default branch can be identified', () => {

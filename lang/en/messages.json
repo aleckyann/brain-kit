@@ -75,6 +75,7 @@
   "lint.tables.cell_too_long": "cell {index} has {length} characters, over the configured maximum of {max}; this change touched the table, so the whole table was checked, not just the lines it added",
   "lint.style.forbidden_char": "this line was added by this change and uses the forbidden character \"{char}\"; style only judges lines a change added, not prose that was already in the vault",
   "lint.secrets.pattern_matched": "an added line matches a secret-shaped pattern ({pattern}); never paste, print or share the matched text, rotate the credential now and follow the incident response steps in SECURITY.md",
+  "lint.secrets.pattern_matched_full": "a line matches a secret-shaped pattern ({pattern}); never paste, print or share the matched text, rotate the credential now and follow the incident response steps in SECURITY.md",
   "lint.secrets.truncated": "this file carries more secret-shaped matches on added lines than could be listed: {shown} shown out of {total} found; treat every one as leaked, not only the ones named above, and follow SECURITY.md",
   "lint.privacy.linked_into_confidential": "this file sits outside every confidential directory but links into one (\"{target}\"), exposing a confidential note from a place meant to be shared more broadly",
   "lint.privacy.confidential_outside": "this note carries confidential: true but sits outside every directory the configuration marks confidential",
@@ -115,5 +116,6 @@
   "lint.scope.auto_since_merge_base": "Scope: \"auto\", checking everything committed since the merge base with \"{defaultBranch}\", plus the current worktree and any untracked file.",
   "lint.scope.auto_merge_base_unavailable": "Scope: \"auto\", but no usable merge base was found, checking what differs from HEAD, plus any untracked file.",
   "lint.scope.auto_no_default_branch": "Scope: \"auto\", but no default branch could be identified, checking what differs from HEAD, plus any untracked file.",
-  "lint.scope.auto_on_default_branch": "Scope: \"auto\", already on the default branch, checking what differs from HEAD, plus any untracked file."
+  "lint.scope.auto_on_default_branch": "Scope: \"auto\", already on the default branch, checking what differs from HEAD, plus any untracked file.",
+  "lint.scope.auto_on_default_branch_clean": "Scope: \"auto\", already on the default branch with nothing left to compare against (a clean tree, nothing untracked), so the whole vault was checked, every line."
 }

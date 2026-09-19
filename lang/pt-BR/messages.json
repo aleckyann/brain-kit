@@ -75,6 +75,7 @@
   "lint.tables.cell_too_long": "a célula {index} tem {length} caracteres, acima do máximo configurado de {max}; esta mudança tocou a tabela, então a tabela inteira foi verificada, não apenas as linhas que ela adicionou",
   "lint.style.forbidden_char": "esta linha foi adicionada por esta mudança e usa o caractere proibido \"{char}\"; o estilo só julga linhas que a mudança adicionou, não a prosa que já existia no vault",
   "lint.secrets.pattern_matched": "uma linha adicionada bate com um padrão de segredo ({pattern}); nunca cole, imprima ou compartilhe o texto correspondente, revogue a credencial agora e siga os passos de resposta a incidente em SECURITY.md",
+  "lint.secrets.pattern_matched_full": "uma linha bate com um padrão de segredo ({pattern}); nunca cole, imprima ou compartilhe o texto correspondente, revogue a credencial agora e siga os passos de resposta a incidente em SECURITY.md",
   "lint.secrets.truncated": "este arquivo carrega mais correspondências com formato de segredo em linhas adicionadas do que puderam ser listadas: {shown} mostradas de {total} encontradas; trate todas como vazadas, não só as nomeadas acima, e siga o SECURITY.md",
   "lint.privacy.linked_into_confidential": "este arquivo está fora de todo diretório confidencial, mas linka para um (\"{target}\"), expondo uma nota confidencial a partir de um lugar pensado para ser compartilhado mais amplamente",
   "lint.privacy.confidential_outside": "esta nota carrega confidential: true, mas fica fora de todo diretório que a configuração marca como confidencial",
@@ -115,5 +116,6 @@
   "lint.scope.auto_since_merge_base": "Escopo: \"auto\", verificando tudo que foi commitado desde o merge base com \"{defaultBranch}\", mais o worktree atual e qualquer arquivo não rastreado.",
   "lint.scope.auto_merge_base_unavailable": "Escopo: \"auto\", mas nenhum merge base utilizável foi encontrado, verificando o que diverge do HEAD, mais qualquer arquivo não rastreado.",
   "lint.scope.auto_no_default_branch": "Escopo: \"auto\", mas nenhum branch padrão pôde ser identificado, verificando o que diverge do HEAD, mais qualquer arquivo não rastreado.",
-  "lint.scope.auto_on_default_branch": "Escopo: \"auto\", já no branch padrão, verificando o que diverge do HEAD, mais qualquer arquivo não rastreado."
+  "lint.scope.auto_on_default_branch": "Escopo: \"auto\", já no branch padrão, verificando o que diverge do HEAD, mais qualquer arquivo não rastreado.",
+  "lint.scope.auto_on_default_branch_clean": "Escopo: \"auto\", já no branch padrão sem mais nada para comparar (worktree limpo, nada não rastreado), então o vault inteiro foi verificado, linha por linha."
 }

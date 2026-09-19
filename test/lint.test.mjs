@@ -499,29 +499,70 @@ test('inside a git repository, the default scope (auto) reports only a secret on
   assert.equal(allMatches.length, 2, `expected both the old and the new secret under --base all, got:\n${allResult.stdout}`);
 });
 
-// --- CRITICAL: the verdict must consult scope, never call a partial run "clean" ---
+// --- CRITICAL, fix round 2: a person's first run must not answer "I checked nothing" ---
 //
-// The worst output this tool can produce: a vault whose secret is
-// already committed on the default branch, checked with the DEFAULT
-// scope (auto), which diffs the worktree against HEAD and sees nothing
-// to add here at all, reports zero findings. Before this fix, the
-// verdict said "Result: no findings." with no more caveat than a run
-// that genuinely checked every line, which is indistinguishable, on
-// screen, from an actual clean bill of health.
-test('a secret already committed on the default branch is invisible to the default scope, but the verdict never calls that a plain clean vault; --base all catches it and fails', () => {
+// Measured, not merely reasoned about: a vault whose only note carries an
+// access key, committed on the default branch, with a clean tree and
+// nothing untracked, is EXACTLY a person's first run. The previous round
+// made `auto` an honest union of the branch, the worktree and whatever is
+// untracked, which correctly reported "nothing changed" here, since
+// nothing HAD changed; but "I checked nothing" is not a useful answer to
+// "lint my vault", however honestly it is said. Where there is no change
+// to scope to, the honest scope is everything, which is what the question
+// means: `auto` now matches `--base all` in exactly this one shape.
+test('a secret already committed on a clean default-branch checkout is caught by the default scope too, matching --base all', () => {
   const root = makeGitVault({
     files: { ...cleanFiles(), 'people/ana.md': `${CLEAN_ANA}\nAlready committed, on the default branch: ${fakeAwsKey('OLD1111111111OLD')}\n` },
     config: NO_DOUBLE_COUNT_CONFIG,
   });
 
   const autoResult = run([root]);
-  assert.equal(autoResult.status, EXIT.OK); // nothing NEW to report under the default scope
+  assert.equal(autoResult.status, EXIT.FAILURE);
+  assert.match(autoResult.stdout, /auto/);
+  assert.match(autoResult.stdout, /people\/ana\.md:\d+ {2}secrets\b/);
+  // The whole vault was genuinely checked here (kind "all" under the
+  // hood, src/git.mjs's own auto-on-default-branch-clean), so the plain
+  // failing verdict applies, not the hedged "partial run" one: this run
+  // does not owe a caveat it did not earn.
+  assert.doesNotMatch(autoResult.stdout, /partial run/i);
+
+  const allResult = run(['--base', 'all', root]);
+  assert.equal(allResult.status, EXIT.FAILURE);
+  assert.match(allResult.stdout, /people\/ana\.md:\d+ {2}secrets\b/);
+  assert.equal(
+    autoResult.stdout.match(/people\/ana\.md:\d+ {2}secrets\b/g)?.length,
+    allResult.stdout.match(/people\/ana\.md:\d+ {2}secrets\b/g)?.length,
+  );
+});
+
+// The hedge fix round 2 keeps, still doing real work: a feature branch
+// whose OWN commits never touch the line a secret sits on must still say
+// so honestly. Here the secret predates the branch (it is already part of
+// the shared history with the default branch), so a real, correctly
+// scoped `auto` run has genuinely narrower information than `--base all`,
+// unlike the fixed case above where there was nothing left to be narrower
+// THAN. This is the run the "partial run is not the same as a clean
+// vault" caveat exists for.
+test('a secret that predates a feature branch stays correctly out of the default scope, and the verdict still says the run was partial', () => {
+  const root = makeGitVault({
+    files: { ...cleanFiles(), 'people/ana.md': `${CLEAN_ANA}\nAlready shared with main before this branch existed: ${fakeAwsKey('PRE1111111111PRE')}\n` },
+    config: NO_DOUBLE_COUNT_CONFIG,
+  });
+  assert.equal(git(root, ['checkout', '-q', '-b', 'feature']).status, 0);
+  // Appended to an already-linked, already-clean file, never a brand new
+  // unlinked one: this test is about the SECRETS rule's own scope, and a
+  // new orphan file would also trigger the (unrelated) orphans warning,
+  // muddying which caveat produced the "partial run" text below.
+  const anaPath = join(root, 'people', 'ana.md');
+  writeFileSync(anaPath, `${readFileSync(anaPath, 'utf8')}One more line this branch adds, nothing secret in it.\n`);
+  assert.equal(git(root, ['add', '-A']).status, 0);
+  assert.equal(git(root, ['commit', '-q', '-m', 'extend ana with an unrelated line']).status, 0);
+
+  const autoResult = run([root]);
+  assert.equal(autoResult.status, EXIT.OK); // the branch's own commits never touch ana.md
   assert.match(autoResult.stdout, /auto/);
   assert.doesNotMatch(autoResult.stdout, /people\/ana\.md:\d+ {2}secrets\b/);
-  // The exact confident-wrong claim this fix removes: "no findings" on
-  // its own, with no caveat that this run did not check everything.
-  assert.doesNotMatch(autoResult.stdout, /^Result: no findings\.$/m);
-  assert.match(autoResult.stdout, /did not check everything/);
+  assert.match(autoResult.stdout, /partial run/i);
 
   const allResult = run(['--base', 'all', root]);
   assert.equal(allResult.status, EXIT.FAILURE);
@@ -780,6 +821,7 @@ test('buildReport renders every scope reason resolveBase can produce, and throws
     ['auto-merge-base-unavailable', {}, /auto/],
     ['auto-no-default-branch', {}, /default branch/],
     ['auto-on-default-branch', {}, /default branch/],
+    ['auto-on-default-branch-clean', {}, /default branch/],
   ];
   for (const [reason, extra, pattern] of cases) {
     const { text } = buildReport([], { t: T, base: { kind: 'x', reason, ...extra }, fileCount: 0, skippedIds: [] });

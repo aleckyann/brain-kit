@@ -1337,14 +1337,37 @@ const secrets = {
       // notices"). The whole record is taken now, and `truncated` is
       // surfaced as its own finding, once per file, rather than dropped.
       const { matches, truncated, total } = scanResult;
+      // Fix round 2: this used to say "an added line matches" even when
+      // `addedLines` was null (every line of the file in scope: an
+      // untracked note, or a run whose base is "all"), a leftover from
+      // the scope this rule usually runs under. Two separate literal
+      // messageKey sites below, not one chosen by a ternary or a
+      // computed key, on purpose: test/message-keys.test.mjs derives its
+      // expected key set by parsing this file's own source for a plain
+      // quoted key immediately followed by its own params object, and a
+      // key it cannot see statically is a key it cannot defend, which is
+      // exactly the gap that check exists to catch. (Spelled out here
+      // without the literal field syntax itself, so this very sentence
+      // does not get read as a third, fake site by that same parser.)
       for (const match of matches) {
-        findings.push({
-          file,
-          line: lineNumbers === null ? match.line : lineNumbers[match.line - 1],
-          check: 'secret-pattern',
-          messageKey: 'lint.secrets.pattern_matched',
-          params: { pattern: displaySecretPattern(match) },
-        });
+        const line = lineNumbers === null ? match.line : lineNumbers[match.line - 1];
+        if (addedLines === null) {
+          findings.push({
+            file,
+            line,
+            check: 'secret-pattern',
+            messageKey: 'lint.secrets.pattern_matched_full',
+            params: { pattern: displaySecretPattern(match) },
+          });
+        } else {
+          findings.push({
+            file,
+            line,
+            check: 'secret-pattern',
+            messageKey: 'lint.secrets.pattern_matched',
+            params: { pattern: displaySecretPattern(match) },
+          });
+        }
       }
       if (truncated) {
         findings.push({
