@@ -4,17 +4,18 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
+import { GENERIC_PATTERNS } from '../src/leak.mjs';
 
 // Generic gate that can live in a public CI: it names no one. Personal patterns
 // are enforced by .githooks/pre-push on the maintainer's machine.
-const SECRET_PATTERNS = [
-  /-----BEGIN (RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY-----/,
-  /ghp_[A-Za-z0-9]{20,}/,
-  /github_pat_[A-Za-z0-9_]{20,}/,
-  /sk-ant-[A-Za-z0-9_-]{10,}/,
-  /AKIA[0-9A-Z]{16}/,
-  /xox[baprs]-[A-Za-z0-9-]{10,}/,
-];
+//
+// Compiled from `GENERIC_PATTERNS` in src/leak.mjs rather than carrying a
+// second, hand-copied list of the same six shapes: three uncoordinated
+// copies of the same patterns (this test, the push gate, and the scanner
+// module itself) is exactly the duplication this codebase has already had
+// to fix, in another module, four times over. There is one list; this test
+// and the push gate both read it.
+const SECRET_PATTERNS = GENERIC_PATTERNS.map((raw) => new RegExp(raw, 'i'));
 // gmail.com is not a public-author domain by itself: only this exact address
 // (the maintainer's public GitHub-linked address) is allowlisted, so a future
 // personal gmail.com address does not slip through as "just another gmail".

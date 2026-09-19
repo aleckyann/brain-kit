@@ -105,9 +105,33 @@ if [ ! -s "$PATTERNS_FILE" ]; then
   exit 1
 fi
 
-# Generic patterns, versioned here because they name no one: private keys and
-# well-known token prefixes.
-GENERIC_PATTERNS='-----BEGIN (RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY-----|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-ant-[A-Za-z0-9_-]{10,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}'
+# Generic patterns, private keys and well-known token prefixes that name no
+# one, read from src/leak.mjs's GENERIC_PATTERNS rather than carried here as
+# a second, hand-copied literal: this hook, the Node scanner module and the
+# public anti-leak test used to each carry their own copy of the same six
+# shapes, and three uncoordinated copies of the same list is exactly the
+# duplication this codebase has already had to fix, in another module, four
+# times over. There is one list now; only this hook still reads it through a
+# small Node call, because bash has no other way to import an ES module.
+if ! command -v node >/dev/null 2>&1; then
+  echo "pre-push: node is required to read the generic leak patterns from src/leak.mjs; refusing to push." >&2
+  exit 1
+fi
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ -z "$REPO_ROOT" ]; then
+  echo "pre-push: could not determine the repository root (git rev-parse --show-toplevel failed); refusing to push." >&2
+  exit 1
+fi
+LEAK_MODULE="$REPO_ROOT/src/leak.mjs"
+READ_GENERIC_PATTERNS_SCRIPT='import(process.argv[1]).then(function (m) { process.stdout.write(m.GENERIC_PATTERNS.join("|")); }, function (err) { process.stderr.write(String(err && err.message ? err.message : err) + "\n"); process.exitCode = 1; });'
+if ! GENERIC_PATTERNS="$(node --input-type=module -e "$READ_GENERIC_PATTERNS_SCRIPT" "$LEAK_MODULE")"; then
+  echo "pre-push: could not read the generic leak patterns from $LEAK_MODULE; refusing to push." >&2
+  exit 1
+fi
+if [ -z "$GENERIC_PATTERNS" ]; then
+  echo "pre-push: the generic leak patterns read from $LEAK_MODULE came back empty; refusing to push." >&2
+  exit 1
+fi
 
 ZERO='0000000000000000000000000000000000000000'
 failed=0

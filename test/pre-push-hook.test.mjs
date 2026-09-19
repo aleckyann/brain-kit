@@ -7,6 +7,7 @@ import { join, dirname } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 
 const HOOK = join(KIT_ROOT, '.githooks', 'pre-push');
+const LEAK_MODULE = join(KIT_ROOT, 'src', 'leak.mjs');
 
 function git(cwd, args, env = {}) {
   return spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd, encoding: 'utf8', env: { ...process.env, ...env } });
@@ -21,6 +22,12 @@ function setup() {
   mkdirSync(join(work, '.githooks'));
   copyFileSync(HOOK, join(work, '.githooks', 'pre-push'));
   chmodSync(join(work, '.githooks', 'pre-push'), 0o755);
+  // The hook reads its generic patterns from src/leak.mjs, sibling to
+  // .githooks/ in a real brain-kit checkout, rather than carrying its own
+  // copy: mirror that one relevant file here so the scratch repo resolves
+  // it exactly as the maintainer's real clone does.
+  mkdirSync(join(work, 'src'));
+  copyFileSync(LEAK_MODULE, join(work, 'src', 'leak.mjs'));
   git(work, ['config', 'core.hooksPath', '.githooks']);
   git(work, ['remote', 'add', 'origin', bare]);
   const patterns = join(root, 'patterns.txt');
