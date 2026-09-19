@@ -68,31 +68,16 @@
     },
     "columns": {
       "followups": {
-        "registered": "Logged",
-        "what": "What",
-        "with": "With whom / where",
-        "deadline": "Deadline",
-        "next_step": "Next step",
-        "open_heading": "## Open",
-        "resolved_heading": "## Resolved"
+        "columns": ["Logged", "What", "With whom / where", "Deadline", "Next step"],
+        "labels": { "open_heading": "## Open", "resolved_heading": "## Resolved" }
       },
       "promises": {
-        "made_at": "Made on",
-        "to": "To whom",
-        "what": "What I promised",
-        "condition": "Condition / deadline",
-        "status": "Status",
-        "active_heading": "## Active",
-        "done_heading": "## Done / renegotiated"
+        "columns": ["Made on", "To whom", "What I promised", "Condition / deadline", "Status"],
+        "labels": { "active_heading": "## Active", "done_heading": "## Done / renegotiated" }
       },
       "rituals": {
-        "calendar_title": "Calendar title",
-        "cadence": "Cadence",
-        "time": "Time",
-        "owner": "Owner",
-        "fixed_attendees": "Fixed attendees",
-        "feeds": "Feeds",
-        "feeds_none": "none yet"
+        "columns": ["Calendar title", "Cadence", "Time", "Owner", "Fixed attendees", "Feeds"],
+        "labels": { "feeds_none": "none yet" }
       }
     }
   },

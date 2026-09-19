@@ -106,10 +106,24 @@ const PARITY_CONFIG = {
       execution_system: 'core/sistema-de-execucao.md', style_guide: 'core/diretrizes-de-resposta.md', bootstrap: 'BOOTSTRAP.md',
       strategy_index: 'decisions/index.md', metrics: null, glossary: null,
     },
+    // Split into an ordered "columns" array and a "labels" object (fix
+    // round 1): the flat shape mixed the two, and a real vault's own
+    // follow-ups/promises files have section headings ("## Abertos" /
+    // "## Resolvidos") and a ritual file has placeholder cell text
+    // ("nenhuma ainda") that are not column headings at all.
     columns: {
-      followups: { registered: 'Registrado', what: 'O que', with: 'Com quem / onde', deadline: 'Prazo', next_step: 'Proximo passo', open_heading: '## Abertos', resolved_heading: '## Resolvidos' },
-      promises: { made_at: 'Feita em', to: 'Para quem', what: 'O que prometi', condition: 'Condicao / prazo', status: 'Situacao', active_heading: '## Ativas', done_heading: '## Cumpridas / renegociadas' },
-      rituals: { calendar_title: 'Titulo no calendario', cadence: 'Cadencia', time: 'Horario', owner: 'Dono', fixed_attendees: 'Participantes fixos', feeds: 'Alimenta', feeds_none: 'nenhuma ainda' },
+      followups: {
+        columns: ['Registrado', 'O que', 'Com quem / onde', 'Prazo', 'Proximo passo'],
+        labels: { open_heading: '## Abertos', resolved_heading: '## Resolvidos' },
+      },
+      promises: {
+        columns: ['Feita em', 'Para quem', 'O que prometi', 'Condicao / prazo', 'Situacao'],
+        labels: { active_heading: '## Ativas', done_heading: '## Cumpridas / renegociadas' },
+      },
+      rituals: {
+        columns: ['Titulo no calendario', 'Cadencia', 'Horario', 'Dono', 'Participantes fixos', 'Alimenta'],
+        labels: { feeds_none: 'nenhuma ainda' },
+      },
     },
   },
   frontmatter: {

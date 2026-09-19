@@ -1155,6 +1155,12 @@ test('no-wikilinks flags a double-bracket link when forbidden, but allows it whe
   const findings = findingsFor({ files, config: forbid }).filter((f) => isHouse('no-wikilinks')(f) && f.file === 'people/ana.md');
   assert.equal(findings.length, 1);
   assert.match(renderedMessage(findings[0]), /Bruno/);
+  // The wikilink sits on the first body line (index 0), after a
+  // 3-line frontmatter block, so its absolute line is 4: this pins
+  // forEachWikilink's own prefixLineCount + lineIndex arithmetic
+  // (src/rules/house.mjs, shared with src/rules/lint.mjs's orphan
+  // rule), which nothing in this suite checked before.
+  assert.equal(findings[0].line, 4);
 
   const allow = { validate: { wikilinks: 'allow' } };
   assert.deepEqual(findingsFor({ files, config: allow }).filter(isHouse('no-wikilinks')), []);

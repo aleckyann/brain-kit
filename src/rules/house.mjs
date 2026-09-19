@@ -809,6 +809,34 @@ export function forEachInternalLink(file, context, visit) {
   }
 }
 
+// Iterates every wikilink in `file`'s body, already stripped of fenced
+// and inline code, handing each to `visit(target, fileLine)`. Mirrors
+// forEachInternalLink's own read/split/strip/line-count sequence exactly
+// (this file used to repeat that sequence a second time, inline, inside
+// no-wikilinks below; that copy is gone now, in favour of this one
+// shared function, which no-wikilinks calls too).
+//
+// Exported for src/rules/lint.mjs (fix round 1): a note reached only
+// through a wikilink was reported unreachable by the orphan rule, and
+// validate.wikilinks defaults to "allow", so this was not an edge case
+// missed, it was the default path never covered. `target` is the raw
+// bracket text, with no target-resolution applied here: no-wikilinks
+// (this rule's own other caller) never resolves a target either, it
+// only forbids the syntax, so there has never been an established
+// resolution rule in this codebase for this function to reuse. lint.mjs
+// records the resolution rule it applies to that raw text as its own,
+// separate judgment call, since this is the first caller that ever
+// needs one.
+export function forEachWikilink(file, context, visit) {
+  const text = context.readFile(file);
+  const { body } = splitFrontmatter(text);
+  const stripped = stripCode(body);
+  const prefixLineCount = bodyPrefixLineCount(text, body);
+  for (const { target, lineIndex } of scanWikilinks(stripped)) {
+    visit(target, prefixLineCount + lineIndex);
+  }
+}
+
 // --- link-style (validate.link_style) --------------------------------------------
 
 const linkStyle = {
@@ -942,19 +970,9 @@ const noWikilinks = {
     if (setting !== 'forbid') return [];
     const findings = [];
     for (const file of files) {
-      const text = context.readFile(file);
-      const { body } = splitFrontmatter(text);
-      const stripped = stripCode(body);
-      const prefixLineCount = bodyPrefixLineCount(text, body);
-      for (const { target, lineIndex } of scanWikilinks(stripped)) {
-        findings.push({
-          file,
-          line: prefixLineCount + lineIndex,
-          check: 'wikilink-forbidden',
-          messageKey: 'house.no_wikilinks.forbidden',
-          params: { target },
-        });
-      }
+      forEachWikilink(file, context, (target, line) => {
+        findings.push({ file, line, check: 'wikilink-forbidden', messageKey: 'house.no_wikilinks.forbidden', params: { target } });
+      });
     }
     return findings;
   },

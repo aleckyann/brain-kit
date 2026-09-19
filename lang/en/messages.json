@@ -65,7 +65,7 @@
   "house.no_wikilinks.forbidden": "[[{target}]] is a wikilink, which this vault forbids; use a standard markdown link instead",
   "house.root_okf_version.missing": "the root index does not declare okf_version, which this vault requires",
   "house.root_okf_version.mismatch": "the root index declares okf_version \"{value}\" but this vault is configured for \"{expected}\"",
-  "lint.index_completeness.missing_index": "this directory holds a markdown file but has no index.md",
+  "lint.index_completeness.missing_index": "the directory \"{dir}\" holds a markdown file but has no index.md",
   "lint.index_completeness.dir_not_linked": "the root index does not link the first-level directory \"{dir}\"",
   "lint.orphans.unreachable": "this note is not reachable by following links from the root index",
   "lint.columns.missing_table": "this file has no table to check against its configured column headings",

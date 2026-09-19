@@ -84,8 +84,11 @@ test('the pt-BR sibling fixture proves the configuration accepts non-English lab
   assert.deepEqual(validateConfig(config), []);
   assert.equal(config.lang, 'pt-BR');
   // A non-English column heading, under a schema key (taxonomy.columns)
-  // that only ever requires a string.
-  assert.equal(config.taxonomy.columns.followups.what, 'O que');
+  // that only ever requires a string: index 1 of the ordered "columns"
+  // array is "What" in the English fixture, so its pt-BR sibling's own
+  // index 1 is checked here (fix round 1: the array replaced a flat
+  // object that mixed real column names with section-heading labels).
+  assert.equal(config.taxonomy.columns.followups.columns[1], 'O que');
   // Non-English file names, under taxonomy.files (also free-form): two
   // of them, not one, since a previous pass translated one sibling
   // entry and left another (this exact one) untouched.

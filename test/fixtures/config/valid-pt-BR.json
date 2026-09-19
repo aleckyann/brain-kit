@@ -68,31 +68,16 @@
     },
     "columns": {
       "followups": {
-        "registered": "Registrado",
-        "what": "O que",
-        "with": "Com quem / onde",
-        "deadline": "Prazo",
-        "next_step": "Próximo passo",
-        "open_heading": "## Abertos",
-        "resolved_heading": "## Resolvidos"
+        "columns": ["Registrado", "O que", "Com quem / onde", "Prazo", "Próximo passo"],
+        "labels": { "open_heading": "## Abertos", "resolved_heading": "## Resolvidos" }
       },
       "promises": {
-        "made_at": "Feita em",
-        "to": "Para quem",
-        "what": "O que prometi",
-        "condition": "Condição / prazo",
-        "status": "Situação",
-        "active_heading": "## Ativas",
-        "done_heading": "## Cumpridas / renegociadas"
+        "columns": ["Feita em", "Para quem", "O que prometi", "Condição / prazo", "Situação"],
+        "labels": { "active_heading": "## Ativas", "done_heading": "## Cumpridas / renegociadas" }
       },
       "rituals": {
-        "calendar_title": "Título no calendário",
-        "cadence": "Cadência",
-        "time": "Horário",
-        "owner": "Dono",
-        "fixed_attendees": "Participantes fixos",
-        "feeds": "Alimenta",
-        "feeds_none": "nenhuma ainda"
+        "columns": ["Título no calendário", "Cadência", "Horário", "Dono", "Participantes fixos", "Alimenta"],
+        "labels": { "feeds_none": "nenhuma ainda" }
       }
     }
   },

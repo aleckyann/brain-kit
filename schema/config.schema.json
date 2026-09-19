@@ -71,9 +71,27 @@
         "columns": {
           "type": "object", "additionalProperties": false,
           "properties": {
-            "followups": { "type": "object", "additionalProperties": { "type": "string" } },
-            "promises": { "type": "object", "additionalProperties": { "type": "string" } },
-            "rituals": { "type": "object", "additionalProperties": { "type": "string" } }
+            "followups": {
+              "type": "object", "additionalProperties": false, "required": ["columns"],
+              "properties": {
+                "columns": { "type": "array", "items": { "type": "string" } },
+                "labels": { "type": "object", "additionalProperties": { "type": "string" } }
+              }
+            },
+            "promises": {
+              "type": "object", "additionalProperties": false, "required": ["columns"],
+              "properties": {
+                "columns": { "type": "array", "items": { "type": "string" } },
+                "labels": { "type": "object", "additionalProperties": { "type": "string" } }
+              }
+            },
+            "rituals": {
+              "type": "object", "additionalProperties": false, "required": ["columns"],
+              "properties": {
+                "columns": { "type": "array", "items": { "type": "string" } },
+                "labels": { "type": "object", "additionalProperties": { "type": "string" } }
+              }
+            }
           }
         }
       }

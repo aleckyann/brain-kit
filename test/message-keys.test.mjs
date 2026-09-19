@@ -162,6 +162,7 @@ function allSites() {
   const rule = [
     ...extractRuleMessageSites(readSrc('src/rules/spec.mjs'), 'src/rules/spec.mjs'),
     ...extractRuleMessageSites(readSrc('src/rules/house.mjs'), 'src/rules/house.mjs'),
+    ...extractRuleMessageSites(readSrc('src/rules/lint.mjs'), 'src/rules/lint.mjs'),
   ];
   const direct = [
     ...extractTranslatorCallSites(readSrc('src/cli.mjs'), 'src/cli.mjs'),
