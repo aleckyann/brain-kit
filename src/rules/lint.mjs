@@ -674,6 +674,45 @@ const columns = {
 // malformed, the same silence the style rule below keeps for an
 // untouched line.
 //
+// Fix round 1 (review of commit 0718c40). The plan never said how THIS
+// rule should read the scope: it named style's line-by-line reading
+// explicitly and said nothing about tables at all, so table-level
+// scoping (judge the whole table once ANY of its lines is touched) was
+// a judgment call, later RATIFIED by the plan itself (see
+// docs/superpowers/plans, "docs: settle what the scope means for a
+// table"): what this rule asks (is there a blank line before this
+// table, does it hold a duplicate row) are properties of the table, not
+// of any one row, so the table is the right unit to judge. The defect
+// the review actually found was not the scoping, it was the SILENCE:
+// this rule is the one that CAN name a line the change never touched,
+// and its three messages said nothing about why. Every message below
+// now says so explicitly (see lang/en/messages.json's own three
+// lint.tables.* entries).
+//
+// Two false positives fixed in the same round, both in table
+// DETECTION rather than in scoping:
+// - A delimiter row with no pipe of its own ("---", a bare run of
+//   dashes) used to be accepted as a valid single-column delimiter,
+//   which reads a setext heading ("Some text\n---") or a thematic break
+//   sitting under a line that happens to use a pipe as punctuation (a
+//   range, a link title) as a table. The fix requires the delimiter row
+//   to carry a pipe of its own before it is trusted as one: a genuine
+//   single-column table written as `| A |` over `|---|` still has one
+//   (the framing pipes survive splitTableRow's own outer-pipe strip,
+//   see that function's own header), so this declines nothing the
+//   format actually offers, only the shape indistinguishable from a
+//   setext underline. The same declared trade-off findFirstTableHeader
+//   above already makes for a headerless table; this is its mirror for
+//   a "delimiter-less" one.
+// - Two real tables with no blank line between them used to be read as
+//   ONE table, because the data-row scan absorbed the second table's
+//   own header and delimiter as more data of the first, so its missing
+//   blank line (this rule's own headline check) went unreported. The
+//   data-row scan now stops, without consuming the line, the moment the
+//   line it is about to absorb is itself followed by a real delimiter
+//   row: that line is a new table's header, not more data of the
+//   current one, and the outer scan picks it up fresh from there.
+//
 // A table found entirely inside a fenced or indented code block is not
 // found at all: the table scanner below reads `stripCode`
 // (src/markdown.mjs, already imported above for the columns rule), the
@@ -681,12 +720,21 @@ const columns = {
 // before it ever looks for a pipe. A blanked fence line has no pipe
 // left in it to be mistaken for one; this is not a second
 // code-detection implementation choosing to agree with the first, it is
-// the one shared call.
+// the one shared call. A table inside a BLOCKQUOTE is a declared,
+// accepted limitation of the same kind: the ">" prefix a blockquote
+// puts in front of its own content makes isDelimiterRow's plain-dashes
+// test fail, so a quoted table is never found. This is the safe
+// direction (a missed table, never a false one), matching every other
+// declined shape in this module, but unlike them it costs a vault
+// nothing to work around: writing the table unquoted still gets it
+// checked.
 //
 // Three independent checks share one table scan:
 // - blank-line-before-table: the line immediately before a table's own
-//   header row must be blank, unless the header is the very first line
-//   of the body, with nothing before it to require a blank line from.
+//   header row must be blank (a whitespace-only line counts, trimmed
+//   the same way splitTableRow already trims a row), unless the header
+//   is the very first line of the body, with nothing before it to
+//   require a blank line from.
 // - duplicate-row: two data rows in the SAME table whose cells, once
 //   each is trimmed, read identically are a duplicate, reported at the
 //   LATER row's own line. Trimming is what makes a row differing only
@@ -694,12 +742,26 @@ const columns = {
 //   names explicitly. `splitTableRow` (above, already honouring an
 //   escaped pipe as literal content) is reused rather than a second,
 //   simpler row split that could disagree with it on that escape.
-// - cell-too-long: any cell (header or data), once trimmed, longer than
-//   `lint.tables.max_cell_chars` is reported at its own row's
-//   line, naming the first offending cell only: the same "first
-//   divergence" discipline the columns rule above already follows,
-//   because a message naming every offense on a row at once is worse
-//   than one a person can fix and re-run against. A missing or
+// - cell-too-long: any cell (header or data), once trimmed AND
+//   unescaped, longer than `lint.tables.max_cell_chars` is reported at
+//   its own row's line, naming the first offending cell only: the same
+//   "first divergence" discipline the columns rule above already
+//   follows, because a message naming every offense on a row at once is
+//   worse than one a person can fix and re-run against. Unescaping
+//   (`a\|b` measures as 3 characters, not 4) is deliberate, not shared
+//   with duplicate-row's own comparison: docs/incidents.md establishes
+//   that a heading carrying the separator is written and MATCHED in its
+//   escaped form, which duplicate detection still honours, but a length
+//   measured on the escaped source form overcounts the one character
+//   the escape adds for every literal pipe a cell actually renders, so
+//   length is the one place that source form is the wrong unit. A row
+//   whose own cell count does not match the header's is skipped by this
+//   check alone (not by duplicate-row, which never sees it misparsed
+//   this way in practice): GFM's lazy continuation makes a pipe-bearing
+//   prose line right after a table, with no blank line separating them,
+//   a defensible parse as more data, but a message naming a cell of a
+//   sentence unactionable, and a mismatched cell count is the cheap
+//   signal that the row is prose rather than data. A missing or
 //   non-positive `max_cell_chars` disables this one check rather than
 //   assuming a made-up limit nothing in this project ever declared
 //   (the same silent-skip posture columns' own judgment call 2 takes
@@ -723,6 +785,20 @@ function rowKey(cells) {
   return JSON.stringify(normalizedRowCells(cells));
 }
 
+// A cell's length as it RENDERS, not as it is written: the one escape
+// this project's own table contract establishes (docs/incidents.md, "a
+// heading containing the separator is written with it backslash-escaped
+// ... keep it escaped to write and to match in a markdown table") turns
+// one rendered pipe into two source characters, so measuring the source
+// form overcounts by one character per literal pipe a cell actually
+// holds. Used ONLY for the cell-length check, never for rowKey's own
+// duplicate comparison above, which is right to keep comparing the
+// escaped source form: `a\|b` and `a|b` are a one-cell row and a
+// two-cell row, not the same row written two ways.
+function unescapeSeparator(text) {
+  return text.replace(/\\\|/g, '|');
+}
+
 // Every markdown table in `strippedBody` (fenced, indented and inline
 // code already blanked by the caller): a header row, its delimiter, and
 // every immediately following non-blank line that itself carries a
@@ -734,12 +810,22 @@ function rowKey(cells) {
 // right after it, via the same splitTableRow/isDelimiterRow above), so
 // the two can never disagree about what a table IS, only about how many
 // of them a given call is asked to enumerate.
+//
+// The delimiter row must carry a pipe of ITS OWN (fix round 1, finding
+// 2): a bare run of dashes with no pipe at all is far more likely to be
+// a setext heading's underline or a thematic break than the world's
+// only table whose delimiter omits its framing pipes, and accepting it
+// read ordinary prose ("Cost is a | b dollars" over "---") as a table.
+// A real single-column table keeps its own framing pipes (`| A |` over
+// `|---|`, splitTableRow's outer-pipe strip leaves the delimiter's pipes
+// in place before its own dash test ever runs), so nothing this format
+// actually offers is declined by requiring one here too.
 function findAllTables(strippedBody) {
   const lines = strippedBody.split('\n');
   const found = [];
   let i = 0;
   while (i < lines.length - 1) {
-    if (!lines[i].includes('|') || !isDelimiterRow(lines[i + 1])) {
+    if (!lines[i].includes('|') || !lines[i + 1].includes('|') || !isDelimiterRow(lines[i + 1])) {
       i++;
       continue;
     }
@@ -750,7 +836,19 @@ function findAllTables(strippedBody) {
     // line that contains a pipe can never produce the empty string), so
     // requiring a pipe here already stops the scan at a blank line too,
     // with no separate blank check needed beside it.
+    //
+    // Fix round 1, finding 5: before absorbing `lines[j]` as one more
+    // data row of THIS table, check whether IT is itself the header of
+    // a second table (a pipe of its own, and a real delimiter row right
+    // after it). Two real tables sitting back to back with no blank
+    // line between them otherwise had the second one's header and
+    // delimiter swallowed as data of the first, which hid the second
+    // table's own missing-blank-line finding entirely and subjected its
+    // header/delimiter rows to the cell-length check as if they held
+    // data. Stopping here, without consuming the line, is what lets the
+    // outer scan below pick it up fresh as a table of its own.
     while (j < lines.length && lines[j].includes('|')) {
+      if (j + 1 < lines.length && isDelimiterRow(lines[j + 1])) break;
       dataRows.push({ lineIndex: j, cells: splitTableRow(lines[j]) });
       j++;
     }
@@ -767,10 +865,12 @@ function findAllTables(strippedBody) {
 
 // True when `bodyLineIndex` (0-based, relative to the same stripped body
 // findAllTables read) is a line the scope says this change added, or
-// when the scope carries no restriction for this file at all (`null`,
-// the untracked-file and "all" reading; see src/git.mjs's own header).
-function lineIsInScope(scope, file, prefixLineCount, bodyLineIndex) {
-  const added = scope.addedLines(file);
+// when `added` is `null`, meaning the scope carries no restriction for
+// this file at all (the untracked-file and "all" reading; see
+// src/git.mjs's own header). Takes the already-resolved `added` set
+// rather than `scope` and `file`, so a caller that reads it once per
+// file (below) never asks the scope the same question twice per table.
+function lineIsInScope(added, prefixLineCount, bodyLineIndex) {
   return added === null || added.has(prefixLineCount + bodyLineIndex);
 }
 
@@ -799,6 +899,17 @@ const tables = {
     const duplicateSeverity = VALID_SEVERITIES.has(duplicateSeverityRaw) ? duplicateSeverityRaw : severityFor(tables, context.config);
 
     for (const file of files) {
+      // Fix round 1, finding 10: style (below) already skipped
+      // readFile+stripCode for a file with nothing added at all; this
+      // rule ran both, plus a full table scan, on every file in the
+      // vault regardless of scope, which is the more expensive miss of
+      // the two. Unfalsifiable by any FINDING this function returns
+      // (the per-table `inScope` check below already excludes every
+      // such file's tables), so it changes no test's expected output,
+      // only how much work a file the change never touched costs.
+      const added = scope.addedLines(file);
+      if (added !== null && added.size === 0) continue;
+
       const text = context.readFile(file);
       const { body } = splitFrontmatter(text);
       const stripped = stripCode(body);
@@ -807,7 +918,7 @@ const tables = {
 
       for (const table of findAllTables(stripped)) {
         const ownLineIndices = [table.headerLineIndex, table.delimiterLineIndex, ...table.dataRows.map((row) => row.lineIndex)];
-        const inScope = ownLineIndices.some((idx) => lineIsInScope(scope, file, prefixLineCount, idx));
+        const inScope = ownLineIndices.some((idx) => lineIsInScope(added, prefixLineCount, idx));
         if (!inScope) continue; // every one of this table's own lines already existed before this change
 
         if (table.headerLineIndex > 0 && bodyLines[table.headerLineIndex - 1].trim() !== '') {
@@ -841,17 +952,21 @@ const tables = {
         }
 
         if (maxCellChars !== null) {
-          const rowsToCheck = [{ lineIndex: table.headerLineIndex, cells: table.headerCells }, ...table.dataRows];
+          const headerCellCount = table.headerCells.length;
+          const rowsToCheck = [
+            { lineIndex: table.headerLineIndex, cells: table.headerCells },
+            ...table.dataRows.filter((row) => row.cells.length === headerCellCount),
+          ];
           for (const row of rowsToCheck) {
-            const cells = normalizedRowCells(row.cells);
-            const overIndex = cells.findIndex((cell) => cell.length > maxCellChars);
+            const measured = normalizedRowCells(row.cells).map(unescapeSeparator);
+            const overIndex = measured.findIndex((cell) => cell.length > maxCellChars);
             if (overIndex !== -1) {
               findings.push({
                 file,
                 line: prefixLineCount + row.lineIndex,
                 check: 'cell-too-long',
                 messageKey: 'lint.tables.cell_too_long',
-                params: { index: overIndex + 1, length: cells[overIndex].length, max: maxCellChars },
+                params: { index: overIndex + 1, length: measured[overIndex].length, max: maxCellChars },
               });
             }
           }
@@ -886,7 +1001,14 @@ const tables = {
 // the full-file line numbers scope.addedLines already reports (a git
 // diff always counts whole-file lines), so there is no body-prefix
 // offset to add back on here, unlike every other rule in this module
-// that reports a line inside a specific known section of the file.
+// that reports a line inside a specific known section of the file. A
+// consequence worth stating plainly (fix round 1, finding 10): a
+// forbidden character sitting inside the frontmatter block itself,
+// including inside an indented YAML block scalar, is judged exactly
+// like ordinary prose, since nothing about YAML looks like a fence to
+// stripCode. Correct for the line-number alignment this rule depends
+// on, but a character common in YAML syntax (a colon, a dash) could in
+// principle fire on structure rather than on prose if ever configured.
 //
 // A forbidden character inside a fenced or indented code block, or an
 // inline code span, is never a finding: stripCode blanks all three

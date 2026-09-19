@@ -773,6 +773,302 @@ test('tables reports a table whose header has no blank line before it, when the 
   assert.match(renderedMessage(findings[0]), /blank/);
 });
 
+// --- Fix round 1 (review of commit 0718c40) -----------------------------------------
+//
+// Finding 1, CRITICAL and half the plan's own doing: the plan settled
+// that this rule judges a table as a WHOLE once the change touches any
+// one of its lines (docs/superpowers/plans, "docs: settle what the
+// scope means for a table"), which means a finding can legitimately
+// name a line the change never added. What was actually wrong is that
+// none of this rule's three messages said so; every one of them now
+// does (lang/en/messages.json, lang/pt-BR/messages.json). The three
+// tests below pin, in order: the message says why on the check that
+// started this (blank-line), that a finding CAN legitimately name an
+// untouched line (documenting the ratified design, not a defect), and
+// that the other two checks carry the same explanation.
+
+test('the blank-line-before-table message explains that the change touched the table, not only the line it names', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['# Notes', '| A | B |', '|---|---|', '| x | y |'].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [2] });
+  const [finding] = findingsFor({ files, scope }).filter(isLintCheck('tables', 'blank-line-before-table'));
+  assert.match(renderedMessage(finding), /touched the table/);
+});
+
+test('a finding can legitimately name a line this change never added, because the change touched some OTHER line of the same table: the ratified design, not a defect', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    // Only the last row (line 6) is added; the header at line 2 and its
+    // missing blank line were already there before this change.
+    'core/notes.md': ['intro', '| A | B |', '|---|---|', '| x | 1 |', '| y | 2 |', '| z | 3 |'].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [6] });
+  const findings = findingsFor({ files, scope }).filter(isLintCheck('tables', 'blank-line-before-table'));
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].line, 2, 'the finding correctly names the untouched header line, since the check is about the table as a whole');
+  assert.match(renderedMessage(findings[0]), /touched the table/, 'and says out loud why an untouched line is being named');
+});
+
+test('the duplicate-row and cell-too-long messages explain the same table-wide scoping the blank-line message does', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['| A | B |', '|---|---|', '| x | y |', '| x | y |'].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [3, 4] });
+  const duplicateFindings = findingsFor({ files, scope }).filter(isLintCheck('tables', 'duplicate-row'));
+  assert.equal(duplicateFindings.length, 1);
+  assert.match(renderedMessage(duplicateFindings[0]), /touched the table/);
+
+  const cellFiles = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': [`| ${'x'.repeat(5)} | B |`, '|---|---|', '| a | y |'].join('\n'),
+  };
+  const cellScope = scopeFor({ 'core/notes.md': [1] });
+  const config = { lint: { tables: { max_cell_chars: 4 } } };
+  const cellFindings = findingsFor({ files: cellFiles, scope: cellScope, config }).filter(isLintCheck('tables', 'cell-too-long'));
+  assert.equal(cellFindings.length, 1);
+  assert.match(renderedMessage(cellFindings[0]), /touched the table/);
+});
+
+// Finding 2, CRITICAL: a prose line containing a separator, sitting
+// above a bare run of dashes, used to be read as a table. The fix
+// (findAllTables, above) requires the delimiter row to carry a pipe of
+// its own; these two are the real-world shapes the review named, a
+// setext heading and a link title, neither of which is a table under
+// any markdown reading.
+
+test('a setext heading whose text uses a separator as punctuation is never mistaken for a table, even though its text line contains a separator', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['intro', 'Cost is a | b dollars', '---', 'more'].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [2, 3] });
+  const findings = findingsFor({ files, scope }).filter(isLint('tables'));
+  assert.deepEqual(findings, []);
+});
+
+test('a link whose title contains a separator, sitting above a thematic break, is never mistaken for a table', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['intro', 'See [x](y.md "a | b") here', '---', 'more'].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [2, 3] });
+  const findings = findingsFor({ files, scope }).filter(isLint('tables'));
+  assert.deepEqual(findings, []);
+});
+
+// Finding 5, IMPORTANT: two tables with no blank line between them used
+// to be read as one, swallowing the second table's own header and
+// delimiter as data of the first, which hid its missing blank line.
+
+test('two tables with no blank line between them are read as two tables, not one, and the second table missing blank line is still caught', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['Intro.', '', '| A | B |', '|---|---|', '| x | 1 |', '| C | D |', '|---|---|', '| y | 2 |'].join('\n'),
+  };
+  // Only the second table's own header line is marked as added: if the
+  // two tables were still read as one, none of the second table's own
+  // lines (falsely absorbed as data of the first) would ever be
+  // recognised as a header at all, and this finding would not exist.
+  const scope = scopeFor({ 'core/notes.md': [6] });
+  const findings = findingsFor({ files, scope }).filter(isLintCheck('tables', 'blank-line-before-table'));
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].line, 6);
+});
+
+test('the first of two back-to-back tables keeps only its own real data row: the second table header and delimiter are never absorbed as data of the first', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['Intro.', '', '| A | B |', '|---|---|', '| x | 1 |', '| C | D |', '|---|---|', '| y | 2 |'].join('\n'),
+  };
+  // The two "| A | B |" style rows are never actually written here, so a
+  // duplicate-row finding can only appear if the second table header
+  // ("| C | D |") were wrongly compared as a data row of the first
+  // against something identical, which it is not; this test instead
+  // pins the ABSENCE of any duplicate-row finding when nothing is
+  // actually duplicated, as a control for the fixture above.
+  const scope = scopeFor({ 'core/notes.md': [3, 4, 5, 6, 7, 8] });
+  const findings = findingsFor({ files, scope }).filter(isLintCheck('tables', 'duplicate-row'));
+  assert.deepEqual(findings, []);
+});
+
+// Finding 6, IMPORTANT: a prose line with a separator, immediately
+// after a table with no blank line separating them, is a defensible
+// parse as more data (GFM's own lazy continuation), but a cell-length
+// finding against a sentence is not an actionable message. The
+// cell-length check now skips a row whose cell count does not match
+// the header's.
+
+test('a prose line absorbed as a data row by lazy continuation does not trigger a cell-length finding when its cell count does not match the header', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['| A | B |', '|---|---|', '| x | 1 |', `Rates: ${'z'.repeat(50)} | more | text here.`].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [4] });
+  const config = { lint: { tables: { max_cell_chars: 8 } } };
+  const findings = findingsFor({ files, scope, config }).filter(isLintCheck('tables', 'cell-too-long'));
+  assert.deepEqual(findings, []);
+});
+
+// Finding 7, MINOR: cell-too-long used to measure the escaped source
+// form of a cell, overcounting by one character per literal separator
+// the cell renders, against this project's own established practice
+// (docs/incidents.md) of writing and matching a separator escaped.
+
+test('cell length is measured on the unescaped, rendered text, not the escaped source form: an established escaped separator does not inflate the count', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['| A |', '|---|', '| a\\|b\\|c\\|d |'].join('\n'),
+  };
+  // "a\|b\|c\|d" is 10 characters in the source, 7 once rendered
+  // (each "\|" is one rendered pipe); 8 sits strictly between the two.
+  const scope = scopeFor({ 'core/notes.md': [3] });
+  const config = { lint: { tables: { max_cell_chars: 8 } } };
+  const findings = findingsFor({ files, scope, config }).filter(isLintCheck('tables', 'cell-too-long'));
+  assert.deepEqual(findings, []);
+});
+
+// Finding 9, MINOR: eight more clauses the review found no test defended.
+
+test('a table whose delimiter row is the very last line of the file is still found', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['Intro.', '| A | B |', '|---|---|'].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [2] });
+  const findings = findingsFor({ files, scope }).filter(isLintCheck('tables', 'blank-line-before-table'));
+  assert.equal(findings.length, 1);
+});
+
+test('a pipe-less prose line immediately after a table, with no blank line separating them, is never absorbed as a data row', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    // A single-column table on purpose: the absorbed prose line below
+    // also splits into exactly one cell (it has no pipe to split on at
+    // all), so its cell count would MATCH the header's and slip past
+    // the cell-count filter (finding 6) even if it were wrongly
+    // absorbed; only the pipe requirement on the data-row scan itself
+    // stops it, which is the clause this test actually isolates.
+    'core/notes.md': ['| A |', '|---|', '| 1 |', `${'z'.repeat(50)} no separator here at all.`].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [1, 2, 3] });
+  const config = { lint: { tables: { max_cell_chars: 8 } } };
+  const findings = findingsFor({ files, scope, config }).filter(isLintCheck('tables', 'cell-too-long'));
+  assert.deepEqual(findings, []);
+});
+
+test('touching only a table own delimiter row puts the whole table in scope, exactly like touching its header or a data row', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['Intro.', '| A | B |', '|---|---|', '| x | 1 |'].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [3] }); // only the delimiter row
+  const findings = findingsFor({ files, scope }).filter(isLintCheck('tables', 'blank-line-before-table'));
+  assert.equal(findings.length, 1, 'the delimiter row alone must be enough to bring the whole table into scope');
+});
+
+test('a non-integer max_cell_chars disables the cell-length check rather than enforcing a fractional limit', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['| A |', '|---|', '| 1234567 |'].join('\n'), // a 7-character cell
+  };
+  // Bypasses loadConfig on purpose: the schema itself requires an
+  // integer, so this shape can only be reached by a hand-built config.
+  const root = makeVault({ files });
+  const config = { lint: { tables: { max_cell_chars: 6.5 } } };
+  const all = walkVault(root, config, { all: true });
+  const mdFiles = all.filter((path) => path.endsWith('.md'));
+  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8') };
+  const scope = scopeFor({ 'core/notes.md': [3] });
+  const findings = runLintRules(mdFiles, context, scope).filter(isLintCheck('tables', 'cell-too-long'));
+  assert.deepEqual(findings, []);
+});
+
+test('a max_cell_chars of zero disables the cell-length check rather than flagging every non-empty cell', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['| A |', '|---|', '| x |'].join('\n'),
+  };
+  // Bypasses loadConfig on purpose: the schema requires a minimum of 1.
+  const root = makeVault({ files });
+  const config = { lint: { tables: { max_cell_chars: 0 } } };
+  const all = walkVault(root, config, { all: true });
+  const mdFiles = all.filter((path) => path.endsWith('.md'));
+  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8') };
+  const scope = scopeFor({ 'core/notes.md': [3] });
+  const findings = runLintRules(mdFiles, context, scope).filter(isLintCheck('tables', 'cell-too-long'));
+  assert.deepEqual(findings, []);
+});
+
+test('a row with two cells over the limit names the FIRST one, not the last', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['| A | B |', '|---|---|', `| ${'x'.repeat(5)} | ${'y'.repeat(9)} |`].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [3] });
+  const config = { lint: { tables: { max_cell_chars: 4 } } };
+  const findings = findingsFor({ files, scope, config }).filter(isLintCheck('tables', 'cell-too-long'));
+  assert.equal(findings.length, 1);
+  assert.deepEqual(findings[0].params, { index: 1, length: 5, max: 4 });
+});
+
+test('a whitespace-only line before a table still counts as blank, exactly like a truly empty one', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['Intro.', '   ', '| A | B |', '|---|---|', '| x | 1 |'].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [3] });
+  const findings = findingsFor({ files, scope }).filter(isLintCheck('tables', 'blank-line-before-table'));
+  assert.deepEqual(findings, []);
+});
+
+// Finding 10, assorted. tables now skips reading a file entirely when
+// this change added nothing in it, exactly like style already did; the
+// review measured one readFile call per file with an empty scope
+// before this fix, zero after.
+
+test('tables skips reading a file entirely when this change added nothing in it, exactly like style', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['| A | B |', '|---|---|', '| x | y |'].join('\n'),
+  };
+  const root = makeVault({ files });
+  const config = { lint: { tables: 'error' } };
+  const all = walkVault(root, config, { all: true });
+  const mdFiles = all.filter((path) => path.endsWith('.md'));
+  let readCount = 0;
+  const context = {
+    root,
+    config,
+    all: new Set(all),
+    readFile(relPath) {
+      readCount++;
+      return readFileSync(join(root, relPath), 'utf8');
+    },
+  };
+  const tablesRule = LINT_RULES.find((rule) => rule.id === 'tables');
+  const scope = scopeFor({ 'index.md': [], 'core/notes.md': [] }); // nothing added anywhere in this change
+  tablesRule.check(mdFiles, context, scope);
+  assert.equal(readCount, 0, 'a file with nothing added must never be read at all, the same performance path style already takes');
+});
+
+// A table inside a blockquote is never detected: the ">" prefix makes
+// isDelimiterRow's plain-dashes test fail. Safe direction (a missed
+// table, never a false one), now documented in findAllTables's own
+// header; pinned here so it stays a declared limitation, not a silent
+// gap, matching every other declined shape in this module.
+test('a table written inside a blockquote is never detected as a table: a missed table is safer than a false one', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['> | A | B |', '> |---|---|', '> | x | y |'].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [1, 2, 3] });
+  const findings = findingsFor({ files, scope }).filter(isLint('tables'));
+  assert.deepEqual(findings, []);
+});
+
 test('a table preceded by a real blank line, or sitting at the very start of the body with nothing before it, is not reported for a missing blank line', () => {
   const files = {
     'index.md': '# Welcome\n',
@@ -1151,7 +1447,16 @@ test('when a line carries more than one forbidden character, only the one that o
     'people/ana.md': 'Bruno uses a tilde ~ and later a caret ^ in the same added line.',
   };
   const scope = scopeFor({ 'people/ana.md': [1] });
-  const config = { lint: { style: { forbidden_chars: ['^', '~'] } } }; // configured in the OPPOSITE order the characters appear in the line
+  // Fix round 1, finding 8: the previous fixture configured
+  // forbidden_chars as ['^', '~'], with '~' both textually FIRST and
+  // LAST in the array, so "leftmost in the text" and "last entry in the
+  // array that matches" gave the same answer and the test passed under
+  // both readings; a mutation dropping the `idx < firstIndex` compare
+  // entirely (always overwrite) survived the whole suite because of it.
+  // The array is now ['~', '^'], with '~' first in the array but STILL
+  // first in the text, so only the correct algorithm can produce '~'
+  // here: "last matching array entry" would produce '^' instead.
+  const config = { lint: { style: { forbidden_chars: ['~', '^'] } } };
   const findings = findingsFor({ files, scope, config }).filter(isLint('style'));
   assert.equal(findings.length, 1, 'one finding per line, never one per forbidden character it carries');
   assert.equal(findings[0].params.char, '~', 'the tilde comes first in the text, regardless of the order forbidden_chars lists it in');
