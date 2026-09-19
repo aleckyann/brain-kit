@@ -186,7 +186,7 @@
       "properties": {
         "confidential_dirs": { "type": "array", "items": { "type": "string" } },
         "require_private_repo": { "type": "boolean" },
-        "secret_patterns": { "type": "array", "items": { "type": "string" } },
+        "secret_patterns": { "type": "array", "items": { "type": "string", "minLength": 1 } },
         "third_party_data_acknowledged": { "type": "boolean" },
         "retention_note": { "type": "string" },
         "audiences": { "type": "object" }

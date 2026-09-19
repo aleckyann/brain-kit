@@ -137,6 +137,21 @@ test('curate.schedule entries must be HH:MM', () => {
   assert.ok(validateConfig(config).some((e) => e.startsWith('$.curate.schedule[0]')));
 });
 
+// Fix round 1 (IMPORTANT, brain-kit lint's own secrets rule): an empty
+// string used to be schema-valid inside privacy.secret_patterns, and
+// only failed once it reached src/leak.mjs's own compilePattern, which
+// refuses an empty pattern outright ("an empty pattern matches
+// everywhere") and, for the secrets rule specifically, that refusal
+// crashes the whole lint run rather than reporting a controlled
+// finding. Caught here now, at config-validation time, before it ever
+// reaches a rule at all.
+test('an empty string inside privacy.secret_patterns is rejected by the schema itself, before it can crash the secrets rule at scan time', () => {
+  const config = fixture('config/valid.json');
+  config.privacy.secret_patterns = ['ghp_[A-Za-z0-9]{20,}', ''];
+  const errors = validateConfig(config);
+  assert.ok(errors.some((e) => e.startsWith('$.privacy.secret_patterns[1]')), errors.join('\n'));
+});
+
 test('the example machine.json is valid and canonical_path is required', () => {
   const machine = fixture('machine/valid.json');
   assert.deepEqual(validateMachine(machine), []);

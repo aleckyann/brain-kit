@@ -1566,14 +1566,46 @@ test('a file with nothing added at all in this change is skipped entirely, even 
   assert.deepEqual(findings, []);
 });
 
-test('a pattern configured in privacy.secret_patterns is applied too, not only the built-in generic patterns, and is named by its own text', () => {
+test('a pattern configured in privacy.secret_patterns is applied too, not only the built-in generic patterns, but is named by a NEUTRAL label, never its own text', () => {
   const customToken = 'internal-token-' + '778899';
   const files = { 'index.md': '# Welcome\n', 'people/ana.md': `see ${customToken} for details` };
   const scope = scopeFor({ 'people/ana.md': [1] });
   const config = { privacy: { secret_patterns: ['internal-token-[0-9]{6}'] } };
   const findings = findingsFor({ files, scope, config }).filter(isLint('secrets'));
   assert.equal(findings.length, 1);
-  assert.equal(findings[0].params.pattern, 'internal-token-[0-9]{6}');
+  assert.equal(findings[0].params.pattern, 'a pattern configured in privacy.secret_patterns');
+});
+
+// Fix round 1, CRITICAL: a vault owner can paste a REAL, literal
+// credential into privacy.secret_patterns by mistake (a denylist entry
+// rather than a detection pattern). Before this fix, that pattern's own
+// text (a "config"-origin match, per leak.mjs) was treated as safe to
+// print, since leak.mjs calls a config pattern "public by nature" -- a
+// claim about whether the LIST exists is safe to log, not about whether
+// every STRING inside it is safe to print. Built by runtime
+// concatenation, never as one literal, per this repository's own rule
+// against writing a secret-shaped literal into a committed file.
+test('a vault owner literal credential, pasted into privacy.secret_patterns by mistake, is never rendered verbatim: the message names it only as "a pattern configured in privacy.secret_patterns"', () => {
+  // Deliberately NOT shaped like any of leak.mjs's own GENERIC_PATTERNS
+  // (a private key header, ghp_, github_pat_, sk-ant-, AKIA, xox[baprs]-):
+  // this fixture is testing the CONFIG-origin path alone, and a value
+  // that also happened to match a generic pattern would produce a second,
+  // legitimately-unmasked finding (the generic shape's own safe regex
+  // text) that would make this assertion's own intent ambiguous.
+  const pastedCredential = 'CorrectHorse' + 'BatteryStaple2026';
+  const files = { 'index.md': '# Welcome\n', 'people/ana.md': `the real token is ${pastedCredential} for now` };
+  const scope = scopeFor({ 'people/ana.md': [1] });
+  // Escaped so it is matched as a literal substring, exactly the mistake
+  // a vault owner who thinks privacy.secret_patterns is a denylist would
+  // make: pasting the credential itself rather than a detection pattern.
+  const config = { privacy: { secret_patterns: [pastedCredential.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')] } };
+  const findings = findingsFor({ files, scope, config }).filter(isLint('secrets'));
+  assert.ok(findings.length > 0, 'the pasted credential must still be detected');
+  for (const finding of findings) {
+    assert.equal(finding.params.pattern, 'a pattern configured in privacy.secret_patterns');
+    const rendered = renderedMessage(finding);
+    assert.doesNotMatch(rendered, new RegExp(pastedCredential), 'the vault owner own pasted credential must never appear in the rendered message');
+  }
 });
 
 test('unlike style and tables, secrets is NOT exempt inside a fenced code block: an example pasted with a real key in it is still a leaked secret', () => {
@@ -1618,6 +1650,53 @@ test('secrets defaults to severity "error" when the configuration never names it
   assert.equal(findings[0].severity, 'error');
 });
 
+// Fix round 1 (review's own gap list: "no test puts two secrets in one
+// file"). Two DISTINCT secret shapes, on two different added lines of
+// the SAME file, both reported, each with its own correct line number:
+// this is the shape that would break first if the per-file loop
+// accidentally kept only the first match, or mis-mapped a later line
+// back to the wrong original number.
+test('two distinct secrets on two different added lines of the same file are both reported, each at its own correct line', () => {
+  const awsKey = fakeAwsKey('AAAA1111BBBB2222');
+  const slackToken = 'xoxb-' + '1234567890';
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/ana.md': ['untouched line, nothing here', `first secret: ${awsKey}`, 'an ordinary line in between', `second secret: ${slackToken}`].join('\n'),
+  };
+  const scope = scopeFor({ 'people/ana.md': [2, 4] });
+  const config = { privacy: { secret_patterns: [] } }; // isolate GENERIC_PATTERNS only, avoiding the AKIA overlap noted elsewhere in this file
+  const findings = findingsFor({ files, scope, config }).filter(isLintCheck('secrets', 'secret-pattern'));
+  assert.equal(findings.length, 2);
+  assert.deepEqual(findings.map((f) => f.line).sort(), [2, 4]);
+});
+
+// Fix round 1, CRITICAL: this rule used to destructure only `matches`
+// out of scanText's own return, silently accepting the default cap of
+// five and never surfacing `truncated`. Eight distinct secrets on eight
+// added lines (one per line, all the same generic shape so each line
+// contributes exactly one match) exceeds that cap; this pins that the
+// whole record is now read, and that truncation is surfaced as its own
+// finding rather than dropped.
+test('a file with more secret-shaped matches on added lines than the cap allows surfaces its own truncation finding, naming how many were shown and how many exist', () => {
+  const lines = [];
+  const addedLineNumbers = [];
+  for (let i = 0; i < 8; i++) {
+    lines.push(`secret number ${i}: ${fakeAwsKey(`Z${i}Z${i}BBBB2222CCCC`.slice(0, 16).toUpperCase())}`);
+    addedLineNumbers.push(i + 1);
+  }
+  const files = { 'index.md': '# Welcome\n', 'people/many.md': lines.join('\n') };
+  const scope = scopeFor({ 'people/many.md': addedLineNumbers });
+  const config = { privacy: { secret_patterns: [] } };
+  const findings = findingsFor({ files, scope, config }).filter(isLint('secrets'));
+  const matchFindings = findings.filter((f) => f.check === 'secret-pattern');
+  const truncatedFindings = findings.filter((f) => f.check === 'secret-pattern-truncated');
+  assert.equal(matchFindings.length, 5, 'the default cap still applies to how many individual matches are named');
+  assert.equal(truncatedFindings.length, 1, 'exactly one truncation notice per file, not one per hidden match');
+  assert.equal(truncatedFindings[0].params.shown, 5);
+  assert.equal(truncatedFindings[0].params.total, 8);
+  assert.match(renderedMessage(truncatedFindings[0]), /8/);
+});
+
 // --- privacy: "a note under a confidential directory is not linked from a file outside
 //     one, and a note outside one does not carry a field the configuration marks
 //     confidential" -----------------------------------------------------------------
@@ -1654,6 +1733,45 @@ test('linking the confidential directory itself, or straight to its own index.md
   assert.deepEqual(findings, []);
 });
 
+// Fix round 1, CRITICAL: the exemption used to cover log.md too (any
+// RESERVED filename, index-completeness's own pair), but
+// index-completeness's own root-links-directory clause never mentions
+// log.md at all; a public note linking straight to a confidential
+// directory's log is exactly the leak clause 1 exists to catch, and
+// used to produce zero findings.
+test('linking a confidential directory own log.md from outside is reported: index-completeness never requires linking it, so it is not the front door', () => {
+  const files = {
+    'index.md': '# Welcome\n\n[People](people/)\n\n[People activity log](people/log.md)\n',
+    'people/index.md': '# People\n',
+    'people/log.md': '# Log\n',
+  };
+  const findings = findingsFor({ files }).filter(isLintCheck('privacy', 'link-into-confidential'));
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].params.target, 'people/log.md');
+});
+
+// Fix round 1, CRITICAL: the exemption used to cover a reserved
+// filename at ANY DEPTH, so a link straight to a NESTED index.md
+// ("people/team/index.md") went unreported while the equivalent bare
+// directory link ("people/team/") WAS reported -- the same underlying
+// target, reported one way and not the other. index-completeness's own
+// contract only ever concerns the confidential directory's OWN,
+// top-level index.md; a nested one is confidential content like any
+// other note.
+test('a nested index.md deeper inside a confidential directory is confidential content, not exempt like the top-level one, and reporting is consistent with the bare directory link', () => {
+  const files = {
+    'index.md': '# Welcome\n\n[People](people/)\n\n[Team page](people/team/index.md)\n\n[Team bare](people/team/)\n',
+    'people/index.md': '# People\n',
+    'people/team/index.md': '# Team\n',
+  };
+  const findings = findingsFor({ files }).filter(isLintCheck('privacy', 'link-into-confidential'));
+  assert.deepEqual(
+    findings.map((f) => f.params.target).sort(),
+    ['people/team', 'people/team/index.md'],
+    'both spellings of the same nested target must be reported, consistently with each other',
+  );
+});
+
 test('a link between two notes that are both under the confidential directory is not reported: only a link FROM outside the boundary counts', () => {
   const files = {
     'index.md': '# Welcome\n\n[People](people/)\n',
@@ -1675,6 +1793,43 @@ test('a wikilink from outside the boundary into a specific confidential note is 
   assert.equal(findings.length, 1);
   assert.equal(findings[0].file, 'projects/index.md');
   assert.equal(findings[0].params.target, 'people/ana.md');
+});
+
+// Fix round 1, IMPORTANT: a BARE wikilink target (no extension) tries
+// BOTH readings wikilinkPathParts offers ("people/ana" and
+// "people/ana.md"), and when the boundary is a simple path prefix, both
+// candidate strings independently satisfy isConfidentialContent. This
+// used to report the SAME one wikilink twice; the fix stops at the
+// first candidate that matches, exactly the way followLink (the orphan
+// rule's own use of these two candidates) already only needs one to
+// succeed.
+test('a single bare wikilink (no extension) into a confidential note is reported exactly ONCE, not once per candidate reading', () => {
+  const files = {
+    'index.md': '# Welcome\n\n[People](people/)\n\n[Projects](projects/)\n',
+    'people/index.md': '# People\n',
+    'people/ana.md': '# Ana\n',
+    'projects/index.md': '# Projects\n\nSee [[../people/ana]] for background.\n',
+  };
+  const findings = findingsFor({ files }).filter(isLintCheck('privacy', 'link-into-confidential'));
+  assert.equal(findings.length, 1, 'one wikilink must produce one finding, however many candidate readings its bare target has');
+});
+
+// Fix round 1 (MINOR, cheap): a hand-written "confidential: TRUE" or
+// "confidential: True" is a valid YAML boolean, but this check started
+// life comparing against the exact lowercase string only (matching
+// house.mjs's own established, stricter convention for a boolean-typed
+// field). Loosened for THIS one field, since missing a real
+// confidential marking is the cost of being wrong in the direction this
+// rule cannot afford.
+test('a confidential field written in a different case ("TRUE") still counts: only the strict lowercase spelling used to be recognised', () => {
+  const files = {
+    'index.md': '# Welcome\n\n[Projects](projects/)\n',
+    'projects/index.md': '# Projects\n',
+    'projects/leaky.md': '---\nconfidential: TRUE\n---\n# Leaky\n',
+  };
+  const findings = findingsFor({ files }).filter(isLintCheck('privacy', 'confidential-field-outside'));
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].file, 'projects/leaky.md');
 });
 
 test('a note outside every confidential directory carrying confidential: true is reported, beside one inside the boundary carrying the same field that is not', () => {
@@ -1810,6 +1965,7 @@ test('a sources entry with no id is reported by its own index, so no footnote co
   assert.equal(findings.length, 1);
   assert.equal(findings[0].absence, true);
   assert.equal(findings[0].params.index, 0);
+  assert.equal(findings[0].line, 2); // "sources:" own line, the same location every entry-level finding here points at
 });
 
 test('a footnote key naming no declared source id is reported, beside two real ids correctly anchored in the same file', () => {
@@ -1836,6 +1992,12 @@ test('a footnote key naming no declared source id is reported, beside two real i
   const unknown = findings.filter((f) => f.check === 'unknown-footnote');
   assert.equal(unknown.length, 1);
   assert.equal(unknown[0].params.key, 'call9');
+  // Fix round 1 (review's own gap list: "none asserts an attribution
+  // finding's line"): line 14 is where "[^call9]" actually sits in the
+  // fixture above (a stray reference, whole-file line, frontmatter
+  // included), not some other line the finding happened to be attached
+  // to by an off-by-one in the body-prefix arithmetic.
+  assert.equal(unknown[0].line, 14);
   assert.deepEqual(findings.filter((f) => f.check === 'source-not-anchored'), [], 'both real ids were anchored, so neither should be reported unanchored');
 });
 
@@ -1859,6 +2021,11 @@ test('a declared source id that no footnote anywhere in the body ever references
   assert.equal(findings.length, 1);
   assert.equal(findings[0].absence, true);
   assert.equal(findings[0].params.id, 'call2');
+  // A "not anchored" finding is about the DECLARATION, not any one line
+  // in the body (there is no line in the body it could point at instead,
+  // since the whole complaint is that no line ever cites it): it points
+  // at "sources:" own line, 2 in this fixture.
+  assert.equal(findings[0].line, 2);
 });
 
 test('a footnote DEFINITION alone, with no inline reference anywhere, does not anchor a claim: the id is still reported unanchored', () => {
@@ -1883,6 +2050,80 @@ test('a footnote DEFINITION alone, with no inline reference anywhere, does not a
   const findings = findingsFor({ files }).filter(isLintCheck('attribution', 'source-not-anchored'));
   assert.equal(findings.length, 1);
   assert.equal(findings[0].params.id, 'call2');
+});
+
+// Fix round 1 (review's own gap list: "none exercises a footnote beside
+// a colon or at the start of a line"). Two edge cases the position rule
+// (isFootnoteDefinition) has to tell apart correctly:
+test('a footnote reference followed by an ordinary colon, with text before it on the line, still anchors a claim: only a colon at the START of the line makes it a definition', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/colon-after-reference.md': [
+      '---',
+      'sources:',
+      '  - id: call1',
+      '    resource: https://example.com/call1',
+      '  - id: call2',
+      '    resource: https://example.com/call2',
+      '---',
+      '# Case',
+      '',
+      'Bruno put it this way[^call1]: he fully agreed with the plan.',
+      '',
+      'Ana confirmed separately[^call2].',
+    ].join('\n'),
+  };
+  const findings = findingsFor({ files }).filter(isLint('attribution'));
+  assert.deepEqual(findings, [], 'a colon right after the reference, with real text before it on the line, must not be read as a definition');
+});
+
+test('a footnote reference sitting at the very start of a line, with NO colon right after it, still anchors a claim rather than being read as a definition', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/reference-at-line-start.md': [
+      '---',
+      'sources:',
+      '  - id: call1',
+      '    resource: https://example.com/call1',
+      '  - id: call2',
+      '    resource: https://example.com/call2',
+      '---',
+      '# Case',
+      '',
+      '[^call1] confirmed this point on its own line, with no colon right after it.',
+      '',
+      'Ana confirmed the second point separately[^call2].',
+    ].join('\n'),
+  };
+  const findings = findingsFor({ files }).filter(isLint('attribution'));
+  assert.deepEqual(findings, [], 'a reference at the start of a line, without an immediate colon, must not be read as a definition');
+});
+
+// Fix round 1: no existing fixture had EVERY sources entry lacking an
+// id at once (ids.length reaching 0 after every entry is reported
+// missing), which is the one input that tells the ids.length===0 early
+// return apart from removing it: without the guard, every footnote
+// reference in the body would be reported as "unknown" against an
+// empty id set, rather than the body being left alone once every source
+// has already been reported for lacking an id in the first place.
+test('when every sources entry lacks an id, each is reported once by its own index, and no footnote in the body is also reported as unknown', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/all-missing-ids.md': [
+      '---',
+      'sources:',
+      '  - resource: https://example.com/call1',
+      '  - resource: https://example.com/call2',
+      '---',
+      '# Case',
+      '',
+      'A claim with a stray footnote[^call9].',
+    ].join('\n'),
+  };
+  const findings = findingsFor({ files }).filter(isLint('attribution'));
+  const missing = findings.filter((f) => f.check === 'missing-source-id');
+  assert.deepEqual(missing.map((f) => f.params.index), [0, 1]);
+  assert.deepEqual(findings.filter((f) => f.check === 'unknown-footnote'), [], 'with no id ever declared, the body is left alone rather than flooded with "unknown footnote" for every reference in it');
 });
 
 test('a footnote-shaped reference inside a fenced code block is neither an anchor nor an unknown footnote: code is stripped first, like every other rule in this file', () => {
