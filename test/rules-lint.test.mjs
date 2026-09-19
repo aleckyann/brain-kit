@@ -48,14 +48,39 @@ function renderedMessage(finding) {
   return englishFor(finding.messageKey, finding.params ?? {});
 }
 
-// Shaped exactly per src/git.mjs's own scope contract (task 1), even
-// though every rule in this task ignores it outright. Passing a real,
-// correctly-shaped value, rather than null or {}, is what actually
-// proves these three rules never read it: a rule that started reading
-// `scope.files` by mistake would see an always-empty array here and
-// silently misbehave on every fixture below, rather than throwing on a
-// missing method the way a lazier stand-in (null, undefined) would.
+// Shaped exactly per src/git.mjs's own scope contract (task 1). The
+// three task-3 rules ignore it outright; passing a real, correctly-shaped
+// value, rather than null or {}, is what actually proves that: a rule
+// that started reading `scope.files` by mistake would see an
+// always-empty array here and silently misbehave on every fixture
+// below, rather than throwing on a missing method the way a lazier
+// stand-in (null, undefined) would. For the two task-4 rules (tables,
+// style), which DO read `addedLines`, this same object doubles as "every
+// line of every file is in scope" (a `null` return, per the scope
+// contract, means exactly that), which is the correct default for every
+// test in this file that is not itself testing scoping: a test that
+// wants a NARROWER scope builds one with scopeFor, below, instead.
 const IGNORED_SCOPE = { files: [], addedLines: () => null };
+
+// Builds a scope whose `addedLines` answers per file from a plain map,
+// for tests that need to prove tables/style actually consult the scope
+// rather than always seeing "everything is in scope" (IGNORED_SCOPE,
+// above). `linesByFile` maps a relative path to either an array of
+// 1-based line numbers (turned into the Set the contract requires) or
+// `null` (the untracked-file reading: every line of that file counts).
+// A file named in neither `linesByFile` NOR requested here at all gets
+// an EMPTY set, not `null`: a file the scope never mentions has nothing
+// of its own added, exactly like a tracked file a diff left untouched.
+function scopeFor(linesByFile) {
+  return {
+    files: Object.keys(linesByFile),
+    addedLines(relPath) {
+      const value = linesByFile[relPath];
+      if (value === undefined) return new Set();
+      return value === null ? null : new Set(value);
+    },
+  };
+}
 
 // Builds the { files, context } pair src/commands/lint.mjs (a later
 // task) will hand this ruler, from a real, on-disk vault, exactly as
@@ -82,11 +107,11 @@ function rulerArgsFor(root, config) {
   return { files, context };
 }
 
-function findingsFor({ files = {}, config = {} } = {}) {
+function findingsFor({ files = {}, config = {}, scope = IGNORED_SCOPE } = {}) {
   const root = makeVault({ files, config });
   const loaded = loadConfig(root);
   const { files: mdFiles, context } = rulerArgsFor(root, loaded);
-  return runLintRules(mdFiles, context, IGNORED_SCOPE);
+  return runLintRules(mdFiles, context, scope);
 }
 
 function isLint(id) {
@@ -98,13 +123,15 @@ function isLintCheck(id, check) {
 
 // --- shape of the ruler itself -----------------------------------------------------
 
-test('LINT_RULES is the three structural rules this task owns, each with a stable id and its own lint.<key> setting name', () => {
+test('LINT_RULES is the five rules this ruler owns, each with a stable id and its own lint.<key> setting name', () => {
   assert.deepEqual(
     LINT_RULES.map((r) => ({ id: r.id, settingKey: r.settingKey })),
     [
       { id: 'index-completeness', settingKey: 'index_completeness' },
       { id: 'orphans', settingKey: 'orphans' },
       { id: 'columns', settingKey: 'columns' },
+      { id: 'tables', settingKey: 'tables' },
+      { id: 'style', settingKey: 'style' },
     ],
   );
 });
@@ -720,6 +747,339 @@ test('a null or malformed taxonomy.columns.<name> entry, reached by bypassing lo
   assert.doesNotThrow(() => runLintRules(mdFiles, context, IGNORED_SCOPE));
   const findings = runLintRules(mdFiles, context, IGNORED_SCOPE).filter(isLint('columns'));
   assert.deepEqual(findings, []);
+});
+
+// --- tables: "a table is preceded by a blank line, carries no duplicated data row, -
+//     and no cell exceeds max_cell_chars" -------------------------------------------
+//
+// Unlike the three rules above, tables (and style, further below) READ
+// the scope: every fixture in this section builds one with scopeFor
+// rather than reusing IGNORED_SCOPE, specifically to prove each check
+// only fires for a table whose own lines this change actually added.
+
+test('tables reports a table whose header has no blank line before it, when the header line is one this change added', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['# Notes', '| A | B |', '|---|---|', '| x | y |'].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [2] });
+  const findings = findingsFor({ files, scope }).filter(isLintCheck('tables', 'blank-line-before-table'));
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].file, 'core/notes.md');
+  assert.equal(findings[0].line, 2);
+  assert.match(renderedMessage(findings[0]), /blank/);
+});
+
+test('a table preceded by a real blank line, or sitting at the very start of the body with nothing before it, is not reported for a missing blank line', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['# Notes', '', '| A | B |', '|---|---|', '| x | y |'].join('\n'),
+    'core/leading.md': ['| A | B |', '|---|---|', '| x | y |'].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [3], 'core/leading.md': [1] });
+  const findings = findingsFor({ files, scope }).filter(isLintCheck('tables', 'blank-line-before-table'));
+  assert.deepEqual(findings, []);
+});
+
+test('a finding line number correctly adds a real frontmatter offset, not just a body starting at the top of the file', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['---', 'type: note', '---', 'Intro line.', '| A | B |', '|---|---|', '| x | y |'].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [5] });
+  const findings = findingsFor({ files, scope }).filter(isLintCheck('tables', 'blank-line-before-table'));
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].line, 5); // 3 frontmatter lines, an intro line, then the header row
+});
+
+test('tables leaves an untouched table alone, however malformed: none of its own lines is one this change added', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['# Notes', '| A | B |', '|---|---|', '| x | y |', '| x | y |'].join('\n'),
+  };
+  // This table has no blank line before its header AND a duplicated data
+  // row, either of which would be reported if the table were in scope.
+  const scope = scopeFor({ 'core/notes.md': [] });
+  const findings = findingsFor({ files, scope }).filter(isLint('tables'));
+  assert.deepEqual(findings, []);
+});
+
+test('a file the scope has never seen at all (addedLines returns null) has every line in scope, exactly like an untracked file', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/brand-new.md': ['| A | B |', '|---|---|', '| x | y |', '| x | y |'].join('\n'),
+  };
+  const scope = scopeFor({ 'core/brand-new.md': null });
+  const findings = findingsFor({ files, scope }).filter(isLintCheck('tables', 'duplicate-row'));
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].line, 4);
+});
+
+test('a duplicated data row is reported at its own line naming the earlier row it duplicates, and a row differing only in trailing whitespace IS a duplicate', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['| A | B |', '|---|---|', '| x | y |', '| x | y   |'].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [3, 4] });
+  const findings = findingsFor({ files, scope }).filter(isLintCheck('tables', 'duplicate-row'));
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].file, 'core/notes.md');
+  assert.equal(findings[0].line, 4);
+  assert.equal(findings[0].params.line, 3);
+});
+
+test('two data rows that are genuinely different, even by a single non-whitespace character, are never reported as duplicates', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['| A | B |', '|---|---|', '| x | y |', '| x | z |'].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [3, 4] });
+  const findings = findingsFor({ files, scope }).filter(isLintCheck('tables', 'duplicate-row'));
+  assert.deepEqual(findings, []);
+});
+
+test('a duplicate-row finding carries lint.tables_limits.duplicate_rows as its own severity, independent of lint.tables itself', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['# Notes', '', '| A | B |', '|---|---|', '| x | y |', '| x | y |'].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [5, 6] });
+  const config = { lint: { tables: 'warn', tables_limits: { duplicate_rows: 'error' } } };
+
+  const duplicateFindings = findingsFor({ files, scope, config }).filter(isLintCheck('tables', 'duplicate-row'));
+  assert.equal(duplicateFindings.length, 1);
+  assert.equal(duplicateFindings[0].severity, 'error');
+
+  // A real blank line precedes this header, so this is a control proving
+  // the OTHER check made by the same rule call is unaffected, not the
+  // thing under test.
+  const blankLineFindings = findingsFor({ files, scope, config }).filter(isLintCheck('tables', 'blank-line-before-table'));
+  assert.deepEqual(blankLineFindings, []);
+});
+
+test('tables_limits.duplicate_rows set to "off" suppresses only the duplicate-row check, leaving the rule severity blank-line check unaffected', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['# Notes', '| A | B |', '|---|---|', '| x | y |', '| x | y |'].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [2, 4, 5] });
+  const config = { lint: { tables: 'error', tables_limits: { duplicate_rows: 'off' } } };
+
+  const duplicateFindings = findingsFor({ files, scope, config }).filter(isLintCheck('tables', 'duplicate-row'));
+  assert.deepEqual(duplicateFindings, [], 'duplicate_rows: off must suppress this one check');
+
+  const blankLineFindings = findingsFor({ files, scope, config }).filter(isLintCheck('tables', 'blank-line-before-table'));
+  assert.equal(blankLineFindings.length, 1);
+  assert.equal(blankLineFindings[0].severity, 'error', 'the rule-level severity still applies to a check duplicate_rows never touches');
+});
+
+test('a cell longer than the configured max_cell_chars is reported once, naming the first offending cell, its length and the configured maximum', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['| A | B |', '|---|---|', `| ${'x'.repeat(5)} | ${'y'.repeat(3)} |`].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [3] });
+  const config = { lint: { tables_limits: { max_cell_chars: 4 } } };
+  const findings = findingsFor({ files, scope, config }).filter(isLintCheck('tables', 'cell-too-long'));
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].line, 3);
+  assert.deepEqual(findings[0].params, { index: 1, length: 5, max: 4 });
+});
+
+test('a cell exactly at the configured maximum is not reported; only a cell strictly over it is', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['| A | B |', '|---|---|', `| ${'x'.repeat(4)} | y |`].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [3] });
+  const config = { lint: { tables_limits: { max_cell_chars: 4 } } };
+  const findings = findingsFor({ files, scope, config }).filter(isLintCheck('tables', 'cell-too-long'));
+  assert.deepEqual(findings, []);
+});
+
+test('a missing max_cell_chars disables the cell-length check rather than assuming a made-up default limit', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['| A | B |', '|---|---|', `| ${'x'.repeat(9000)} | y |`].join('\n'),
+  };
+  // Bypasses loadConfig on purpose (like the malformed-columns test
+  // above): this hand-built config never sets tables_limits at all,
+  // which the schema itself allows since none of it is required.
+  const root = makeVault({ files });
+  const config = { lint: { tables: 'error' } };
+  const all = walkVault(root, config, { all: true });
+  const mdFiles = all.filter((path) => path.endsWith('.md'));
+  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8') };
+  const scope = scopeFor({ 'core/notes.md': [3] });
+  const findings = runLintRules(mdFiles, context, scope).filter(isLintCheck('tables', 'cell-too-long'));
+  assert.deepEqual(findings, []);
+});
+
+test('a table written entirely inside a fenced code block is not treated as a table at all, even though it would otherwise fail every check', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': [
+      'Here is an example table:',
+      '',
+      '```',
+      '| A | B |',
+      '|---|---|',
+      '| x | y |',
+      '| x | y |',
+      '```',
+    ].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [4, 5, 6, 7] });
+  const findings = findingsFor({ files, scope }).filter(isLint('tables'));
+  assert.deepEqual(findings, []);
+});
+
+test('an ordinary prose line that happens to contain a pipe is not a table header unless a real delimiter row follows it', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['Intro text before it.', 'Not really a table: a | b here.', 'Just another line of prose.'].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [1, 2, 3] });
+  const findings = findingsFor({ files, scope }).filter(isLint('tables'));
+  assert.deepEqual(findings, []);
+});
+
+test('a setext heading (a line of text followed by a bare "---") is never mistaken for a headerless, one-column table', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    // Sits right after non-blank text on purpose: a table scanner that
+    // wrongly accepted a pipe-free header would report a missing blank
+    // line here, which is exactly what proves this fixture is exercising
+    // the pipe requirement and not merely producing a table with nothing
+    // else left to report.
+    'core/notes.md': ['Intro text right before it.', 'Some heading', '---', '', 'Some prose after it.'].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [1, 2, 3] });
+  const findings = findingsFor({ files, scope }).filter(isLint('tables'));
+  assert.deepEqual(findings, []);
+});
+
+test('a header cell over max_cell_chars is reported too, not only a data cell: the check reads every row of the table, not merely its data rows', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': [`| ${'x'.repeat(5)} | B |`, '|---|---|', '| a | y |'].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [1] });
+  const config = { lint: { tables_limits: { max_cell_chars: 4 } } };
+  const findings = findingsFor({ files, scope, config }).filter(isLintCheck('tables', 'cell-too-long'));
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].line, 1);
+  assert.deepEqual(findings[0].params, { index: 1, length: 5, max: 4 });
+});
+
+test('two separate tables in the same file are judged independently: an identical row in each is not a cross-table duplicate, and a blank line between them is what tells the scanner they are two tables, not one', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': [
+      '| A | B |',
+      '|---|---|',
+      '| x | y |',
+      '',
+      '| A | B |',
+      '|---|---|',
+      '| x | y |',
+    ].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [1, 3, 5, 7] });
+  const findings = findingsFor({ files, scope }).filter(isLintCheck('tables', 'duplicate-row'));
+  assert.deepEqual(findings, [], 'the two "| x | y |" rows sit in two different tables, so neither duplicates the other');
+});
+
+// --- style: "no forbidden character appears, judged ONLY on lines the scope says --
+//     were added" ---------------------------------------------------------------------
+//
+// This task's own example config (test/fixtures/config/valid.json,
+// lint.style.forbidden_chars) already forbids the em dash; every
+// fixture below builds it at runtime via String.fromCharCode, never
+// literally, per this project's own standing rule against typing a
+// unicode escape or a banned character straight into file content.
+
+test('style reports the forbidden character only on the line this change added, not on an identical untouched line, and names the right line number', () => {
+  const emDash = String.fromCharCode(0x2014);
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/ana.md': [`Ana went to the market ${emDash} it was busy.`, `Bruno went too ${emDash} they met there.`].join('\n'),
+  };
+  const scope = scopeFor({ 'people/ana.md': [2] });
+  const findings = findingsFor({ files, scope }).filter(isLint('style'));
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].file, 'people/ana.md');
+  assert.equal(findings[0].line, 2);
+  assert.equal(findings[0].params.char, emDash);
+});
+
+test('a file the scope has never seen at all (addedLines returns null) has every line in scope, exactly like an untracked file', () => {
+  const emDash = String.fromCharCode(0x2014);
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/new.md': [`Line one ${emDash} has it.`, 'Line two is fine.', `Line three ${emDash} too.`].join('\n'),
+  };
+  const scope = scopeFor({ 'people/new.md': null });
+  const findings = findingsFor({ files, scope }).filter(isLint('style'));
+  assert.deepEqual(findings.map((f) => f.line), [1, 3]);
+});
+
+test('a forbidden character inside a fenced code block is not a finding, even on a line this change added, because code must stay quotable', () => {
+  const emDash = String.fromCharCode(0x2014);
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/ana.md': ['Some prose.', '', '```', `example ${emDash} text`, '```'].join('\n'),
+  };
+  const scope = scopeFor({ 'people/ana.md': [4] });
+  const findings = findingsFor({ files, scope }).filter(isLint('style'));
+  assert.deepEqual(findings, []);
+});
+
+test('an empty forbidden_chars list means nothing is ever reported, even on an added line that would otherwise match the example config own default', () => {
+  const emDash = String.fromCharCode(0x2014);
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/ana.md': `Ana went to the market ${emDash} it was busy.`,
+  };
+  const scope = scopeFor({ 'people/ana.md': [1] });
+  const config = { lint: { style: { forbidden_chars: [] } } };
+  const findings = findingsFor({ files, scope, config }).filter(isLint('style'));
+  assert.deepEqual(findings, []);
+});
+
+test('style severity always resolves to the default "warn": lint.style holds forbidden_chars and base, never a severity value the schema would accept', () => {
+  const emDash = String.fromCharCode(0x2014);
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/ana.md': `Ana went to the market ${emDash} it was busy.`,
+  };
+  const scope = scopeFor({ 'people/ana.md': [1] });
+  const findings = findingsFor({ files, scope }).filter(isLint('style'));
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].severity, 'warn');
+});
+
+test('the style message itself says it only judges lines this change added, not the vault own existing prose', () => {
+  const emDash = String.fromCharCode(0x2014);
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/ana.md': `Ana went to the market ${emDash} it was busy.`,
+  };
+  const scope = scopeFor({ 'people/ana.md': [1] });
+  const [finding] = findingsFor({ files, scope }).filter(isLint('style'));
+  assert.match(renderedMessage(finding), /added/);
+});
+
+test('when a line carries more than one forbidden character, only the one that occurs FIRST, reading left to right, is named, and only once', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/ana.md': 'Bruno uses a tilde ~ and later a caret ^ in the same added line.',
+  };
+  const scope = scopeFor({ 'people/ana.md': [1] });
+  const config = { lint: { style: { forbidden_chars: ['^', '~'] } } }; // configured in the OPPOSITE order the characters appear in the line
+  const findings = findingsFor({ files, scope, config }).filter(isLint('style'));
+  assert.equal(findings.length, 1, 'one finding per line, never one per forbidden character it carries');
+  assert.equal(findings[0].params.char, '~', 'the tilde comes first in the text, regardless of the order forbidden_chars lists it in');
 });
 
 // --- severity: "error", "warn" or "off", defaulting to "warn" ----------------------

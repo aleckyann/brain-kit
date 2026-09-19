@@ -69,5 +69,9 @@
   "lint.index_completeness.dir_not_linked": "o index raiz não faz link para o diretório de primeiro nível \"{dir}\"",
   "lint.orphans.unreachable": "esta nota não é alcançável a partir do index raiz seguindo links",
   "lint.columns.missing_table": "este arquivo não tem uma tabela para conferir com os cabeçalhos de coluna configurados",
-  "lint.columns.mismatch": "a coluna {index} deveria ser \"{expected}\", mas é \"{found}\""
+  "lint.columns.mismatch": "a coluna {index} deveria ser \"{expected}\", mas é \"{found}\"",
+  "lint.tables.missing_blank_line": "esta tabela não tem uma linha em branco antes do cabeçalho",
+  "lint.tables.duplicate_row": "esta linha de dados duplica a linha {line}",
+  "lint.tables.cell_too_long": "a célula {index} tem {length} caracteres, acima do máximo configurado de {max}",
+  "lint.style.forbidden_char": "esta linha foi adicionada por esta mudança e usa o caractere proibido \"{char}\"; o estilo só julga linhas que a mudança adicionou, não a prosa que já existia no vault"
 }

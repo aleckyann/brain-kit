@@ -618,7 +618,281 @@ const columns = {
   },
 };
 
-export const LINT_RULES = Object.freeze([indexCompleteness, orphans, columns]);
+// --- tables (lint.tables, lint.tables_limits) ---------------------------------------
+//
+// "A table is preceded by a blank line, carries no duplicated data row,
+// and no cell exceeds max_cell_chars." Ported from a real awk one-liner
+// (this slice's own plan, "the awk check for a split table"), which read
+// a whole tracked file every run with no notion of which line was old
+// and which was new. This is one of only two rules in LINT_RULES that
+// reads `scope` at all (style, below, is the other), for the identical
+// reason style needs it: a vault that adopts this kit arrives with
+// tables written under no such rule, and a table check that reports
+// every old table on its first run is exactly the linter someone
+// switches off in its first minute. A table is judged only when at
+// least one of its OWN lines (its header, its delimiter, or any of its
+// data rows) is a line the scope says this change added; a table none
+// of whose lines were touched is left alone in silence, however
+// malformed, the same silence the style rule below keeps for an
+// untouched line.
+//
+// A table found entirely inside a fenced or indented code block is not
+// found at all: the table scanner below reads `stripCode`
+// (src/markdown.mjs, already imported above for the columns rule), the
+// SAME call every other rule in this file already goes through, applied
+// before it ever looks for a pipe. A blanked fence line has no pipe
+// left in it to be mistaken for one; this is not a second
+// code-detection implementation choosing to agree with the first, it is
+// the one shared call.
+//
+// Three independent checks share one table scan:
+// - blank-line-before-table: the line immediately before a table's own
+//   header row must be blank, unless the header is the very first line
+//   of the body, with nothing before it to require a blank line from.
+// - duplicate-row: two data rows in the SAME table whose cells, once
+//   each is trimmed, read identically are a duplicate, reported at the
+//   LATER row's own line. Trimming is what makes a row differing only
+//   in trailing whitespace a duplicate, a case this task's own brief
+//   names explicitly. `splitTableRow` (above, already honouring an
+//   escaped pipe as literal content) is reused rather than a second,
+//   simpler row split that could disagree with it on that escape.
+// - cell-too-long: any cell (header or data), once trimmed, longer than
+//   `lint.tables_limits.max_cell_chars` is reported at its own row's
+//   line, naming the first offending cell only: the same "first
+//   divergence" discipline the columns rule above already follows,
+//   because a message naming every offense on a row at once is worse
+//   than one a person can fix and re-run against. A missing or
+//   non-positive `max_cell_chars` disables this one check rather than
+//   assuming a made-up limit nothing in this project ever declared
+//   (the same silent-skip posture columns' own judgment call 2 takes
+//   for a configured file absent from the walk).
+//
+// `lint.tables_limits.duplicate_rows` is a SEPARATE severity from
+// `lint.tables` itself: the configuration's own schema
+// (schema/config.schema.json) gives duplicate-row detection its own
+// error/warn/off knob, distinct from the blank-line and cell-length
+// checks this same rule also makes. A finding this check returns
+// therefore carries its own `severity` field, which runLintRules
+// (below) reads in PREFERENCE to the one rule-level severity it computes
+// for everything else a rule returns. That preference is the one thing
+// added to runLintRules for this; every other rule leaves `severity`
+// off its own findings and is unaffected.
+function normalizedRowCells(cells) {
+  return cells.map((cell) => cell.trim());
+}
+
+function rowKey(cells) {
+  return JSON.stringify(normalizedRowCells(cells));
+}
+
+// Every markdown table in `strippedBody` (fenced, indented and inline
+// code already blanked by the caller): a header row, its delimiter, and
+// every immediately following non-blank line that itself carries a
+// pipe. Unlike findFirstTableHeader above (columns' own single-table,
+// single-file need), this collects every table in the text, in order,
+// because a lint pass has to judge every table a file carries, not only
+// the vault's one configured one. Both share the same row-level reading
+// of "is this a table" (a pipe on the header line, a real delimiter row
+// right after it, via the same splitTableRow/isDelimiterRow above), so
+// the two can never disagree about what a table IS, only about how many
+// of them a given call is asked to enumerate.
+function findAllTables(strippedBody) {
+  const lines = strippedBody.split('\n');
+  const found = [];
+  let i = 0;
+  while (i < lines.length - 1) {
+    if (!lines[i].includes('|') || !isDelimiterRow(lines[i + 1])) {
+      i++;
+      continue;
+    }
+    const headerLineIndex = i;
+    const dataRows = [];
+    let j = i + 2;
+    // A data row must carry a pipe; a blank line never does (trimming a
+    // line that contains a pipe can never produce the empty string), so
+    // requiring a pipe here already stops the scan at a blank line too,
+    // with no separate blank check needed beside it.
+    while (j < lines.length && lines[j].includes('|')) {
+      dataRows.push({ lineIndex: j, cells: splitTableRow(lines[j]) });
+      j++;
+    }
+    found.push({
+      headerLineIndex,
+      delimiterLineIndex: i + 1,
+      headerCells: splitTableRow(lines[headerLineIndex]),
+      dataRows,
+    });
+    i = j;
+  }
+  return found;
+}
+
+// True when `bodyLineIndex` (0-based, relative to the same stripped body
+// findAllTables read) is a line the scope says this change added, or
+// when the scope carries no restriction for this file at all (`null`,
+// the untracked-file and "all" reading; see src/git.mjs's own header).
+function lineIsInScope(scope, file, prefixLineCount, bodyLineIndex) {
+  const added = scope.addedLines(file);
+  return added === null || added.has(prefixLineCount + bodyLineIndex);
+}
+
+const tables = {
+  id: 'tables',
+  settingKey: 'tables',
+  check(files, context, scope) {
+    const findings = [];
+    const maxCellCharsRaw = context.config?.lint?.tables_limits?.max_cell_chars;
+    const maxCellChars = Number.isInteger(maxCellCharsRaw) && maxCellCharsRaw > 0 ? maxCellCharsRaw : null;
+    const duplicateSeverityRaw = context.config?.lint?.tables_limits?.duplicate_rows;
+    const duplicateSeverity = VALID_SEVERITIES.has(duplicateSeverityRaw) ? duplicateSeverityRaw : DEFAULT_SEVERITY;
+
+    for (const file of files) {
+      const text = context.readFile(file);
+      const { body } = splitFrontmatter(text);
+      const stripped = stripCode(body);
+      const bodyLines = stripped.split('\n');
+      const prefixLineCount = bodyPrefixLineCount(text, body);
+
+      for (const table of findAllTables(stripped)) {
+        const ownLineIndices = [table.headerLineIndex, table.delimiterLineIndex, ...table.dataRows.map((row) => row.lineIndex)];
+        const inScope = ownLineIndices.some((idx) => lineIsInScope(scope, file, prefixLineCount, idx));
+        if (!inScope) continue; // every one of this table's own lines already existed before this change
+
+        if (table.headerLineIndex > 0 && bodyLines[table.headerLineIndex - 1].trim() !== '') {
+          findings.push({
+            file,
+            line: prefixLineCount + table.headerLineIndex,
+            check: 'blank-line-before-table',
+            messageKey: 'lint.tables.missing_blank_line',
+            params: {},
+          });
+        }
+
+        if (duplicateSeverity !== 'off') {
+          const seenAt = new Map();
+          for (const row of table.dataRows) {
+            const key = rowKey(row.cells);
+            const firstLineIndex = seenAt.get(key);
+            if (firstLineIndex !== undefined) {
+              findings.push({
+                file,
+                line: prefixLineCount + row.lineIndex,
+                check: 'duplicate-row',
+                severity: duplicateSeverity,
+                messageKey: 'lint.tables.duplicate_row',
+                params: { line: prefixLineCount + firstLineIndex },
+              });
+            } else {
+              seenAt.set(key, row.lineIndex);
+            }
+          }
+        }
+
+        if (maxCellChars !== null) {
+          const rowsToCheck = [{ lineIndex: table.headerLineIndex, cells: table.headerCells }, ...table.dataRows];
+          for (const row of rowsToCheck) {
+            const cells = normalizedRowCells(row.cells);
+            const overIndex = cells.findIndex((cell) => cell.length > maxCellChars);
+            if (overIndex !== -1) {
+              findings.push({
+                file,
+                line: prefixLineCount + row.lineIndex,
+                check: 'cell-too-long',
+                messageKey: 'lint.tables.cell_too_long',
+                params: { index: overIndex + 1, length: cells[overIndex].length, max: maxCellChars },
+              });
+            }
+          }
+        }
+      }
+    }
+    return findings;
+  },
+};
+
+// --- style (lint.style.forbidden_chars) ----------------------------------------------
+//
+// "No forbidden character appears, judged ONLY on lines the scope says
+// were added." Ported from the reference vault's own morning-briefing
+// style lock, whose own history already taught this lesson once: the
+// lock counted only added lines, for the exact reason tables' own
+// header above restates, years of prose written before the rule existed
+// must not all light up red the day a vault adopts it. This rule is why
+// the scope contract (src/git.mjs) exists at all.
+//
+// One finding per (file, line): a line is reported at most once here
+// even when it carries more than one forbidden character, or the same
+// one twice, naming whichever configured character occurs FIRST reading
+// left to right. The same "first divergence" discipline columns and
+// tables both already follow above, for the same reason: a message
+// naming every occurrence on a line at once is worse than one a person
+// can fix and re-run against.
+//
+// stripCode runs over the WHOLE file text here, frontmatter included,
+// not merely the body findAllTables and the columns rule restrict
+// themselves to: this rule's own line numbers must match, one for one,
+// the full-file line numbers scope.addedLines already reports (a git
+// diff always counts whole-file lines), so there is no body-prefix
+// offset to add back on here, unlike every other rule in this module
+// that reports a line inside a specific known section of the file.
+//
+// A forbidden character inside a fenced or indented code block, or an
+// inline code span, is never a finding: stripCode blanks all three
+// before this rule ever looks at a line, because an example that
+// documents the very character this rule forbids must still be
+// quotable (the same reasoning tables' own header states for a table
+// inside a fenced block).
+const style = {
+  id: 'style',
+  settingKey: 'style',
+  check(files, context, scope) {
+    const configuredChars = context.config?.lint?.style?.forbidden_chars;
+    const forbiddenChars = Array.isArray(configuredChars) ? configuredChars.filter((c) => typeof c === 'string' && c.length > 0) : [];
+    // Both early exits below are unfalsifiable by any OUTPUT this
+    // function can produce: the per-line loop already reads `added.has`
+    // and `forbiddenChars` the same way either exit shortcuts, so
+    // removing either one changes no finding this rule ever returns, in
+    // any fixture. They are kept anyway, deliberately, for what they are
+    // not dead FOR: the first skips readFile+stripCode for every file in
+    // the vault when style has nothing configured to look for at all,
+    // and the second skips the same per file this change never touched.
+    // Neither is defended by a test that could tell its removal apart
+    // from keeping it; a mutation of either survives the whole suite.
+    if (forbiddenChars.length === 0) return [];
+
+    const findings = [];
+    for (const file of files) {
+      const added = scope.addedLines(file);
+      if (added !== null && added.size === 0) continue; // this change added nothing at all in this file: skip the read
+      const lines = stripCode(context.readFile(file)).split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        const lineNumber = i + 1;
+        if (added !== null && !added.has(lineNumber)) continue;
+        let firstChar = null;
+        let firstIndex = Infinity;
+        for (const char of forbiddenChars) {
+          const idx = lines[i].indexOf(char);
+          if (idx !== -1 && idx < firstIndex) {
+            firstIndex = idx;
+            firstChar = char;
+          }
+        }
+        if (firstChar !== null) {
+          findings.push({
+            file,
+            line: lineNumber,
+            check: 'forbidden-char',
+            messageKey: 'lint.style.forbidden_char',
+            params: { char: firstChar },
+          });
+        }
+      }
+    }
+    return findings;
+  },
+};
+
+export const LINT_RULES = Object.freeze([indexCompleteness, orphans, columns, tables, style]);
 
 const VALID_SEVERITIES = new Set(['error', 'warn', 'off']);
 const DEFAULT_SEVERITY = 'warn';
@@ -652,11 +926,22 @@ function severityFor(rule, config) {
 // rule would have made.
 //
 // `scope` is accepted and handed to every rule uniformly, exactly as
-// HOUSE_RULES and SPEC_RULES hand every rule the same `context`: none of
-// the three rules in this task reads it (see this file's own header),
-// but the runner does not know that and must not need to, so a future
-// rule that DOES read scope (task 4) is one array entry away, not a
-// change to this loop.
+// HOUSE_RULES and SPEC_RULES hand every rule the same `context`: the
+// three rules from task 3 never read it (see this file's own header),
+// while tables and style (above) do, and the runner does not need to
+// know which is which for either to work.
+//
+// A finding may carry its OWN `severity`, read in preference to the one
+// rule-level severity this function otherwise stamps on everything a
+// rule returns: `lint.tables_limits.duplicate_rows` is a real,
+// separately configurable severity the schema already gives one single
+// check inside the `tables` rule (see that rule's own header above), and
+// a runner that only ever had one severity per rule could not honour it
+// without this. `VALID_SEVERITIES.has(partial.severity)` guards against
+// a rule that never sets the field at all (every rule but tables'
+// duplicate-row check): `undefined` is not a member of that set, so
+// those findings fall straight through to the ordinary rule-level
+// severity exactly as before this existed.
 export function runLintRules(files, context, scope) {
   const findings = [];
   for (const rule of LINT_RULES) {
@@ -667,7 +952,7 @@ export function runLintRules(files, context, scope) {
         ruler: 'lint',
         id: rule.id,
         check: partial.check,
-        severity,
+        severity: VALID_SEVERITIES.has(partial.severity) ? partial.severity : severity,
         file: partial.file,
         line: partial.line,
         absence: partial.absence === true,
