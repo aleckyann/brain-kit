@@ -276,3 +276,63 @@ The slice is done when each of these has been RUN, with its output pasted into t
 **A singular noun in a mitigation ships as a single file.** I ruled that the gate should refuse "when the scanner it is about to run differs from the committed one". The reviewer defeated that wording in a minute by editing a NEIGHBOURING module, and it is right that the check must cover the whole executing subtree, untracked files included. It is also right about the better answer, which I am adopting over my own: extract the pushed tip's toolchain and run THAT, rather than compare and refuse. Same cost, no friction, and a step towards the real per-commit fix instead of a detour. The friction argument decides it: a gate that refuses every dirty push in a repository whose source tree is dirty most of the working day teaches people the bypass flag, which is worse than the hole it closes.
 
 **Two questions, two answers, and the second does not retire the first.** The question "what single edit makes it pass and keeps the suite green" and the question "what already gets through untouched" each found a live leak here. I had recorded the second as the more valuable question because it won the earlier round. It is not a ranking, it is a pair.
+
+### The push gate executed code the push carried, and it was my ruling that put it there
+
+Reproduced by me on 19/09/2026 in a throwaway clone with its own bare remote, one command
+away from a real disaster: a branch that modifies `bin/brain-kit.mjs` to write a witness
+file and exit zero, plus a file matching an active pattern. The push was accepted, exit 0,
+no output, hook intact, correct pattern list, no bypass flag. The witness file was written,
+and the code the branch carried had also read the environment variable naming the private
+pattern list and copied its path out. Arbitrary code execution in the one component whose
+whole job is to run before anything leaves this machine.
+
+The route it took is worth writing down in full, because no single step was careless. The
+gate resolved its scanner from the working tree, so an uncommitted edit weakened it. A
+reviewer proved that, and proposed extracting the pushed tip's toolchain and running that
+instead. I had proposed comparing the working tree against the committed copy and refusing
+on a difference; I adopted the reviewer's answer over my own because the friction argument
+was right, and because it moved towards the real per-commit fix rather than away from it.
+An implementer built it carefully, extended the extraction list when the translator turned
+out to need it, and refused when extraction failed. Every one of us treated "the scanner
+the push carries" as obviously safer than "the scanner in the working tree", and not one of
+us asked the question that names the defect out loud: whose code is the pushed tip?
+
+**The rule this earns: a fix that moves WHERE code comes from is a change of trust
+boundary, and it must be argued as one.** Say, in words, who can write the new source, and
+what they get if they do. Here the answer was "anybody whose branch this repository ever
+pushes, and they get arbitrary execution with the maintainer's environment". That sentence
+was available before a line was written. It never got said because the change was framed as
+closing a hole, and a change framed as closing a hole does not get asked what it opens.
+
+**The second rule, which is the reviewer's and is sharper than mine: the fix defended the
+wrong asset.** It treats the pushed tip as trustworthy and the maintainer's own working
+tree as suspicious. That is backwards. The working tree is the maintainer's; the pushed tip
+is whatever a branch happens to contain. The correct place for both the hook and the engine
+the hook runs is outside the working tree entirely, maintainer-controlled, where a checkout
+cannot remove them, an uncommitted edit cannot weaken them, and a pushed branch cannot
+replace them. That single move closes the working-tree weakening, the missing-hook hole and
+the execution hole together, and it removes three unconditional refusals that the
+extraction design had to invent.
+
+**And the correction to what I published.** I wrote in SECURITY.md that a working tree
+without the hook file has no gate and that no version of this gate can close it from inside
+itself. The first half is true of the configuration this repository ships. The second half
+is false: `core.hooksPath` does not have to point inside the working tree, and with it
+pointed outside I reproduced the same orphan-branch push and the gate refused it. I stated
+a limit as a property of the mechanism when it was a property of one setup, and I stated it
+in the file people read to decide what to trust.
+
+### Measure the ground at dispatch, not from memory
+
+I wrote the rule about never telling a subagent a workspace is in a state I have not
+established, and then broke it twice within the hour, in the very next dispatch. I told the
+re-reviewer the scratchpad was empty and counted; it had been, an hour and two of my own
+verification runs earlier, and by dispatch it held thousands of entries. I told it the tree
+was at one commit and then committed a documentation change on top before it started. The
+reviewer measured both and said so.
+
+Neither slip changed a result this time, and that is the point: they are the same shape as
+the ones that did. A setup claim decays. Measure it in the same minute you send it, quote
+the number and the commit you measured, and if you commit anything after dispatching, say
+so to the agent you dispatched.
