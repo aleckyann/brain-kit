@@ -75,16 +75,49 @@ const SCAN_TIMEOUT_MS = 2000;
 // above. The two bound different things and neither substitutes for the
 // other: `SCAN_TIMEOUT_MS` catches the ONE stuck evaluation, but a scan can
 // be made of thousands of evaluations that EACH stay comfortably under
-// that bound and still sum to an unbounded total, because the budget is
-// spent per line and per pattern, not once for the whole call. Twenty
-// lines that each cost just under the per-line budget, or a ten-thousand
-// line file at the same rate, hit exactly this: no single call ever times
-// out, so nothing before this constant existed would ever raise, and the
-// caller would simply wait. This is checked before every per-pattern
-// evaluation (see `scanText`), so the actual overshoot past this deadline
-// is bounded by one more `SCAN_TIMEOUT_MS`, not by however long the rest
-// of the file would have taken.
-const OVERALL_SCAN_TIMEOUT_MS = 10000;
+// that bound and still sum to an unbounded total, because the budget used
+// to be spent per line AND per pattern (see `SCAN_LINE_SRC`'s own history
+// below). No single call ever timed out, so nothing before this constant
+// existed would ever raise, and the caller would simply wait; a
+// ten-thousand-line file at that old per-(line, pattern) rate already
+// extrapolated to hours.
+//
+// This is not a judgment call, it is a measurement, and the module was
+// wrong once already for treating it as the former. Measured on the
+// machine this was written on, scanning ORDINARY prose (no matches at
+// all) against the six generic patterns before `SCAN_LINE_SRC` was hoisted
+// to run every pattern for one line in a single sandbox call: one
+// `vm.runInContext` call costs roughly 70-115 MICROseconds regardless of
+// how little work is inside it, against roughly a TENTH of a microsecond
+// for the same regex work run directly outside a sandbox. On content with
+// nothing to find, which is most real content, that per-call overhead WAS
+// the scan's cost, and paying it once per (line, pattern) rather than once
+// per line meant a ten-thousand-line file alone cost several seconds
+// against the OLD ceiling of ten seconds, using up roughly half of it on
+// ordinary prose containing no secret at all. Hoisting the pattern loop
+// inside the sandbox (calling once per line, not once per line per
+// pattern) cut a representative scan's time by roughly three quarters;
+// compiling `SCAN_LINE_SRC` once with `vm.Script` instead of passing it as
+// a string to `runInContext` on every call was also measured and made no
+// further difference, so it is not done.
+//
+// After hoisting, 100,000 lines (about 13 MB) of ordinary prose with no
+// matches, scanned against the six generic patterns plus five typical
+// vault-configured ones (eleven patterns total), measured at roughly 12.7
+// seconds on that same machine. This constant is set with real margin
+// above that measurement, specifically so a legitimate large file (a
+// generated document, an exported log, a big diff) does not spuriously
+// spend most or all of its budget on content that carries no secret at
+// all: at this value, 100,000 lines of clean content is comfortably
+// admitted, not merely tolerated.
+//
+// Exported, not a private implementation detail, specifically so this
+// module's own tests can pin its VALUE directly rather than only its
+// existence: a test that only ever exercises an override (see
+// `deadlineAt`) never notices this constant growing by any factor at all,
+// including one that would turn a bounded scan back into an effectively
+// unbounded one.
+export const OVERALL_SCAN_TIMEOUT_MS = 20000;
 
 // Versioned in this repository because these name no one: a private key
 // header, the two GitHub token shapes, the Anthropic key shape, the AWS
@@ -272,51 +305,83 @@ export function loadPatterns({ env, configPatterns } = {}) {
 // source, not stand up a new global object each time.
 const scanSandbox = vm.createContext(Object.create(null));
 
-// The script executed inside `scanSandbox`. It is plain top-level code,
-// not a function body: a vm script's completion value is the value of its
-// last evaluated expression statement, which a `function` body does not
-// give you without an explicit `return`, so this stays a flat script on
-// purpose. It finds EVERY match of `regex` in `text`, retaining full
+// The script executed inside `scanSandbox`, ONCE PER LINE for every
+// pattern together, not once per (line, pattern). Measured (see the
+// fix-round report): one `vm.runInContext` call costs on the order of
+// seventy microseconds regardless of how little work is inside it, against
+// roughly a tenth of a MICROsecond for the same regex work run directly.
+// On ordinary content, where almost nothing matches, that per-call
+// overhead was almost the entire cost of a scan; calling once per line
+// instead of once per (line, pattern) cuts a representative scan's time by
+// roughly three quarters, because the sandbox-entry cost is paid once per
+// line rather than once per line per pattern. Compiling this script once
+// with `vm.Script` instead of passing it as a string to `runInContext`
+// every time was also measured and made no measurable difference, so it is
+// not done here; the cost is in crossing into the sandbox, not in parsing
+// the same few lines of source again.
+//
+// It is plain top-level code, not a function body: a vm script's
+// completion value is the value of its last evaluated expression
+// statement, which a `function` body does not give you without an
+// explicit `return`, so this stays a flat script on purpose. For each
+// pattern in `patterns` it finds EVERY match, retaining full
 // `[index, length]` pairs for at most `keep` of them (so retention cannot
 // allocate more than `keep` objects no matter how many matches exist) while
-// still counting every match found (so `count` is exact even when far more
-// matches exist than `keep`), all inside the ONE timeout this function is
-// run under. That single timeout is what turns two different-looking
-// dangers into one bounded failure: a pattern whose backtracking never
-// returns dies on its first `exec` call, and a pattern that returns
-// constantly (an `a*`-shaped pattern against a very long run of `a`) dies
-// once the accumulated cost of all those cheap calls crosses the same
-// budget, well before either one could allocate its way to an outage or
-// hang the process.
+// still counting every match found (so each entry's `count` is exact even
+// when far more matches exist than `keep`), ALL of it, every pattern on
+// this line, inside the ONE timeout this whole call is run under. That one
+// timeout is what turns two different-looking dangers into one bounded
+// failure: a pattern whose backtracking never returns dies wherever it is
+// in the loop, and a pattern that returns constantly (an `a*`-shaped
+// pattern against a very long run of `a`) dies once the accumulated cost
+// of all those cheap calls crosses the same budget, well before either one
+// could allocate its way to an outage or hang the process. The cost of
+// this coarser granularity is attribution: if the whole call times out,
+// there is no way to ask the sandbox which pattern, or which iteration, it
+// was on when V8 terminated it, so the caller cannot name a specific
+// pattern in that message; see `scanLineForAllPatterns`.
 const SCAN_LINE_SRC = `
-var kept = [];
-var count = 0;
-regex.lastIndex = 0;
-var m = regex.exec(text);
-while (m !== null) {
-  count += 1;
-  if (kept.length < keep) { kept.push([m.index, m[0].length]); }
-  if (m[0].length === 0) {
-    // A zero-length match (an all-optional pattern) would otherwise pin
-    // lastIndex in place and loop forever without ever reaching the count
-    // that would let the caller's ceiling apply.
-    regex.lastIndex += 1;
+var results = [];
+for (var p = 0; p < patterns.length; p += 1) {
+  var regex = patterns[p];
+  var kept = [];
+  var count = 0;
+  regex.lastIndex = 0;
+  var m = regex.exec(text);
+  while (m !== null) {
+    count += 1;
+    if (kept.length < keep) { kept.push([m.index, m[0].length]); }
+    if (m[0].length === 0) {
+      // A zero-length match (an all-optional pattern) would otherwise pin
+      // lastIndex in place and loop forever without ever reaching the
+      // count that would let the caller's ceiling apply.
+      regex.lastIndex += 1;
+    }
+    m = regex.exec(text);
   }
-  m = regex.exec(text);
+  results.push({ kept: kept, count: count });
 }
-({ kept: kept, count: count });
+results;
 `;
 
-// Runs `SCAN_LINE_SRC` for one (line, pattern) pair. `regex` is passed BY
-// REFERENCE into the sandbox (a vm context does not clone the bindings it
-// is given), so its `lastIndex` mutations, including the automatic reset
-// to zero the specification performs on a failed match, are visible to
-// this module exactly as a direct `regex.exec(text)` call would leave
-// them; nothing here has to reset it again afterwards. `describe` is
-// already the origin-appropriate text (see `displayPattern`): never the
-// raw source of a personal pattern.
-function scanLineForPattern(regex, text, keep, describe) {
-  scanSandbox.regex = regex;
+// Runs `SCAN_LINE_SRC` for one line against EVERY pattern in `regexes`,
+// together, in one sandbox call. `regexes` is passed BY REFERENCE into the
+// sandbox (a vm context does not clone the bindings it is given), so each
+// regex's `lastIndex` mutations, including the automatic reset to zero the
+// specification performs on a failed match, are visible to this module
+// exactly as a direct `regex.exec(text)` call would leave them; nothing
+// here has to reset it again afterwards.
+//
+// Neither failure branch below names a specific pattern, unlike the
+// per-pattern version this replaced: a timeout aborts the WHOLE call, and
+// V8 gives back no information about which pattern, or which loop
+// iteration, it was on when it terminated the script, so there is nothing
+// true this function could attribute to any one entry, personal or not.
+// Saying nothing specific is also what keeps the fail-closed contract
+// trivially true here: a message with no pattern-derived content at all
+// can never be the one that leaks a personal pattern's text.
+function scanLineForAllPatterns(regexes, text, keep) {
+  scanSandbox.patterns = regexes;
   scanSandbox.text = text;
   scanSandbox.keep = keep;
   try {
@@ -327,18 +392,23 @@ function scanLineForPattern(regex, text, keep, describe) {
     // function is entitled to call a timeout: a bare catch that relabels
     // every sandbox failure as "took too long" would send whoever reads it
     // chasing a catastrophic pattern that was never there, when the real
-    // cause could be a bug in `SCAN_LINE_SRC` itself or some other engine
+    // cause could be a bug in `SCAN_LINE_SRC` itself, a caller passing
+    // something that is not a compiled pattern, or some other engine
     // error. Anything else still fails closed (it still throws, never
-    // returns as if the scan had succeeded), but says so honestly.
+    // returns as if the scan had succeeded), but says so honestly, and
+    // without the engine's own message: that message is arbitrary,
+    // engine-controlled text with no origin gate of its own, and this
+    // function's whole point is never to interpolate ungated text into
+    // what it throws.
     if (err?.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') {
       // The engine's own timeout error carries no information this module
-      // needs to relay (it never names the pattern, only "script execution
+      // needs to relay (it never names a pattern, only "script execution
       // timed out"), so it is replaced rather than wrapped: the message
       // here is what actually helps whoever reads it decide what to do
       // next.
-      throw new Error(`a leak pattern took longer than ${SCAN_TIMEOUT_MS}ms to scan one line and was aborted rather than left to hang: ${describe}`);
+      throw new Error(`one or more leak patterns took longer than ${SCAN_TIMEOUT_MS}ms to scan this line and were aborted rather than left to hang`);
     }
-    throw new Error(`scanning one line against a leak pattern failed unexpectedly, not from a timeout: ${describe}: ${err.message}`);
+    throw new Error('scanning this line against the leak patterns failed unexpectedly, not from a timeout');
   }
 }
 
@@ -491,42 +561,53 @@ function buildExcerpt(lineText, start, end, redactionSpans, tooDenseToRedactPrec
 // separate passes (one small, for findings; one large, for redaction)
 // means the accurate total this pattern contributed is counted exactly
 // once per line, not twice.
-// `overallTimeoutMs` defaults to `OVERALL_SCAN_TIMEOUT_MS` and exists as an
-// explicit parameter (rather than a hardcoded constant with no way in) so
-// this module's own test suite can prove the aggregate deadline actually
-// fires without needing a real multi-second scan to do it: a caller who
-// genuinely needs a different aggregate budget can pass one, and one that
-// does not gets this module's own considered default.
-export function scanText(text, patterns, { max, overallTimeoutMs } = {}) {
+// `deadlineAt` is an ABSOLUTE point in time (an epoch millisecond value,
+// comparable to `Date.now()`), not a duration, and this is deliberate. A
+// duration measured from when ONE `scanText` call starts only ever bounds
+// that one call; every real caller scans more than one file over the
+// course of a run (a lint pass, a push gate walking a commit range), and a
+// per-call duration budget resets for each one, so a whole run has no
+// aggregate budget at all even though each individual call thinks it has
+// one. Threading the SAME absolute deadline through every call in a run
+// (compute it once, pass it to every `scanText` call that run makes) gives
+// the run itself a total budget; a fresh duration per call cannot do that
+// no matter what its number is. When omitted, this call gets its own
+// deadline, `Date.now() + OVERALL_SCAN_TIMEOUT_MS`, which preserves this
+// module's behaviour for a caller that only ever scans one thing.
+export function scanText(text, patterns, { max, deadlineAt } = {}) {
   const effectiveMax = Number.isInteger(max) && max >= 0 ? max : DEFAULT_MAX;
-  const effectiveOverallTimeout = Number.isFinite(overallTimeoutMs) && overallTimeoutMs > 0 ? overallTimeoutMs : OVERALL_SCAN_TIMEOUT_MS;
-  const scanStartedAt = Date.now();
+  const effectiveDeadline = Number.isFinite(deadlineAt) ? deadlineAt : Date.now() + OVERALL_SCAN_TIMEOUT_MS;
   const cleaned = text.replace(/\0/g, '');
   const lines = cleaned.split('\n');
   const matches = [];
   let total = 0;
+  // Hoisted once, outside the per-line loop: `patterns` itself does not
+  // change across lines, so there is no reason to rebuild this array
+  // ten thousand times for a ten thousand line file.
+  const regexes = patterns.map((entry) => entry.regex);
   lines.forEach((lineText, index) => {
     const lineNumber = index + 1;
+    // Checked once per line, not once per (line, pattern): the per-line
+    // sandbox call below already evaluates every pattern together (see
+    // `SCAN_LINE_SRC`), so a line is the smallest unit of work this
+    // function can interrupt between. The per-evaluation budget
+    // (`SCAN_TIMEOUT_MS`) bounds one stuck call; this bounds the SUM of
+    // every call a scan makes, which many lines that each finish
+    // comfortably under that per-call budget can still exceed with no
+    // single call ever raising. Checking here bounds how far past this
+    // deadline the scan can overshoot to at most one more line's worth of
+    // work, never the whole rest of the file.
+    if (Date.now() > effectiveDeadline) {
+      throw new Error(`the scan exceeded its deadline before finishing every line; refusing to report a partial result as if it were complete`);
+    }
     const remainingBudget = effectiveMax - matches.length;
     const collectCap = Math.max(remainingBudget, REDACTION_SPAN_FLOOR);
     const findingCandidates = [];
     const redactionSpans = [];
     let tooDenseToRedactPrecisely = false;
-    for (const entry of patterns) {
-      // Checked before every per-pattern evaluation, not once per line: the
-      // per-evaluation budget (`SCAN_TIMEOUT_MS`) bounds one stuck
-      // evaluation, but says nothing about the SUM of many evaluations that
-      // each individually finish well under it. Twenty lines, or twenty
-      // patterns on one line, that each cost just under that budget would
-      // otherwise sum to an unbounded total with no single call ever
-      // raising. Checking here bounds how far past this deadline the scan
-      // can overshoot to at most one more `SCAN_TIMEOUT_MS`, rather than
-      // however long the rest of the file would have taken.
-      if (Date.now() - scanStartedAt > effectiveOverallTimeout) {
-        throw new Error(`the overall scan exceeded its ${effectiveOverallTimeout}ms deadline before finishing every line; refusing to report a partial result as if it were complete`);
-      }
-      const describe = displayPattern(entry);
-      const { kept, count } = scanLineForPattern(entry.regex, lineText, collectCap, describe);
+    const results = scanLineForAllPatterns(regexes, lineText, collectCap);
+    patterns.forEach((entry, patternIndex) => {
+      const { kept, count } = results[patternIndex];
       total += count;
       if (count > kept.length) {
         // More matches of this one pattern exist on this line than this
@@ -551,7 +632,7 @@ export function scanText(text, patterns, { max, overallTimeoutMs } = {}) {
         findingCandidates.push({ line: lineNumber, column: start + 1, start, end: start + length, entry });
         redactionSpans.push([start, start + length]);
       });
-    }
+    });
     // A performance fast path, not a correctness guard: sorting and
     // slicing an empty array is already a no-op, so a line with no
     // candidates at all would fall through the rest of this block and
