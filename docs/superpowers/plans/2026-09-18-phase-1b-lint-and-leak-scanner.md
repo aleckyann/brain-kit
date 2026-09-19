@@ -156,7 +156,9 @@ Three behaviours to pin, because each is where a rule of this kind goes wrong:
 
 | id | Setting | What it requires |
 |---|---|---|
-| `tables` | `lint.tables`, `lint.tables_limits` | A table is preceded by a blank line, carries no duplicated data row, and no cell exceeds `max_cell_chars`. |
+| `tables` | `lint.tables` | A table is preceded by a blank line, carries no duplicated data row, and no cell exceeds the configured maximum. |
+
+**What the scope means for a TABLE, settled here because this plan left it ambiguous and an implementer had to guess.** The plan said only the style rule judges added lines and said nothing about this one, so the scoping below is a decision rather than a restatement. A table is judged when the change touched ANY of its lines, and then the WHOLE table is judged, because the questions this rule asks are properties of a table and not of a line: whether a blank line precedes it is not a fact about any row. That keeps the adoption property, since a table nobody touched stays silent, while making a touched table answerable as the unit it is. The cost, and it must be paid in the message: a finding can name a line the change never touched. So each of this rule's messages SAYS that the table was judged because the change touched it, in those words. A finding on an untouched line with no explanation is how a person concludes the tool is wrong about their file.
 | `style` | `lint.style.forbidden_chars` | No forbidden character appears, judged ONLY on lines the scope says were added. |
 
 The style rule is the reason the scope exists. A vault that adopts this kit inherits years of prose it did not write under this rule, and a linter that reports every old line on the first run is a linter someone switches off in its first minute. So style judges only what this change added, and its message says so.
