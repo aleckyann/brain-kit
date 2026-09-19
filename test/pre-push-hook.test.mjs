@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { makeTempDir } from './helpers/tmp.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, copyFileSync, chmodSync, writeFileSync, symlinkSync, unlinkSync } from 'node:fs';
@@ -14,7 +15,7 @@ function git(cwd, args, env = {}) {
 }
 
 function setup() {
-  const root = mkdtempSync(join(tmpdir(), 'brain-kit-prepush-'));
+  const root = makeTempDir('brain-kit-prepush-');
   const bare = join(root, 'origin.git');
   const work = join(root, 'work');
   assert.equal(spawnSync('git', ['init', '-q', '--bare', bare]).status, 0);

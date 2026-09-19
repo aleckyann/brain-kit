@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { makeTempDir } from './helpers/tmp.mjs';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -24,7 +25,7 @@ const SECOND_AWS_KEY_ID = 'AKIA' + '2'.repeat(16);
 const SLACK_TOKEN = 'xoxb-' + 'D'.repeat(15);
 
 function tempDir() {
-  return mkdtempSync(join(tmpdir(), 'brain-kit-leak-'));
+  return makeTempDir('brain-kit-leak-');
 }
 
 function isRoot() {

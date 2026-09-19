@@ -78,6 +78,7 @@
 // substring match over English-only source is not expected to fire on
 // anything these words do not actually spell.
 import { test } from 'node:test';
+import { makeTempDir } from './helpers/tmp.mjs';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -217,7 +218,7 @@ test('no file under src/, bin/, or the English language pack contains a word fro
 // builds and destroys itself, never at src/ or bin/, and prove the two
 // checking functions actually flag what they are supposed to.
 function withTempDir(build, use) {
-  const dir = mkdtempSync(join(tmpdir(), 'brain-kit-guard-selfcheck-'));
+  const dir = makeTempDir('brain-kit-guard-selfcheck-');
   try {
     build(dir);
     return use(dir);

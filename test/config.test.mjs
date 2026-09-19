@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { makeTempDir } from './helpers/tmp.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -160,12 +161,12 @@ test('the example machine.json is valid and canonical_path is required', () => {
 });
 
 test('loadConfig fails clearly outside a vault', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'brain-kit-'));
+  const dir = makeTempDir('brain-kit-');
   assert.throws(() => loadConfig(dir), (e) => e instanceof ConfigError && /Not a brain-kit vault/.test(e.message));
 });
 
 test('loadConfig exposes schema errors on the thrown ConfigError', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'brain-kit-'));
+  const dir = makeTempDir('brain-kit-');
   writeFileSync(join(dir, CONFIG_FILENAME), JSON.stringify({ kit_version: '0.0.1' }));
   assert.throws(() => loadConfig(dir), (e) => e instanceof ConfigError && e.errors.includes('$.lang: required'));
 });

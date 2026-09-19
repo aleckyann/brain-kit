@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { makeTempDir } from './helpers/tmp.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, unlinkSync } from 'node:fs';
@@ -27,7 +28,7 @@ function ok(result, label) {
 }
 
 function initRepo(branch = 'main') {
-  const root = mkdtempSync(join(tmpdir(), 'brain-kit-git-'));
+  const root = makeTempDir('brain-kit-git-');
   ok(spawnSync('git', ['init', '-q', '-b', branch, root]), 'git init');
   return root;
 }
@@ -44,13 +45,13 @@ test('isGitRepo is true inside a repository, false in a plain directory, and fal
   const root = initRepo();
   assert.equal(isGitRepo(root), true);
 
-  const plain = mkdtempSync(join(tmpdir(), 'brain-kit-plain-'));
+  const plain = makeTempDir('brain-kit-plain-');
   assert.equal(isGitRepo(plain), false);
 
   // A bare repository answers "is this inside a work tree" with status 0
   // and stdout "false", not a failure: it is a real repository, but there
   // is no worktree to diff, so it must read as false here too.
-  const bare = join(mkdtempSync(join(tmpdir(), 'brain-kit-bare-')), 'repo.git');
+  const bare = join(makeTempDir('brain-kit-bare-'), 'repo.git');
   ok(spawnSync('git', ['init', '-q', '--bare', '-b', 'main', bare]), 'git init --bare');
   assert.equal(isGitRepo(bare), false);
 });
@@ -76,7 +77,7 @@ test('a repository with no commit at all degrades every base but the explicit "a
 });
 
 test('outside a git repository every base degrades to all, and every file returns null lines', () => {
-  const root = mkdtempSync(join(tmpdir(), 'brain-kit-not-git-'));
+  const root = makeTempDir('brain-kit-not-git-');
   writeFileSync(join(root, 'a.md'), 'hello\n');
   assert.equal(isGitRepo(root), false);
 
@@ -295,7 +296,7 @@ test('findDefaultBranch keeps the remote-tracking name qualified: a real clone w
   // "origin/" prefix (the bug) makes merge-base ask for a ref called
   // "main" that plain does not exist here, and THROWS on an otherwise
   // perfectly good repository.
-  const origin = join(mkdtempSync(join(tmpdir(), 'brain-kit-origin-')), 'repo.git');
+  const origin = join(makeTempDir('brain-kit-origin-'), 'repo.git');
   ok(spawnSync('git', ['init', '-q', '--bare', '-b', 'main', origin]));
   const seed = initRepo('main');
   writeAndCommit(seed, 'index.md', 'root\n', 'init');
@@ -305,7 +306,7 @@ test('findDefaultBranch keeps the remote-tracking name qualified: a real clone w
   writeAndCommit(seed, 'notes.md', 'x\n', 'add');
   ok(git(seed, ['push', '-q', 'origin', 'feature']));
 
-  const root = mkdtempSync(join(tmpdir(), 'brain-kit-ci-checkout-'));
+  const root = makeTempDir('brain-kit-ci-checkout-');
   ok(spawnSync('git', ['init', '-q', '-b', 'placeholder', root]));
   ok(git(root, ['remote', 'add', 'origin', origin]));
   ok(git(root, ['fetch', '-q', 'origin', 'main', 'feature']));
@@ -339,7 +340,7 @@ test('a default branch that turns out to be the branch already checked out degra
   // from genuinely standing on the default branch, so both explicit
   // merge-base and auto must refuse to trust it rather than report a
   // silently empty scope.
-  const origin = join(mkdtempSync(join(tmpdir(), 'brain-kit-origin2-')), 'repo.git');
+  const origin = join(makeTempDir('brain-kit-origin2-'), 'repo.git');
   ok(spawnSync('git', ['init', '-q', '--bare', '-b', 'main', origin]));
   const seed = initRepo('main');
   writeAndCommit(seed, 'index.md', 'root\n', 'init');
@@ -349,7 +350,7 @@ test('a default branch that turns out to be the branch already checked out degra
   writeAndCommit(seed, 'notes.md', 'a real change\n', 'add');
   ok(git(seed, ['push', '-q', 'origin', 'feature']));
 
-  const root = mkdtempSync(join(tmpdir(), 'brain-kit-pr-checkout-'));
+  const root = makeTempDir('brain-kit-pr-checkout-');
   ok(spawnSync('git', ['clone', '-q', '--single-branch', '--branch', 'feature', origin, root]));
   ok(git(root, ['remote', 'set-head', 'origin', 'feature'])); // the mis-set symref
 

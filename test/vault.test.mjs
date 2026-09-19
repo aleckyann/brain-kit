@@ -3,6 +3,7 @@
 // migrations all consume from here on, so they can never again disagree
 // about it the way the original vault's separate readdir loops did.
 import { test } from 'node:test';
+import { makeTempDir } from './helpers/tmp.mjs';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, statSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -24,13 +25,13 @@ test('isVaultRoot is false when index.md is missing', () => {
 });
 
 test('isVaultRoot is false when the config file is missing', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'brain-kit-noconfig-'));
+  const dir = makeTempDir('brain-kit-noconfig-');
   writeVaultFile(dir, 'index.md', '');
   assert.equal(isVaultRoot(dir), false);
 });
 
 test('isVaultRoot is false for a directory that has neither file', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'brain-kit-empty-'));
+  const dir = makeTempDir('brain-kit-empty-');
   assert.equal(isVaultRoot(dir), false);
 });
 
@@ -57,7 +58,7 @@ test('findVaultRoot returns the root itself when started there', () => {
 });
 
 test('findVaultRoot returns null, not a throw, from a directory with no vault above it', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'brain-kit-novault-'));
+  const dir = makeTempDir('brain-kit-novault-');
   assert.doesNotThrow(() => findVaultRoot(dir));
   assert.equal(findVaultRoot(dir), null);
 });
@@ -69,7 +70,7 @@ test("findVaultRoot never returns a directory above the user's home, even if one
   // own. If findVaultRoot ever walked past home, it would find fakeRoot and
   // wrongly report it as the vault for a directory that only happens to sit
   // under someone's home, not because it is one.
-  const fakeRoot = mkdtempSync(join(tmpdir(), 'brain-kit-boundary-'));
+  const fakeRoot = makeTempDir('brain-kit-boundary-');
   writeVaultFile(fakeRoot, CONFIG_FILENAME, '{}');
   writeVaultFile(fakeRoot, 'index.md', '');
   assert.equal(isVaultRoot(fakeRoot), true, 'fakeRoot must look like a vault for this test to mean anything');
@@ -102,7 +103,7 @@ test("findVaultRoot never returns a directory above the user's home, even if one
 // own comment below.
 
 test('findVaultRoot returns null when started exactly at an injected home that is not itself a vault, even though its parent looks like one', () => {
-  const fakeRoot = mkdtempSync(join(tmpdir(), 'brain-kit-boundary2-'));
+  const fakeRoot = makeTempDir('brain-kit-boundary2-');
   writeVaultFile(fakeRoot, CONFIG_FILENAME, '{}');
   writeVaultFile(fakeRoot, 'index.md', '');
   const fakeHome = join(fakeRoot, 'someone');
@@ -112,7 +113,7 @@ test('findVaultRoot returns null when started exactly at an injected home that i
 });
 
 test("findVaultRoot returns null when started at an injected home's parent, even though that parent looks like a vault itself", () => {
-  const fakeRoot = mkdtempSync(join(tmpdir(), 'brain-kit-boundary3-'));
+  const fakeRoot = makeTempDir('brain-kit-boundary3-');
   writeVaultFile(fakeRoot, CONFIG_FILENAME, '{}');
   writeVaultFile(fakeRoot, 'index.md', '');
   const fakeHome = join(fakeRoot, 'someone');
@@ -286,7 +287,7 @@ test('walkVault returns every file, markdown or not, when called with { all: tru
 // self-referential).
 
 test('a symbolic link inside the vault pointing outside it is skipped, not read', () => {
-  const outside = mkdtempSync(join(tmpdir(), 'brain-kit-outside-'));
+  const outside = makeTempDir('brain-kit-outside-');
   const outsideFile = writeVaultFile(outside, 'secret.md', 'not vault content');
   const root = makeVault({ files: { 'index.md': '' } });
   symlinkSync(outsideFile, join(root, 'leaked.md'), 'file');

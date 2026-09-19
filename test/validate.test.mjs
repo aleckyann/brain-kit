@@ -29,6 +29,7 @@
 // personal or company names leaking through a fixture built to test the
 // public engine.
 import { test } from 'node:test';
+import { makeTempDir } from './helpers/tmp.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -200,7 +201,7 @@ function run(args, { cwd, input = '', env } = {}) {
 }
 
 function noVaultDir() {
-  return mkdtempSync(join(tmpdir(), 'brain-kit-validate-novault-'));
+  return makeTempDir('brain-kit-validate-novault-');
 }
 
 // --- outside a vault, paired with the same directory once it is one --------
