@@ -2,13 +2,22 @@ import { test } from 'node:test';
 import { makeTempDir } from './helpers/tmp.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, copyFileSync, chmodSync, writeFileSync, symlinkSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, copyFileSync, cpSync, chmodSync, writeFileSync, symlinkSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 
 const HOOK = join(KIT_ROOT, '.githooks', 'pre-push');
-const LEAK_MODULE = join(KIT_ROOT, 'src', 'leak.mjs');
+// The hook now calls `brain-kit scan-blobs` (bin/brain-kit.mjs, dispatched
+// through src/cli.mjs) rather than importing src/leak.mjs directly, so the
+// scratch repo needs a working copy of the whole package, not just that one
+// module: cli.mjs's own command map imports every built-in command eagerly
+// (hook, validate, lint, scan-blobs), so even running scan-blobs alone drags
+// in validate's and lint's own dependency graph (schema/, lang/, config.mjs,
+// vault.mjs, and the rest of src/). Copying the package wholesale, at test
+// time, from this real checkout is what keeps this fixture from drifting out
+// of sync with whatever src/ actually contains.
+const KIT_DIRS_TO_MIRROR = ['bin', 'src', 'lang', 'schema'];
 
 function git(cwd, args, env = {}) {
   return spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd, encoding: 'utf8', env: { ...process.env, ...env } });
@@ -23,12 +32,16 @@ function setup() {
   mkdirSync(join(work, '.githooks'));
   copyFileSync(HOOK, join(work, '.githooks', 'pre-push'));
   chmodSync(join(work, '.githooks', 'pre-push'), 0o755);
-  // The hook reads its generic patterns from src/leak.mjs, sibling to
-  // .githooks/ in a real brain-kit checkout, rather than carrying its own
-  // copy: mirror that one relevant file here so the scratch repo resolves
-  // it exactly as the maintainer's real clone does.
-  mkdirSync(join(work, 'src'));
-  copyFileSync(LEAK_MODULE, join(work, 'src', 'leak.mjs'));
+  // Mirror the whole package (see KIT_DIRS_TO_MIRROR's own comment above),
+  // plus package.json, which src/version.mjs's kitVersion() reads relative
+  // to KIT_ROOT. None of this is ever `git add`ed by the commit() helper
+  // below (it only stages the one file it is given), so it never reaches a
+  // commit or a push; it only has to be present on disk for `brain-kit
+  // scan-blobs` to run.
+  for (const dir of KIT_DIRS_TO_MIRROR) {
+    cpSync(join(KIT_ROOT, dir), join(work, dir), { recursive: true });
+  }
+  copyFileSync(join(KIT_ROOT, 'package.json'), join(work, 'package.json'));
   git(work, ['config', 'core.hooksPath', '.githooks']);
   git(work, ['remote', 'add', 'origin', bare]);
   const patterns = join(root, 'patterns.txt');
@@ -96,6 +109,24 @@ test('a tag pointing at already-pushed commits is allowed', () => {
   assert.equal(git(work, ['tag', '-a', 'v1', '-m', 'v1']).status, 0);
   const r = git(work, ['push', '-q', 'origin', 'v1'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
   assert.equal(r.status, 0, r.stderr);
+});
+
+test('a push with nothing new to scan still enforces the patterns file', () => {
+  // Same shape as the tag test above (a ref update that resolves to an
+  // EMPTY commit range, nothing genuinely new to read), but with a patterns
+  // file that cannot do its job. `brain-kit scan-blobs` is called exactly
+  // once per push regardless of whether anything ended up in its input
+  // (.githooks/pre-push's own sixth-round comment): loadPatterns' own
+  // fail-closed check must still run, and still refuse, even though the
+  // NUL-separated pairs file handed to it on stdin is empty.
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  assert.equal(git(work, ['tag', '-a', 'v1', '-m', 'v1']).status, 0);
+  const missingPatterns = join(work, '..', 'missing-patterns.txt');
+  const r = git(work, ['push', '-q', 'origin', 'v1'], { BRAIN_KIT_LEAK_PATTERNS: missingPatterns });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /leak patterns file not found/);
 });
 
 test('a new branch is still scanned for its own commits', () => {
@@ -237,7 +268,10 @@ test('a blob with a NUL byte is scanned instead of skipped as binary', () => {
 
 test('a patterns file that cannot do its job refuses the push', () => {
   // Readable but empty: it contributes no personal pattern at all, which used
-  // to look exactly like a clean scan.
+  // to look exactly like a clean scan. src/leak.mjs's own
+  // readPersonalPatternLines treats "empty" and "only comments and blanks"
+  // as the same failure (see its own header), so both are covered by this
+  // one message.
   {
     const { work } = setup();
     const empty = join(work, '..', 'empty-patterns.txt');
@@ -245,10 +279,18 @@ test('a patterns file that cannot do its job refuses the push', () => {
     commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'leak');
     const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: empty });
     assert.notEqual(r.status, 0);
-    assert.match(r.stderr, /leak patterns file is empty/);
+    assert.match(r.stderr, /leak patterns file has no usable pattern/);
+    // Refused before a single blob is read: loadPatterns is called before
+    // standard input is even consumed (see scan-blobs.mjs's own header), so
+    // the leaked notes.md never gets a chance to be named at all here.
+    assert.doesNotMatch(r.stderr, /notes\.md/);
   }
-  // A regex grep cannot compile: grep exits above 1, having said nothing at
-  // all about the content, so the push must be refused, not waved through.
+  // An invalid regular expression in the personal list: src/leak.mjs's own
+  // compilePattern raises immediately, naming the FILE and the LINE the bad
+  // pattern is on, never the pattern's own text (a personal pattern's text
+  // is never printed, compile failure or not). This refuses the push before
+  // any blob is read, unlike the old shell version, which only discovered
+  // the broken regex the first time grep actually ran against a blob.
   {
     const { work } = setup();
     const broken = join(work, '..', 'broken-patterns.txt');
@@ -256,8 +298,8 @@ test('a patterns file that cannot do its job refuses the push', () => {
     commit(work, 'README.md', 'nothing secret here\n', 'clean');
     const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: broken });
     assert.notEqual(r.status, 0);
-    assert.match(r.stderr, /could not scan README\.md/);
-    assert.match(r.stderr, /grep exited [2-9]/);
+    assert.match(r.stderr, /could not compile the personal leak pattern on line 2 of/);
+    assert.doesNotMatch(r.stderr, /README\.md/);
   }
 });
 
@@ -296,4 +338,125 @@ test('a blob that cannot be read refuses the push instead of passing', () => {
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /could not read subm/);
   assert.match(r.stderr, /git show exited 128/);
+});
+
+test('a commit whose tree object cannot be listed refuses the push instead of scanning nothing', () => {
+  // A root commit (no parent) is listed with `git ls-tree -r -z --name-only
+  // "$commit"`, not `git diff-tree`: corrupt exactly that path by deleting
+  // the commit's own tree object from the object database, which is not a
+  // shape any ordinary push can produce, but proves the `list_status -ne 0`
+  // check this hook has always made (unchanged by the sixth round: this is
+  // still bash asking git a question about a commit's shape, never blob
+  // content) still refuses rather than silently treating an unlistable
+  // commit as one with nothing to scan.
+  const { work, patterns } = setup();
+  writeFileSync(join(work, 'README.md'), 'hello world\n');
+  git(work, ['add', 'README.md']);
+  assert.equal(git(work, ['commit', '-q', '-m', 'init']).status, 0);
+  const treeSha = git(work, ['cat-file', '-p', 'HEAD']).stdout.split('\n')[0].split(' ')[1];
+  const objectPath = join(work, '.git', 'objects', treeSha.slice(0, 2), treeSha.slice(2));
+  unlinkSync(objectPath);
+
+  const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /could not list the files of/);
+});
+
+test('a patterns file that is a directory refuses the push (fail closed)', () => {
+  const { work } = setup();
+  const asDir = join(work, '..', 'patterns-dir');
+  mkdirSync(asDir);
+  commit(work, 'README.md', 'nothing secret here\n', 'clean');
+  const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: asDir });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /leak patterns file is not a regular file/);
+  assert.doesNotMatch(r.stderr, /README\.md/);
+});
+
+// --- brain-kit scan-blobs, called directly ------------------------------
+//
+// The gate above only ever exercises `brain-kit scan-blobs` through a real
+// `git push`, which is right for proving the GATE never lets a leak
+// through, but the subcommand is its own interface (see
+// src/commands/scan-blobs.mjs's own header) and deserves its own direct
+// coverage of the contract task-7-brief.md names: it refuses a blob
+// carrying a pattern and accepts one that does not, over a stdin protocol
+// bash itself has to produce correctly. This never bypasses the live gate
+// to test it (it does not touch .githooks/pre-push, and never pushes
+// anything to the bare remote); it tests the one piece the gate delegates
+// to, the same way the gate itself will be run for real.
+const BRAIN_KIT_BIN = () => join(KIT_ROOT, 'bin', 'brain-kit.mjs');
+
+function scanBlobs(work, pairs, env = {}) {
+  const input = pairs.map(([sha, path]) => `${sha}\0${path}\0`).join('');
+  return spawnSync('node', [BRAIN_KIT_BIN(), 'scan-blobs'], {
+    cwd: work,
+    input,
+    encoding: 'utf8',
+    env: { ...process.env, ...env },
+  });
+}
+
+test('scan-blobs refuses a blob carrying a pattern and accepts one that does not, in the same run', () => {
+  const { work, patterns } = setup();
+  commit(work, 'clean.md', 'nothing secret here\n', 'clean');
+  writeFileSync(join(work, 'dirty.md'), 'Meeting with Hunter2Corp tomorrow\n');
+  git(work, ['add', 'dirty.md']);
+  assert.equal(git(work, ['commit', '-q', '-m', 'dirty']).status, 0);
+  const sha = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+
+  const r = scanBlobs(work, [[sha, 'clean.md'], [sha, 'dirty.md']], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /possible leak in dirty\.md/);
+  assert.doesNotMatch(r.stderr, /possible leak in clean\.md/);
+  // NEVER PRINT WHAT IT FOUND (leak.mjs's own contract): the personal
+  // pattern's own matched text never reaches this output.
+  assert.doesNotMatch(r.stderr, /Hunter2Corp/i);
+});
+
+test('scan-blobs accepts a push where every blob is clean, printing nothing', () => {
+  const { work, patterns } = setup();
+  commit(work, 'a.md', 'nothing secret here\n', 'a');
+  commit(work, 'b.md', 'also nothing secret\n', 'b');
+  const sha = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+
+  const r = scanBlobs(work, [[sha, 'a.md'], [sha, 'b.md']], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stderr, '');
+});
+
+test('scan-blobs surfaces truncation rather than silently capping at its print limit', () => {
+  const { work, patterns } = setup();
+  // Eight hits of the same personal pattern on eight separate lines, well
+  // past the five-per-blob print cap (src/commands/scan-blobs.mjs's own
+  // MAX_MATCHES_PER_BLOB): a caller that destructures only `matches` out
+  // of scanText's return and drops `truncated`/`total` would report five
+  // and say nothing about the other three (leak.mjs's own header names
+  // this exact mistake for a sibling caller).
+  const lines = Array.from({ length: 8 }, () => 'Meeting with Hunter2Corp tomorrow').join('\n') + '\n';
+  writeFileSync(join(work, 'busy.md'), lines);
+  git(work, ['add', 'busy.md']);
+  assert.equal(git(work, ['commit', '-q', '-m', 'busy']).status, 0);
+  const sha = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+
+  const r = scanBlobs(work, [[sha, 'busy.md']], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /possible leak in busy\.md/);
+  assert.match(r.stderr, /and 3 more match\(es\)/);
+});
+
+test('scan-blobs continues past an unreadable blob and still reports a later leak', () => {
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  const sha = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  writeFileSync(join(work, 'dirty.md'), 'Meeting with Hunter2Corp tomorrow\n');
+  git(work, ['add', 'dirty.md']);
+  assert.equal(git(work, ['commit', '-q', '-m', 'dirty']).status, 0);
+  const sha2 = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  const missing = '2'.repeat(40);
+
+  const r = scanBlobs(work, [[missing, 'no-such-blob.md'], [sha, 'README.md'], [sha2, 'dirty.md']], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /could not read no-such-blob\.md/);
+  assert.match(r.stderr, /possible leak in dirty\.md/);
 });

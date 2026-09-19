@@ -4,6 +4,7 @@ import { createTranslator, REFERENCE_LANG } from './lang.mjs';
 import { runHook } from './commands/hook.mjs';
 import { runValidate } from './commands/validate.mjs';
 import { runLint } from './commands/lint.mjs';
+import { runScanBlobs } from './commands/scan-blobs.mjs';
 import { walkVault } from './vault.mjs';
 import { ConfigError } from './config.mjs';
 
@@ -17,10 +18,19 @@ import { ConfigError } from './config.mjs';
 // accidental call could bypass the spy by using that other reference
 // instead. With the reference owned here and handed down as the one
 // and only way validate.mjs can reach it, there is no such bypass left.
+// `scan-blobs` is internal (see src/commands/scan-blobs.mjs's own header):
+// the maintainer's own push gate (.githooks/pre-push) is its only caller,
+// it is never listed in cli.usage below, and its messages are plain
+// English literals rather than translated strings, exactly like the shell
+// pipeline it replaces never went through this project's translator
+// either. It still goes through the same command map and the same error
+// boundary as every public command, because a second, parallel dispatch
+// path for "the internal one" would be a second thing to keep correct.
 const BUILTIN_COMMANDS = new Map([
   ['hook', runHook],
   ['validate', (argv, io, t) => runValidate(argv, io, t, walkVault)],
   ['lint', (argv, io, t) => runLint(argv, io, t, walkVault)],
+  ['scan-blobs', (argv, io) => runScanBlobs(argv, io)],
 ]);
 
 export async function main(argv, io, { commands = BUILTIN_COMMANDS } = {}) {

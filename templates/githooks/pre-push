@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# Template pre-push hook for a vault built on brain-kit.
+#
+# This is a TEMPLATE: it is copied into an adopting vault's own .githooks/
+# directory (or wherever that vault points core.hooksPath at) and is meant
+# to be edited there. It names no path or identity specific to any one
+# machine or maintainer; everything it needs about THIS vault (whether an
+# automated identity is even allowed near the default branch) comes from
+# that vault's own brain-kit.config.json, which travels with the vault
+# itself, not from this file.
+#
+# What it does, in order:
+#   1. Runs `brain-kit validate`, refusing the push if the vault does not
+#      conform to the Open Knowledge Format or this vault's own house
+#      rules.
+#   2. Runs `brain-kit lint`, refusing the push if this vault's own health
+#      rules (orphans, tables, the `secrets` rule against
+#      privacy.secret_patterns and the shapes in src/leak.mjs, and the
+#      rest) find a problem.
+#   3. Refuses a push made under the vault's own automation identity
+#      (brain-kit.config.json's git.agent_identity) straight to the
+#      vault's default branch. A vault that curates itself through an
+#      agent is designed around that agent proposing changes as a pull
+#      request (see brain-kit.config.json's git.branch_prefix and
+#      pr_command); an agent pushing directly to the default branch has
+#      skipped the review that design depends on, whether by a bug in the
+#      automation or by a compromised credential, and either way this is
+#      the point that push should stop. This step is not the maintainer's
+#      OWN leak scan against a personal, machine-local pattern list (see
+#      that hook's own header in a brain-kit checkout, .githooks/pre-push):
+#      this template runs generically on every adopting vault, and a
+#      personal pattern list is, by that hook's own design, never
+#      something a generic template could carry.
+#
+# Activate once per clone of the adopting vault:
+#   git config core.hooksPath .githooks
+set -u
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ -z "$REPO_ROOT" ]; then
+  echo "pre-push: could not determine the repository root (git rev-parse --show-toplevel failed); refusing to push." >&2
+  exit 1
+fi
+
+# brain-kit is a dependency of the vault, not a global tool this template
+# can assume is on PATH: look for the copy npm installed for this vault
+# first, and fall back to PATH only for a setup that put it there some
+# other way (a global install, a wrapper script).
+resolve_brain_kit() {
+  if [ -x "$REPO_ROOT/node_modules/.bin/brain-kit" ]; then
+    printf '%s' "$REPO_ROOT/node_modules/.bin/brain-kit"
+    return 0
+  fi
+  if command -v brain-kit >/dev/null 2>&1; then
+    printf '%s' "brain-kit"
+    return 0
+  fi
+  return 1
+}
+
+BRAIN_KIT="$(resolve_brain_kit)"
+if [ -z "$BRAIN_KIT" ]; then
+  echo "pre-push: brain-kit was not found (checked node_modules/.bin and PATH). Install it as a dependency of this vault. Refusing to push." >&2
+  exit 1
+fi
+
+if ! "$BRAIN_KIT" validate; then
+  echo "pre-push: brain-kit validate found a problem with this vault; refusing to push." >&2
+  exit 1
+fi
+
+if ! "$BRAIN_KIT" lint; then
+  echo "pre-push: brain-kit lint found a problem with this vault; refusing to push." >&2
+  exit 1
+fi
+
+# The automation identity this vault configured, and whether this guard is
+# even wanted, both come from the vault's own configuration
+# (brain-kit.config.json, validated already by the `validate` call above,
+# so a missing or malformed file has already refused the push by this
+# point). git.agent_identity.email is a required field of that schema;
+# git.forbid_agent_push_to_default is optional and defaults to "on",
+# because a vault that never mentions it is not thereby declaring it wants
+# its automation pushing straight to the default branch. It is skipped
+# only when the vault sets that flag to `false` explicitly.
+CONFIG_FILE="$REPO_ROOT/brain-kit.config.json"
+READ_AGENT_GUARD_SCRIPT='
+var fs = require("fs");
+try {
+  var config = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  var git = (config && typeof config === "object") ? config.git : undefined;
+  var identity = (git && typeof git === "object") ? git.agent_identity : undefined;
+  var email = (identity && typeof identity === "object") ? identity.email : undefined;
+  var forbidden = !(git && typeof git === "object" && git.forbid_agent_push_to_default === false);
+  if (typeof email === "string" && email.length > 0 && forbidden) {
+    process.stdout.write(email);
+  }
+} catch (err) {
+  // No config, an unreadable config, or malformed JSON: validate above
+  // would already have refused the push over this, so there is nothing
+  // further to enforce here.
+}
+'
+AGENT_EMAIL="$(node -e "$READ_AGENT_GUARD_SCRIPT" "$CONFIG_FILE" 2>/dev/null)"
+
+# The default branch, the same three-step fallback src/git.mjs's own
+# findDefaultBranch uses: the remote's own notion of it, kept qualified
+# (origin/main), a local branch named main or master, or a remote-tracking
+# branch by either of those names. `git symbolic-ref` for the local case is
+# stripped to a bare name so it compares directly against a pushed ref's
+# own branch name below.
+remote_name="${1:-origin}"
+
+default_branch() {
+  local symref candidate
+  symref="$(git symbolic-ref --short "refs/remotes/${remote_name}/HEAD" 2>/dev/null)"
+  if [ -n "$symref" ]; then
+    printf '%s' "${symref#${remote_name}/}"
+    return 0
+  fi
+  for candidate in main master; do
+    if git show-ref --verify --quiet "refs/heads/$candidate"; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  for candidate in main master; do
+    if git show-ref --verify --quiet "refs/remotes/${remote_name}/$candidate"; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+DEFAULT_BRANCH="$(default_branch)"
+CURRENT_EMAIL="$(git config user.email 2>/dev/null || true)"
+
+# The ref negotiation is read in full regardless of whether the guard
+# above is even active, so a push carrying many refs (e.g. `git push
+# --tags`) never leaves git blocked writing to a pipe nobody is draining.
+guard_failed=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -z "${local_ref:-}" ] && continue
+  [ -z "$AGENT_EMAIL" ] && continue
+  [ "$CURRENT_EMAIL" != "$AGENT_EMAIL" ] && continue
+  [ -z "$DEFAULT_BRANCH" ] && continue
+  branch="${local_ref#refs/heads/}"
+  if [ "$branch" = "$DEFAULT_BRANCH" ]; then
+    echo "pre-push: refusing a push to the default branch ('$DEFAULT_BRANCH') under this vault's automation identity ($AGENT_EMAIL). Automated changes go through a pull request, never a direct push to $DEFAULT_BRANCH." >&2
+    guard_failed=1
+  fi
+done
+
+if [ "$guard_failed" -ne 0 ]; then
+  exit 1
+fi
+exit 0
