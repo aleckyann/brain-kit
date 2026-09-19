@@ -235,8 +235,27 @@ export function parseEntries(raw) {
 // mapping has no locale to depend on in the first place. The paths arriving
 // on standard input are decoded the same way, for the same reason and so
 // that both halves of this module agree about what a byte is.
-function git(args) {
-  return spawnSync('git', args, { encoding: 'latin1', maxBuffer: GIT_MAX_BUFFER });
+function git(args, input = undefined) {
+  const options = { encoding: 'latin1', maxBuffer: GIT_MAX_BUFFER };
+  if (input !== undefined) options.input = input;
+  return spawnSync('git', args, options);
+}
+
+// Every way a per-invocation flag or an environment variable can inject
+// git configuration into a child process. `git -c user.name=... push`
+// propagates through GIT_CONFIG_PARAMETERS, and GIT_CONFIG_COUNT with its
+// numbered KEY/VALUE pairs is the other half of the same mechanism.
+const CONFIG_OVERRIDE_ENV_PREFIXES = ['GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_', 'GIT_CONFIG_VALUE_'];
+
+// The environment with those stripped. See readPushingIdentity for why
+// exactly one git call in this module is made with it.
+function envWithoutConfigOverrides(env) {
+  const stripped = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (CONFIG_OVERRIDE_ENV_PREFIXES.some((prefix) => name === prefix || name.startsWith(prefix))) continue;
+    stripped[name] = value;
+  }
+  return stripped;
 }
 
 // The one place a path crosses back OUT of this module's byte world into
@@ -272,42 +291,91 @@ function readBlob(commit, path) {
   return { ok: true, content: result.stdout ?? '' };
 }
 
-// Reads message and identity for a list of commits in as few git processes
-// as the argument list allows. The format is NUL-separated on purpose: a
-// commit message contains newlines by design, so no line-oriented framing
-// could bound one record. `git show -s` prints the records in the order the
-// commits were given and separates them with a newline, which is why the
-// first field of each record is trimmed before it is checked.
-//
-// Every record is verified against the commit it was asked about, and the
-// whole call refuses if the field count or any of those ids does not line
-// up. That check is the parse's own fail-closed clause: a commit message
-// carrying a NUL byte (unusual, but a commit object may hold arbitrary
-// bytes) would shift every field after it, and shifted fields must never be
-// scanned as if they were the thing they are labelled as.
-function readCommitMetadata(shas) {
-  const format = '%H%x00%an%x00%ae%x00%cn%x00%ce%x00%B%x00';
-  const result = git(['show', '-s', `--format=${format}`, ...shas]);
-  if (result.error) throw new Error(`git show could not be run (${result.error.message})`);
-  if (result.status !== 0) throw new Error(`git show exited ${result.status} while reading commit metadata`);
-  const fields = (result.stdout ?? '').split('\0');
-  if (fields[fields.length - 1] === '' || fields[fields.length - 1] === '\n') fields.pop();
-  if (fields.length !== shas.length * 6) {
-    throw new Error(`git show returned ${fields.length} field(s) for ${shas.length} commit(s) instead of ${shas.length * 6}`);
+// An identity header's value as this module reports it: "Name <address>",
+// the same shape readPushingIdentity builds, with git's trailing timestamp
+// and zone cut off. A header with no address at all is reported whole
+// rather than emptied, because an identity this cannot parse is still text
+// the push publishes, and scanning more of it is the safe direction.
+function identityFromHeader(value) {
+  const end = value.lastIndexOf('>');
+  return end === -1 ? value : value.slice(0, end + 1);
+}
+
+// Splits one raw commit object into the three things worth scanning.
+// Headers run to the first empty line; a continuation line of a multi-line
+// header (a gpgsig) begins with a space, so it can never be mistaken for
+// the start of another one.
+export function parseCommitObject(sha, body) {
+  const blank = body.indexOf('\n\n');
+  const headerText = blank === -1 ? body : body.slice(0, blank);
+  const message = blank === -1 ? '' : body.slice(blank + 2);
+  let author = '';
+  let committer = '';
+  for (const line of headerText.split('\n')) {
+    if (line.startsWith('author ')) author = identityFromHeader(line.slice('author '.length));
+    else if (line.startsWith('committer ')) committer = identityFromHeader(line.slice('committer '.length));
   }
+  return { sha, author, committer, message };
+}
+
+// Reads message and identity for a list of commits in ONE git process.
+//
+// This used to ask `git show -s --format=...%B%x00...` and split the
+// result on NUL. The comment that stood here said the field-count and sha
+// checks were the parse's own fail-closed clause against "a commit message
+// carrying a NUL byte, which would shift every field after it". It does
+// not shift. `%B` STOPS at a NUL byte, so git truncated the message before
+// this module ever saw it, and everything after the NUL was never scanned
+// at all: a reviewer wrote a commit object whose message was "harmless",
+// a NUL, and then a pattern, and pushed it with exit 0 and the text in
+// plaintext on the remote. The guards defended a mechanism that does not
+// occur while the one that does occur was unguarded and untested, which is
+// the worst arrangement of the two.
+//
+// So the OBJECT is read rather than a formatted field. `git cat-file
+// --batch` emits "<sha> <type> <size>" and then exactly <size> bytes,
+// which is framing a NUL cannot disturb: the length is declared, not
+// inferred from a separator that the content is allowed to contain. Every
+// record is still checked against the commit it was asked about, and now
+// that check is load-bearing rather than decorative, because the byte
+// count is what says where the next record begins.
+function readCommitMetadata(shas) {
+  const result = git(['cat-file', '--batch'], `${shas.join('\n')}\n`);
+  if (result.error) throw new Error(`git cat-file could not be run (${result.error.message})`);
+  if (result.status !== 0) throw new Error(`git cat-file exited ${result.status} while reading commit objects`);
+  const out = result.stdout ?? '';
   const records = [];
+  let at = 0;
   for (let i = 0; i < shas.length; i += 1) {
-    const at = i * 6;
-    const sha = fields[at].replace(/^\n+/, '');
-    if (sha !== shas[i]) {
-      throw new Error(`git show returned metadata for a different commit than the one asked about (position ${i + 1} of ${shas.length})`);
+    const newline = out.indexOf('\n', at);
+    if (newline === -1) {
+      throw new Error(`git cat-file stopped after ${i} of ${shas.length} commit(s), with no header for the next one`);
     }
-    records.push({
-      sha,
-      author: `${fields[at + 1]} <${fields[at + 2]}>`,
-      committer: `${fields[at + 3]} <${fields[at + 4]}>`,
-      message: fields[at + 5],
-    });
+    const header = out.slice(at, newline);
+    const parts = header.split(' ');
+    if (parts.length !== 3) {
+      throw new Error(`git cat-file answered "${header}" for the commit at position ${i + 1} of ${shas.length} instead of an object header`);
+    }
+    if (parts[0] !== shas[i]) {
+      throw new Error(`git cat-file returned the object ${parts[0]} where ${shas[i]} was asked about (position ${i + 1} of ${shas.length})`);
+    }
+    if (parts[1] !== 'commit') {
+      throw new Error(`git cat-file says ${shas[i]} is a ${parts[1]}, not a commit`);
+    }
+    const size = Number(parts[2]);
+    if (!Number.isInteger(size) || size < 0) {
+      throw new Error(`git cat-file declared a size of "${parts[2]}" for ${shas[i]}, which is not a byte count`);
+    }
+    const body = out.slice(newline + 1, newline + 1 + size);
+    if (body.length !== size) {
+      throw new Error(`git cat-file declared ${size} byte(s) for ${shas[i]} and produced ${body.length}`);
+    }
+    records.push(parseCommitObject(shas[i], body));
+    // The declared bytes, then git's own separating newline.
+    at = newline + 1 + size + 1;
+  }
+  if (at !== out.length) {
+    throw new Error(`git cat-file produced ${out.length - at} byte(s) more than the ${shas.length} commit(s) asked about account for`);
   }
   return records;
 }
@@ -338,9 +406,38 @@ function parseTagObject(text) {
 // Returns null when either half is unset or unreadable, and null means NO
 // exemption, so a configuration this cannot read makes the gate scan more
 // rather than less.
+//
+// READ FROM THE CONFIGURATION FILES, NOT FROM THIS INVOCATION. `git -c
+// user.name=... -c user.email=... push` propagates into every git call a
+// hook makes, so the identity the exemption is keyed on used to be
+// choosable by a flag, per push, leaving nothing behind in any file. A
+// reviewer refused a commit authored under a pattern-matching name with an
+// ordinary push and then pushed the same commit with exit 0 by naming that
+// identity on the command line.
+//
+// The argument for leaving it was that somebody who can set
+// GIT_CONFIG_PARAMETERS can equally set core.hooksPath, so nothing is
+// gained. That is true about capability and wrong about shape, in the two
+// ways the re-review names and I agree with. core.hooksPath is a
+// persistent, visible change to a repository the maintainer reads, while
+// `-c` is a per-command flag that leaves no trace and that a wrapper, an
+// alias or an agent-composed push carries invisibly. And the blast radius
+// differs: core.hooksPath turns the whole gate off, which is obvious the
+// first time anything should have been caught, while `-c` turns off
+// exactly this one channel and leaves the other four working, which reads
+// as a gate that is on.
+//
+// So it is closed, and closing it costs nothing real. The deadlock the
+// exemption exists for is a maintainer whose own name, as their git
+// configuration FILES record it, is in their own pattern list; that is
+// also the identity their commits are authored under, because that is
+// where git reads an author from when it makes one. An identity supplied
+// for one command is not a deadlock: nothing forces it, so nothing is
+// owed an exemption for it.
 function readPushingIdentity() {
-  const name = git(['config', '--get', 'user.name']);
-  const email = git(['config', '--get', 'user.email']);
+  const env = envWithoutConfigOverrides(process.env);
+  const name = spawnSync('git', ['config', '--get', 'user.name'], { encoding: 'latin1', maxBuffer: GIT_MAX_BUFFER, env });
+  const email = spawnSync('git', ['config', '--get', 'user.email'], { encoding: 'latin1', maxBuffer: GIT_MAX_BUFFER, env });
   if (name.error || name.status !== 0 || email.error || email.status !== 0) return null;
   const readName = (name.stdout ?? '').replace(/\n+$/, '');
   const readEmail = (email.stdout ?? '').replace(/\n+$/, '');
@@ -441,6 +538,103 @@ export async function runScanBlobs(argv, io, { metadataBatch = METADATA_BATCH } 
     return false;
   };
 
+  // A PUSHED REF DOES NOT HAVE TO NAME A COMMIT, and this is what happens
+  // when it does not. The tip loop below used to `break` on any object
+  // type it did not recognise, which is a silent pass on an object that
+  // very much had something to read: `git push origin <blob>:refs/leaks/one`
+  // put a pattern on a bare remote with exit 0 and no output, and so did an
+  // annotated tag naming a blob, and one naming a tree.
+  //
+  // Every type the chain can end at is handled BY NAME here, and the last
+  // clause is a refusal rather than a fall-through, so a type nobody
+  // thought of refuses instead of passing. That direction is the whole
+  // lesson: this gate's skip rule says skip only what was never there, and
+  // an object git will happily hand over is not that.
+  const scanTerminalObject = (sha, type) => {
+    const short = sha.slice(0, 7);
+    // A commit tip carries no annotation of its own, and every commit this
+    // push adds already has a `commit` record of its own.
+    if (type === 'commit') return;
+
+    if (type === 'blob') {
+      const body = git(['cat-file', 'blob', sha]);
+      if (body.error || body.status !== 0) {
+        failed = true;
+        const reason = body.error ? `git cat-file could not be run (${body.error.message})` : `git cat-file exited ${body.status}`;
+        io.stderr.write(`pre-push: could not read the blob ${short} this push points a ref at: ${reason}; refusing instead of calling it clean.\n`);
+        return;
+      }
+      scan(body.stdout ?? '', `the blob ${short} this push points a ref at (CONTENT)`);
+      return;
+    }
+
+    if (type === 'tree') {
+      // `-r` recurses, so every entry is a blob or a gitlink and no
+      // subtree is left unvisited. `-z` keeps a path carrying a newline
+      // intact, the same discipline the hook uses on its own lists.
+      const listed = git(['ls-tree', '-r', '-z', sha]);
+      if (listed.error || listed.status !== 0) {
+        failed = true;
+        const reason = listed.error ? `git ls-tree could not be run (${listed.error.message})` : `git ls-tree exited ${listed.status}`;
+        io.stderr.write(`pre-push: could not list the tree ${short} this push points a ref at: ${reason}; refusing instead of calling it clean.\n`);
+        return;
+      }
+      // THE FOURTH TIME, AND THE FIRST ONE IN CODE THIS ROUND WROTE.
+      // `git ls-tree` on a tree with no entries succeeds and prints
+      // nothing, and the loop below then runs zero times: nothing is
+      // scanned, nothing is said, and the push carries on. Accepting it
+      // is right, because an empty tree really has nothing in it to read,
+      // but the SILENCE is not: a skip nobody can see reads exactly like
+      // a scan that found nothing, which is the confusion this gate has
+      // now shipped three times. It is the skipping side of this module's
+      // own rule, so it says so out loud, like the gitlink does.
+      //
+      // The blob branch above needs no such line: an empty blob is
+      // SCANNED, scanText really does run over its content and report
+      // nothing. Here the loop does not run at all. That is the whole
+      // difference the rule turns on.
+      let entriesSeen = 0;
+      for (const raw of (listed.stdout ?? '').split('\0')) {
+        if (raw === '') continue;
+        entriesSeen += 1;
+        const tab = raw.indexOf('\t');
+        if (tab === -1) {
+          failed = true;
+          io.stderr.write(`pre-push: git ls-tree produced an entry of the tree ${short} with no path in it; refusing rather than guessing what this push carries.\n`);
+          continue;
+        }
+        const [entryMode, entryType, entrySha] = raw.slice(0, tab).split(' ');
+        const entryPath = raw.slice(tab + 1);
+        const pathIsClean = scan(entryPath, `a file name in the tree ${short} (PATH, the name itself is withheld)`);
+        const label = pathIsClean ? entryPath : REDACTED_PATH;
+        if (entryMode === GITLINK_MODE) {
+          io.stderr.write(`pre-push: skipping ${label} (in the tree ${short}): it is a gitlink (mode ${GITLINK_MODE}), whose content lives in another repository, so there is nothing here to read.\n`);
+          continue;
+        }
+        if (entryType !== 'blob') {
+          failed = true;
+          io.stderr.write(`pre-push: ${label} (in the tree ${short}) is a ${entryType}, which this gate does not know how to read here; refusing instead of calling it clean.\n`);
+          continue;
+        }
+        const content = git(['cat-file', 'blob', entrySha]);
+        if (content.error || content.status !== 0) {
+          failed = true;
+          const reason = content.error ? `git cat-file could not be run (${content.error.message})` : `git cat-file exited ${content.status}`;
+          io.stderr.write(`pre-push: could not read ${label} (in the tree ${short}): ${reason}; refusing instead of calling it clean.\n`);
+          continue;
+        }
+        scan(content.stdout ?? '', `${label} (CONTENT, in the tree ${short})`);
+      }
+      if (entriesSeen === 0) {
+        io.stderr.write(`pre-push: skipping the tree ${short} this push points a ref at: git lists no entries in it, so there is nothing here to read.\n`);
+      }
+      return;
+    }
+
+    failed = true;
+    io.stderr.write(`pre-push: this push points a ref at the object ${short}, which git calls a "${type}"; this gate has no way to read one, and an object it cannot read is not an object that passed. Refusing instead of calling it clean.\n`);
+  };
+
   const seenCommits = new Set();
   const commitQueue = [];
 
@@ -478,7 +672,13 @@ export async function runScanBlobs(argv, io, { metadataBatch = METADATA_BATCH } 
           io.stderr.write(`pre-push: could not read the object ${sha.slice(0, 7)} this push points a ref at: ${reason}; refusing instead of calling it clean.\n`);
           break;
         }
-        if ((type.stdout ?? '').trim() !== 'tag') break; // a commit tip carries no annotation of its own
+        const objectType = (type.stdout ?? '').trim();
+        if (objectType !== 'tag') {
+          // The end of the chain. Handled by type, and a type this gate
+          // does not know refuses rather than breaking out in silence.
+          scanTerminalObject(sha, objectType);
+          break;
+        }
         if (tagsRead >= MAX_TAG_DEPTH) {
           failed = true;
           io.stderr.write(`pre-push: the ref this push points at is a chain of more than ${MAX_TAG_DEPTH} tag objects, so this gate stopped before reaching the object it finally names; refusing instead of calling the rest of the chain clean.\n`);

@@ -958,21 +958,169 @@ test('the gate refuses to run from inside the working tree, however core.hooksPa
   assert.match(r.stderr, /install-gate/);
 });
 
-test('the gate prints which engine snapshot it ran, on a clean push as well as a refused one', () => {
-  // The snapshot is refreshed only by re-running the installer, so it goes
-  // stale by design. A ceiling this project cannot remove is one it
-  // announces: the line is printed on every push, not only on a failure.
+// --- when the snapshot announcement prints, and when it stays quiet -----
+//
+// It used to print on EVERY push. The honesty behind that is right (the
+// snapshot goes stale by design and nothing else says so) and the delivery
+// was wrong: two unconditional lines on stderr, the same stream the
+// findings use, on every successful push, are two lines people stop
+// reading within a week, and they were competing with the messages that
+// matter. On a refusal both print, always. On a clean push they print only
+// when the snapshot is actually stale, and stale is decided mechanically.
+
+test('every refusal prints which engine snapshot it ran and how to refresh it', () => {
   const { work, patterns } = setup();
   commit(work, 'README.md', 'hello world\n', 'init');
-  const clean = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
-  assert.equal(clean.status, 0, clean.stderr);
-  assert.match(clean.stderr, /gate engine snapshot: installed \d\d\/\d\d\/\d{4} \d\d:\d\d from commit /);
-  assert.match(clean.stderr, /refresh it with: .*install-gate/);
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
 
   commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'leak');
   const refused = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
   assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /gate engine snapshot: installed \d\d\/\d\d\/\d{4} \d\d:\d\d from commit /);
+  assert.match(refused.stderr, /refresh it with: .*install-gate/);
+});
+
+test('a refusal that comes from the hook half, not from the scanner, prints them too', () => {
+  // The two lines are printed from an EXIT trap reading the shell's own
+  // status, precisely so that a refusal leaving from somewhere nobody
+  // enumerated still carries them. This one leaves from the work-list
+  // branch: a commit whose files cannot be listed.
+  const { root, work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  // A SECOND commit, so the commit loop reaches diff-tree at all: a root
+  // commit has no parent and is listed with ls-tree instead.
+  commit(work, 'more.md', 'nothing secret here\n', 'more');
+  const fake = shimDir(root, 'difftree', {
+    git: `#!/bin/sh\nif [ "$1" = "diff-tree" ]; then exit 3; fi\nexec ${realPath('git')} "$@"\n`,
+  });
+  // Invoked directly, because git puts its own exec directory ahead of a
+  // shim on a hook's PATH (see shimDir's own note).
+  const r = spawnSync(join(work, '.git', 'brain-kit-gate', 'pre-push'), ['origin', join(root, 'origin.git')], {
+    cwd: work,
+    encoding: 'utf8',
+    input: `refs/heads/main ${git(work, ['rev-parse', 'HEAD']).stdout.trim()} refs/heads/main ${'0'.repeat(40)}\n`,
+    env: { ...process.env, BRAIN_KIT_LEAK_PATTERNS: patterns, PATH: `${fake}:${process.env.PATH}` },
+  });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /gate engine snapshot: installed /);
+  assert.match(r.stderr, /refresh it with: /);
+});
+
+test('a clean push against a fresh snapshot says nothing about the snapshot at all', () => {
+  // The scratch repository is not a brain-kit checkout and the kit it was
+  // installed from was committed clean, so nothing about this snapshot is
+  // stale and there is nothing to announce.
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  const clean = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(clean.status, 0, clean.stderr);
+  assert.doesNotMatch(clean.stderr, /gate engine snapshot/);
+  assert.doesNotMatch(clean.stderr, /refresh it with/);
+});
+
+test('a snapshot taken from a DIRTY source tree announces itself on a clean push', () => {
+  // The first of the three staleness signals, and the one that needs no
+  // knowledge of what the gate ought to be: the stamp itself records that
+  // the tree it was copied from did not match the commit it names, so the
+  // snapshot may be anything, including a half-edited gate.
+  const root = makeTempDir('brain-kit-prepush-');
+  const bare = join(root, 'origin.git');
+  const work = join(root, 'work');
+  assert.equal(spawnSync('git', ['init', '-q', '--bare', bare]).status, 0);
+  assert.equal(spawnSync('git', ['init', '-q', '-b', 'main', work]).status, 0);
+  git(work, ['remote', 'add', 'origin', bare]);
+  const { kit } = installGate(work, root);
+  // Dirty the kit checkout and re-install, so the stamp records it.
+  writeFileSync(join(kit, 'uncommitted.txt'), 'anything\n');
+  assert.equal(spawnSync(join(kit, '.githooks', 'install-gate'), [], { cwd: work, encoding: 'utf8' }).status, 0);
+  const patterns = join(root, 'patterns.txt');
+  writeFileSync(patterns, 'hunter2corp\n');
+
+  commit(work, 'README.md', 'hello world\n', 'init');
+  const clean = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(clean.status, 0, clean.stderr);
+  assert.match(clean.stderr, /gate engine snapshot: installed .*working tree dirty/);
+  assert.match(clean.stderr, /refresh it with: /);
+});
+
+// The other two staleness signals apply only where this hook can tell what
+// the gate OUGHT to be: a repository that is itself the brain-kit checkout
+// the gate is maintained in, which is the real deployment and the one the
+// maintainer pushes from every day. So the fixture is that repository:
+// the kit, committed, with the gate installed out of its own working tree.
+function setupSelfHosted() {
+  const root = makeTempDir('brain-kit-selfhosted-');
+  const bare = join(root, 'origin.git');
+  const work = join(root, 'work');
+  assert.equal(spawnSync('git', ['init', '-q', '--bare', bare]).status, 0);
+  assert.equal(spawnSync('git', ['init', '-q', '-b', 'main', work]).status, 0);
+  mkdirSync(join(work, '.githooks'), { recursive: true });
+  copyFileSync(HOOK_SOURCE, join(work, '.githooks', 'pre-push'));
+  copyFileSync(INSTALLER, join(work, '.githooks', 'install-gate'));
+  chmodSync(join(work, '.githooks', 'install-gate'), 0o755);
+  for (const dir of KIT_DIRS_TO_MIRROR) cpSync(join(KIT_ROOT, dir), join(work, dir), { recursive: true });
+  copyFileSync(join(KIT_ROOT, 'package.json'), join(work, 'package.json'));
+  git(work, ['remote', 'add', 'origin', bare]);
+  assert.equal(git(work, ['add', '-A']).status, 0);
+  assert.equal(git(work, ['commit', '-q', '-m', 'a brain-kit checkout']).status, 0);
+  const installed = spawnSync(join(work, '.githooks', 'install-gate'), [], { cwd: work, encoding: 'utf8' });
+  assert.equal(installed.status, 0, `${installed.stdout}${installed.stderr}`);
+  const patterns = join(root, 'patterns.txt');
+  writeFileSync(patterns, 'hunter2corp\n');
+  return { root, work, bare, patterns };
+}
+
+test('in the checkout the gate is maintained in, a clean push right after installing says nothing', () => {
+  // The control for the two tests below: HEAD is the commit the stamp
+  // names and .githooks/pre-push is byte for byte the installed hook, so
+  // nothing is stale and nothing is announced.
+  const { work, patterns } = setupSelfHosted();
+  const clean = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(clean.status, 0, clean.stderr);
+  assert.doesNotMatch(clean.stderr, /gate engine snapshot/);
+});
+
+test('a commit made since the install makes the snapshot stale and it says so', () => {
+  const { work, patterns } = setupSelfHosted();
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  commit(work, 'ordinary.md', 'nothing secret here\n', 'a later commit');
+  const clean = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(clean.status, 0, clean.stderr);
+  assert.match(clean.stderr, /gate engine snapshot: installed /);
+  assert.match(clean.stderr, /refresh it with: /);
+});
+
+test('an UNCOMMITTED edit to the gate source makes the snapshot stale, which no commit comparison could see', () => {
+  // The ordinary way a gate change is made and tested. It is a byte
+  // comparison against the installed copy, and the file is COMPARED,
+  // never run: the leak below is still refused, by the installed hook,
+  // while the edited one in the tree does nothing at all.
+  const { work, patterns } = setupSelfHosted();
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  writeFileSync(join(work, '.githooks', 'pre-push'), '#!/usr/bin/env bash\nexit 0\n');
+  commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'a leak');
+  const refused = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(refused.status, 0, refused.stderr);
+  assert.match(refused.stderr, /possible leak in notes\.md \(CONTENT/);
   assert.match(refused.stderr, /gate engine snapshot: installed /);
+});
+
+test('the installed gate records a REPOSITORY-RELATIVE refresh command, never an absolute path', () => {
+  // The hook prints this string on stderr, the same stream the findings
+  // use, so an absolute path here is a home directory travelling into
+  // every log and pasted transcript a push appears in. On a project whose
+  // subject is not disclosing that sort of thing, the gate must not be
+  // what discloses it.
+  const { work, patterns } = setupSelfHosted();
+  const recorded = readFileSync(join(work, '.git', 'brain-kit-gate', 'INSTALLER'), 'utf8').trim();
+  assert.equal(recorded, '.githooks/install-gate');
+  assert.doesNotMatch(recorded, /^\//);
+
+  commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'a leak');
+  const refused = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /refresh it with: \.githooks\/install-gate/);
+  assert.doesNotMatch(refused.stderr, /refresh it with: \//);
 });
 
 test('re-running the installer refreshes the snapshot, and only re-running it does', () => {
@@ -1539,7 +1687,6 @@ test('a push from a LINKED WORKTREE finds the one gate the repository has', () =
   assert.equal(git(side, ['commit', '-q', '-m', 'a clean message']).status, 0);
   const clean = git(side, ['push', '-q', 'origin', 'side'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
   assert.equal(clean.status, 0, clean.stderr);
-  assert.match(clean.stderr, /gate engine snapshot: installed /);
 
   writeFileSync(join(side, 'notes.md'), 'Meeting with Hunter2Corp tomorrow\n');
   assert.equal(git(side, ['add', 'notes.md']).status, 0);
@@ -1547,4 +1694,591 @@ test('a push from a LINKED WORKTREE finds the one gate the repository has', () =
   const leaking = git(side, ['push', '-q', 'origin', 'side'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
   assert.notEqual(leaking.status, 0, leaking.stderr);
   assert.match(leaking.stderr, /possible leak in notes\.md \(CONTENT/);
+  // The gate the linked worktree found is the one the repository has, and
+  // it names itself on the refusal.
+  assert.match(leaking.stderr, /gate engine snapshot: installed /);
+});
+
+// --- the snapshot must be a COPY, not a link (ninth round) ---------------
+//
+// `cp -R` does not dereference a symbolic link, so a link in the engine
+// source was installed AS a link and the gate executed whatever it pointed
+// at, which stayed writable after the install and could live anywhere. A
+// reviewer pointed src/leak.mjs outside the repository, replaced the
+// target with a module keeping every export and blunting only the scan,
+// and pushed a leak with exit 0 and no re-install. That is the working
+// tree reaching the gate again, through a file the installer believed it
+// had copied, and nothing in this suite could see it: nothing planted a
+// symlink and the harness's own cpSync does not dereference either.
+//
+// The installer refuses instead of dereferencing, because this project's
+// engine has no symbolic links in it: one appearing means the tree is not
+// what the installer thinks it is, and refusing says which path.
+
+function kitCheckout(root, name = 'kit') {
+  const kit = join(root, name);
+  mkdirSync(join(kit, '.githooks'), { recursive: true });
+  copyFileSync(HOOK_SOURCE, join(kit, '.githooks', 'pre-push'));
+  copyFileSync(INSTALLER, join(kit, '.githooks', 'install-gate'));
+  chmodSync(join(kit, '.githooks', 'install-gate'), 0o755);
+  for (const dir of KIT_DIRS_TO_MIRROR) cpSync(join(KIT_ROOT, dir), join(kit, dir), { recursive: true });
+  copyFileSync(join(KIT_ROOT, 'package.json'), join(kit, 'package.json'));
+  assert.equal(spawnSync('git', ['init', '-q', '-b', 'main', kit]).status, 0);
+  assert.equal(git(kit, ['add', '-A']).status, 0);
+  assert.equal(git(kit, ['commit', '-q', '-m', 'a brain-kit checkout']).status, 0);
+  return kit;
+}
+
+test('the installer REFUSES a symbolic link in the engine source, and names the path', () => {
+  const root = makeTempDir('brain-kit-symlink-');
+  const work = join(root, 'work');
+  assert.equal(spawnSync('git', ['init', '-q', '-b', 'main', work]).status, 0);
+  const kit = kitCheckout(root, 'kit');
+  const outside = join(root, 'outside');
+  mkdirSync(outside, { recursive: true });
+  copyFileSync(join(kit, 'src', 'leak.mjs'), join(outside, 'leak.mjs'));
+  unlinkSync(join(kit, 'src', 'leak.mjs'));
+  symlinkSync(join(outside, 'leak.mjs'), join(kit, 'src', 'leak.mjs'));
+
+  const installed = spawnSync(join(kit, '.githooks', 'install-gate'), [], { cwd: work, encoding: 'utf8' });
+  assert.notEqual(installed.status, 0, installed.stdout);
+  assert.match(installed.stderr, /symbolic link/);
+  assert.match(installed.stderr, /src\/leak\.mjs/);
+  // Refusing must not leave a half-built gate behind, nor point
+  // core.hooksPath at one that was never finished.
+  assert.equal(existsSync(join(work, '.git', 'brain-kit-gate')), false);
+  assert.equal(existsSync(join(work, '.git', 'brain-kit-gate.installing')), false);
+  assert.equal(git(work, ['config', '--get', 'core.hooksPath']).stdout.trim(), '');
+});
+
+test('a symbolic link DEEP in the engine source is refused too, not only one at the top', () => {
+  const root = makeTempDir('brain-kit-symlink-deep-');
+  const work = join(root, 'work');
+  assert.equal(spawnSync('git', ['init', '-q', '-b', 'main', work]).status, 0);
+  const kit = kitCheckout(root, 'kit');
+  const outside = join(root, 'outside');
+  mkdirSync(outside, { recursive: true });
+  copyFileSync(join(kit, 'src', 'commands', 'scan-blobs.mjs'), join(outside, 'scan-blobs.mjs'));
+  unlinkSync(join(kit, 'src', 'commands', 'scan-blobs.mjs'));
+  symlinkSync(join(outside, 'scan-blobs.mjs'), join(kit, 'src', 'commands', 'scan-blobs.mjs'));
+
+  const installed = spawnSync(join(kit, '.githooks', 'install-gate'), [], { cwd: work, encoding: 'utf8' });
+  assert.notEqual(installed.status, 0, installed.stdout);
+  assert.match(installed.stderr, /symbolic link/);
+  assert.match(installed.stderr, /src\/commands\/scan-blobs\.mjs/);
+});
+
+test('a symbolic link pointing INSIDE the repository being pushed is refused on the same terms', () => {
+  // The sharpest shape of it: the link target is an uncommitted file in
+  // the working tree, which is hole (i) restored exactly.
+  const root = makeTempDir('brain-kit-symlink-inside-');
+  const work = join(root, 'work');
+  assert.equal(spawnSync('git', ['init', '-q', '-b', 'main', work]).status, 0);
+  const kit = kitCheckout(root, 'kit');
+  mkdirSync(join(work, 'vendor'), { recursive: true });
+  copyFileSync(join(kit, 'src', 'leak.mjs'), join(work, 'vendor', 'leak.mjs'));
+  unlinkSync(join(kit, 'src', 'leak.mjs'));
+  symlinkSync(join(work, 'vendor', 'leak.mjs'), join(kit, 'src', 'leak.mjs'));
+
+  const installed = spawnSync(join(kit, '.githooks', 'install-gate'), [], { cwd: work, encoding: 'utf8' });
+  assert.notEqual(installed.status, 0, installed.stdout);
+  assert.match(installed.stderr, /symbolic link/);
+});
+
+test('an ordinary engine source, with no links in it, still installs', () => {
+  // The control: the refusal above must be about links, not about the
+  // installer having become unable to install anything.
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  assert.equal(existsSync(join(work, '.git', 'brain-kit-gate', 'engine', 'src', 'leak.mjs')), true);
+});
+
+// --- a refresh never leaves the clone ungated (ninth round) --------------
+
+test('a REFRESH keeps a working gate at every step, and a failed one leaves the old gate in place', () => {
+  // The installer used to delete the live gate and then move the staged
+  // one in. Between those two statements core.hooksPath named a directory
+  // that did not exist, and git skips a missing hook in silence, so the
+  // failure mode of a refresh was no gate at all with no output. A
+  // reviewer proved it by deleting the directory and pushing a leak.
+  //
+  // Here the second rename is made to fail (the destination is replaced
+  // by a file the staged directory cannot be renamed onto is not portable,
+  // so the staged directory is removed underneath the installer instead,
+  // by making it unreadable is not portable either; the portable shape is
+  // to let the installer run and then assert the gate survives a refresh
+  // that could not complete, which is what the interrupted case leaves).
+  const { work, patterns, kit, gateDir } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+
+  // A refresh that cannot finish: the engine is gone from the source, so
+  // the installer refuses BEFORE it touches the installed gate.
+  rmSync(join(kit, 'src'), { recursive: true, force: true });
+  const failed = spawnSync(join(kit, '.githooks', 'install-gate'), [], { cwd: work, encoding: 'utf8' });
+  assert.notEqual(failed.status, 0);
+
+  // The gate that was there is still there, and still refuses a leak.
+  assert.equal(existsSync(join(gateDir, 'pre-push')), true);
+  assert.equal(existsSync(join(gateDir, 'engine', 'src', 'leak.mjs')), true);
+  commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'leak');
+  const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in notes\.md \(CONTENT/);
+});
+
+test('the installer never leaves a "previous" directory behind after a successful refresh', () => {
+  const { work, kit } = setup();
+  const previous = join(work, '.git', 'brain-kit-gate.previous');
+  assert.equal(spawnSync(join(kit, '.githooks', 'install-gate'), [], { cwd: work, encoding: 'utf8' }).status, 0);
+  assert.equal(existsSync(previous), false);
+  assert.equal(existsSync(join(work, '.git', 'brain-kit-gate.installing')), false);
+});
+
+test('a gate directory that vanished is the one failure the hook cannot report, so the installer must never create it', () => {
+  // Not a test of the hook: it is a test of the ONLY thing that can
+  // prevent this state, which is the installer's ordering. This asserts
+  // the consequence, so that a future reader sees why the ordering is
+  // written the way it is: with core.hooksPath set and the directory
+  // gone, a leaking push is accepted in total silence.
+  const { work, patterns, gateDir } = setup();
+  commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'leak');
+  rmSync(gateDir, { recursive: true, force: true });
+  const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 0, 'git really does skip a missing hook without a word');
+  assert.doesNotMatch(r.stderr, /pre-push/);
+});
+
+// --- a bare or mirror clone: refused, with the true reason ---------------
+
+test('a bare clone is told it has no working tree, not that it is not a repository', () => {
+  const root = makeTempDir('brain-kit-bare-');
+  const bare = join(root, 'mirror.git');
+  assert.equal(spawnSync('git', ['init', '-q', '--bare', bare]).status, 0);
+  const kit = kitCheckout(root, 'kit');
+  const r = spawnSync(join(kit, '.githooks', 'install-gate'), [], { cwd: bare, encoding: 'utf8' });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /no working tree/);
+  assert.match(r.stderr, /bare or mirror clone/);
+  assert.doesNotMatch(r.stderr, /not inside a git repository/);
+});
+
+test('somewhere that really is not a repository still says so', () => {
+  const root = makeTempDir('brain-kit-norepo-');
+  const kit = kitCheckout(root, 'kit');
+  const outside = join(root, 'outside');
+  mkdirSync(outside, { recursive: true });
+  const r = spawnSync(join(kit, '.githooks', 'install-gate'), [], {
+    cwd: outside,
+    encoding: 'utf8',
+    // GIT_CEILING_DIRECTORIES stops git walking up into whatever
+    // repository the temporary directory may happen to sit inside.
+    env: { ...process.env, GIT_CEILING_DIRECTORIES: root },
+  });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /not inside a git repository/);
+});
+
+// --- a pushed ref that does not peel to a commit (ninth round) -----------
+//
+// `git rev-list` on a non-commit exits ZERO and prints nothing, which the
+// hook read as an empty range, and the tip handler broke out of its loop
+// on any type it did not recognise. Three shapes reached a bare remote
+// with exit 0 and no output at all.
+
+test('a raw BLOB pushed to an arbitrary ref is scanned, not waved through', () => {
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  const written = spawnSync('git', ['-C', work, 'hash-object', '-w', '--stdin'], {
+    input: 'secret partner list: Hunter2Corp\n', encoding: 'utf8',
+  });
+  assert.equal(written.status, 0, written.stderr);
+  const sha = written.stdout.trim();
+  const r = git(work, ['push', '-q', 'origin', `${sha}:refs/leaks/one`], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in the blob [0-9a-f]{7} this push points a ref at \(CONTENT\)/);
+  assert.doesNotMatch(r.stderr, /hunter2corp/i);
+});
+
+test('a CLEAN blob pushed to an arbitrary ref still pushes: the ref is scanned, not banned', () => {
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  const written = spawnSync('git', ['-C', work, 'hash-object', '-w', '--stdin'], {
+    input: 'nothing secret here\n', encoding: 'utf8',
+  });
+  assert.equal(written.status, 0);
+  const r = git(work, ['push', '-q', 'origin', `${written.stdout.trim()}:refs/notes/ordinary`], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 0, r.stderr);
+});
+
+test('an annotated tag naming a BLOB is followed to the blob and the blob is scanned', () => {
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  const written = spawnSync('git', ['-C', work, 'hash-object', '-w', '--stdin'], {
+    input: 'secret partner list: Hunter2Corp\n', encoding: 'utf8',
+  });
+  assert.equal(written.status, 0);
+  assert.equal(git(work, ['tag', '-a', 'leaktag', '-m', 'an innocent message', written.stdout.trim()]).status, 0);
+  const r = git(work, ['push', '-q', 'origin', 'refs/tags/leaktag'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in the blob [0-9a-f]{7} this push points a ref at \(CONTENT\)/);
+});
+
+test('an annotated tag naming a TREE has that tree\'s paths and contents scanned', () => {
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  mkdirSync(join(work, 'leakdir'), { recursive: true });
+  writeFileSync(join(work, 'leakdir', 'Hunter2Corp-notes.md'), 'nothing secret in the body\n');
+  assert.equal(git(work, ['add', 'leakdir']).status, 0);
+  const tree = git(work, ['write-tree']);
+  assert.equal(tree.status, 0, tree.stderr);
+  assert.equal(git(work, ['tag', '-a', 'treetag', '-m', 'an innocent message', tree.stdout.trim()]).status, 0);
+  const r = git(work, ['push', '-q', 'origin', 'refs/tags/treetag'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in a file name in the tree [0-9a-f]{7} \(PATH/);
+  assert.doesNotMatch(r.stderr, /hunter2corp/i);
+});
+
+test('a tree whose PATHS are clean still has its blob CONTENTS read', () => {
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  mkdirSync(join(work, 'ordinary'), { recursive: true });
+  writeFileSync(join(work, 'ordinary', 'notes.md'), 'Meeting with Hunter2Corp tomorrow\n');
+  assert.equal(git(work, ['add', 'ordinary']).status, 0);
+  const tree = git(work, ['write-tree']);
+  assert.equal(tree.status, 0);
+  assert.equal(git(work, ['tag', '-a', 'treetag2', '-m', 'an innocent message', tree.stdout.trim()]).status, 0);
+  const r = git(work, ['push', '-q', 'origin', 'refs/tags/treetag2'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in ordinary\/notes\.md \(CONTENT, in the tree [0-9a-f]{7}\)/);
+});
+
+test('the hook says out loud that a ref naming no commit has no commit range, rather than passing in silence', () => {
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  const written = spawnSync('git', ['-C', work, 'hash-object', '-w', '--stdin'], {
+    input: 'nothing secret here\n', encoding: 'utf8',
+  });
+  const r = git(work, ['push', '-q', 'origin', `${written.stdout.trim()}:refs/notes/said-so`], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /does not point at a commit \(it names a blob\)/);
+});
+
+// --- the exemption's containment DIRECTION (ninth round) -----------------
+
+test('the exemption is exact in BOTH directions: an author whose name CONTAINS the pushing identity is refused', () => {
+  // The three narrowness tests above all vary the CANDIDATE and none
+  // varies the direction, so what they actually pin is "a different
+  // string is not exempt", not "only an equal string is exempt".
+  // Widening `===` to `.includes()` is one token, it walks a real leak
+  // onto a remote, and the suite did not move. This is the test that
+  // moves.
+  const { work, patterns } = setupSelfNamedMaintainer();
+  writeFileSync(join(work, 'README.md'), 'hello world\n');
+  assert.equal(gitAs(work, ['add', 'README.md']).status, 0);
+  // The pushing identity is `Hunter2Corp Admin <hunter2corp-admin@example.invalid>`.
+  // This author string CONTAINS it, byte for byte, with a prefix.
+  assert.equal(gitAs(work, ['commit', '-q', '-m', 'a clean message'], {
+    GIT_AUTHOR_NAME: 'Not Really Hunter2Corp Admin',
+    GIT_AUTHOR_EMAIL: 'hunter2corp-admin@example.invalid',
+  }).status, 0);
+
+  const r = gitAs(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in the author of commit [0-9a-f]{7} \(AUTHOR IDENTITY\)/);
+  assert.doesNotMatch(r.stderr, /hunter2corp/i);
+});
+
+test('an author string the pushing identity is a suffix of is refused too', () => {
+  const { work, patterns } = setupSelfNamedMaintainer();
+  writeFileSync(join(work, 'README.md'), 'hello world\n');
+  assert.equal(gitAs(work, ['add', 'README.md']).status, 0);
+  assert.equal(gitAs(work, ['commit', '-q', '-m', 'a clean message'], {
+    GIT_AUTHOR_NAME: 'Hunter2Corp Admin and a friend',
+    GIT_AUTHOR_EMAIL: 'hunter2corp-admin@example.invalid',
+  }).status, 0);
+  const r = gitAs(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in the author of commit [0-9a-f]{7} \(AUTHOR IDENTITY\)/);
+});
+
+// --- the exemption cannot be chosen on the command line (ninth round) ----
+
+test('`git -c user.name=... push` cannot hand itself the identity exemption', () => {
+  // `git -c` propagates through GIT_CONFIG_PARAMETERS into every git call
+  // a hook makes, so the identity the exemption is keyed on used to be
+  // choosable per invocation, by a flag, leaving no trace in any file. It
+  // disabled exactly one channel and left the other four working, which
+  // reads as a gate that is on. The identity is read from the
+  // configuration FILES now, which is also where the author of a commit
+  // git makes comes from, so nothing legitimate is lost.
+  const { work, patterns } = setup();
+  writeFileSync(join(work, 'README.md'), 'hello world\n');
+  assert.equal(git(work, ['add', 'README.md']).status, 0);
+  assert.equal(git(work, ['commit', '-q', '-m', 'a clean message'], {
+    GIT_AUTHOR_NAME: 'Hunter2Corp Ltd', GIT_AUTHOR_EMAIL: 'hunter2corp-ops@example.invalid',
+  }).status, 0);
+
+  const r = gitAs(work, [
+    '-c', 'user.name=Hunter2Corp Ltd',
+    '-c', 'user.email=hunter2corp-ops@example.invalid',
+    'push', '-q', 'origin', 'main',
+  ], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in the author of commit [0-9a-f]{7} \(AUTHOR IDENTITY\)/);
+  assert.doesNotMatch(r.stderr, /hunter2corp/i);
+});
+
+test('the GIT_CONFIG_COUNT form of the same override cannot either', () => {
+  const { work, patterns } = setup();
+  writeFileSync(join(work, 'README.md'), 'hello world\n');
+  assert.equal(git(work, ['add', 'README.md']).status, 0);
+  assert.equal(git(work, ['commit', '-q', '-m', 'a clean message'], {
+    GIT_AUTHOR_NAME: 'Hunter2Corp Ltd', GIT_AUTHOR_EMAIL: 'hunter2corp-ops@example.invalid',
+  }).status, 0);
+  const r = gitAs(work, ['push', '-q', 'origin', 'main'], {
+    BRAIN_KIT_LEAK_PATTERNS: patterns,
+    GIT_CONFIG_COUNT: '2',
+    GIT_CONFIG_KEY_0: 'user.name', GIT_CONFIG_VALUE_0: 'Hunter2Corp Ltd',
+    GIT_CONFIG_KEY_1: 'user.email', GIT_CONFIG_VALUE_1: 'hunter2corp-ops@example.invalid',
+  });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in the author of commit [0-9a-f]{7} \(AUTHOR IDENTITY\)/);
+});
+
+test('the exemption a maintainer really needs still works, read from the configuration files', () => {
+  // The control for the two above: closing the flag channel must not
+  // close the deadlock the exemption exists for.
+  const { work, patterns } = setupSelfNamedMaintainer();
+  writeFileSync(join(work, 'README.md'), 'hello world\n');
+  assert.equal(gitAs(work, ['add', 'README.md']).status, 0);
+  assert.equal(gitAs(work, ['commit', '-q', '-m', 'a clean message']).status, 0);
+  const r = gitAs(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /\(AUTHOR IDENTITY\) matches a pattern, but it is exactly the identity/);
+});
+
+// --- a commit message is read as an OBJECT, not as a formatted field -----
+
+test('a commit message carrying a NUL byte is scanned past the NUL, not truncated at it', () => {
+  // `git show -s --format=%B` stops at a NUL, so everything after one was
+  // never scanned: a raw commit object whose message was "harmless", a
+  // NUL, and then a pattern pushed with exit 0 and the text in plaintext
+  // on the remote. The guards that were built for this defended a field
+  // shift that does not happen, because git truncated first.
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+
+  const tree = git(work, ['rev-parse', 'HEAD^{tree}']).stdout.trim();
+  const parent = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  const object = Buffer.concat([
+    Buffer.from(`tree ${tree}\nparent ${parent}\n`
+      + 'author A Human <human@example.invalid> 1700000000 +0000\n'
+      + 'committer A Human <human@example.invalid> 1700000000 +0000\n\n', 'utf8'),
+    Buffer.from('harmless', 'utf8'),
+    Buffer.from([0]),
+    Buffer.from('Meeting with Hunter2Corp tomorrow\n', 'utf8'),
+  ]);
+  const written = spawnSync('git', ['-C', work, 'hash-object', '-t', 'commit', '-w', '--literally', '--stdin'], {
+    input: object, encoding: 'utf8',
+  });
+  assert.equal(written.status, 0, written.stderr);
+  assert.equal(git(work, ['update-ref', 'refs/heads/main', written.stdout.trim()]).status, 0);
+
+  const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in the message of commit [0-9a-f]{7} \(COMMIT MESSAGE\)/);
+  assert.doesNotMatch(r.stderr, /hunter2corp/i);
+});
+
+test('an ordinary multi-line commit message is still read whole, message and identities alike', () => {
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  commit(work, 'more.md', 'nothing secret here\n', 'a subject\n\na body line\nand another mentioning Hunter2Corp\n');
+  const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in the message of commit [0-9a-f]{7} \(COMMIT MESSAGE\)/);
+});
+
+// --- the gate directory comparison is EXACT, not a prefix (ninth round) --
+
+test('a hook run from a subdirectory OF the gate directory is refused, so the comparison cannot widen to a prefix', () => {
+  // `[ "$HOOK_DIR" != "$GATE_DIR" ]` widened to a prefix match survives
+  // the whole suite otherwise. It is low severity on its own, because
+  // reaching it needs somebody who can already write under the gate
+  // directory, but an exactness nothing pins is an exactness that will be
+  // relaxed by the next person who finds it inconvenient.
+  const { work, patterns, gateDir } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  const nested = join(gateDir, 'nested');
+  mkdirSync(nested, { recursive: true });
+  copyFileSync(join(gateDir, 'pre-push'), join(nested, 'pre-push'));
+  chmodSync(join(nested, 'pre-push'), 0o755);
+  assert.equal(git(work, ['config', 'core.hooksPath', nested]).status, 0);
+
+  const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /not from its installed copy/);
+});
+
+test('when the swap itself fails, the gate that was already installed is put back', () => {
+  // The load-bearing half of the ordering: the old gate is moved aside,
+  // not deleted, so there is something to restore. Proved by making the
+  // second rename fail, which is the only step between "old gate moved
+  // aside" and "new gate in place".
+  const { root, work, patterns, kit, gateDir } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+
+  const realMv = realPath('mv');
+  const fake = shimDir(root, 'mv', {
+    mv: `#!/bin/sh\ncase "$1" in\n  *brain-kit-gate.installing) exit 1 ;;\nesac\nexec ${realMv} "$@"\n`,
+  });
+  const failed = spawnSync(join(kit, '.githooks', 'install-gate'), [], {
+    cwd: work, encoding: 'utf8', env: { ...process.env, PATH: `${fake}:${process.env.PATH}` },
+  });
+  assert.notEqual(failed.status, 0);
+  assert.match(failed.stderr, /has been put back/);
+
+  assert.equal(existsSync(join(gateDir, 'pre-push')), true);
+  assert.equal(existsSync(join(gateDir, 'engine', 'src', 'leak.mjs')), true);
+  assert.equal(existsSync(join(work, '.git', 'brain-kit-gate.previous')), false);
+
+  commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'leak');
+  const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in notes\.md \(CONTENT/);
+});
+
+test('a SOURCE HOOK that is a symbolic link is refused too, not only an engine file', () => {
+  const root = makeTempDir('brain-kit-symlink-hook-');
+  const work = join(root, 'work');
+  assert.equal(spawnSync('git', ['init', '-q', '-b', 'main', work]).status, 0);
+  const kit = kitCheckout(root, 'kit');
+  const outside = join(root, 'outside');
+  mkdirSync(outside, { recursive: true });
+  copyFileSync(join(kit, '.githooks', 'pre-push'), join(outside, 'pre-push'));
+  unlinkSync(join(kit, '.githooks', 'pre-push'));
+  symlinkSync(join(outside, 'pre-push'), join(kit, '.githooks', 'pre-push'));
+
+  const r = spawnSync(join(kit, '.githooks', 'install-gate'), [], { cwd: work, encoding: 'utf8' });
+  assert.notEqual(r.status, 0, r.stdout);
+  assert.match(r.stderr, /is a symbolic link/);
+  assert.equal(existsSync(join(work, '.git', 'brain-kit-gate')), false);
+});
+
+test('an uncommitted gate edit alone makes the snapshot stale, with HEAD unchanged', () => {
+  // Isolates the byte comparison from the HEAD comparison: nothing is
+  // committed here, so HEAD still equals the commit the stamp names, and
+  // only the edited file can be what makes this stale. Without this the
+  // comparison could be deleted and the suite would not move, because
+  // every other stale case also moves HEAD.
+  const { work, patterns } = setupSelfHosted();
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  // A ref to push that does not move HEAD.
+  assert.equal(git(work, ['branch', 'side']).status, 0);
+
+  const quiet = git(work, ['push', '-q', 'origin', 'side'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(quiet.status, 0, quiet.stderr);
+  assert.doesNotMatch(quiet.stderr, /gate engine snapshot/);
+
+  writeFileSync(join(work, '.githooks', 'pre-push'), '#!/usr/bin/env bash\nexit 0\n');
+  assert.equal(git(work, ['branch', 'side2']).status, 0);
+  const noisy = git(work, ['push', '-q', 'origin', 'side2'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(noisy.status, 0, noisy.stderr);
+  assert.match(noisy.stderr, /gate engine snapshot: installed /);
+});
+
+// The terminal-object handler's last clause, a refusal on a type this
+// gate does not know, is left UNDEFENDED on purpose and the attempt is
+// recorded rather than the conclusion. The case designed to break it
+// cannot be built: git 2.55 refuses `hash-object -t <anything> --literally`
+// for a type it does not know ("fatal: invalid object type"), so there is
+// no object to push and no test to write. It stays because a default that
+// refuses costs nothing and a default that falls through is how this
+// whole finding happened; it is declared because a clause no test can
+// reach is a clause a later reader may delete believing it is dead.
+
+test('a ref pointing at an EMPTY tree is skipped OUT LOUD, never in silence', () => {
+  // The fourth appearance on this gate of "a command succeeded with empty
+  // output, so there was nothing to do", and the first in code this round
+  // wrote. Accepting it is right; saying nothing is not, because a skip
+  // nobody can see reads exactly like a scan that found nothing.
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  const empty = spawnSync('git', ['-C', work, 'hash-object', '-t', 'tree', '-w', '--stdin'], {
+    input: '', encoding: 'utf8',
+  });
+  assert.equal(empty.status, 0, empty.stderr);
+  const r = git(work, ['push', '-q', 'origin', `${empty.stdout.trim()}:refs/trees/empty`], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /skipping the tree [0-9a-f]{7} .*git lists no entries in it/);
+});
+
+// --- the commit read's own framing checks, reached for real -------------
+
+function scanBlobsDirect(work, gateDir, records, patterns) {
+  return spawnSync(process.execPath, [join(gateDir, 'engine', 'bin', 'brain-kit.mjs'), 'scan-blobs'], {
+    cwd: work, encoding: 'utf8', input: records,
+    env: { ...process.env, BRAIN_KIT_LEAK_PATTERNS: patterns },
+  });
+}
+
+test('a commit record naming an object that is not a commit refuses, rather than being read as one', () => {
+  const { work, patterns, gateDir } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  const blob = spawnSync('git', ['-C', work, 'hash-object', '-w', '--stdin'], {
+    input: 'nothing secret here\n', encoding: 'utf8',
+  });
+  assert.equal(blob.status, 0);
+  const r = scanBlobsDirect(work, gateDir, `commit\0${blob.stdout.trim()}\0`, patterns);
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /is a blob, not a commit/);
+});
+
+test('a commit record naming an object this clone does not have refuses', () => {
+  const { work, patterns, gateDir } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  const r = scanBlobsDirect(work, gateDir, `commit\0${'0'.repeat(39)}1\0`, patterns);
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /instead of an object header/);
+});
+
+test('two commit records are matched to their own objects, not to each other\'s', () => {
+  // The id check, reached with a real batch: the whole point of reading
+  // objects by declared length is that record N is record N.
+  const { work, patterns, gateDir } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  commit(work, 'notes.md', 'nothing secret here\n', 'mentions Hunter2Corp');
+  const first = git(work, ['rev-parse', 'HEAD~1']).stdout.trim();
+  const second = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  const r = scanBlobsDirect(work, gateDir, `commit\0${first}\0commit\0${second}\0`, patterns);
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, new RegExp(`the message of commit ${second.slice(0, 7)} \\(COMMIT MESSAGE\\)`));
+  assert.doesNotMatch(r.stderr, new RegExp(`the message of commit ${first.slice(0, 7)} \\(COMMIT MESSAGE\\)`));
+});
+
+test('a commit record that does not name its object exactly refuses, rather than being quietly resolved', () => {
+  // `git cat-file --batch` echoes the object name it RESOLVED, not the
+  // string it was given, so a record carrying an abbreviation or a
+  // symbolic name comes back as something else. Refusing keeps the
+  // records this command reports on identical to the records it was
+  // handed: a finding names the commit the hook listed, never one this
+  // module resolved on its own.
+  const { work, patterns, gateDir } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  const short = git(work, ['rev-parse', '--short', 'HEAD']).stdout.trim();
+  const r = scanBlobsDirect(work, gateDir, `commit\0${short}\0`, patterns);
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /returned the object [0-9a-f]{40} where/);
 });

@@ -193,8 +193,47 @@ set -u
 #   (n) The snapshot is deliberately NOT refreshed automatically: doing so
 #       would read the gate back out of the working tree on every push and
 #       hand (i) straight back. So it goes stale by design, and the hook
-#       prints which snapshot it ran on every single push, clean or not.
-#       A ceiling this project cannot remove is one it announces.
+#       says which snapshot it ran. See (o) for when.
+#
+# 19/09/2026, ninth round, from the eighth round's own re-review.
+#   (o) THE ANNOUNCEMENT WAS UNCONDITIONAL, WHICH IS HOW IT WENT UNREAD.
+#       (n) printed two lines on every push, clean or refused, on stderr,
+#       the same stream the findings use. A message that appears on every
+#       successful push is one people stop parsing within a week, and it
+#       was competing for attention with the messages that matter, which
+#       weakened the only signal a stale snapshot has. The honesty (n)
+#       argues for is kept and the noise is not: on a REFUSAL both lines
+#       print, always, whatever went wrong and wherever the refusal came
+#       from (an EXIT trap, so no future exit path can forget); on a clean
+#       push they print only when the snapshot is actually stale, decided
+#       mechanically and never by age. Stale means the stamp records a
+#       dirty source tree, or this repository is the brain-kit checkout
+#       the gate came from and its HEAD is not the commit the stamp names
+#       or its .githooks/pre-push no longer matches the installed copy.
+#       Nothing in that reads the engine out of the tree, so none of it
+#       hands (i) back.
+#   (p) A PUSHED REFERENCE THAT DOES NOT PEEL TO A COMMIT WAS NEVER
+#       SCANNED. This loop assumed every ref resolves to a commit. Git
+#       does not require that: a ref can name a blob or a tree outright,
+#       and `git push origin <blob>:refs/leaks/one` is a one-line command.
+#       `git rev-list` on a non-commit exits ZERO with empty output, which
+#       this loop read as "nothing to scan", and the tip handler in
+#       scan-blobs broke out of its loop on any type it did not recognise,
+#       so nothing scanned it and nothing said so: exit 0, and the content
+#       readable straight off the bare remote. A reviewer proved three
+#       shapes of it, a raw blob and an annotated tag naming a blob and
+#       one naming a tree.
+#
+#       This is the THIRD time on this gate that a command succeeding with
+#       empty output was read as nothing to do, after the two the comments
+#       at full_history and at the range computation already name. Both of
+#       those guard a command that FAILS. Neither guarded a command that
+#       succeeds and returns nothing because its argument was never the
+#       kind of thing it was asked about. So the question is asked before
+#       the command instead of inferred from its silence: this loop peels
+#       the ref and refuses to let rev-list stand in for the answer, and
+#       scan-blobs handles every terminal type by name and refuses one it
+#       does not know.
 PATTERNS_FILE_LABEL="${BRAIN_KIT_LEAK_PATTERNS:-$HOME/.config/brain-kit/leak-patterns.txt}"
 
 if ! command -v node >/dev/null 2>&1; then
@@ -272,12 +311,58 @@ if ! SNAPSHOT="$(cat "$SNAPSHOT_FILE")" || [ -z "$SNAPSHOT" ]; then
   exit 1
 fi
 
-# (n). Printed on EVERY push, clean or not, and before anything else can
-# fail: the snapshot is refreshed only by re-running the installer, so it
-# goes stale silently unless it says so. Printed first, so every message
-# after it is attributable to a named engine.
-echo "pre-push: gate engine snapshot: $SNAPSHOT" >&2
-echo "pre-push: refresh it with: $INSTALL_CMD" >&2
+# (n) and (o). The two lines, printed at most once, from wherever the
+# decision to print them is taken.
+gate_lines_printed=0
+print_gate_lines() {
+  [ "$gate_lines_printed" -eq 1 ] && return 0
+  gate_lines_printed=1
+  echo "pre-push: gate engine snapshot: $SNAPSHOT" >&2
+  echo "pre-push: refresh it with: $INSTALL_CMD" >&2
+  return 0
+}
+
+# (o). Is the snapshot stale? Mechanical, and never age: a snapshot taken
+# an hour ago from a tree that has since changed is stale, and one taken a
+# month ago from a gate nobody has touched is not, so a threshold in days
+# would be wrong in both directions.
+#
+# Three signals, any one of which is enough, and every one of them errs
+# toward printing. The stamp's own record of a dirty source tree is the
+# first: a snapshot taken from a dirty tree does not correspond to the
+# commit it names, and what made it dirty may be the gate itself. The
+# other two apply only when the repository being pushed IS the brain-kit
+# checkout the gate is maintained in, which is the only case where this
+# hook can tell what the gate ought to be: a HEAD that is not the commit
+# the stamp names, and a .githooks/pre-push that no longer matches the
+# installed hook byte for byte. That second one catches the case the first
+# cannot, an edit made and not yet committed, which is the ordinary way a
+# gate change is tested.
+#
+# Reading .githooks/pre-push here does not hand (i) back. It is COMPARED,
+# never executed and never sourced; the hook that runs is still only the
+# installed copy, and the comparison can make this gate noisier, never
+# quieter or weaker.
+snapshot_stale=0
+case "$SNAPSHOT" in
+  *"working tree dirty"*) snapshot_stale=1 ;;
+esac
+if [ -f "$REPO_ROOT/.githooks/pre-push" ] && [ -f "$REPO_ROOT/.githooks/install-gate" ]; then
+  # The stamp carries the FULL object name for exactly this comparison, so
+  # neither side has to decide how many characters of the other to look at.
+  snapshot_rest="${SNAPSHOT#*from commit }"
+  snapshot_commit="${snapshot_rest%% *}"
+  head_commit="$(git rev-parse HEAD 2>/dev/null || true)"
+  if [ -z "$head_commit" ] || [ "$snapshot_commit" != "$head_commit" ]; then
+    snapshot_stale=1
+  fi
+  if ! cmp -s "$REPO_ROOT/.githooks/pre-push" "$GATE_DIR/pre-push"; then
+    snapshot_stale=1
+  fi
+fi
+if [ "$snapshot_stale" -eq 1 ]; then
+  print_gate_lines
+fi
 
 ZERO='0000000000000000000000000000000000000000'
 TAB="$(printf '\t')"
@@ -286,11 +371,26 @@ failed=0
 # Scratch files. `mktemp -d` with an explicit template behaves the same in
 # GNU and BSD userlands. Failing to create it refuses the push: no scratch
 # space, no scan.
+#
+# (o). The trap carries the scratch cleanup AND the refusal half of the
+# announcement, because a refusal can leave from a dozen places in this
+# file and a rule that every one of them has to remember is a rule the
+# next one added will not. Reading $? in the trap makes "refused" mean
+# what the shell means by it, so nothing has to be kept in step by hand.
+gate_exit() {
+  if [ "$1" -ne 0 ]; then
+    print_gate_lines
+  fi
+  if [ -n "${TMP_DIR:-}" ]; then
+    rm -rf "$TMP_DIR"
+  fi
+}
+trap 'gate_exit $?' EXIT
+
 if ! TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/brain-kit-prepush.XXXXXX")"; then
   echo "pre-push: could not create a temporary directory; refusing to push." >&2
   exit 1
 fi
-trap 'rm -rf "$TMP_DIR"' EXIT
 LIST_FILE="$TMP_DIR/list"
 PATHS_RAW="$TMP_DIR/paths.raw"
 PATHS_FILE="$TMP_DIR/paths"
@@ -444,6 +544,32 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   # a commit: an annotated tag carries a message and a tagger identity that
   # exist nowhere in any commit (seventh round, (h)).
   printf 'tip\0%s\0' "$local_sha" >> "$PAIRS_FILE" || work_list_write_failed
+
+  # (p). Everything below this point is about COMMITS: a range, a history,
+  # a diff against parents. None of it is meaningful for a ref that names
+  # a blob or a tree, and `git rev-list` does not say so, it exits zero
+  # and prints nothing, which this loop used to read as an empty range and
+  # a clean push. So the question is asked outright, before any command
+  # whose silence could be mistaken for an answer.
+  #
+  # `^{}` peels a chain of tag objects down to the object it finally
+  # names, and returns that object whatever kind it is; an empty result
+  # means git could not resolve the ref at all. Either way this loop does
+  # NOT refuse here and does not pass anything either: the `tip` record
+  # above already names the object, and scan-blobs reads it by type, scans
+  # a blob's content and a tree's paths and contents, and refuses a type
+  # it does not know or an object it cannot read. The refusal belongs
+  # there, once, rather than in two places that could come to disagree.
+  peeled=""
+  peel_type=""
+  peeled="$(git rev-parse -q --verify "${local_sha}^{}" 2>/dev/null || true)"
+  if [ -n "$peeled" ]; then
+    peel_type="$(git cat-file -t "$peeled" 2>/dev/null || true)"
+  fi
+  if [ "$peel_type" != "commit" ]; then
+    echo "pre-push: $local_ref does not point at a commit (it names $(if [ -n "$peel_type" ]; then echo "a $peel_type"; else echo "an object this clone cannot resolve"; fi)), so there is no commit range to scan here; the object itself is examined directly." >&2
+    continue
+  fi
 
   if [ "$remote_sha" != "$ZERO" ]; then
     # The remote already has this ref, and git just told us so, live, as part

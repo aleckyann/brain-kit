@@ -15,7 +15,9 @@ repository). Do not open a public issue for a secret or a leak.
 This repository runs its own pre-push gate against a personal pattern list that lives
 outside the repository. It scans five channels of every commit a push carries: file
 content, file names, commit messages, annotated tag messages, and author and committer
-identities. It fails closed: a missing, empty, unreadable or invalid pattern list refuses
+identities. A pushed reference that names a blob or a tree rather than a commit is
+scanned too, as an object: its content, or its paths and their contents. It fails
+closed: a missing, empty, unreadable or invalid pattern list refuses
 the push rather than passing it, and so does a blob it cannot read. It never prints what
 it matched.
 
@@ -28,11 +30,20 @@ Both halves of the gate, the hook and the engine it runs, are installed into
 `<git common dir>/brain-kit-gate/` and reached through `core.hooksPath`. That directory is
 never part of any tree, so no checkout can remove it, no orphan branch can leave it
 behind, and no pushed branch can replace it; an uncommitted edit in the working tree does
-not reach it either. Nothing is read out of the objects being pushed except the objects
-being scanned. The snapshot is refreshed only by re-running the installer, never
-automatically, because an automatic refresh would read the gate back out of the working
-tree on every push; so it can go stale, and the gate prints which snapshot it ran on every
-push to make that visible rather than silent.
+not reach it either, and the installer refuses to install an engine containing a symbolic
+link, because a link is a file whose content still lives where it points. Nothing is read
+out of the objects being pushed except the objects being scanned. The snapshot is
+refreshed only by re-running the installer, never automatically, because an automatic
+refresh would read the gate back out of the working tree on every push; so it can go
+stale. The gate names the snapshot it ran on every refusal, and on a clean push only when
+that snapshot is stale: the stamp records a dirty source tree, or this is the brain-kit
+checkout and its HEAD or its `.githooks/pre-push` no longer matches what was installed.
+Printing it on every push instead made it a line people stopped reading, which is the
+opposite of what saying it is for.
+
+A refresh never leaves the clone ungated: the installed gate is moved aside, the new one
+renamed into place, and the old one removed last, so a refresh that fails leaves the gate
+that was already working rather than none.
 
 It is a client-side hook, so the limits below are properties of the mechanism rather than
 defects in this implementation. They are written down because a guard whose limits are
@@ -58,15 +69,25 @@ unstated gets trusted past them.
   to whatever a branch contained, and the code a branch carried read the environment
   variable naming the private pattern list. Both were reproduced against this repository on
   19/09/2026. Both are closed by installing the hook and the engine outside the working
-  tree, where neither a checkout, an uncommitted edit nor a pushed branch can reach them.
+  tree, where neither a checkout, an uncommitted edit nor a pushed branch can reach them,
+  and by refusing to install an engine that contains a symbolic link: `cp -R` preserves a
+  link rather than flattening it, so a link was a file the installer believed it had
+  copied while its content stayed in the working tree, and a reviewer walked a leak
+  through exactly that way on 19/09/2026.
 - **An installed snapshot can be older than the checkout it came from.** That is
-  deliberate, and the gate prints the snapshot's date and source commit on every push so
-  the staleness is visible; `.githooks/install-gate` refreshes it.
+  deliberate; the gate names the snapshot whenever it is stale or whenever it refuses,
+  and `.githooks/install-gate` refreshes it.
+- **A bare or mirror clone cannot be gated.** Both the installer and the hook resolve
+  everything they do against a working tree, and a bare clone has none. The installer
+  says so rather than claiming the directory is not a repository.
 - **An author or committer identity that is EXACTLY the identity the push is made under is
   exempt from the identity channel**, and the gate says so when that happens. A commit
   cannot be re-authored away from the person making it, so refusing there would leave only
-  the pattern list or `--no-verify`. The exemption is exact: anybody else's name matching
-  the same pattern still refuses.
+  the pattern list or `--no-verify`. The exemption is exact in both directions: a
+  different name refuses, and so does a name that merely CONTAINS the pushing identity.
+  It is read from the git configuration FILES, with `git -c` and the `GIT_CONFIG_*`
+  environment overrides stripped, so the identity it keys on cannot be chosen per
+  invocation by a flag that leaves no trace.
 - **Content the pattern list does not describe is not found.** The list is the whole of
   the gate's knowledge, and keeping it current is a person's job, not the tool's.
 

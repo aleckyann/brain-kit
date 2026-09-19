@@ -38,18 +38,62 @@ test('run never shells out: passing options.shell is refused rather than silentl
   assert.throws(() => run(process.execPath, ['-e', '1'], { shell: true }), /shell/);
 });
 
-test('a command killed by a timeout still returns the output it wrote before dying', () => {
-  // fs.writeSync performs a real, blocking write() to the fd, so the line is
-  // guaranteed to have reached the pipe before the child blocks; a plain
-  // console.log/process.stdout.write to a piped stdout is asynchronous on
-  // POSIX and could still be queued, unflushed, when the timeout fires.
-  // Atomics.wait then blocks the child's own thread (not the event loop)
-  // well past the timeout, so spawnSync's parent-side timer has to kill it.
-  const script = "require('fs').writeSync(1, 'line-before-timeout\\n'); "
-    + 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000);';
+// --- a command killed by a timeout, split in two on purpose --------------
+//
+// This was ONE test, and it asserted both halves against a real 200ms
+// timer: that a killed child reports failure, and that whatever it managed
+// to write survives. The first half is deterministic under any load (a
+// child blocked for five seconds is always killed at 200ms). The second is
+// a race between the child starting up and the parent's timer, and on a
+// busy machine the child loses it and the suite goes red on a pristine
+// tree, which teaches whoever reads it that red means noise. Widening the
+// timeout would only raise the load at which it happens.
+//
+// So the clock is injected for the half that needs one, rather than the
+// tolerance widened. The two together assert strictly more than the
+// original did: the integration half no longer depends on timing, and the
+// unit half pins the exact shape spawnSync reports for a killed child,
+// which the original could only reach by luck.
+
+test('a command killed by a timeout reports failure, never success', () => {
+  // Atomics.wait blocks the child's own thread (not its event loop) well
+  // past the timeout, so spawnSync's parent-side timer always has to kill
+  // it, whatever the machine is doing.
+  const script = 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000);';
   const result = run(process.execPath, ['-e', script], { timeout: 200 });
   assert.notEqual(result.status, 0);
-  assert.match(result.stdout, /line-before-timeout/);
+});
+
+test('output written before a timeout killed the child survives, and is not replaced by an empty string', () => {
+  // Exactly what spawnSync reports for a child it killed on a timeout:
+  // captured output, a null status, and an ETIMEDOUT error beside it. The
+  // clause under test is this module's, not the operating system's: real
+  // output must survive the error branch rather than being thrown away.
+  const killed = {
+    status: null,
+    stdout: 'line-before-timeout\n',
+    stderr: '',
+    error: Object.assign(new Error('spawnSync node ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+  };
+  const result = run(process.execPath, ['-e', '1'], { timeout: 200 }, { spawn: () => killed });
+  assert.equal(result.stdout, 'line-before-timeout\n');
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /ETIMEDOUT/);
+});
+
+test('the injected spawn is a seam and nothing more: it receives the same arguments the real one would, with shell forced off', () => {
+  let seen = null;
+  run('some-program', ['a', 'b'], { timeout: 50 }, {
+    spawn: (command, args, options) => {
+      seen = { command, args, options };
+      return { status: 0, stdout: '', stderr: '' };
+    },
+  });
+  assert.equal(seen.command, 'some-program');
+  assert.deepEqual(seen.args, ['a', 'b']);
+  assert.equal(seen.options.shell, false);
+  assert.equal(seen.options.timeout, 50);
+  assert.equal(seen.options.encoding, 'utf8');
 });
 
 test('runOrThrow throws on a non-zero status, and the error carries status, stdout and stderr', () => {

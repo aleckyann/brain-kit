@@ -74,8 +74,21 @@ fi
 SOURCE_ROOT="$(dirname "$SELF_DIR")"
 INSTALLER_PATH="$SELF_DIR/$(basename "$0")"
 
+# Two different failures used to share one message, and the shared message
+# was false for the second of them. `--show-toplevel` fails both when this
+# is not a repository at all and when it is a repository with no working
+# tree, and saying "not a git repository" to somebody standing in a bare
+# clone sends them to look for a problem that is not there. Mirroring a
+# vault to a second remote out of a bare clone is an ordinary thing to do,
+# so the person who tries it deserves the true reason: this gate runs from
+# a working tree (it resolves paths against one, and so does the hook it
+# installs), and a bare clone has none.
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+  echo "install-gate: the current directory is not inside a git repository (git rev-parse --git-dir failed); nothing to install into." >&2
+  exit 1
+fi
 if ! TARGET_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || [ -z "$TARGET_ROOT" ]; then
-  echo "install-gate: the current directory is not inside a git repository (git rev-parse --show-toplevel failed); nothing to install into." >&2
+  echo "install-gate: this is a git repository with no working tree (a bare or mirror clone), and this gate cannot be installed into one: both it and the hook it installs resolve everything they do against a working tree. Push from an ordinary clone with the gate installed in it instead." >&2
   exit 1
 fi
 
@@ -151,6 +164,42 @@ for path in $ENGINE_PATHS; do
   fi
 done
 
+# THE SNAPSHOT MUST BE A COPY, AND `cp -R` DOES NOT GUARANTEE THAT.
+#
+# Neither -R nor -r dereferences a symbolic link: a link in the source tree
+# is installed as a link, and the file the gate then executes is whatever
+# that link points at, which stays writable after the install and lives
+# wherever it likes. A reviewer pointed src/leak.mjs at a file outside the
+# repository, replaced the target with a module keeping every export and
+# blunting only the scan, and pushed a leak with exit 0 and no re-install.
+# That is hole (i) restored, through a file this installer believed it had
+# copied, and no test in the suite can see it: nothing plants a symlink and
+# the harness's own copy does not dereference either.
+#
+# `cp -RL` would close it by dereferencing, and it is rejected on purpose.
+# Dereferencing makes the wrong thing work: this project's engine has no
+# symbolic links in it, so one appearing is not a shape to accommodate, it
+# is a sign that the tree is not what the installer thinks it is. Refusing
+# says that where copying would say nothing, and the person reading it
+# learns which path to look at.
+#
+# Counted rather than parsed: a path containing a newline would split into
+# two lines and inflate the count, which still refuses. There is no shape
+# of output here that can be read as "no links" when there were links.
+SYMLINKS_FOUND="$(find "$STAGING_DIR/engine" -type l 2>/dev/null | wc -l | tr -d ' ')"
+if [ -z "$SYMLINKS_FOUND" ] || [ "$SYMLINKS_FOUND" != "0" ]; then
+  echo "install-gate: the engine snapshot would contain a symbolic link, so it would not be a self-contained copy: the gate would execute whatever the link points at, which stays writable after this install. This project's engine has no symbolic links in it. The offending path(s), under $SOURCE_ROOT:" >&2
+  find "$STAGING_DIR/engine" -type l 2>/dev/null | sed "s|^$STAGING_DIR/engine/|  |" >&2
+  echo "install-gate: refusing to install a gate that reads its own code from outside itself." >&2
+  rm -rf "$STAGING_DIR"
+  exit 1
+fi
+if [ -L "$SOURCE_HOOK" ]; then
+  echo "install-gate: $SOURCE_HOOK is a symbolic link, so the hook this installs would be decided by whatever it points at; refusing to install a gate whose source is not the file it appears to be." >&2
+  rm -rf "$STAGING_DIR"
+  exit 1
+fi
+
 # Checked here and not only trusted: the two files the hook will refuse
 # without. Finding out at install time beats finding out on a push.
 for path in bin/brain-kit.mjs src/commands/scan-blobs.mjs; do
@@ -161,7 +210,15 @@ for path in bin/brain-kit.mjs src/commands/scan-blobs.mjs; do
   fi
 done
 
-SOURCE_COMMIT="$(git -C "$SOURCE_ROOT" rev-parse --short HEAD 2>/dev/null)"
+# The FULL object name, not the abbreviated one. The hook compares this
+# against the HEAD of the repository being pushed to decide whether the
+# snapshot is stale (see its own (o) below), and an abbreviation is not a
+# value two git invocations are obliged to agree about: the length git
+# picks grows with the object count, so a short name written today and a
+# short name read tomorrow can differ without anything being stale. A
+# comparison that has to guess how much of two strings to look at is the
+# prefix-match mistake this gate has already had to refuse once.
+SOURCE_COMMIT="$(git -C "$SOURCE_ROOT" rev-parse HEAD 2>/dev/null)"
 if [ -z "$SOURCE_COMMIT" ]; then
   SOURCE_COMMIT="no commit yet"
 fi
@@ -173,11 +230,26 @@ fi
 # Dates a person reads are DD/MM/YYYY in this project.
 INSTALLED_AT="$(date '+%d/%m/%Y %H:%M')"
 
-# The exact command that re-installs this gate, recorded rather than
-# reconstructed. The hook names it in every message it can fail with, and
-# guessing it from the repository being pushed would be wrong whenever the
-# source checkout is not the repository the gate protects.
-if ! printf '%s\n' "$INSTALLER_PATH" > "$STAGING_DIR/INSTALLER"; then
+# The command that re-installs this gate, recorded rather than
+# reconstructed, and recorded RELATIVE to the repository it is installed
+# into. It used to be the absolute path, which on the maintainer's own
+# machine is a home directory with a person's name in it, and the hook
+# prints this string on stderr, the same stream the findings use, so it
+# travelled into every terminal, log and pasted transcript a push appeared
+# in. On a project whose whole subject is not disclosing that sort of
+# thing, the gate must not be the thing that discloses it.
+#
+# In the ordinary case the installer lives inside the repository it
+# protects and the relative name is the exact command, runnable from the
+# repository root. When it does not, there is no relative name that would
+# be correct, and inventing one would put the same home directory back in
+# a different shape, so the generic form is recorded: it is what every
+# other message in the hook already says, and it is true everywhere.
+case "$INSTALLER_PATH" in
+  "$TARGET_ROOT"/*) INSTALLER_RECORD="${INSTALLER_PATH#"$TARGET_ROOT"/}" ;;
+  *) INSTALLER_RECORD=".githooks/install-gate (run it from your brain-kit checkout)" ;;
+esac
+if ! printf '%s\n' "$INSTALLER_RECORD" > "$STAGING_DIR/INSTALLER"; then
   echo "install-gate: could not record this script's own path in the gate; refusing to install a gate that cannot say how to repair itself." >&2
   rm -rf "$STAGING_DIR"
   exit 1
@@ -191,12 +263,50 @@ if ! printf 'installed %s from commit %s (%s)\n' "$INSTALLED_AT" "$SOURCE_COMMIT
   exit 1
 fi
 
-rm -rf "$GATE_DIR" || exit 1
+# NEVER DELETE THE LIVE GATE BEFORE THE REPLACEMENT IS IN PLACE.
+#
+# This used to be `rm -rf "$GATE_DIR"` and then a move, and the failure
+# mode of a refresh was therefore NO GATE AT ALL, silently: between those
+# two statements core.hooksPath names a directory that does not exist, and
+# git skips a missing hook without a word. A Ctrl-C, a crash, a full disk
+# or a move that fails for any reason left the repository looking gated
+# and pushing everything unexamined with exit 0. A reviewer proved it by
+# deleting the directory and pushing a leak straight to a bare remote.
+#
+# That inverts the design's own reasoning. The half-done install the
+# staging directory guards against (hook present, engine missing) refuses
+# loudly and names the fix, and the hook has two tests for it. This one
+# cannot be detected by the hook, because the hook is what is missing,
+# which makes it the worse of the two and the one to order the steps
+# around. The old gate moves aside, the new one takes its place, and the
+# old one is removed last; if the second rename fails the old one goes
+# back. Both renames are within one directory, so neither needs space and
+# neither can half-happen, and the only instant without a gate is between
+# them.
+PREVIOUS_DIR="$GIT_COMMON_DIR/brain-kit-gate.previous"
+rm -rf "$PREVIOUS_DIR" || exit 1
+HAD_PREVIOUS=0
+if [ -e "$GATE_DIR" ]; then
+  if ! mv "$GATE_DIR" "$PREVIOUS_DIR"; then
+    echo "install-gate: could not move the existing gate aside; refusing rather than deleting a working gate to make room for one that may not arrive." >&2
+    rm -rf "$STAGING_DIR"
+    exit 1
+  fi
+  HAD_PREVIOUS=1
+fi
 if ! mv "$STAGING_DIR" "$GATE_DIR"; then
   echo "install-gate: could not move the staged gate into $GATE_DIR; refusing to leave a partial install." >&2
+  if [ "$HAD_PREVIOUS" -eq 1 ]; then
+    if mv "$PREVIOUS_DIR" "$GATE_DIR"; then
+      echo "install-gate: the gate that was already installed has been put back, so this repository is still gated." >&2
+    else
+      echo "install-gate: the gate that was already installed could NOT be put back, so this repository has core.hooksPath set and no gate behind it, and git skips a missing hook in silence. Restore it by hand (mv $PREVIOUS_DIR $GATE_DIR) or re-run this script." >&2
+    fi
+  fi
   rm -rf "$STAGING_DIR"
   exit 1
 fi
+rm -rf "$PREVIOUS_DIR"
 
 if ! git -C "$TARGET_ROOT" config core.hooksPath "$GATE_DIR"; then
   echo "install-gate: the gate is installed at $GATE_DIR but core.hooksPath could not be set, so git will not run it. Set it by hand: git config core.hooksPath $GATE_DIR" >&2
