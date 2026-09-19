@@ -18,8 +18,10 @@
 #      privacy.secret_patterns and the shapes in src/leak.mjs, and the
 #      rest) find a problem.
 #   3. Refuses a push made under the vault's own automation identity
-#      (brain-kit.config.json's git.agent_identity) straight to the
-#      vault's default branch. A vault that curates itself through an
+#      (brain-kit.config.json's git.agent_identity) whose DESTINATION is
+#      the vault's default branch, whatever the ref being pushed from is
+#      called and whether it adds commits or deletes the branch outright.
+#      A vault that curates itself through an
 #      agent is designed around that agent proposing changes as a pull
 #      request (see brain-kit.config.json's git.branch_prefix and
 #      pr_command); an agent pushing directly to the default branch has
@@ -107,8 +109,8 @@ AGENT_EMAIL="$(node -e "$READ_AGENT_GUARD_SCRIPT" "$CONFIG_FILE" 2>/dev/null)"
 # findDefaultBranch uses: the remote's own notion of it, kept qualified
 # (origin/main), a local branch named main or master, or a remote-tracking
 # branch by either of those names. `git symbolic-ref` for the local case is
-# stripped to a bare name so it compares directly against a pushed ref's
-# own branch name below.
+# stripped to a bare name so it compares directly against the branch a
+# pushed ref lands on below.
 remote_name="${1:-origin}"
 
 default_branch() {
@@ -136,16 +138,57 @@ default_branch() {
 DEFAULT_BRANCH="$(default_branch)"
 CURRENT_EMAIL="$(git config user.email 2>/dev/null || true)"
 
+# Whether this guard has anything to say about this push at all, decided
+# once rather than per ref: a vault with no automation identity configured,
+# or one being pushed by a human, is not what this guard is for.
+guard_active=0
+if [ -n "$AGENT_EMAIL" ] && [ "$CURRENT_EMAIL" = "$AGENT_EMAIL" ]; then
+  guard_active=1
+fi
+
+# The ladder above has three steps and can still come up empty (a vault
+# whose default branch is called neither main nor master, with no
+# remote-tracking information for it). That used to be a bare `continue`,
+# which switched the guard off in silence: a guard that cannot find its
+# default branch is a guard that is not running, and the vault it is
+# supposed to protect has no way of knowing. It says so now. It does not
+# refuse: refusing every push an automation makes, including the ones to
+# its own branches, is how a vault learns to pass --no-verify, which would
+# turn this guard off permanently instead of for one push.
+if [ "$guard_active" -eq 1 ] && [ -z "$DEFAULT_BRANCH" ]; then
+  echo "pre-push: WARNING: could not determine this vault's default branch (no $remote_name/HEAD, no local main or master, no remote-tracking main or master), so the guard against an automated push to it is NOT running for this push. Set it with: git remote set-head $remote_name --auto" >&2
+fi
+
 # The ref negotiation is read in full regardless of whether the guard
 # above is even active, so a push carrying many refs (e.g. `git push
 # --tags`) never leaves git blocked writing to a pipe nobody is draining.
+#
+# WHICH FIELD DECIDES: remote_ref, the DESTINATION of this push, and never
+# local_ref, its source. They are equal for the ordinary `git push origin
+# main`, which is why reading the wrong one survived a whole review round,
+# but only the destination says where the change lands. Reading local_ref
+# let `git push origin curador/2026-09-19:main` and `git push origin
+# HEAD:refs/heads/main` both through, under the automation identity, and
+# the remote's default branch really did advance; a detached-head push
+# slipped for a second reason, because stripping refs/heads/ off `HEAD`
+# leaves `HEAD`, which matches no branch name. A deletion of the default
+# branch is a push to that destination too (its local_ref is `(delete)`
+# and its local_sha is zero), and is refused for the same reason: it is a
+# change to the default branch that skipped the pull request.
+#
+# A destination outside refs/heads/ (a tag, a note, a replace ref) is not
+# a branch and cannot be the default branch, so it is skipped rather than
+# compared.
 guard_failed=0
 while read -r local_ref local_sha remote_ref remote_sha; do
-  [ -z "${local_ref:-}" ] && continue
-  [ -z "$AGENT_EMAIL" ] && continue
-  [ "$CURRENT_EMAIL" != "$AGENT_EMAIL" ] && continue
+  [ -z "${remote_ref:-}" ] && continue
+  [ "$guard_active" -eq 1 ] || continue
   [ -z "$DEFAULT_BRANCH" ] && continue
-  branch="${local_ref#refs/heads/}"
+  case "$remote_ref" in
+    refs/heads/*) ;;
+    *) continue ;;
+  esac
+  branch="${remote_ref#refs/heads/}"
   if [ "$branch" = "$DEFAULT_BRANCH" ]; then
     echo "pre-push: refusing a push to the default branch ('$DEFAULT_BRANCH') under this vault's automation identity ($AGENT_EMAIL). Automated changes go through a pull request, never a direct push to $DEFAULT_BRANCH." >&2
     guard_failed=1

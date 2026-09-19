@@ -66,13 +66,13 @@ function git(cwd, args, { name = HUMAN_NAME, email = HUMAN_EMAIL, env = {} } = {
 // core.hooksPath pointed at it, a bare remote, and a node_modules/.bin/
 // brain-kit shim so the template's own `resolve_brain_kit` finds a real,
 // working binary without needing brain-kit on PATH or a real npm install.
-function setup({ config = {}, files = cleanFiles() } = {}) {
+function setup({ config = {}, files = cleanFiles(), branch = 'main' } = {}) {
   const root = makeTempDir('brain-kit-prepush-template-');
   const bare = join(root, 'origin.git');
   assert.equal(spawnSync('git', ['init', '-q', '--bare', bare]).status, 0);
 
   const work = makeVault({ files, config });
-  assert.equal(spawnSync('git', ['init', '-q', '-b', 'main', work]).status, 0);
+  assert.equal(spawnSync('git', ['init', '-q', '-b', branch, work]).status, 0);
 
   mkdirSync(join(work, '.githooks'));
   copyFileSync(TEMPLATE_HOOK, join(work, '.githooks', 'pre-push'));
@@ -84,7 +84,7 @@ function setup({ config = {}, files = cleanFiles() } = {}) {
 
   assert.equal(git(work, ['config', 'core.hooksPath', '.githooks']).status, 0);
   assert.equal(git(work, ['remote', 'add', 'origin', bare]).status, 0);
-  return { work, bare };
+  return { root, work, bare };
 }
 
 function commitEverything(work, message, identity = {}) {
@@ -158,4 +158,103 @@ test('forbid_agent_push_to_default: false turns the guard off', () => {
   commitEverything(work, 'init', { name: "Ana's Second Brain (curator)", email: AGENT_EMAIL });
   const r = git(work, ['push', '-q', 'origin', 'main'], { name: "Ana's Second Brain (curator)", email: AGENT_EMAIL });
   assert.equal(r.status, 0, r.stderr);
+});
+
+// --- which ref field the guard reads -------------------------------------
+//
+// Every test above pushes a branch to a branch of the SAME NAME, which is
+// why reading the source ref instead of the destination survived a review
+// round: the two agree in the ordinary case and only the destination is
+// ever true. These four are the cases where they disagree.
+
+const AGENT = { name: "Ana's Second Brain (curator)", email: AGENT_EMAIL };
+
+test('the automation identity pushing a differently named branch INTO the default branch is refused', () => {
+  const { work } = setup();
+  commitEverything(work, 'init', AGENT);
+  assert.equal(git(work, ['checkout', '-q', '-b', 'bot/curate-2026-09-19']).status, 0);
+  writeFileSync(join(work, 'people', 'ana.md'), `${CLEAN_PERSON}\nAn extra line, still clean.\n`);
+  commitEverything(work, 'curated change', AGENT);
+  const r = git(work, ['push', '-q', 'origin', 'bot/curate-2026-09-19:main'], AGENT);
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /refusing a push to the default branch/);
+});
+
+test('the automation identity pushing HEAD into the default branch by full reference is refused', () => {
+  const { work } = setup();
+  commitEverything(work, 'init', AGENT);
+  assert.equal(git(work, ['checkout', '-q', '-b', 'bot/curate-2026-09-19']).status, 0);
+  writeFileSync(join(work, 'people', 'ana.md'), `${CLEAN_PERSON}\nAn extra line, still clean.\n`);
+  commitEverything(work, 'curated change', AGENT);
+  const r = git(work, ['push', '-q', 'origin', 'HEAD:refs/heads/main'], AGENT);
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /refusing a push to the default branch/);
+});
+
+test('the automation identity DELETING the default branch is refused', () => {
+  // A deletion is a push to that destination too, and it skips the same
+  // review. Git itself may also refuse to delete a remote's current branch,
+  // so the assertion is on the guard's own message, not on the exit code
+  // alone.
+  const { work } = setup();
+  commitEverything(work, 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main']).status, 0);
+  const r = git(work, ['push', '-q', 'origin', ':main'], AGENT);
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /refusing a push to the default branch/);
+});
+
+test('the automation identity pushing a tag is accepted: a tag is not a branch', () => {
+  const { work } = setup();
+  commitEverything(work, 'init', AGENT);
+  assert.equal(git(work, ['tag', '-a', 'v1', '-m', 'v1'], AGENT).status, 0);
+  const r = git(work, ['push', '-q', 'origin', 'v1'], AGENT);
+  assert.equal(r.status, 0, r.stderr);
+});
+
+// --- the three steps of the default-branch ladder ------------------------
+//
+// Each step is the ONLY one that can resolve in its own test, so removing
+// it leaves the guard with no default branch to compare against and the
+// push goes through. Step two (a local branch called main or master) is
+// what every other test in this file exercises.
+
+test('step one of the default-branch ladder: the remote HEAD symbolic reference', () => {
+  const { work } = setup({ branch: 'trunk' });
+  commitEverything(work, 'init', AGENT);
+  assert.equal(git(work, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/trunk']).status, 0);
+  const r = git(work, ['push', '-q', 'origin', 'trunk'], AGENT);
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /refusing a push to the default branch \('trunk'\)/);
+});
+
+test('step three of the default-branch ladder: a remote-tracking main', () => {
+  const { work } = setup({ branch: 'trunk' });
+  commitEverything(work, 'init', AGENT);
+  const head = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  assert.equal(git(work, ['update-ref', 'refs/remotes/origin/main', head]).status, 0);
+  const r = git(work, ['push', '-q', 'origin', 'trunk:main'], AGENT);
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /refusing a push to the default branch \('main'\)/);
+});
+
+test('a ladder that resolves nothing says so instead of going quiet', () => {
+  // The guard cannot run without a default branch to compare against. It
+  // used to switch itself off in silence, which is indistinguishable from
+  // a guard that is working.
+  const { work } = setup({ branch: 'trunk' });
+  commitEverything(work, 'init', AGENT);
+  const r = git(work, ['push', '-q', 'origin', 'trunk'], AGENT);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /could not determine this vault's default branch/);
+});
+
+test('a human pushing into a vault with no resolvable default branch is not warned at all', () => {
+  // The warning is about a guard that is not running, and the guard has
+  // nothing to say about a human's push in the first place.
+  const { work } = setup({ branch: 'trunk' });
+  commitEverything(work, 'init');
+  const r = git(work, ['push', '-q', 'origin', 'trunk']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.doesNotMatch(r.stderr, /could not determine this vault's default branch/);
 });
