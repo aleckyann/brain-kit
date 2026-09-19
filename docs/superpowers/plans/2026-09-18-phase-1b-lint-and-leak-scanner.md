@@ -336,3 +336,15 @@ Neither slip changed a result this time, and that is the point: they are the sam
 the ones that did. A setup claim decays. Measure it in the same minute you send it, quote
 the number and the commit you measured, and if you commit anything after dispatching, say
 so to the agent you dispatched.
+
+### There are two gates, and calling them one hid a hole for the length of a slice
+
+The final review's first sentence of correction is the one that matters: I have been writing "the pre-push gate", singular, for the whole slice. There are two. The maintainer's gate scans every blob a push carries, through the engine, against a personal pattern list that never enters the repository. The adopting vault's template hook runs the validator and the linter and refuses on a non-zero exit. Different threat models, different coverage, and only one of them was ever attacked.
+
+Treating them as one thing made a real hole invisible. The linter reads markdown and nothing else, so a credential in a file that is not a note is not findable by it; the template gate reads only the linter's exit code; therefore the gate that ships to other people has NO coverage for a secret outside a markdown file, while the gate that protects this repository has full coverage. Measured: a vault whose only offending file is a committed environment file reports "the whole vault was checked, every line" and "no findings", and exits zero.
+
+The same singular blinded me a second time, on a behaviour I had already looked at and accepted. On the default branch, one unrelated untracked file narrows the default scope, so a committed secret elsewhere goes unreported. I verified that myself, saw the hedged verdict saying the run was partial, and ratified it as honest. It is honest to a person reading the output. The template gate does not read the output, it reads the exit code, and the exit code says zero. A disclosure that only exists in prose is not a disclosure to a machine consumer, and this project has a machine consumer of exactly that value.
+
+**The rule: when two components serve the same purpose with different reach, never name them with one word.** The word is what makes a reviewer, or an author, check one of them and feel finished. And when a command discloses a limit in its output while a caller consumes only its status, the limit has not been disclosed to that caller; either the status carries it or the caller must not be allowed to depend on the status alone.
+
+**And a third miscount.** My dispatch said this slice has seven lint rules; the rule table holds eight, in the code and in both language packs. I wrote the rule that a count in a brief is a cap on a reviewer's attention, and I have now got a count wrong in a brief three times on this slice, after writing it. The instruction stands and my compliance with it does not: state the count only when it has just been counted, and otherwise do not number the list at all.
