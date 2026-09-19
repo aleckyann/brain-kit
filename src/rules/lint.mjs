@@ -1660,7 +1660,15 @@ const DEFAULT_SEVERITY = 'warn';
 // off pays nothing for it, not even the walk." A sub-setting nobody's
 // code ever reads because the rule itself never runs is exactly that
 // promise kept, not a leftover value someone forgot to honour.
-function severityFor(rule, config) {
+// Exported (task 6, src/commands/lint.mjs): the lint command's --rule
+// filter needs to report which of the CONSIDERED rules resolve to 'off' in
+// the vault's own configuration (its own "skipped" count and list), a
+// question this exact function already answers correctly. Reimplementing
+// severity resolution a second time in the command layer, rather than
+// calling this one, is precisely the two-implementations-disagreeing
+// hazard this file's own header opens by naming for a link scanner and a
+// code stripper; nothing about this function's own behaviour changes.
+export function severityFor(rule, config) {
   const raw = config?.lint?.[rule.settingKey];
   const value = raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? raw.severity : raw;
   return VALID_SEVERITIES.has(value) ? value : (rule.defaultSeverity ?? DEFAULT_SEVERITY);

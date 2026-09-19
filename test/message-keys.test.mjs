@@ -168,6 +168,7 @@ function allSites() {
     ...extractTranslatorCallSites(readSrc('src/cli.mjs'), 'src/cli.mjs'),
     ...extractTranslatorCallSites(readSrc('src/commands/hook.mjs'), 'src/commands/hook.mjs'),
     ...extractTranslatorCallSites(readSrc('src/commands/validate.mjs'), 'src/commands/validate.mjs'),
+    ...extractTranslatorCallSites(readSrc('src/commands/lint.mjs'), 'src/commands/lint.mjs'),
   ];
   return [...rule, ...direct];
 }

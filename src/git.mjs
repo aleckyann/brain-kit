@@ -60,7 +60,14 @@
 // captured error rather than returning empty.
 import { run, runOrThrow } from './exec.mjs';
 
-const KNOWN_BASES = Object.freeze(['all', 'worktree', 'merge-base', 'auto']);
+// Exported (task 6, src/commands/lint.mjs): the lint command validates a
+// requested --base itself, before ever calling resolveBase, so a bad value
+// is a usage error (exit 2) with a translated message rather than the raw,
+// unlocalised Error resolveBase throws below. Reusing THIS array for that
+// check, rather than a second hand-typed list in the command, is the same
+// no-second-copy discipline this module's own header already states for
+// every other fact a caller could otherwise restate and let drift.
+export const KNOWN_BASES = Object.freeze(['all', 'worktree', 'merge-base', 'auto']);
 
 // Line numbers come from the hunk header ("@@ -a,b +c,d @@", with either
 // count omitted when it is 1), never from counting lines in the body: a

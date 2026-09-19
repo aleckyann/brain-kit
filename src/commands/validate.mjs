@@ -139,7 +139,13 @@ export function makeReadFile(root) {
 // apart unnoticed). `all` already comes from ONE walkVault call; this
 // only re-derives which of its entries are markdown, using the same
 // primitive vault.mjs itself uses.
-function isMarkdown(path) {
+// Exported (task 6, src/commands/lint.mjs): the lint command needs the
+// exact same markdown filter over the exact same single walkVault result,
+// and restating `extname(path) === '.md'` a second time in that module
+// would be the identical mistake this function's own comment already
+// describes fixing once (a second definition that happens to agree with
+// this one for every fixture in the suite, until it does not).
+export function isMarkdown(path) {
   return extname(path) === '.md';
 }
 

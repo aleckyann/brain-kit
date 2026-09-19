@@ -3,6 +3,7 @@ import { kitVersion } from './version.mjs';
 import { createTranslator, REFERENCE_LANG } from './lang.mjs';
 import { runHook } from './commands/hook.mjs';
 import { runValidate } from './commands/validate.mjs';
+import { runLint } from './commands/lint.mjs';
 import { walkVault } from './vault.mjs';
 import { ConfigError } from './config.mjs';
 
@@ -19,6 +20,7 @@ import { ConfigError } from './config.mjs';
 const BUILTIN_COMMANDS = new Map([
   ['hook', runHook],
   ['validate', (argv, io, t) => runValidate(argv, io, t, walkVault)],
+  ['lint', (argv, io, t) => runLint(argv, io, t, walkVault)],
 ]);
 
 export async function main(argv, io, { commands = BUILTIN_COMMANDS } = {}) {
