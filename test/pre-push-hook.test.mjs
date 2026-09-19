@@ -2,58 +2,76 @@ import { test } from 'node:test';
 import { makeTempDir } from './helpers/tmp.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, copyFileSync, cpSync, chmodSync, writeFileSync, symlinkSync, unlinkSync, rmSync } from 'node:fs';
+import { mkdirSync, copyFileSync, cpSync, chmodSync, writeFileSync, readFileSync, symlinkSync, unlinkSync, rmSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 
-const HOOK = join(KIT_ROOT, '.githooks', 'pre-push');
-// The hook runs `brain-kit scan-blobs` from the TOOLCHAIN IT EXTRACTS OUT OF
-// THE COMMIT BEING PUSHED (seventh round, (i)), not from the working tree, so
-// a scratch repository has to CARRY the package in its history rather than
-// merely have it on disk: bin/, src/, lang/ and schema/ plus package.json are
-// committed by setup() below as the repository's first commit. cli.mjs's own
-// command map imports every built-in command eagerly (hook, validate, lint,
-// scan-blobs), so even running scan-blobs alone drags in validate's and
-// lint's dependency graph, and createTranslator reads lang/ before any
-// command dispatches at all; schema/ and package.json follow the same
-// package. Copying the package wholesale, at test time, from this real
-// checkout is what keeps this fixture from drifting out of sync with
-// whatever src/ actually contains.
+const HOOK_SOURCE = join(KIT_ROOT, '.githooks', 'pre-push');
+const INSTALLER = join(KIT_ROOT, '.githooks', 'install-gate');
+// BOTH HALVES OF THE GATE LIVE OUTSIDE THE WORKING TREE (eighth round, (l)),
+// installed under the git directory by `.githooks/install-gate` and reached
+// through core.hooksPath. So a scratch repository does NOT carry the package
+// in its history, and does not need to: nothing is read out of the pushed
+// tip except the objects being scanned. The two earlier designs both needed
+// a fixture of their own (a working tree holding the package, then a history
+// carrying it) and each of those fixtures existed because the gate read its
+// own code from somewhere the push could reach.
+//
+// `installGate` below runs the real installer against a scratch repository,
+// pointed at this checkout as its source, so what the tests exercise is the
+// installed gate and not a hand-assembled imitation of one.
 const KIT_DIRS_TO_MIRROR = ['bin', 'src', 'lang', 'schema'];
-const TOOLCHAIN_PATHS = [...KIT_DIRS_TO_MIRROR, 'package.json'];
 
 function git(cwd, args, env = {}) {
   return spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd, encoding: 'utf8', env: { ...process.env, ...env } });
 }
 
-// `publishToolchain: false` leaves the first commit unpushed, so a test that
-// needs a ROOT commit inside the range it pushes (there is one: the
-// unlistable-tree case) can still have one.
-function setup({ publishToolchain = true } = {}) {
+// Builds a brain-kit checkout of its own (the installer copies FROM a
+// checkout) and runs the installer in the scratch repository with that
+// checkout's .githooks on hand. The scratch repository itself stays empty
+// of kit files, which is the point: the gate no longer depends on what the
+// repository being pushed happens to contain.
+//
+// `hookSource` lets one test install a DIFFERENT hook file (the shim tests
+// need the hook itself to see a stand-in PATH), and every other caller gets
+// the real one.
+function installGate(work, root, { hookSource = HOOK_SOURCE } = {}) {
+  const kit = join(root, 'kit');
+  mkdirSync(join(kit, '.githooks'), { recursive: true });
+  copyFileSync(hookSource, join(kit, '.githooks', 'pre-push'));
+  copyFileSync(INSTALLER, join(kit, '.githooks', 'install-gate'));
+  chmodSync(join(kit, '.githooks', 'install-gate'), 0o755);
+  for (const dir of KIT_DIRS_TO_MIRROR) {
+    cpSync(join(KIT_ROOT, dir), join(kit, dir), { recursive: true });
+  }
+  copyFileSync(join(KIT_ROOT, 'package.json'), join(kit, 'package.json'));
+  // The installer resolves its source from `git rev-parse --show-toplevel`,
+  // so the checkout it copies from has to be a repository. It is a plain
+  // one with a single commit; nothing about it is pushed anywhere.
+  assert.equal(spawnSync('git', ['init', '-q', '-b', 'main', kit]).status, 0);
+  assert.equal(git(kit, ['add', '-A']).status, 0);
+  assert.equal(git(kit, ['commit', '-q', '-m', 'a brain-kit checkout']).status, 0);
+  const installed = spawnSync(join(kit, '.githooks', 'install-gate'), [], {
+    cwd: work,
+    encoding: 'utf8',
+    env: { ...process.env },
+  });
+  assert.equal(installed.status, 0, `${installed.stdout}${installed.stderr}`);
+  const gateDir = join(work, '.git', 'brain-kit-gate');
+  return { kit, gateDir, installedHook: join(gateDir, 'pre-push'), install: installed };
+}
+
+function setup({ hookSource = HOOK_SOURCE } = {}) {
   const root = makeTempDir('brain-kit-prepush-');
   const bare = join(root, 'origin.git');
   const work = join(root, 'work');
   assert.equal(spawnSync('git', ['init', '-q', '--bare', bare]).status, 0);
   assert.equal(spawnSync('git', ['init', '-q', '-b', 'main', work]).status, 0);
-  mkdirSync(join(work, '.githooks'));
-  copyFileSync(HOOK, join(work, '.githooks', 'pre-push'));
-  chmodSync(join(work, '.githooks', 'pre-push'), 0o755);
-  for (const dir of KIT_DIRS_TO_MIRROR) {
-    cpSync(join(KIT_ROOT, dir), join(work, dir), { recursive: true });
-  }
-  copyFileSync(join(KIT_ROOT, 'package.json'), join(work, 'package.json'));
-  assert.equal(git(work, ['add', ...TOOLCHAIN_PATHS]).status, 0);
-  assert.equal(git(work, ['commit', '-q', '-m', 'the toolchain this gate runs']).status, 0);
   git(work, ['remote', 'add', 'origin', bare]);
-  // Pushed BEFORE core.hooksPath points at the hook, so seeding the remote
-  // neither runs the gate nor bypasses it with --no-verify.
-  if (publishToolchain) {
-    assert.equal(git(work, ['push', '-q', 'origin', 'main']).status, 0);
-  }
-  git(work, ['config', 'core.hooksPath', '.githooks']);
+  const { kit, gateDir, installedHook } = installGate(work, root, { hookSource });
   const patterns = join(root, 'patterns.txt');
   writeFileSync(patterns, 'hunter2corp\nsecret[- ]partner\n');
-  return { root, work, bare, patterns };
+  return { root, work, bare, patterns, kit, gateDir, installedHook };
 }
 
 function commit(work, file, content, message, env = {}) {
@@ -208,7 +226,7 @@ test('a stale-ahead tracking ref does not hide an unpublished commit', () => {
 });
 
 test('the remote being unreachable makes the hook scan everything', () => {
-  const { work, patterns } = setup();
+  const { work, patterns, installedHook } = setup();
   commit(work, 'README.md', 'hello world\n', 'init');
   commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'leak');
   const localSha = git(work, ['rev-parse', 'HEAD']).stdout.trim();
@@ -222,7 +240,7 @@ test('the remote being unreachable makes the hook scan everything', () => {
   // Invoke the hook the way git would for a brand new ref reaching this
   // commit, so the fallback branch (git ls-remote itself failing) is what
   // gets exercised, deterministically.
-  const r = spawnSync(HOOK, [bogusRemote, bogusRemote], {
+  const r = spawnSync(installedHook, [bogusRemote, bogusRemote], {
     cwd: work,
     input: `refs/heads/main ${localSha} refs/heads/main ${ZERO}\n`,
     encoding: 'utf8',
@@ -451,11 +469,11 @@ test('a commit whose tree object cannot be listed refuses the push instead of sc
   // object from the object database, which is not a shape any ordinary push
   // can produce, but proves the status check this hook has always made still
   // refuses rather than silently treating an unlistable commit as one with
-  // nothing to scan. The root commit here is the toolchain commit, left
-  // unpushed so it falls inside the range, and the TIP is a later commit
-  // whose own tree is intact, so the toolchain can still be extracted from
-  // it and the refusal under test is the one being aimed at.
-  const { work, patterns } = setup({ publishToolchain: false });
+  // nothing to scan. The root commit is made here and left unpushed so it
+  // falls inside the range, and the TIP is a later commit whose own tree is
+  // intact, so the refusal under test is the one being aimed at.
+  const { work, patterns } = setup();
+  commit(work, 'first.md', 'nothing secret here\n', 'a root commit');
   const rootTree = git(work, ['rev-parse', 'HEAD^{tree}']).stdout.trim();
   commit(work, 'README.md', 'hello world\n', 'init');
   rmSync(join(work, '.git', 'objects', rootTree.slice(0, 2), rootTree.slice(2)));
@@ -544,6 +562,110 @@ test('a COMMITTER identity carrying a pattern is refused even when the author is
   assert.doesNotMatch(r.stderr, /hunter2corp/i);
 });
 
+// --- the identity channel's one exemption --------------------------------
+//
+// Every other channel has a remedy: edit the file, rename it, rewrite the
+// message. An AUTHOR IDENTITY match has none for the person it is about,
+// because any rewrite re-authors the commit as the same person. A
+// maintainer whose own name is in their own pattern list, which is the most
+// likely name for somebody protecting household data to put there, would
+// have every push refused forever with two exits: delete their own name
+// from the list, or --no-verify. So an EXACT match of the identity the push
+// is being made under is exempt, and nothing wider is.
+
+// The harness `git` helper forces `-c user.name=t`, which is the wrong
+// thing here: these tests need the push and the commit to be made under the
+// SAME configured identity, and that identity is the subject under test.
+function gitAs(cwd, args, env = {}) {
+  return spawnSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...env } });
+}
+
+function setupSelfNamedMaintainer() {
+  const fixture = setup();
+  assert.equal(gitAs(fixture.work, ['config', 'user.name', 'Hunter2Corp Admin']).status, 0);
+  assert.equal(gitAs(fixture.work, ['config', 'user.email', 'hunter2corp-admin@example.invalid']).status, 0);
+  return fixture;
+}
+
+test('a maintainer whose own name is in their own pattern list can still push their own clean commit, and is told an exemption applied', () => {
+  const { work, patterns } = setupSelfNamedMaintainer();
+  writeFileSync(join(work, 'README.md'), 'hello world\n');
+  assert.equal(gitAs(work, ['add', 'README.md']).status, 0);
+  assert.equal(gitAs(work, ['commit', '-q', '-m', 'a clean message']).status, 0);
+
+  const r = gitAs(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /the author of commit [0-9a-f]{7} \(AUTHOR IDENTITY\) matches a pattern, but it is exactly the identity this push is being made under/);
+  // The whole reason it is exempt is that it matched, so it is still never
+  // printed.
+  assert.doesNotMatch(r.stderr, /hunter2corp/i);
+});
+
+test('the exemption is EXACT: somebody else matching the same pattern is still refused, on the same push', () => {
+  // The case the channel exists for. One commit authored by the pushing
+  // identity (exempt) and one authored by a DIFFERENT person whose name
+  // matches the same pattern (refused), in the same push, so the exemption
+  // cannot be a blanket one hiding behind a passing test.
+  const { work, patterns } = setupSelfNamedMaintainer();
+  writeFileSync(join(work, 'README.md'), 'hello world\n');
+  assert.equal(gitAs(work, ['add', 'README.md']).status, 0);
+  assert.equal(gitAs(work, ['commit', '-q', '-m', 'a clean message']).status, 0);
+
+  writeFileSync(join(work, 'notes.md'), 'nothing secret here\n');
+  assert.equal(gitAs(work, ['add', 'notes.md']).status, 0);
+  assert.equal(gitAs(work, ['commit', '-q', '-m', 'a clean message'], {
+    GIT_AUTHOR_NAME: 'Hunter2Corp Bot', GIT_AUTHOR_EMAIL: 'hunter2corp-bot@example.invalid',
+  }).status, 0);
+
+  const r = gitAs(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in the author of commit [0-9a-f]{7} \(AUTHOR IDENTITY\)/);
+  assert.doesNotMatch(r.stderr, /hunter2corp/i);
+});
+
+test('the exemption does not widen to a near miss: a different spelling of the same identity is still refused', () => {
+  // Exact means exact. A case difference, a changed address, a name that
+  // merely CONTAINS the configured one: none of these is a thing the
+  // pushing person cannot rewrite, so none of them is exempt.
+  const { work, patterns } = setupSelfNamedMaintainer();
+  writeFileSync(join(work, 'README.md'), 'hello world\n');
+  assert.equal(gitAs(work, ['add', 'README.md']).status, 0);
+  assert.equal(gitAs(work, ['commit', '-q', '-m', 'a clean message'], {
+    GIT_AUTHOR_NAME: 'hunter2corp admin', GIT_AUTHOR_EMAIL: 'hunter2corp-admin@example.invalid',
+  }).status, 0);
+
+  const r = gitAs(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in the author of commit [0-9a-f]{7} \(AUTHOR IDENTITY\)/);
+});
+
+test('the exemption covers the COMMITTER channel on the same terms', () => {
+  const { work, patterns } = setupSelfNamedMaintainer();
+  writeFileSync(join(work, 'README.md'), 'hello world\n');
+  assert.equal(gitAs(work, ['add', 'README.md']).status, 0);
+  // Authored by a clean third party, committed by the pushing identity:
+  // the author is scanned and passes, the committer matches and is exempt.
+  assert.equal(gitAs(work, ['commit', '-q', '-m', 'a clean message'], {
+    GIT_AUTHOR_NAME: 'A Human', GIT_AUTHOR_EMAIL: 'human@example.invalid',
+  }).status, 0);
+
+  const r = gitAs(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /the committer of commit [0-9a-f]{7} \(COMMITTER IDENTITY\) matches a pattern, but it is exactly the identity this push is being made under/);
+  assert.doesNotMatch(r.stderr, /hunter2corp/i);
+});
+
+test('an exempt identity says nothing at all when it matches no pattern, so an ordinary push stays quiet', () => {
+  // The exemption is announced only when it FIRES. Announcing it on every
+  // commit of every push would put a line per commit into the output of a
+  // hundred-commit push and teach whoever reads it to stop reading.
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 0, r.stderr);
+  assert.doesNotMatch(r.stderr, /exempt/);
+});
+
 test('an annotated TAG MESSAGE carrying a pattern is refused even when every commit it points at is published', () => {
   const { work, patterns } = setup();
   commit(work, 'README.md', 'hello world\n', 'init');
@@ -553,6 +675,107 @@ test('an annotated TAG MESSAGE carrying a pattern is refused even when every com
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /possible leak in the message of tag object [0-9a-f]{7} \(TAG MESSAGE\)/);
   assert.doesNotMatch(r.stderr, /hunter2corp/i);
+});
+
+// --- the tag CHAIN: a tag object can name another tag object -------------
+//
+// `git tag -a <new> <existing annotated tag>` builds one of these every
+// time somebody re-tags, and `git push --tags` sends the whole chain, so
+// this is ordinary traffic. Following only the first level is a ONE LINE
+// edit (`sha = tag.target` becoming `sha = null`) that puts the inner tag's
+// message on the remote in plaintext, which is why all three properties
+// below have a test of their own.
+
+test('a tag object wrapping another tag object is followed past the first level, so the inner message is scanned', () => {
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  // The OUTER message is clean, so nothing at the first level of the chain
+  // refuses: only following it to the inner tag finds anything.
+  assert.equal(git(work, ['tag', '-a', 'inner', '-m', 'contract with Hunter2Corp']).status, 0);
+  assert.equal(git(work, ['tag', '-a', 'outer', '-m', 'a perfectly ordinary release', 'inner']).status, 0);
+
+  const r = git(work, ['push', '-q', 'origin', 'outer'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in the message of tag object [0-9a-f]{7} \(TAG MESSAGE\)/);
+  assert.doesNotMatch(r.stderr, /hunter2corp/i);
+});
+
+test('every tag message on the way down a chain is scanned, not only the innermost one', () => {
+  // The other direction: the pattern is in the OUTER message and the inner
+  // one is clean. A chain follower that scanned only the object the chain
+  // finally names would miss this, and a chain follower that scanned only
+  // the first level would miss the test above; both are needed to pin
+  // "every level".
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  assert.equal(git(work, ['tag', '-a', 'inner2', '-m', 'a perfectly ordinary release']).status, 0);
+  assert.equal(git(work, ['tag', '-a', 'outer2', '-m', 'contract with Hunter2Corp', 'inner2']).status, 0);
+
+  const r = git(work, ['push', '-q', 'origin', 'outer2'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in the message of tag object [0-9a-f]{7} \(TAG MESSAGE\)/);
+  assert.doesNotMatch(r.stderr, /hunter2corp/i);
+});
+
+test('a chain the gate follows to its end reaches the commit, so a leak in the tagged COMMIT is still found through it', () => {
+  // The chain is followed in order to arrive somewhere, not only to read
+  // the tags on the way: the object it finally names is a commit, and that
+  // commit's own content is what the rest of the push machinery scans.
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'a clean message');
+  assert.equal(git(work, ['tag', '-a', 'inner3', '-m', 'a perfectly ordinary release']).status, 0);
+  assert.equal(git(work, ['tag', '-a', 'outer3', '-m', 'also ordinary', 'inner3']).status, 0);
+
+  const r = git(work, ['push', '-q', 'origin', 'outer3'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in notes\.md \(CONTENT/);
+});
+
+test('a chain longer than the depth bound REFUSES rather than stopping quietly partway down it', () => {
+  // The bound exists so a malformed chain cannot spin forever. What it must
+  // not do is double as a silent pass: stopping at the bound means there is
+  // more chain, unread, and this module's own rule is that something which
+  // should have been readable and was not refuses. Twelve tag objects, two
+  // past the bound of ten, with the leak in the innermost one where a quiet
+  // stop would never reach it.
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+
+  assert.equal(git(work, ['tag', '-a', 'deep0', '-m', 'contract with Hunter2Corp']).status, 0);
+  let previous = 'deep0';
+  for (let level = 1; level <= 11; level += 1) {
+    assert.equal(git(work, ['tag', '-a', `deep${level}`, '-m', 'a perfectly ordinary release', previous]).status, 0);
+    previous = `deep${level}`;
+  }
+
+  const r = git(work, ['push', '-q', 'origin', previous], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /chain of more than 10 tag objects/);
+  assert.doesNotMatch(r.stderr, /hunter2corp/i);
+});
+
+test('a chain exactly at the depth bound is followed to its end and still passes when it is clean', () => {
+  // The other side of the bound, so it cannot be tightened into refusing
+  // ordinary traffic without a test noticing: ten levels, all clean, must
+  // push.
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+
+  assert.equal(git(work, ['tag', '-a', 'ok0', '-m', 'a perfectly ordinary release']).status, 0);
+  let previous = 'ok0';
+  for (let level = 1; level <= 9; level += 1) {
+    assert.equal(git(work, ['tag', '-a', `ok${level}`, '-m', 'a perfectly ordinary release', previous]).status, 0);
+    previous = `ok${level}`;
+  }
+
+  const r = git(work, ['push', '-q', 'origin', previous], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 0, r.stderr);
 });
 
 test('a TAGGER identity carrying a pattern is refused', () => {
@@ -569,15 +792,17 @@ test('a TAGGER identity carrying a pattern is refused', () => {
 // --- the toolchain the gate runs -----------------------------------------
 
 test('an uncommitted edit to the scanner does not weaken the gate', () => {
-  // The gate extracts bin/ and src/ (and lang/, schema/, package.json) from
-  // the commit being pushed and runs THAT copy. Before it did, one unstaged
-  // edit to any module the scanner loads was enough to walk a leak straight
-  // through with exit 0, which is a thing an implementer mid-task does by
-  // accident, not an attack.
+  // The engine the gate runs is the installed SNAPSHOT, outside the working
+  // tree. Before it was, one unstaged edit to any module the scanner loads
+  // was enough to walk a leak straight through with exit 0, which is a
+  // thing an implementer mid-task does by accident, not an attack. The
+  // toothless copy goes into the working tree where a reader would expect
+  // the scanner to be found, and is never reached.
   const { work, patterns } = setup();
   commit(work, 'README.md', 'hello world\n', 'init');
   assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
 
+  mkdirSync(join(work, 'src', 'commands'), { recursive: true });
   writeFileSync(join(work, 'src', 'commands', 'scan-blobs.mjs'), [
     '// A deliberately toothless stand-in, left UNCOMMITTED in the working tree.',
     'export function parseEntries() { return []; }',
@@ -591,7 +816,77 @@ test('an uncommitted edit to the scanner does not weaken the gate', () => {
   assert.match(r.stderr, /possible leak in notes\.md \(CONTENT/);
 });
 
-test('a commit with no toolchain in it refuses the push rather than running someone else', () => {
+test('an uncommitted edit to the hook file in the working tree does not weaken the gate either', () => {
+  // The half of the gate that decides WHAT to scan (the commit range, the
+  // diff filter, merge handling, the exclusions, whether the engine is
+  // called at all) used to run from the working tree, because that is where
+  // git runs a hook from. Emptying .githooks/pre-push there, with nothing
+  // committed, pushed a matching file to the remote with exit 0 and no
+  // output. Installed outside the tree, the file in the tree is inert: it
+  // is a source to install FROM, not a thing git runs.
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+
+  mkdirSync(join(work, '.githooks'), { recursive: true });
+  writeFileSync(join(work, '.githooks', 'pre-push'), '#!/usr/bin/env bash\nexit 0\n');
+  chmodSync(join(work, '.githooks', 'pre-push'), 0o755);
+  commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'leak');
+
+  const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in notes\.md \(CONTENT/);
+});
+
+test('the pushed tip cannot choose the code that judges it', () => {
+  // THE HOLE THIS ROUND EXISTS TO CLOSE. When the gate extracted its
+  // toolchain from the commit being pushed, a branch carrying its own
+  // bin/brain-kit.mjs was accepted with the hook intact, a correct pattern
+  // list and no --no-verify: the push chose its own judge, and the code it
+  // carried ran with the hook's environment, which names the private
+  // pattern list. The tip here carries exactly that: an entry point that
+  // writes a witness file, reads BRAIN_KIT_LEAK_PATTERNS and exits zero,
+  // next to a file matching an active pattern.
+  const { root, work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+
+  const witness = join(root, 'witness.txt');
+  mkdirSync(join(work, 'bin'), { recursive: true });
+  mkdirSync(join(work, 'src', 'commands'), { recursive: true });
+  writeFileSync(join(work, 'bin', 'brain-kit.mjs'), [
+    "import { writeFileSync } from 'node:fs';",
+    `writeFileSync(${JSON.stringify(witness)}, String(process.env.BRAIN_KIT_LEAK_PATTERNS ?? 'no patterns variable'));`,
+    'process.exit(0);',
+    '',
+  ].join('\n'));
+  writeFileSync(join(work, 'src', 'commands', 'scan-blobs.mjs'), [
+    '// Carries the record protocol token, so a version check that greps for',
+    '// it would be satisfied by a file it never executes.',
+    "export const RECORD_PROTOCOL = 'brain-kit-scan-blobs-records-v2';",
+    'export async function runScanBlobs() { return 0; }',
+    '',
+  ].join('\n'));
+  writeFileSync(join(work, 'notes.md'), 'Meeting with Hunter2Corp tomorrow\n');
+  assert.equal(git(work, ['add', 'bin/brain-kit.mjs', 'src/commands/scan-blobs.mjs', 'notes.md']).status, 0);
+  assert.equal(git(work, ['commit', '-q', '-m', 'a judge of my own and a leak']).status, 0);
+
+  const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in notes\.md \(CONTENT/);
+  assert.equal(existsSync(witness), false, 'the pushed tip\'s own code was executed by the gate');
+  // And the leak really did not reach the remote.
+  const onRemote = spawnSync('git', ['--git-dir', join(root, 'origin.git'), 'cat-file', '-e', 'refs/heads/main:notes.md'], { encoding: 'utf8' });
+  assert.notEqual(onRemote.status, 0, 'the leaking blob reached the remote');
+});
+
+test('an orphan branch carrying no package at all is SCANNED, not refused', () => {
+  // The extraction design had to refuse this outright (no package in the
+  // tip, no scanner to run), with --no-verify as the only way out. That is
+  // not a safe state: a gate whose ordinary escape is the bypass flag
+  // teaches the bypass flag. With the engine installed outside the tree
+  // there is no tip that cannot be scanned, so an orphan branch is an
+  // ordinary push and its content is examined like any other.
   const { work, patterns } = setup();
   commit(work, 'README.md', 'hello world\n', 'init');
   assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
@@ -602,28 +897,116 @@ test('a commit with no toolchain in it refuses the push rather than running some
   assert.equal(git(work, ['add', 'only.md']).status, 0);
   assert.equal(git(work, ['commit', '-q', '-m', 'an unrelated root']).status, 0);
 
+  const clean = git(work, ['push', '-q', 'origin', 'unrelated'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(clean.status, 0, clean.stderr);
+
+  // And the scanning really happened: the same orphan branch with a leak on
+  // it is refused, which an unconditional accept would not do either.
+  writeFileSync(join(work, 'only.md'), 'Meeting with Hunter2Corp tomorrow\n');
+  assert.equal(git(work, ['add', 'only.md']).status, 0);
+  assert.equal(git(work, ['commit', '-q', '-m', 'an orphan leak']).status, 0);
   const r = git(work, ['push', '-q', 'origin', 'unrelated'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
-  assert.notEqual(r.status, 0);
-  assert.match(r.stderr, /could not extract the committed toolchain/);
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in only\.md \(CONTENT/);
 });
 
-test('a commit whose toolchain has no brain-kit.mjs in it refuses the push', () => {
-  const { work, patterns } = setup();
-  assert.equal(git(work, ['rm', '-q', 'bin/brain-kit.mjs']).status, 0);
-  mkdirSync(join(work, 'bin'), { recursive: true });
-  writeFileSync(join(work, 'bin', 'keep.txt'), 'bin/ still exists, the entry point does not\n');
-  assert.equal(git(work, ['add', 'bin/keep.txt']).status, 0);
-  assert.equal(git(work, ['commit', '-q', '-m', 'remove the entry point']).status, 0);
+test('an install with a hook but no engine snapshot refuses and names the command that fixes it', () => {
+  // The half-done install: the hook is in place and core.hooksPath points
+  // at it, and the engine beside it is gone (a partly deleted gate, a moved
+  // git directory, a copied hook). Failing silently here would be a push
+  // judged by nothing; failing without naming the fix is how a gate teaches
+  // people to skip it.
+  const { work, patterns, gateDir } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  rmSync(join(gateDir, 'engine'), { recursive: true, force: true });
 
   const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
-  assert.notEqual(r.status, 0);
-  assert.match(r.stderr, /does not contain bin\/brain-kit\.mjs/);
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /engine snapshot is incomplete/);
+  assert.match(r.stderr, /install-gate/);
+});
+
+test('an install whose snapshot stamp is missing refuses, so a gate that cannot say what it is never runs', () => {
+  // The stamp is what the gate prints on every push so a stale snapshot is
+  // visible rather than silent. The installer writes it LAST, so its
+  // absence means the install did not finish.
+  const { work, patterns, gateDir } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  rmSync(join(gateDir, 'SNAPSHOT'));
+
+  const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /engine snapshot is incomplete/);
+  assert.match(r.stderr, /install-gate/);
+});
+
+test('the gate refuses to run from inside the working tree, however core.hooksPath is pointed at it', () => {
+  // The old activation line was `git config core.hooksPath .githooks`,
+  // which put the deciding half of the gate back where a checkout replaces
+  // it and an uncommitted edit empties it. It does not quietly work any
+  // more: it stops, and says which command installs the gate properly.
+  const { work, patterns, kit } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  mkdirSync(join(work, '.githooks'), { recursive: true });
+  copyFileSync(join(kit, '.githooks', 'pre-push'), join(work, '.githooks', 'pre-push'));
+  chmodSync(join(work, '.githooks', 'pre-push'), 0o755);
+  assert.equal(git(work, ['config', 'core.hooksPath', '.githooks']).status, 0);
+
+  const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /not from its installed copy/);
+  assert.match(r.stderr, /install-gate/);
+});
+
+test('the gate prints which engine snapshot it ran, on a clean push as well as a refused one', () => {
+  // The snapshot is refreshed only by re-running the installer, so it goes
+  // stale by design. A ceiling this project cannot remove is one it
+  // announces: the line is printed on every push, not only on a failure.
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  const clean = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(clean.status, 0, clean.stderr);
+  assert.match(clean.stderr, /gate engine snapshot: installed \d\d\/\d\d\/\d{4} \d\d:\d\d from commit /);
+  assert.match(clean.stderr, /refresh it with: .*install-gate/);
+
+  commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'leak');
+  const refused = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /gate engine snapshot: installed /);
+});
+
+test('re-running the installer refreshes the snapshot, and only re-running it does', () => {
+  // The documented way to pick up a change to the gate, and the ONLY way:
+  // nothing refreshes automatically, because an automatic refresh would
+  // read the gate back out of the working tree on every push and hand back
+  // the hole this whole design exists to close.
+  const { work, patterns, kit, gateDir } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+
+  const before = readFileSync(join(gateDir, 'engine', 'src', 'commands', 'scan-blobs.mjs'), 'utf8');
+  assert.ok(!before.includes('A MARKER FROM THE CHECKOUT'));
+
+  // Change the engine in the CHECKOUT the gate was installed from. The
+  // installed snapshot must not notice until the installer is re-run.
+  const kitScanner = join(kit, 'src', 'commands', 'scan-blobs.mjs');
+  writeFileSync(kitScanner, `// A MARKER FROM THE CHECKOUT\n${readFileSync(kitScanner, 'utf8')}`);
+  const stillOld = readFileSync(join(gateDir, 'engine', 'src', 'commands', 'scan-blobs.mjs'), 'utf8');
+  assert.ok(!stillOld.includes('A MARKER FROM THE CHECKOUT'), 'the snapshot changed without the installer being re-run');
+
+  const again = spawnSync(join(kit, '.githooks', 'install-gate'), [], { cwd: work, encoding: 'utf8' });
+  assert.equal(again.status, 0, `${again.stdout}${again.stderr}`);
+  const after = readFileSync(join(gateDir, 'engine', 'src', 'commands', 'scan-blobs.mjs'), 'utf8');
+  assert.ok(after.includes('A MARKER FROM THE CHECKOUT'), 're-running the installer did not refresh the snapshot');
+
+  // And the refreshed gate still works.
+  const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 0, r.stderr);
 });
 
 // --- the machine the hook runs on ----------------------------------------
 
 test('no node on PATH refuses the push', () => {
-  const { root, work, patterns } = setup();
+  const { root, work, patterns, installedHook } = setup();
   commit(work, 'README.md', 'hello world\n', 'init');
   // A PATH with nothing on it but bash, which /usr/bin/env needs to start
   // the hook at all. The node check is the hook's first statement, so it is
@@ -631,7 +1014,7 @@ test('no node on PATH refuses the push', () => {
   const dir = join(root, 'path-without-node');
   mkdirSync(dir, { recursive: true });
   symlinkSync(realPath('bash'), join(dir, 'bash'));
-  const r = spawnSync(HOOK, ['origin', 'origin'], {
+  const r = spawnSync(installedHook, ['origin', 'origin'], {
     cwd: work,
     input: '',
     encoding: 'utf8',
@@ -747,6 +1130,10 @@ const BRAIN_KIT_BIN = () => join(KIT_ROOT, 'bin', 'brain-kit.mjs');
 // NUL-terminated, and a blob record carries the tree entry's mode.
 function blobRecord(sha, path, mode = '100644') {
   return `blob\u0000${sha}\u0000${mode}\u0000${path}\u0000`;
+}
+
+function tipRecord(sha) {
+  return `tip\u0000${sha}\u0000`;
 }
 
 function scanBlobs(work, input, env = {}) {
@@ -930,11 +1317,12 @@ test('a scan budget that is not a number refuses the push', () => {
 
 test('a push that only deletes a ref still enforces the patterns file, and passes when it is sound', () => {
   // Nothing is added, so there is nothing to scan, and nothing is the right
-  // answer. It is arrived at deliberately: `scan-blobs` still runs (its
-  // fail-closed check on the patterns file is not scoped to "only when
-  // something was found to scan"), and the toolchain it runs still has to
-  // come from a commit, which for a push that carries no tip of its own is
-  // HEAD.
+  // answer. It is arrived at deliberately: `scan-blobs` still runs, because
+  // its fail-closed check on the patterns file is not scoped to "only when
+  // something was found to scan". The deletion is also the skipping side of
+  // this gate's own rule (there was never anything here to read, as opposed
+  // to something it could not read), so it is announced rather than passed
+  // in silence: a silent skip reads exactly like a scan that found nothing.
   const { work, patterns } = setup();
   commit(work, 'README.md', 'hello world\n', 'init');
   assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
@@ -948,6 +1336,7 @@ test('a push that only deletes a ref still enforces the patterns file, and passe
 
   const fine = git(work, ['push', '-q', 'origin', ':doomed'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
   assert.equal(fine.status, 0, fine.stderr);
+  assert.match(fine.stderr, /skipping refs\/heads\/doomed: this push deletes it/);
 });
 
 test('a stray field in the raw diff output refuses loudly instead of mis-pairing entries', () => {
@@ -957,7 +1346,11 @@ test('a stray field in the raw diff output refuses loudly instead of mis-pairing
   // The hook is invoked the way git invokes it, rather than through `git
   // push`, because git puts its own exec directory at the front of a hook's
   // PATH and a stand-in named `git` would never be reached from there.
-  const { root, work, bare, patterns } = setup();
+  const { root, work, bare, patterns, installedHook } = setup();
+  // TWO commits, so the tip has a parent and is therefore listed with `git
+  // diff-tree`: a root commit is listed with `git ls-tree` instead, and the
+  // parse under test here is diff-tree's.
+  commit(work, 'first.md', 'nothing secret here\n', 'a root commit');
   commit(work, 'README.md', 'hello world\n', 'init');
   const localSha = git(work, ['rev-parse', 'HEAD']).stdout.trim();
   const ZERO = '0'.repeat(40);
@@ -973,7 +1366,7 @@ test('a stray field in the raw diff output refuses loudly instead of mis-pairing
       '',
     ].join('\n'),
   });
-  const r = spawnSync(HOOK, ['origin', bare], {
+  const r = spawnSync(installedHook, ['origin', bare], {
     cwd: work,
     input: `refs/heads/main ${localSha} refs/heads/main ${ZERO}\n`,
     encoding: 'utf8',
@@ -988,7 +1381,11 @@ test('raw diff output that ends mid-entry refuses instead of scanning part of th
   // after it. Pairing is positional, so a work list built from it would be
   // one field out from there on; the entries already read are a PREFIX of
   // the commit, and a prefix scanned clean is not a commit scanned clean.
-  const { root, work, bare, patterns } = setup();
+  const { root, work, bare, patterns, installedHook } = setup();
+  // TWO commits, so the tip has a parent and is therefore listed with `git
+  // diff-tree`: a root commit is listed with `git ls-tree` instead, and the
+  // parse under test here is diff-tree's.
+  commit(work, 'first.md', 'nothing secret here\n', 'a root commit');
   commit(work, 'README.md', 'hello world\n', 'init');
   const localSha = git(work, ['rev-parse', 'HEAD']).stdout.trim();
   const ZERO = '0'.repeat(40);
@@ -1006,7 +1403,7 @@ test('raw diff output that ends mid-entry refuses instead of scanning part of th
       '',
     ].join('\n'),
   });
-  const r = spawnSync(HOOK, ['origin', bare], {
+  const r = spawnSync(installedHook, ['origin', bare], {
     cwd: work,
     input: `refs/heads/main ${localSha} refs/heads/main ${ZERO}\n`,
     encoding: 'utf8',
@@ -1016,31 +1413,138 @@ test('raw diff output that ends mid-entry refuses instead of scanning part of th
   assert.match(r.stderr, /ended in the middle of an entry/);
 });
 
-test('a commit whose scanner predates this hook refuses the push in one line', () => {
-  // The hook comes out of the working tree, because that is where git runs
-  // a hook from; the scanner comes out of the commit being pushed. They are
-  // two halves of one record protocol and they can be different ages. An
-  // older scanner reads every field one place out and refuses over hundreds
-  // of paths that never existed, which is fail closed and says nothing
-  // true. It is a compatibility check, not a security one: a COMMITTED
-  // scanner that does understand the protocol is still the one that runs,
-  // weakened or not.
+
+// --- the metadata batch has a lower bound, and the loop always advances ---
+//
+// Commit metadata is read in batches of METADATA_BATCH with `at += batch`.
+// At a batch of zero that never advances: the loop spins forever, asking
+// git about an empty slice each time round, and the push neither passes nor
+// fails. MAX_TAG_DEPTH has had a bound since it was written and this did
+// not. A gate that HANGS is worse than one that refuses and worse than one
+// that accepts, because both of those say what happened.
+
+test('metadataBatchSize refuses to return a batch that would stall the loop', async () => {
+  const { metadataBatchSize, METADATA_BATCH } = await import('../src/commands/scan-blobs.mjs');
+  // Zero is the one that hangs; the rest are the neighbourhood it lives in,
+  // each of which would either hang or advance backwards.
+  for (const stalling of [0, -1, -256, 0.5, 1.5, NaN, Infinity, -Infinity, undefined, null, '256', '0']) {
+    assert.equal(metadataBatchSize(stalling), 1, `metadataBatchSize(${String(stalling)}) must be a batch the loop can advance by`);
+  }
+  // And a usable value is passed through untouched, so the bound is a
+  // floor and not a replacement for the constant.
+  assert.equal(metadataBatchSize(1), 1);
+  assert.equal(metadataBatchSize(7), 7);
+  assert.equal(metadataBatchSize(METADATA_BATCH), METADATA_BATCH);
+  assert.ok(Number.isInteger(METADATA_BATCH) && METADATA_BATCH >= 1, 'the shipped constant must itself be a batch the loop can advance by');
+});
+
+test('a metadata batch of zero terminates instead of hanging, and still scans every commit', () => {
+  // THE CASE BUILT TO BREAK THE CONTRACT, not a restatement of it. The
+  // stalling value is driven all the way through runScanBlobs, in a CHILD
+  // process with a timeout: a spinning `at += 0` loop is synchronous
+  // between git calls and never yields, so a test runner's own timeout,
+  // which shares the event loop with the test, could not interrupt it. Only
+  // something outside the process can. If the bound were removed this test
+  // reports a killed child rather than hanging the suite.
   const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  commit(work, 'notes.md', 'nothing secret here\n', 'Meeting with Hunter2Corp tomorrow');
+  const leakSha = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  const firstSha = git(work, ['rev-parse', 'HEAD~1']).stdout.trim();
+
+  const driver = join(work, '..', 'zero-batch-driver.mjs');
+  writeFileSync(driver, [
+    `import { runScanBlobs } from ${JSON.stringify(join(KIT_ROOT, 'src', 'commands', 'scan-blobs.mjs'))};`,
+    'const io = {',
+    '  stdin: process.stdin,',
+    '  stdout: { write: (text) => process.stdout.write(text) },',
+    '  stderr: { write: (text) => process.stderr.write(text) },',
+    '};',
+    'const status = await runScanBlobs([], io, { metadataBatch: 0 });',
+    'process.stdout.write(`STATUS:${status}\\n`);',
+    '',
+  ].join('\n'));
+
+  const NUL = String.fromCharCode(0);
+  const result = spawnSync(process.execPath, [driver], {
+    cwd: work,
+    input: `commit${NUL}${firstSha}${NUL}commit${NUL}${leakSha}${NUL}`,
+    encoding: 'utf8',
+    timeout: 20000,
+    env: { ...process.env, BRAIN_KIT_LEAK_PATTERNS: patterns },
+  });
+
+  assert.equal(result.signal, null, `the child was killed (${result.signal}); the metadata loop did not advance`);
+  // It terminated AND it did the work: the leak is in the second commit's
+  // MESSAGE, so a loop that stopped early would report nothing.
+  assert.match(result.stderr, /possible leak in the message of commit [0-9a-f]{7} \(COMMIT MESSAGE\)/);
+  assert.match(result.stdout, /STATUS:1/);
+  assert.doesNotMatch(result.stderr, /hunter2corp/i);
+});
+
+test('a tag object that names no object refuses, rather than ending the chain quietly', () => {
+  // The case built to break the "git never produces this" contract, rather
+  // than a restatement of it: `git hash-object --literally` writes the tag
+  // object git's own fsck refuses to write, with a tagger and a message but
+  // no `object` header. The chain then ends somewhere other than where the
+  // tag says it does, and whatever it pointed at went unread, which is the
+  // refusing side of this module's own skip rule.
+  //
+  // Driven through `scan-blobs` directly rather than through `git push`,
+  // and that is a finding of its own worth writing down: a push carrying
+  // such a tag is ALREADY refused one step earlier, because `git rev-list`
+  // on it fails and the hook refuses rather than scanning nothing. So this
+  // clause is the second of two fail-closed checks on the same shape, and
+  // it is reachable only through this command's own interface. It is
+  // defended anyway, because the hook's check is about listing commits and
+  // this one is about following the chain, and a later round that changes
+  // one has no reason to look at the other.
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+
+  const body = join(work, '..', 'malformed-tag-body.txt');
+  writeFileSync(body, ['type commit', 'tag broken', 'tagger A Human <human@example.invalid> 1 +0000', '', 'an ordinary message', ''].join('\n'));
+  const written = git(work, ['hash-object', '-t', 'tag', '-w', '--literally', body]);
+  assert.equal(written.status, 0, written.stderr);
+  const tagSha = written.stdout.trim();
+  assert.equal(git(work, ['cat-file', '-t', tagSha]).stdout.trim(), 'tag');
+
+  const r = scanBlobs(work, tipRecord(tagSha), { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stdout);
+  assert.match(r.stderr, /names no object/);
+});
+
+test('a push from a LINKED WORKTREE finds the one gate the repository has', () => {
+  // The gate lives under the git directory, and a linked worktree has two
+  // of those: `--git-dir` gives it its own private .git/worktrees/<name>,
+  // while `--git-common-dir` gives the shared one the gate was installed
+  // into. core.hooksPath is a single setting for the whole repository, so
+  // git runs the installed hook from the worktree too; reading the
+  // per-worktree directory instead would send the hook looking for an
+  // installation that is not there, and it would refuse EVERY push made
+  // from ANY worktree. That fails closed rather than open, but a gate that
+  // refuses ordinary work is how a repository learns --no-verify, which is
+  // the failure this whole slice keeps coming back to. So both directions
+  // are asserted: clean work from a worktree goes through, and a leak from
+  // a worktree does not.
+  const { root, work, patterns } = setup();
   commit(work, 'README.md', 'hello world\n', 'init');
   assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
 
-  writeFileSync(join(work, 'src', 'commands', 'scan-blobs.mjs'), [
-    '// A scanner of an older era: it reads pairs, not kinded records, and',
-    '// would call this whole push clean.',
-    'export function parseEntries() { return []; }',
-    'export async function runScanBlobs() { return 0; }',
-    '',
-  ].join('\n'));
-  writeFileSync(join(work, 'notes.md'), 'Meeting with Hunter2Corp tomorrow\n');
-  assert.equal(git(work, ['add', 'src/commands/scan-blobs.mjs', 'notes.md']).status, 0);
-  assert.equal(git(work, ['commit', '-q', '-m', 'an older scanner and a leak']).status, 0);
+  const side = join(root, 'side');
+  assert.equal(git(work, ['worktree', 'add', '-q', '-b', 'side', side]).status, 0);
 
-  const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
-  assert.notEqual(r.status, 0, r.stderr);
-  assert.match(r.stderr, /does not understand the work list this hook writes/);
+  writeFileSync(join(side, 'ordinary.md'), 'nothing secret here\n');
+  assert.equal(git(side, ['add', 'ordinary.md']).status, 0);
+  assert.equal(git(side, ['commit', '-q', '-m', 'a clean message']).status, 0);
+  const clean = git(side, ['push', '-q', 'origin', 'side'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(clean.status, 0, clean.stderr);
+  assert.match(clean.stderr, /gate engine snapshot: installed /);
+
+  writeFileSync(join(side, 'notes.md'), 'Meeting with Hunter2Corp tomorrow\n');
+  assert.equal(git(side, ['add', 'notes.md']).status, 0);
+  assert.equal(git(side, ['commit', '-q', '-m', 'a clean message']).status, 0);
+  const leaking = git(side, ['push', '-q', 'origin', 'side'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(leaking.status, 0, leaking.stderr);
+  assert.match(leaking.stderr, /possible leak in notes\.md \(CONTENT/);
 });

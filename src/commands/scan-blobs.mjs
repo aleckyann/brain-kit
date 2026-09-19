@@ -87,11 +87,36 @@ const GITLINK_MODE = '160000';
 // what this gate's running time is made of. The batch exists only to keep
 // the argument list bounded on a push that carries thousands of commits (a
 // first import, or the full-history fallback scan).
-const METADATA_BATCH = 256;
+export const METADATA_BATCH = 256;
+
+// The batch size the metadata loop actually advances by, bounded below at
+// one. The loop is `at += batch` over a list of commits, so a batch of zero
+// never advances it: it spins forever, asking git about an empty slice each
+// time round, and the push neither passes nor fails. A gate that HANGS is
+// worse than one that refuses and worse than one that accepts, because
+// those two at least tell you what happened; this one looks like a slow
+// network. MAX_TAG_DEPTH below has had this bound since it was written and
+// this one did not, which is the whole reason it is here.
+//
+// A value that is not a usable batch size becomes one rather than raising.
+// One is always correct, only slower (one git process per commit, which is
+// what this constant exists to avoid, not something it is required for), so
+// there is no configuration mistake this can turn into a scan that does not
+// happen. Anything that raised here would have to be caught somewhere, and
+// a gate that refuses every push because a performance constant was
+// mistyped teaches --no-verify.
+export function metadataBatchSize(configured) {
+  return Number.isInteger(configured) && configured >= 1 ? configured : 1;
+}
 
 // How far a chain of tag objects is followed (a tag of a tag of a tag).
-// Bounded rather than unbounded so a cycle, which git itself will not
-// normally produce, cannot spin here.
+// `git tag -a <new> <existing-tag>` builds one of these every time somebody
+// re-tags, and `git push --tags` sends the whole chain, so this is ordinary
+// traffic and not an adversarial shape. Bounded so a malformed chain cannot
+// spin here; reaching the bound REFUSES rather than stopping quietly,
+// because a chain still going when the bound runs out is something that
+// should have been readable and was not, which is the refusing side of this
+// module's own skip rule.
 const MAX_TAG_DEPTH = 10;
 
 // The label that replaces a path in EVERY message about a blob whose path
@@ -306,7 +331,24 @@ function parseTagObject(text) {
   return { target, tagger, message: lines.slice(at).join('\n') };
 }
 
-export async function runScanBlobs(argv, io) {
+// The identity this push is being made under, as `git show` would render an
+// author or committer of a commit made right now: "Name <address>".
+//
+// Read for ONE narrow purpose, the exemption in the metadata loop below.
+// Returns null when either half is unset or unreadable, and null means NO
+// exemption, so a configuration this cannot read makes the gate scan more
+// rather than less.
+function readPushingIdentity() {
+  const name = git(['config', '--get', 'user.name']);
+  const email = git(['config', '--get', 'user.email']);
+  if (name.error || name.status !== 0 || email.error || email.status !== 0) return null;
+  const readName = (name.stdout ?? '').replace(/\n+$/, '');
+  const readEmail = (email.stdout ?? '').replace(/\n+$/, '');
+  if (readName === '' || readEmail === '') return null;
+  return `${readName} <${readEmail}>`;
+}
+
+export async function runScanBlobs(argv, io, { metadataBatch = METADATA_BATCH } = {}) {
   // Checked before a single byte of stdin is read, and before a single git
   // call runs: see this module's own header on why the fail-closed check
   // must not be scoped to "only once something was found to scan".
@@ -352,7 +394,29 @@ export async function runScanBlobs(argv, io) {
   // catch itself, is the whole point of catching here, since one blob that
   // cannot be scanned must not stop the rest of the push being examined,
   // and a reported-then-forgotten failure is a push accepted unexamined.
-  const scan = (text, channel) => {
+  //
+  // `exemptIfMatched` is the ONE narrow exception, and it exists because
+  // one channel has no remedy. A content match is fixed by editing a file,
+  // a path match by renaming one, a message match by rewriting the commit.
+  // An AUTHOR IDENTITY match cannot be fixed by the person it is about: any
+  // rewrite re-authors the commit as the same person, so a maintainer whose
+  // own name is in their own pattern list, which is the single most likely
+  // name for somebody protecting household data to put in it, has every
+  // push refused forever with exactly two exits, deleting their own name
+  // from the list or --no-verify. That is a deadlock that teaches the
+  // bypass, and this gate has already rejected that shape twice.
+  //
+  // The exemption is EXACT and it is narrow: it applies only where the text
+  // is byte for byte the identity this very push is configured under (see
+  // readPushingIdentity). Somebody ELSE's name appearing as an author, which
+  // is the case this channel exists for, still refuses. A substring match, a
+  // case-insensitive match or a name-only match would all widen it into a
+  // hole, and none of them is what a person cannot rewrite.
+  //
+  // The text is still SCANNED when it is exempt, not skipped: a scan that
+  // cannot run still refuses. Only a match is forgiven, and it says so.
+  // The identity itself is never printed, exactly because it matched.
+  const scan = (text, channel, { exemptIfMatched = false } = {}) => {
     let result;
     try {
       result = scanText(text, patterns, { deadlineAt: Date.now() + budgetMs });
@@ -362,6 +426,10 @@ export async function runScanBlobs(argv, io) {
       return false;
     }
     if (result.matches.length === 0) return true;
+    if (exemptIfMatched) {
+      io.stderr.write(`pre-push: ${channel} matches a pattern, but it is exactly the identity this push is being made under, so it is exempt and does not refuse the push (the identity itself is withheld). No rewrite can change it, so refusing here would leave only editing the patterns file or --no-verify.\n`);
+      return false;
+    }
     failed = true;
     io.stderr.write(`pre-push: possible leak in ${channel}:\n`);
     for (const match of result.matches) {
@@ -386,8 +454,23 @@ export async function runScanBlobs(argv, io) {
     }
 
     if (entry.kind === 'tip') {
+      // The CHAIN, not the first link. A tag object can name another tag
+      // object, and each one carries a message and a tagger identity of its
+      // own, so every level is scanned on the way down to the object the
+      // chain finally names. Following only the first level is a ONE LINE
+      // edit that walks a leak onto the remote in plaintext: the inner
+      // tag's message is pushed with the outer one and never read. Both the
+      // scanning of every level and the bound below are defended by tests
+      // for that reason.
       let sha = entry.sha;
-      for (let depth = 0; depth < MAX_TAG_DEPTH && sha !== null; depth += 1) {
+      // Counts TAG OBJECTS READ, not turns of the loop. The last turn reads
+      // the commit (or blob, or tree) the chain finally names and breaks
+      // out without following anything, so counting turns would make the
+      // bound one tighter than it says it is and refuse a chain of exactly
+      // MAX_TAG_DEPTH tags, which is ordinary traffic. Both edges have a
+      // test: a chain AT the bound must push, one past it must refuse.
+      let tagsRead = 0;
+      while (sha !== null) {
         const type = git(['cat-file', '-t', sha]);
         if (type.error || type.status !== 0) {
           failed = true;
@@ -396,6 +479,12 @@ export async function runScanBlobs(argv, io) {
           break;
         }
         if ((type.stdout ?? '').trim() !== 'tag') break; // a commit tip carries no annotation of its own
+        if (tagsRead >= MAX_TAG_DEPTH) {
+          failed = true;
+          io.stderr.write(`pre-push: the ref this push points at is a chain of more than ${MAX_TAG_DEPTH} tag objects, so this gate stopped before reaching the object it finally names; refusing instead of calling the rest of the chain clean.\n`);
+          break;
+        }
+        tagsRead += 1;
         const body = git(['cat-file', 'tag', sha]);
         if (body.error || body.status !== 0) {
           failed = true;
@@ -407,6 +496,16 @@ export async function runScanBlobs(argv, io) {
         const tag = parseTagObject(body.stdout ?? '');
         scan(tag.message, `the message of tag object ${short} (TAG MESSAGE)`);
         scan(tag.tagger, `the tagger of tag object ${short} (TAGGER IDENTITY)`);
+        if (tag.target === null) {
+          // A tag object git printed, that this module read, and that names
+          // no object at all. git does not produce this, which is exactly
+          // why it must not be shrugged off: it means the chain ends
+          // somewhere other than where the tag says it does, and whatever
+          // is past it went unread.
+          failed = true;
+          io.stderr.write(`pre-push: the tag object ${short} names no object, so this gate cannot follow it to what this push actually points at; refusing instead of calling what it points at clean.\n`);
+          break;
+        }
         sha = tag.target;
       }
       continue;
@@ -446,8 +545,13 @@ export async function runScanBlobs(argv, io) {
     scan(blob.content, `${label} (CONTENT, at ${short})`);
   }
 
-  for (let at = 0; at < commitQueue.length; at += METADATA_BATCH) {
-    const batch = commitQueue.slice(at, at + METADATA_BATCH);
+  // Read once for the whole push, not once per commit: it is the same
+  // answer every time and it costs two git processes.
+  const pushingIdentity = commitQueue.length > 0 ? readPushingIdentity() : null;
+
+  const batchSize = metadataBatchSize(metadataBatch);
+  for (let at = 0; at < commitQueue.length; at += batchSize) {
+    const batch = commitQueue.slice(at, at + batchSize);
     let records;
     try {
       records = readCommitMetadata(batch);
@@ -459,9 +563,13 @@ export async function runScanBlobs(argv, io) {
     for (const record of records) {
       const short = record.sha.slice(0, 7);
       scan(record.message, `the message of commit ${short} (COMMIT MESSAGE)`);
-      scan(record.author, `the author of commit ${short} (AUTHOR IDENTITY)`);
+      scan(record.author, `the author of commit ${short} (AUTHOR IDENTITY)`, {
+        exemptIfMatched: pushingIdentity !== null && record.author === pushingIdentity,
+      });
       if (record.committer !== record.author) {
-        scan(record.committer, `the committer of commit ${short} (COMMITTER IDENTITY)`);
+        scan(record.committer, `the committer of commit ${short} (COMMITTER IDENTITY)`, {
+          exemptIfMatched: pushingIdentity !== null && record.committer === pushingIdentity,
+        });
       }
     }
   }

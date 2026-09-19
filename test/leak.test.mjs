@@ -629,20 +629,48 @@ test('a sandbox failure that is NOT a timeout is reported honestly, not relabell
 });
 
 test('a pattern that matches very often on one line is bounded by the same collection cap rather than allocating without limit', () => {
-  // The literal "a" matches at EVERY position of a long run of "a": half a
-  // million non-overlapping matches on one line, not catastrophic
+  // The literal "a" matches at EVERY position of a long run of "a": twenty
+  // thousand adjacent, zero-gap matches on one line, not catastrophic
   // backtracking, but exactly the "allocates its way to an outage" shape a
   // naive cap-after-scanning would not catch, because collecting every
   // match before slicing to max would already have paid the cost by the
   // time the cap is applied. The true total is still reported exactly.
+  //
+  // WHAT THIS ASSERTS ON, AND WHY NOT THE CLOCK. This test used to time
+  // itself (half a million matches, "must finish within five seconds").
+  // Two things were wrong with that, both measured rather than reasoned:
+  //
+  //   - It did not discriminate the clause it is named after. The cap
+  //     bounds how many spans are COLLECTED; the time is spent in the
+  //     regex loop, which runs to the end of the line either way. Measured
+  //     at half a million matches: 3642ms with the cap, 4177ms without it.
+  //     A thirteen percent difference, nowhere near a five-second
+  //     threshold, so lifting the cap would not have moved the assertion.
+  //   - At that size the SANDBOX's own timeout (2000ms per line) fires on
+  //     a busy machine, on the CAPPED path, so the test went red on a
+  //     pristine tree with nothing wrong. That is how a suite teaches
+  //     whoever reads it that red means noise.
+  //
+  // So the size comes down to where the sandbox call has better than an
+  // order of magnitude of headroom on a loaded machine (measured at 131ms
+  // under a load average near 50), and the assertion moves to the cap's
+  // own OBSERVABLE consequence, which is exact rather than approximate:
+  // once more matches of one pattern exist on a line than the module is
+  // willing to enumerate, it knows it cannot vouch for every neighbour of
+  // a finding, so it masks the whole excerpt window instead of redacting
+  // precisely. Lift the cap and every span IS enumerated, the line stops
+  // counting as too dense, and the excerpt comes back with context in it.
   const patterns = loadPatterns({ configPatterns: ['a'] });
-  const longLine = 'a'.repeat(500000);
-  const start = Date.now();
+  const longLine = 'a'.repeat(20000);
   const result = scanText(longLine, patterns, { max: 3 });
-  assert.ok(Date.now() - start < 5000, 'scanning half a million cheap matches must not itself take anywhere near the reported ten-second hang');
   assert.equal(result.matches.length, 3);
   assert.equal(result.truncated, true);
-  assert.equal(result.total, 500000);
+  assert.equal(result.total, 20000);
+  assert.equal(
+    result.matches[0].excerpt,
+    '[REDACTED]',
+    'the collection cap was not applied: every span was enumerated, so the line no longer counted as too dense to redact precisely',
+  );
 });
 
 test('a pattern that can match the empty string does not stall scanning: zero-length matches advance rather than repeat forever', () => {
@@ -874,16 +902,76 @@ test('the same deadlineAt threaded across two separate scanText calls shares one
   // would have no aggregate budget at all. A single deadline computed once
   // and passed to both calls here proves the SECOND call is bound by what
   // the first one already consumed, not by a fresh clock of its own.
+  //
+  // THE CLOCK IS INJECTED, and this test used to race a real one: it took
+  // a five millisecond real deadline and hoped the first call would finish
+  // inside it. On a loaded machine the FIRST call blew the budget and
+  // threw, and the test went red on a pristine tree with nothing wrong.
+  // Widening the five milliseconds would only have moved that threshold to
+  // a busier machine; what the test actually needs is to decide when time
+  // passes, so it does.
+  //
+  // The clock advances one millisecond per reading, which is exactly how
+  // this module spends time: one reading per line scanned. That makes the
+  // budget a COUNT OF LINES, and both halves of the claim exact. Twenty
+  // lines against a twenty millisecond budget consume all of it and finish
+  // on the boundary (the comparison is strict, so the twentieth line is
+  // the last one that fits); the second call then reads a clock that has
+  // already moved past the shared deadline and must refuse. Were the
+  // deadline re-read as a duration from each call's own start, the second
+  // call would get a fresh twenty lines and this would pass.
   const patterns = loadPatterns({ configPatterns: ['hit'] });
-  const deadlineAt = Date.now() + 5;
+  let tick = 0;
+  const clock = () => { tick += 1; return tick; };
+  const deadlineAt = 20;
   const lines = Array.from({ length: 20 }, () => 'a hit here').join('\n');
-  scanText(lines, patterns, { deadlineAt }); // spends part of the shared budget
-  // Busy-wait CLEARLY past the shared deadline, not merely to it: a
-  // strict `>` comparison at the exact millisecond boundary is a real
-  // race against a timer-based wait, so this waits a few milliseconds
-  // further to make the "past the deadline" state unambiguous.
-  while (Date.now() < deadlineAt + 5) { /* busy-wait past the shared deadline */ }
-  assert.throws(() => scanText('a hit here\n', patterns, { deadlineAt }), /exceeded its deadline/);
+  const first = scanText(lines, patterns, { deadlineAt, now: clock }); // spends the whole shared budget
+  assert.equal(first.total, 20, 'the first call must finish, spending the budget rather than failing inside it');
+  assert.equal(tick, 20, 'the first call must have consumed exactly one tick per line');
+  assert.throws(() => scanText('a hit here\n', patterns, { deadlineAt, now: clock }), /exceeded its deadline/);
+});
+
+test('an injected clock that is not a function falls back to the real one rather than leaving the scan unbounded', () => {
+  // The clock is a test seam on the one code path that decides when a scan
+  // gives up, so the seam itself must not be a way to switch that decision
+  // off. Anything that is not callable falls back to Date.now, the same
+  // shape as the deadlineAt fallback: an already-past absolute deadline
+  // still aborts immediately, which it could not do if a broken clock had
+  // silently disabled the check.
+  const patterns = loadPatterns({ configPatterns: ['hit'] });
+  for (const bad of [null, undefined, 0, 'later', {}, 12345]) {
+    assert.throws(
+      () => scanText('a hit here\n', patterns, { deadlineAt: 1, now: bad }),
+      /exceeded its deadline/,
+      `now=${JSON.stringify(bad)} must fall back to the real clock, not disable the deadline`,
+    );
+  }
+});
+
+test('an injected clock is used for the DEFAULT deadline too, not only for the per-line check', () => {
+  // The default deadline is computed from the clock as well
+  // (`clock() + OVERALL_SCAN_TIMEOUT_MS`). If that one call still read
+  // Date.now directly while the per-line check read the injected clock,
+  // the two would be on different time bases and the default deadline
+  // would be meaningless to any caller driving the clock. A clock parked
+  // at zero puts the default deadline at OVERALL_SCAN_TIMEOUT_MS; reading
+  // one tick past it on the first line must abort.
+  const patterns = loadPatterns({ configPatterns: ['hit'] });
+  let reading = 0;
+  const clock = () => reading;
+  const text = Array.from({ length: 3 }, () => 'a hit here').join('\n');
+  reading = 0;
+  assert.equal(scanText(text, patterns, { now: clock }).total, 3, 'a clock that never advances must never reach the default deadline');
+  let call = 0;
+  const advancingClock = () => {
+    call += 1;
+    return call === 1 ? 0 : OVERALL_SCAN_TIMEOUT_MS + 1;
+  };
+  assert.throws(
+    () => scanText(text, patterns, { now: advancingClock }),
+    /exceeded its deadline/,
+    'the default deadline must be computed from the injected clock, so advancing past it aborts',
+  );
 });
 
 test('OVERALL_SCAN_TIMEOUT_MS, the default deadline, is exported and holds a specific, bounded value', () => {

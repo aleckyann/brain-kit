@@ -615,9 +615,29 @@ function buildExcerpt(lineText, start, end, redactionSpans, tooDenseToRedactPrec
 // no matter what its number is. When omitted, this call gets its own
 // deadline, `Date.now() + OVERALL_SCAN_TIMEOUT_MS`, which preserves this
 // module's behaviour for a caller that only ever scans one thing.
-export function scanText(text, patterns, { max, deadlineAt } = {}) {
+//
+// `now` is the CLOCK this function reads, injectable, defaulting to
+// `Date.now`. It exists because the deadline is the one behaviour here
+// that a test cannot pin without controlling time: a test that computes a
+// tiny real deadline and then races real work against it asserts on how
+// busy the machine is, not on what this module does, and such a test goes
+// red on a loaded machine with nothing wrong and green on an idle one with
+// a real regression present. Neither reading is worth anything, and a gate
+// whose suite goes red for reasons unrelated to the gate teaches whoever
+// reads it that red means noise. A clock is therefore passed in, and a
+// test drives it.
+//
+// It cannot open a hole. A value that is not a function falls back to
+// `Date.now` (the same shape as the `deadlineAt` fallback just above), so
+// no caller can switch the deadline off by handing over something
+// unusable; a caller that hands over a WORKING clock of its own can only
+// make this function give up sooner or later, never skip a pattern or drop
+// a match. No production caller passes it: src/commands/scan-blobs.mjs and
+// src/rules/lint.mjs both leave it out and get the real clock.
+export function scanText(text, patterns, { max, deadlineAt, now } = {}) {
   const effectiveMax = Number.isInteger(max) && max >= 0 ? max : DEFAULT_MAX;
-  const effectiveDeadline = Number.isFinite(deadlineAt) ? deadlineAt : Date.now() + OVERALL_SCAN_TIMEOUT_MS;
+  const clock = typeof now === 'function' ? now : Date.now;
+  const effectiveDeadline = Number.isFinite(deadlineAt) ? deadlineAt : clock() + OVERALL_SCAN_TIMEOUT_MS;
   const cleaned = text.replace(/\0/g, '');
   const lines = cleaned.split('\n');
   const matches = [];
@@ -638,7 +658,7 @@ export function scanText(text, patterns, { max, deadlineAt } = {}) {
     // single call ever raising. Checking here bounds how far past this
     // deadline the scan can overshoot to at most one more line's worth of
     // work, never the whole rest of the file.
-    if (Date.now() > effectiveDeadline) {
+    if (clock() > effectiveDeadline) {
       throw new Error(`the scan exceeded its deadline before finishing every line; refusing to report a partial result as if it were complete`);
     }
     const remainingBudget = effectiveMax - matches.length;

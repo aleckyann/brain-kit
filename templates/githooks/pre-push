@@ -167,7 +167,7 @@ fi
 # local_ref, its source. They are equal for the ordinary `git push origin
 # main`, which is why reading the wrong one survived a whole review round,
 # but only the destination says where the change lands. Reading local_ref
-# let `git push origin curador/2026-09-19:main` and `git push origin
+# let `git push origin agent/some-branch:main` and `git push origin
 # HEAD:refs/heads/main` both through, under the automation identity, and
 # the remote's default branch really did advance; a detached-head push
 # slipped for a second reason, because stripping refs/heads/ off `HEAD`

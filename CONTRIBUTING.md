@@ -9,3 +9,7 @@
   outside example domains. Example data uses the fictional owner "Ana" and `example.com`.
 - Commits use conventional prefixes (`feat:`, `fix:`, `test:`, `docs:`, `ci:`, `chore:`).
 - Shell commands in code are always argument arrays (`execFileSync`), never strings.
+- Maintainers: install the anti-leak push gate once per clone with `.githooks/install-gate`,
+  and re-run it whenever the gate changes. It installs the hook AND the engine outside the
+  working tree; pointing `core.hooksPath` at `.githooks` does not work on purpose. See
+  SECURITY.md.

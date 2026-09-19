@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+# brain-kit maintainer push gate: the installer.
+#
+# WHAT THIS EXISTS TO PREVENT. The gate is the last thing between this
+# repository and a leak of its maintainer's private data, and twice now it
+# has been weakened by the question "whose code is this, really":
+#
+#   - The gate used to run the scanner out of the WORKING TREE. One
+#     uncommitted edit to any module it loads walked a leak straight
+#     through with exit 0. That is not an attack, it is what an implementer
+#     mid-task does by accident.
+#   - The fix for that ran the scanner out of the COMMIT BEING PUSHED
+#     instead. That was worse: the pushed tip is arbitrary content, so the
+#     push chose the code that judged it. A branch carrying its own
+#     bin/brain-kit.mjs was accepted with the hook intact, the pattern list
+#     correct and no --no-verify, and the code it carried read the
+#     environment variable naming the private pattern list.
+#
+# Both holes are the same mistake, made in opposite directions: the code
+# that judges a push was read from somewhere the push itself can reach.
+# So it is read from somewhere it cannot. This script copies BOTH halves of
+# the gate, the hook and the engine it runs, into a directory under the git
+# directory and points core.hooksPath at that copy:
+#
+#   <git common dir>/brain-kit-gate/pre-push        the hook
+#   <git common dir>/brain-kit-gate/engine/         bin, src, lang, schema,
+#                                                   package.json
+#   <git common dir>/brain-kit-gate/SNAPSHOT        what was installed, when
+#
+# WHY THE GIT DIRECTORY. It is the one place with all four properties this
+# needs at once. It is never part of any tree, so no commit, branch or tag
+# can contain a path that lands in it (git refuses ".git" as a path
+# component in a tree, so this is not a convention, it is enforced by the
+# object format). A checkout cannot remove it, an orphan branch included.
+# `git clean` does not touch it. And it is per clone, so one repository's
+# gate cannot be made stale by work done in another. A directory under
+# $HOME would satisfy the first three and fail the fourth, sharing one
+# snapshot between every clone on the machine.
+#
+# WHAT THIS DOES NOT CLOSE, and cannot: `git push --no-verify`, and a
+# second clone that was never installed into. Both are the maintainer
+# deciding not to run the gate, which no client-side gate can overrule.
+# Editing the installed copy by hand is the same decision made slowly.
+#
+# REFRESHING. Re-running this script IS the refresh: it replaces the whole
+# directory. Nothing refreshes it automatically, on purpose, because an
+# automatic refresh would read the gate back out of the working tree on
+# every push and hand the hole back. The snapshot therefore goes stale by
+# design, which is why the hook prints which one it ran on every push: a
+# ceiling this project cannot remove is one it announces.
+#
+# The snapshot is taken from the WORKING TREE, not from HEAD, so a change
+# to the gate can be tested before it is committed. That is also why
+# SNAPSHOT records whether the tree was dirty: a snapshot taken from a
+# dirty tree does not correspond exactly to the commit it names, and the
+# person reading the line on their next push should be told so rather than
+# left to assume.
+#
+# Portability: bash 3.2 and a POSIX userland, the same bar as the hook.
+set -u
+
+# TWO ROOTS, and keeping them apart is the point. The SOURCE is the
+# brain-kit checkout this script is part of, found from the script's own
+# location, because the gate it installs is the gate that ships beside it.
+# The TARGET is the repository the gate is installed INTO, found from the
+# current directory. In ordinary use they are the same repository, which is
+# exactly why they were easy to conflate; they are separate here so that the
+# suite can install a real gate into a scratch repository and exercise the
+# real thing instead of an imitation of it.
+if ! SELF_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd -P)"; then
+  echo "install-gate: could not resolve this script's own directory; refusing to guess where the gate it installs lives." >&2
+  exit 1
+fi
+SOURCE_ROOT="$(dirname "$SELF_DIR")"
+INSTALLER_PATH="$SELF_DIR/$(basename "$0")"
+
+if ! TARGET_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || [ -z "$TARGET_ROOT" ]; then
+  echo "install-gate: the current directory is not inside a git repository (git rev-parse --show-toplevel failed); nothing to install into." >&2
+  exit 1
+fi
+
+# --git-common-dir rather than --git-dir: in a linked worktree the latter
+# points at .git/worktrees/<name>, which is per worktree, while
+# core.hooksPath is one setting shared by all of them. Installing into the
+# common directory keeps one gate for the repository however many worktrees
+# it grows.
+if ! GIT_COMMON_DIR="$(git rev-parse --git-common-dir 2>/dev/null)" || [ -z "$GIT_COMMON_DIR" ]; then
+  echo "install-gate: could not locate the git directory (git rev-parse --git-common-dir failed); refusing to guess where to install." >&2
+  exit 1
+fi
+case "$GIT_COMMON_DIR" in
+  /*) ;;
+  *) GIT_COMMON_DIR="$TARGET_ROOT/$GIT_COMMON_DIR" ;;
+esac
+# Resolved with `pwd -P` on both sides here and in the hook, so the two
+# agree about a path reached through a symlink (macOS /tmp is one).
+if ! GIT_COMMON_DIR="$(cd "$GIT_COMMON_DIR" 2>/dev/null && pwd -P)"; then
+  echo "install-gate: the git directory reported by git does not exist; refusing to install." >&2
+  exit 1
+fi
+
+GATE_DIR="$GIT_COMMON_DIR/brain-kit-gate"
+STAGING_DIR="$GIT_COMMON_DIR/brain-kit-gate.installing"
+SOURCE_HOOK="$SOURCE_ROOT/.githooks/pre-push"
+
+if [ ! -f "$SOURCE_HOOK" ]; then
+  echo "install-gate: $SOURCE_HOOK does not exist, so there is no gate to install; run this from a brain-kit checkout." >&2
+  exit 1
+fi
+
+# The engine is the whole runnable package, not just bin and src:
+# src/cli.mjs builds its translator before dispatching any command, which
+# reads lang/; kitVersion reads package.json; schema/ travels with them.
+# A snapshot of only bin and src refuses every push with a module error.
+ENGINE_PATHS="bin src lang schema package.json"
+for path in $ENGINE_PATHS; do
+  if [ ! -e "$SOURCE_ROOT/$path" ]; then
+    echo "install-gate: $SOURCE_ROOT/$path is missing, so the engine snapshot would be incomplete; refusing to install half a gate." >&2
+    exit 1
+  fi
+done
+
+# Built under a staging name and moved into place at the end, so an
+# interrupted install never leaves a gate that is half one version and half
+# another. The hook checks for a complete install as well, because a move
+# is not an atomic operation on every filesystem and because somebody can
+# always delete part of the directory afterwards.
+rm -rf "$STAGING_DIR" || exit 1
+if ! mkdir -p "$STAGING_DIR/engine"; then
+  echo "install-gate: could not create $STAGING_DIR; refusing to install." >&2
+  exit 1
+fi
+
+if ! cp "$SOURCE_HOOK" "$STAGING_DIR/pre-push"; then
+  echo "install-gate: could not copy the hook into $STAGING_DIR; refusing to install." >&2
+  rm -rf "$STAGING_DIR"
+  exit 1
+fi
+if ! chmod 755 "$STAGING_DIR/pre-push"; then
+  echo "install-gate: could not make the installed hook executable; refusing to install." >&2
+  rm -rf "$STAGING_DIR"
+  exit 1
+fi
+
+for path in $ENGINE_PATHS; do
+  # `cp -R` rather than `cp -a`: -a is GNU-only, -R is in both userlands.
+  if ! cp -R "$SOURCE_ROOT/$path" "$STAGING_DIR/engine/$path"; then
+    echo "install-gate: could not copy $path into the engine snapshot; refusing to install." >&2
+    rm -rf "$STAGING_DIR"
+    exit 1
+  fi
+done
+
+# Checked here and not only trusted: the two files the hook will refuse
+# without. Finding out at install time beats finding out on a push.
+for path in bin/brain-kit.mjs src/commands/scan-blobs.mjs; do
+  if [ ! -f "$STAGING_DIR/engine/$path" ]; then
+    echo "install-gate: the engine snapshot has no $path in it; refusing to install a gate that cannot run." >&2
+    rm -rf "$STAGING_DIR"
+    exit 1
+  fi
+done
+
+SOURCE_COMMIT="$(git -C "$SOURCE_ROOT" rev-parse --short HEAD 2>/dev/null)"
+if [ -z "$SOURCE_COMMIT" ]; then
+  SOURCE_COMMIT="no commit yet"
+fi
+if [ -n "$(git -C "$SOURCE_ROOT" status --porcelain 2>/dev/null)" ]; then
+  TREE_STATE="working tree dirty, so this snapshot is not exactly that commit"
+else
+  TREE_STATE="working tree clean"
+fi
+# Dates a person reads are DD/MM/YYYY in this project.
+INSTALLED_AT="$(date '+%d/%m/%Y %H:%M')"
+
+# The exact command that re-installs this gate, recorded rather than
+# reconstructed. The hook names it in every message it can fail with, and
+# guessing it from the repository being pushed would be wrong whenever the
+# source checkout is not the repository the gate protects.
+if ! printf '%s\n' "$INSTALLER_PATH" > "$STAGING_DIR/INSTALLER"; then
+  echo "install-gate: could not record this script's own path in the gate; refusing to install a gate that cannot say how to repair itself." >&2
+  rm -rf "$STAGING_DIR"
+  exit 1
+fi
+
+# Written LAST, and read by the hook as the marker of a COMPLETE install:
+# every other file is in place by the time this line exists.
+if ! printf 'installed %s from commit %s (%s)\n' "$INSTALLED_AT" "$SOURCE_COMMIT" "$TREE_STATE" > "$STAGING_DIR/SNAPSHOT"; then
+  echo "install-gate: could not write the snapshot stamp; refusing to install a gate that cannot say what it is." >&2
+  rm -rf "$STAGING_DIR"
+  exit 1
+fi
+
+rm -rf "$GATE_DIR" || exit 1
+if ! mv "$STAGING_DIR" "$GATE_DIR"; then
+  echo "install-gate: could not move the staged gate into $GATE_DIR; refusing to leave a partial install." >&2
+  rm -rf "$STAGING_DIR"
+  exit 1
+fi
+
+if ! git -C "$TARGET_ROOT" config core.hooksPath "$GATE_DIR"; then
+  echo "install-gate: the gate is installed at $GATE_DIR but core.hooksPath could not be set, so git will not run it. Set it by hand: git config core.hooksPath $GATE_DIR" >&2
+  exit 1
+fi
+
+echo "install-gate: gate installed at $GATE_DIR"
+echo "install-gate: $(cat "$GATE_DIR/SNAPSHOT")"
+echo "install-gate: core.hooksPath now points at it. Re-run this script to refresh the snapshot."
+exit 0

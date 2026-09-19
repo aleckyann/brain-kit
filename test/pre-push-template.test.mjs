@@ -258,3 +258,33 @@ test('a human pushing into a vault with no resolvable default branch is not warn
   assert.equal(r.status, 0, r.stderr);
   assert.doesNotMatch(r.stderr, /could not determine this vault's default branch/);
 });
+
+test('the ladder warning names the command that fixes it, not only the problem', () => {
+  // A warning that says a guard is not running, without saying how to make
+  // it run, is a warning a vault learns to scroll past. The remedy is part
+  // of the message and is asserted as such.
+  const { work } = setup({ branch: 'trunk' });
+  commitEverything(work, 'init', AGENT);
+  const r = git(work, ['push', '-q', 'origin', 'trunk'], AGENT);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /git remote set-head origin --auto/);
+});
+
+test('the ladder warning does NOT fire when the guard IS running, so it never becomes noise', () => {
+  // The other half of the warning's own condition, and the half no test
+  // reached: it warns when the default branch could not be DETERMINED, not
+  // on every push an automation makes. Dropping the emptiness check makes
+  // this vault, whose default branch resolves perfectly well, warn about a
+  // guard that is running correctly on every single push, and a warning
+  // that cries wolf on a healthy vault is worth less than no warning.
+  const { work } = setup();
+  commitEverything(work, 'init', AGENT);
+  assert.equal(git(work, ['push', '-q', 'origin', 'main']).status, 0);
+  assert.equal(git(work, ['checkout', '-q', '-b', 'agent/work'], AGENT).status, 0);
+  writeFileSync(join(work, 'memory', 'log.md'), `${CLEAN_LOG}\nA second entry.\n`);
+  commitEverything(work, 'more', AGENT);
+
+  const r = git(work, ['push', '-q', 'origin', 'agent/work'], AGENT);
+  assert.equal(r.status, 0, r.stderr);
+  assert.doesNotMatch(r.stderr, /could not determine this vault's default branch/);
+});

@@ -19,11 +19,21 @@
 # Portability: bash 3.2 and a POSIX userland. The project's own CI runs this on
 # macOS, whose /bin/bash is 3.2.57 and whose grep and sort are BSD, so nothing
 # here may need bash 4 (no associative arrays, no ${var,,}) or a GNU-only
-# flag. The flags relied on are `sort -z` and `tar -xf -C`, present in both
-# userlands, and every empty-array expansion uses the ${arr[@]+"${arr[@]}"}
-# form, which old bash needs under `set -u`.
+# flag. The one flag relied on is `sort -z`, present in both userlands, and
+# every empty-array expansion uses the ${arr[@]+"${arr[@]}"} form, which old
+# bash needs under `set -u`.
 #
-# Activate once per clone:  git config core.hooksPath .githooks
+# Activate once per clone:  .githooks/install-gate
+#
+# NOT `git config core.hooksPath .githooks`. This file is the SOURCE of the
+# gate, not the thing git runs. `.githooks/install-gate` copies this file
+# and a snapshot of the engine it needs into a directory under the git
+# directory and points core.hooksPath there; see the eighth round below,
+# and that script's own header, for why the copy has to live outside the
+# working tree. Pointing core.hooksPath at this directory instead leaves
+# the half of the gate that decides WHAT to scan inside the tree, where a
+# checkout replaces it and an uncommitted edit weakens it, so the hook
+# refuses to run from here and says so.
 set -u
 
 # 18/09/2026, fourth lesson: three gaps, all the same shape. A scanner that
@@ -58,10 +68,10 @@ set -u
 #       else, so additions, modifications, typechanges, copies and renames are
 #       all scanned. Deletions are the only kind with nothing to read.
 #   (e) Only the last stage's status was read, in the old `git show | tr |
-#       grep` pipeline. There is no pipeline left in this hook: where two
-#       commands still have to cooperate (the toolchain extraction of the
-#       seventh round below), they are two statements with two statuses, not
-#       two stages of one pipe.
+#       grep` pipeline. There is no pipeline left in this hook at all: every
+#       command whose result is used runs as a statement of its own, with
+#       its own status read, rather than as a stage of a pipe whose earlier
+#       stages report nothing.
 #   (f) The hook required bash 4. The dedupe used an associative array and
 #       `"${remote_exclusions[@]}"` aborts on an empty array under `set -u` in
 #       old bash, so on macOS (bash 3.2.57) the dedupe silently switched off
@@ -118,16 +128,10 @@ set -u
 #   (i) The scanner ran from the WORKING TREE, so an uncommitted edit to any
 #       module it loads weakened the gate that was supposed to judge the
 #       push, which a reviewer demonstrated by editing one neighbouring file
-#       and walking a leak straight through. The toolchain is now EXTRACTED
-#       from the commit being pushed (`git archive`, below) and run from
-#       there. The alternative considered and rejected was refusing any push
-#       made from a dirty tree: this repository's own source tree is dirty
-#       most of the working day, and a gate that refuses every ordinary push
-#       teaches its own maintainer to reach for --no-verify, which is worse
-#       than the hole it closes. Extraction costs the same and adds no
-#       friction. It is still not the whole fix: the toolchain of the TIP is
-#       used for every commit in the range, where the honest version would
-#       use each commit's own.
+#       and walking a leak straight through. The fix that round shipped,
+#       extracting the toolchain from the commit being pushed, was worse
+#       than the hole; see the eighth round below, which is where this is
+#       actually fixed.
 #   (j) A repository containing a submodule could not be pushed at all: the
 #       gitlink made `git show` exit 128 and the gate refused every push
 #       permanently, leaving --no-verify as the only way out, which is not a
@@ -140,6 +144,57 @@ set -u
 #       is a push whose remaining blobs are never examined and which then
 #       exits 0. Every write to it is checked, and a failed one refuses the
 #       push immediately rather than scanning a prefix of it.
+#
+# 19/09/2026, eighth round. ONE FINDING, AND IT IS THE SEVENTH ROUND'S OWN
+# CENTRAL FIX. Running the scanner out of the commit being pushed is
+# arbitrary code execution: the push chose the code that judged it. A
+# branch carrying its own bin/brain-kit.mjs was accepted with the hook
+# intact, a correct pattern list and no --no-verify, and the code it
+# carried read BRAIN_KIT_LEAK_PATTERNS and copied the private pattern list
+# out. That list lives outside the repository precisely because, in this
+# file's own words, the list of names to protect is itself the data to
+# protect, and the seventh round handed it to whatever the push carried.
+#
+# Both that hole and the one it was built to close are the same mistake in
+# opposite directions: the code that judges a push was read from somewhere
+# the push itself can reach. The working tree can be edited without
+# committing; the pushed tip can be written outright. Neither is a place to
+# read a judge from.
+#
+#   (l) BOTH HALVES OF THE GATE NOW LIVE OUTSIDE THE WORKING TREE, under
+#       the git directory, installed there by `.githooks/install-gate`
+#       (read its header for the location argument and for what this still
+#       does not close). This file is only the SOURCE of the hook; the copy
+#       git runs is <git common dir>/brain-kit-gate/pre-push, and the
+#       engine it runs is <git common dir>/brain-kit-gate/engine. A
+#       checkout cannot remove them, an orphan branch cannot replace them,
+#       an uncommitted edit cannot weaken them, and nothing in any pushed
+#       object is read except the objects being scanned.
+#
+#       That one change dissolves a whole class at once, and the deletions
+#       are the evidence: there is no `git archive` of the tip any more, no
+#       tar, no scratch toolchain directory, and no record-protocol token
+#       grep, because the hook and the engine are installed by one command
+#       and cannot be different ages. With them go three refusals the
+#       extraction design had to invent, each of which had --no-verify as
+#       its only escape: a tip carrying no package, a tip whose bin/ has no
+#       entry point, and a tip whose scanner predates the record protocol.
+#       An orphan branch and a pre-package tag are ordinary pushes again,
+#       and they are SCANNED rather than waved through.
+#
+#   (m) An install can be half done, so the gate checks its own. Running
+#       from anywhere but the installed directory refuses, which is what
+#       keeps `git config core.hooksPath .githooks` from quietly putting
+#       the deciding half back in the tree; a missing engine snapshot or a
+#       missing stamp refuses too. Every one of those messages names the
+#       exact command that fixes it, because a gate that fails without
+#       saying how to make it work is a gate people learn to skip.
+#
+#   (n) The snapshot is deliberately NOT refreshed automatically: doing so
+#       would read the gate back out of the working tree on every push and
+#       hand (i) straight back. So it goes stale by design, and the hook
+#       prints which snapshot it ran on every single push, clean or not.
+#       A ceiling this project cannot remove is one it announces.
 PATTERNS_FILE_LABEL="${BRAIN_KIT_LEAK_PATTERNS:-$HOME/.config/brain-kit/leak-patterns.txt}"
 
 if ! command -v node >/dev/null 2>&1; then
@@ -151,6 +206,78 @@ if [ -z "$REPO_ROOT" ]; then
   echo "pre-push: could not determine the repository root (git rev-parse --show-toplevel failed); refusing to push." >&2
   exit 1
 fi
+
+# --- the gate's own installation (eighth round, (l), (m) and (n)) --------
+#
+# Where the installed gate lives, computed the same way `.githooks/install-gate`
+# computes it, from git rather than from this file's own location: the two
+# have to agree, and asking git is the only way to agree without one of them
+# guessing. --git-common-dir rather than --git-dir so a linked worktree
+# finds the one gate the repository has.
+GIT_COMMON_DIR="$(git rev-parse --git-common-dir 2>/dev/null)"
+if [ -z "$GIT_COMMON_DIR" ]; then
+  echo "pre-push: could not locate the git directory (git rev-parse --git-common-dir failed), so this gate cannot find its own installation; refusing to push." >&2
+  exit 1
+fi
+case "$GIT_COMMON_DIR" in
+  /*) ;;
+  *) GIT_COMMON_DIR="$REPO_ROOT/$GIT_COMMON_DIR" ;;
+esac
+if ! GIT_COMMON_DIR="$(cd "$GIT_COMMON_DIR" 2>/dev/null && pwd -P)"; then
+  echo "pre-push: the git directory reported by git does not exist, so this gate cannot find its own installation; refusing to push." >&2
+  exit 1
+fi
+GATE_DIR="$GIT_COMMON_DIR/brain-kit-gate"
+
+# (m), first half. THIS half of the gate decides what gets scanned at all:
+# the commit range, the diff filter, merge handling, the exclusions, and
+# whether the engine is called once or not at all. Left in the working tree
+# it is a file a checkout replaces and an uncommitted edit empties, which a
+# reviewer demonstrated by emptying it and pushing a matching file with
+# exit 0 and no output. So it refuses to run from anywhere but the
+# installed copy. This is also the check that keeps the old activation line
+# (`git config core.hooksPath .githooks`) from silently working: it would
+# run this file from the tree, and it now stops instead.
+HOOK_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd -P)"
+if [ "$HOOK_DIR" != "$GATE_DIR" ]; then
+  echo "pre-push: this gate is running from $HOOK_DIR, not from its installed copy at $GATE_DIR. The half of the gate that decides what to scan must not live where a checkout can replace it or an uncommitted edit can empty it. Install it and point core.hooksPath at the installed copy by running .githooks/install-gate from your brain-kit checkout." >&2
+  exit 1
+fi
+
+# (m), second half. An install with a hook but no engine is the shape a
+# person half-does without noticing: a copied hook, a moved git directory,
+# a partly deleted gate. The stamp is written LAST by the installer, so its
+# presence means the rest arrived; the two engine files are checked by name
+# anyway, because a message naming what is missing beats a module error
+# naming a path nobody recognises.
+ENGINE_DIR="$GATE_DIR/engine"
+BRAIN_KIT_BIN="$ENGINE_DIR/bin/brain-kit.mjs"
+SNAPSHOT_FILE="$GATE_DIR/SNAPSHOT"
+INSTALLER_FILE="$GATE_DIR/INSTALLER"
+for required in "$BRAIN_KIT_BIN" "$ENGINE_DIR/src/commands/scan-blobs.mjs" "$INSTALLER_FILE" "$SNAPSHOT_FILE"; do
+  if [ ! -f "$required" ]; then
+    echo "pre-push: the gate's engine snapshot is incomplete ($required is missing), so there is nothing here to scan this push with; refusing to push. Re-install it by running .githooks/install-gate from your brain-kit checkout." >&2
+    exit 1
+  fi
+done
+# The installer recorded its own path, so every message below names the
+# exact command rather than a reconstruction of it: the checkout the gate
+# was installed from is not necessarily the repository being pushed.
+if ! INSTALL_CMD="$(cat "$INSTALLER_FILE")" || [ -z "$INSTALL_CMD" ]; then
+  echo "pre-push: the gate cannot read $INSTALLER_FILE, so it cannot say which command re-installs it; refusing to push. Re-install it by running .githooks/install-gate from your brain-kit checkout." >&2
+  exit 1
+fi
+if ! SNAPSHOT="$(cat "$SNAPSHOT_FILE")" || [ -z "$SNAPSHOT" ]; then
+  echo "pre-push: the gate's snapshot stamp at $SNAPSHOT_FILE could not be read, so this gate cannot say which engine it is about to run; refusing to push. Re-install it with: $INSTALL_CMD" >&2
+  exit 1
+fi
+
+# (n). Printed on EVERY push, clean or not, and before anything else can
+# fail: the snapshot is refreshed only by re-running the installer, so it
+# goes stale silently unless it says so. Printed first, so every message
+# after it is attributable to a named engine.
+echo "pre-push: gate engine snapshot: $SNAPSHOT" >&2
+echo "pre-push: refresh it with: $INSTALL_CMD" >&2
 
 ZERO='0000000000000000000000000000000000000000'
 TAB="$(printf '\t')"
@@ -168,10 +295,6 @@ LIST_FILE="$TMP_DIR/list"
 PATHS_RAW="$TMP_DIR/paths.raw"
 PATHS_FILE="$TMP_DIR/paths"
 PAIRS_FILE="$TMP_DIR/pairs"
-TOOLCHAIN_DIR="$TMP_DIR/toolchain"
-TOOLCHAIN_TAR="$TMP_DIR/toolchain.tar"
-BRAIN_KIT_BIN=""
-toolchain_ready=0
 if ! printf '' > "$PAIRS_FILE"; then
   echo "pre-push: could not create the scan work list under $TMP_DIR; refusing to push." >&2
   exit 1
@@ -185,46 +308,6 @@ fi
 # also keeps a half-written list from ever reaching `scan-blobs` at all.
 work_list_write_failed() {
   echo "pre-push: could not write the scan work list under $TMP_DIR; a partial list would scan part of this push and pass the rest unexamined; refusing to push." >&2
-  exit 1
-}
-
-# Seventh round, (i). Extracts the toolchain from the commit being pushed
-# into the scratch directory and points BRAIN_KIT_BIN at THAT copy, so what
-# judges the push is what the push contains rather than whatever the working
-# tree happens to hold mid-edit.
-#
-# `git archive` into a file and `tar` out of it are two statements with two
-# statuses, deliberately not `git archive | tar -x`: a pipeline reports only
-# its last stage, which is the fifth lesson's own (e). git's stderr is left
-# alone rather than merged into the archive, because merging it produces a
-# tar file with a diagnostic line glued to the front of it.
-#
-# A push carrying several refs extracts once, from the first ref with
-# anything to push; `scan-blobs` runs once per push, so there is one
-# toolchain to choose and this is the least surprising choice.
-extract_toolchain() {
-  if [ "$toolchain_ready" -eq 1 ]; then
-    return 0
-  fi
-  if ! mkdir -p "$TOOLCHAIN_DIR"; then
-    return 1
-  fi
-  if ! git archive --format=tar "$1" -- bin src lang schema package.json > "$TOOLCHAIN_TAR" < /dev/null; then
-    return 1
-  fi
-  if ! tar -xf "$TOOLCHAIN_TAR" -C "$TOOLCHAIN_DIR"; then
-    return 1
-  fi
-  BRAIN_KIT_BIN="$TOOLCHAIN_DIR/bin/brain-kit.mjs"
-  toolchain_ready=1
-  return 0
-}
-
-require_toolchain() {
-  if extract_toolchain "$1"; then
-    return 0
-  fi
-  echo "pre-push: could not extract the committed toolchain (bin, src, lang, schema, package.json) from $1; the gate runs the scanner the push carries, not the one in the working tree, so it cannot run at all without it. Refusing to push." >&2
   exit 1
 }
 
@@ -346,9 +429,16 @@ full_history() {
 }
 
 while read -r local_ref local_sha remote_ref remote_sha; do
-  [ "$local_sha" = "$ZERO" ] && continue   # branch deletion: nothing to scan
+  # A deletion carries no objects, so there is genuinely nothing here to
+  # read: it is the skipping side of this gate's own rule, and like the
+  # other one (a gitlink, in scan-blobs) it says so out loud rather than
+  # passing in silence. A skip nobody can see reads exactly like a scan
+  # that found nothing, and this gate has shipped that confusion before.
+  if [ "$local_sha" = "$ZERO" ]; then
+    echo "pre-push: skipping $remote_ref: this push deletes it, and a deletion carries no objects, so there is nothing here to read." >&2
+    continue
+  fi
 
-  require_toolchain "$local_sha"
 
   # The tip itself, for `scan-blobs` to examine as an object rather than as
   # a commit: an annotated tag carries a message and a tagger identity that
@@ -480,31 +570,6 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     done < "$PATHS_FILE"
   done <<< "$commits"
 done
-
-# A push that only deletes refs still runs `scan-blobs` (see below), and
-# that still needs a toolchain to run: HEAD is the honest choice when the
-# push itself carries no tip of its own.
-if [ "$toolchain_ready" -ne 1 ]; then
-  require_toolchain HEAD
-fi
-if [ ! -f "$BRAIN_KIT_BIN" ]; then
-  echo "pre-push: the commit being pushed does not contain bin/brain-kit.mjs, so this gate has nothing to run; refusing to push." >&2
-  exit 1
-fi
-# Seventh round, (i), second half. This file comes from the working tree,
-# because that is where git runs a hook from, while the scanner it just
-# extracted comes from the commit being pushed. The two are halves of one
-# protocol (the record stream written above) and they can be different
-# ages: pushing a commit older than that protocol hands a scanner that
-# reads (commit, path) pairs a stream of kinded records, and it then
-# refuses over hundreds of paths that never existed. That is fail closed
-# and completely uninformative. The token below is written into
-# src/commands/scan-blobs.mjs for exactly this check.
-SCAN_BLOBS_SRC="$TOOLCHAIN_DIR/src/commands/scan-blobs.mjs"
-if ! grep -q 'brain-kit-scan-blobs-records-v2' "$SCAN_BLOBS_SRC" 2>/dev/null; then
-  echo "pre-push: the commit being pushed carries a scan-blobs that does not understand the work list this hook writes (it predates the record protocol, or does not contain src/commands/scan-blobs.mjs at all). This gate runs the scanner the push carries, so it cannot scan this push at all; rebase the branch onto a commit that has it, or push it from a checkout of its own era. Refusing to push." >&2
-  exit 1
-fi
 
 # Called exactly once, even when the work list is empty (a push that deletes
 # branches only, or otherwise touches nothing): `brain-kit scan-blobs` checks
