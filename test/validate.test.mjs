@@ -802,7 +802,7 @@ test('src/commands/validate.mjs imports no walk at all, from any module, under a
 // Neither one enumerates anything, and the `node:fs` clause below keeps
 // a ruler from rolling its own readdir loop instead.
 test('no rules module imports a walk, from any module, under any name, and none reads the filesystem directly', () => {
-  for (const file of ['spec.mjs', 'house.mjs']) {
+  for (const file of ['spec.mjs', 'house.mjs', 'lint.mjs']) {
     const source = readFileSync(join(KIT_ROOT, 'src', 'rules', file), 'utf8');
     const importLines = source.split('\n').filter((line) => /^\s*import\b/.test(line));
 

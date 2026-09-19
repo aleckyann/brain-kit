@@ -544,7 +544,13 @@ const extensionFields = {
 // come from the same splitFrontmatter call, and body is never rebuilt),
 // so counting the newlines in the untouched prefix is enough to place any
 // later line without re-deriving how long the frontmatter block was.
-function bodyPrefixLineCount(fullText, body) {
+//
+// Exported for src/rules/lint.mjs (this ruler's sibling, phase 1b): the
+// column-heading check needs the exact same body-relative-to-whole-file
+// line arithmetic to point at a table's header row, and a second copy of
+// four lines of pointer math is still a second copy that can drift from
+// this one, however small the surface.
+export function bodyPrefixLineCount(fullText, body) {
   const prefixLength = fullText.length - body.length;
   return fullText.slice(0, prefixLength).split('\n').length;
 }
@@ -745,7 +751,15 @@ function decodePathSafely(pathPart) {
 // neither the link the author wrote nor anything that exists on disk. The
 // one field added to make a broken-link message understandable instead of
 // insulting was garbage for exactly the shapes a human writes by hand.
-function resolveLinkPath(file, pathPart) {
+//
+// Exported for src/rules/lint.mjs: the orphan and index-completeness
+// rules both need to turn a link's raw text into the one canonical vault
+// path this function already defines, to walk the same graph
+// link-target-exists resolves against. Writing a second normaliser would
+// risk the two rulers disagreeing about what a link resolves to, which
+// is exactly the class of defect this file's own header names for the
+// code stripper.
+export function resolveLinkPath(file, pathPart) {
   const joined = pathPart.startsWith('/') ? pathPart.slice(1) : posix.join(posix.dirname(file), pathPart);
   let normalized = posix.normalize(joined);
   // A trailing slash is the only thing normalize leaves behind that would
@@ -770,7 +784,16 @@ function resolveLinkPath(file, pathPart) {
 // neither link-style nor link-target-exists has to repeat that work or
 // risk disagreeing about it. Shared by both rules so they can never
 // disagree about what counts as an internal link in the first place.
-function forEachInternalLink(file, context, visit) {
+//
+// Exported for src/rules/lint.mjs (phase 1b, this ruler's sibling): the
+// orphan rule builds its reachability graph by following exactly these
+// links, and the index-completeness rule asks the root index the same
+// question link-target-exists already answers ("what does this link
+// resolve to"). Both need the identical extraction link-style and
+// link-target-exists already share, per this module's own header on why
+// a second link scanner is not an independent implementation, it is a
+// second chance to disagree about what a link is.
+export function forEachInternalLink(file, context, visit) {
   const text = context.readFile(file);
   const { body } = splitFrontmatter(text);
   const stripped = stripCode(body);

@@ -64,5 +64,10 @@
   "house.link_target_exists.unwalked": "o destino do link \"{target}\" existe em disco, mas está fora do que este comando percorreu (resolvido para \"{resolved}\"): ele fica sob validate.ignore_paths, uma entrada iniciada por ponto ou node_modules, então esta execução não pode garantir nada sobre ele",
   "house.no_wikilinks.forbidden": "[[{target}]] é um wikilink, que este vault proíbe; use um link markdown padrão",
   "house.root_okf_version.missing": "o index raiz não declara okf_version, que este vault exige",
-  "house.root_okf_version.mismatch": "o index raiz declara okf_version \"{value}\", mas este vault está configurado para \"{expected}\""
+  "house.root_okf_version.mismatch": "o index raiz declara okf_version \"{value}\", mas este vault está configurado para \"{expected}\"",
+  "lint.index_completeness.missing_index": "este diretório contém um arquivo markdown, mas não tem index.md",
+  "lint.index_completeness.dir_not_linked": "o index raiz não faz link para o diretório de primeiro nível \"{dir}\"",
+  "lint.orphans.unreachable": "esta nota não é alcançável a partir do index raiz seguindo links",
+  "lint.columns.missing_table": "este arquivo não tem uma tabela para conferir com os cabeçalhos de coluna configurados",
+  "lint.columns.mismatch": "a coluna {index} deveria ser \"{expected}\", mas é \"{found}\""
 }
