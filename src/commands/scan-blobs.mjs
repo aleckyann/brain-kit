@@ -144,21 +144,29 @@ export async function runScanBlobs(argv, io) {
       // export) was measured against ONE scanText call, roughly 13 seconds
       // for 100,000 lines of ordinary prose with real margin added on top;
       // that measurement says nothing about a SECOND, unrelated blob still
-      // having budget left. The `secrets` lint rule threads one such
-      // deadline across an entire vault's worth of files on purpose,
-      // because a lint run genuinely is one bounded unit of work the vault
-      // owner asked for once; a push is not that. A push can carry
-      // anywhere from one blob to several hundred (a large rename, a
-      // vendored update, a first import of an existing vault), and a
-      // shared budget would let an ordinary push with many normal-sized
-      // files exhaust it partway through and abort with no verdict at all,
-      // refusing a perfectly clean push for having too much perfectly
-      // ordinary content, not for anything it found. Each blob getting the
-      // full, generously-measured budget keeps the guarantee this module
+      // having budget left. A push can carry anywhere from one blob to
+      // several hundred (a large rename, a vendored update, a first
+      // import of an existing vault), and a shared budget would let an
+      // ordinary push with many normal-sized files exhaust it partway
+      // through and abort with no verdict at all, refusing a perfectly
+      // clean push for having too much perfectly ordinary content, not
+      // for anything it found. Each blob getting the full,
+      // generously-measured budget keeps the guarantee this module
       // actually needs (no single blob's scan runs unbounded) without
       // inventing a new, unmeasured number for "a whole push's worth of
       // scanning", which is exactly the mistake OVERALL_SCAN_TIMEOUT_MS's
       // own header warns a caller away from making up.
+      //
+      // Correction (fix round 2): this comment used to say the `secrets`
+      // lint rule shares one deadline across a whole vault "on purpose",
+      // as the point of contrast for this module's own per-blob choice.
+      // That vault-wide sharing was never actually a purpose, it was a
+      // defect: a real vault of 800 untracked notes exhausted the shared
+      // budget partway through, and the escaping exception aborted every
+      // lint rule that had not run yet. The secrets rule now makes the
+      // SAME choice this module already made, a fresh deadline per file,
+      // for the identical reason spelled out above; the two are aligned,
+      // not contrasted, and this comment no longer claims otherwise.
       result = scanText(blob.content, patterns, { max: MAX_MATCHES_PER_BLOB, deadlineAt: Date.now() + OVERALL_SCAN_TIMEOUT_MS });
     } catch (error) {
       failed = true;

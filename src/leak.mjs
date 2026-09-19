@@ -43,7 +43,14 @@ const REDACTION_MARKER = '[REDACTED]';
 // involved. A personal pattern can be a person's real name or a company's
 // name shaped as a regular expression, and that text is exactly what this
 // module exists to keep out of a terminal, a log file and a CI record.
-const PERSONAL_PATTERN_LABEL = 'a personal pattern';
+// Exported (fix round 2, src/rules/lint.mjs's own secrets rule): a caller
+// that classifies a match by its `origin` field (see `matches.push` in
+// `scanText`, below) rather than by re-inspecting the already-rendered
+// `pattern` text needs this exact string to describe a personal-origin
+// match, the same string this module already uses for the identical
+// purpose, rather than inventing a second, independently-drifting label
+// for the same fact.
+export const PERSONAL_PATTERN_LABEL = 'a personal pattern';
 
 // How many characters of context are kept on each side of a match. Forty
 // total (twenty each side), per the module's contract: an excerpt is
@@ -285,16 +292,50 @@ function loadPersonalPatterns(env) {
 // Every pattern that fails to compile raises immediately, naming its
 // source (and, for a public pattern, its text). A skipped pattern is a
 // hole nobody sees, so nothing here is ever skipped.
+//
+// Fix round 2 (CRITICAL): a pattern's raw text that appears in more than
+// one of these three sources used to compile TWICE (or three times),
+// producing two independently-matching entries scanText treats as two
+// unrelated patterns. This project's own shipped example configuration
+// (test/fixtures/config/valid.json) names this exact shape: it lists
+// `AKIA[0-9A-Z]{16}` in `privacy.secret_patterns`, and GENERIC_PATTERNS
+// already carries the identical string. Three real secrets on three
+// added lines then reported as "5 shown out of 6 found": every real
+// match counted once for the 'generic' entry and once more for the
+// 'config' entry, inflating both the shown findings and the truncation
+// notice's own total, and every secrets test in this codebase already
+// works around it by clearing `privacy.secret_patterns` to `[]`, so
+// nothing exercised what a real adopter, running the shipped
+// configuration unmodified, actually sees. Deduplicated by RAW TEXT,
+// first occurrence wins, in the same generic-then-config-then-personal
+// order these are already assembled in: a config or personal entry
+// that merely repeats a shape GENERIC_PATTERNS already ships is folded
+// into that one generic entry rather than compiled a second time, so
+// its own match origin reads as 'generic' (safe: raw text identical to
+// a versioned, public shape is not a new disclosure) and it is scanned
+// exactly once. A compile failure is still checked for every personal
+// pattern before this fold ever runs, so a malformed personal pattern
+// that ALSO happens to duplicate a public one still raises first,
+// unaffected by whether it would otherwise have been folded away.
 export function loadPatterns({ env, configPatterns } = {}) {
   const compiled = [];
+  const seenRaw = new Set();
   for (const raw of GENERIC_PATTERNS) {
     compiled.push(compilePattern(raw, 'generic'));
+    seenRaw.add(raw);
   }
   for (const raw of configPatterns ?? []) {
-    compiled.push(compilePattern(raw, 'config'));
+    const entry = compilePattern(raw, 'config');
+    if (seenRaw.has(raw)) continue; // already covered by an earlier source; scanning it again only double-counts every match
+    compiled.push(entry);
+    seenRaw.add(raw);
   }
   if (env !== undefined) {
-    compiled.push(...loadPersonalPatterns(env));
+    for (const entry of loadPersonalPatterns(env)) {
+      if (seenRaw.has(entry.raw)) continue;
+      compiled.push(entry);
+      seenRaw.add(entry.raw);
+    }
   }
   return compiled;
 }
@@ -647,6 +688,20 @@ export function scanText(text, patterns, { max, deadlineAt } = {}) {
         line: candidate.line,
         column: candidate.column,
         pattern: displayPattern(candidate.entry),
+        // The compiled entry's own origin ('generic' | 'config' |
+        // 'personal'), alongside `pattern` (the already-decided DISPLAY
+        // text `displayPattern` computed above), not instead of it: a
+        // caller that needs to classify a match (src/rules/lint.mjs's
+        // own secrets rule is the one that does) must read the fact
+        // this module already knows for certain, not re-derive it by
+        // inspecting the rendered text a second time. Re-deriving from
+        // `pattern` alone is exactly the bug that shipped once: a
+        // 'personal' match's own `pattern` is already the neutral
+        // PERSONAL_PATTERN_LABEL, a string that is not, and was never
+        // meant to be compared against, GENERIC_PATTERNS, so a second
+        // classifier reading that already-laundered value has no
+        // correct way to tell "personal" apart from "config" at all.
+        origin: candidate.entry.origin,
         excerpt: buildExcerpt(lineText, candidate.start, candidate.end, redactionSpans, tooDenseToRedactPrecisely),
       });
     }

@@ -84,6 +84,36 @@ test('configPatterns are applied alongside the generic patterns', () => {
   assert.equal(result.matches[0].pattern, 'fixture-internal-[0-9]{4}');
 });
 
+// Fix round 2 (CRITICAL): a configPatterns entry whose raw text is
+// IDENTICAL to one GENERIC_PATTERNS already ships used to compile
+// twice, as two independent pattern entries scanText treats as
+// unrelated, so one real match was found and counted twice. This
+// project's own shipped example configuration
+// (test/fixtures/config/valid.json) names this exact shape: it lists
+// `AKIA[0-9A-Z]{16}` in `privacy.secret_patterns`, and GENERIC_PATTERNS
+// already carries the identical string. Reproduced here directly
+// against GENERIC_PATTERNS itself (not a fixture copy of it, so this
+// test cannot silently drift from whichever shape actually overlaps):
+// three real secrets on three lines must report as three matches, never
+// six.
+test('a configPatterns entry identical to a generic pattern is folded into that one generic entry, never compiled and scanned a second time', () => {
+  const overlapping = GENERIC_PATTERNS[0];
+  const patterns = loadPatterns({ configPatterns: [overlapping] });
+  assert.equal(patterns.length, GENERIC_PATTERNS.length, 'the duplicate must not add a second compiled entry');
+  assert.equal(patterns.filter((p) => p.raw === overlapping).length, 1);
+  assert.equal(patterns.find((p) => p.raw === overlapping).origin, 'generic', 'the surviving entry keeps the generic origin, safe to display verbatim');
+});
+
+test('three real secrets on three lines report as three matches, not six, when the shipped configuration duplicates a generic pattern shape', () => {
+  const awsKey = 'AKIA' + 'DUPE1111DUPE2222';
+  const text = [`one ${awsKey} here`, `two ${awsKey} here`, `three ${awsKey} here`].join('\n');
+  const patterns = loadPatterns({ configPatterns: ['AKIA[0-9A-Z]{16}'] }); // the shipped example config's own overlap with GENERIC_PATTERNS
+  const result = scanText(text, patterns);
+  assert.equal(result.total, 3, `expected exactly one match per real secret, got total=${result.total}`);
+  assert.equal(result.matches.length, 3);
+  assert.equal(result.truncated, false);
+});
+
 test('a caller may ask for configPatterns alone: no env means no personal file is ever consulted, even if it would be broken', () => {
   // Deliberately no `env` key at all. If loadPatterns tried to read a
   // personal file in this mode it would throw (there is no such file at

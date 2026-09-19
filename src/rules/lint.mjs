@@ -20,8 +20,18 @@
 //
 // The three rules in this task judge the VAULT AS A WHOLE, not a
 // change: every one of them reads the full `files` argument and ignores
-// the `scope` argument entirely (task 4's two rules, tables and style,
-// are the ones that read it). This is not an optimisation this module
+// the `scope` argument entirely. THREE rules read it instead: tables and
+// style (task 4), and secrets (task 5, below). An earlier version of
+// this project's own plan said two, that count was repeated in dispatch
+// after dispatch and then into an earlier draft of this very header, so
+// the plan, this file and a command's own report once held three
+// mutually inconsistent statements about the same fact at once (see
+// docs/superpowers/plans/2026-09-18-phase-1b-lint-and-leak-scanner.md's
+// own fix). The consequence was never cosmetic: a reader who believes
+// secrets sweeps the whole vault does not expect a committed secret to
+// print as no findings under a narrowed scope, which is exactly what a
+// narrowed scope does to it (see secrets' own header below). This is
+// not an optimisation this module
 // declines to make; narrowing any of these three questions to a
 // change's own files would make the answer WRONG, in the confident
 // direction. Reachability (the orphan rule) cannot be computed from a
@@ -260,7 +270,7 @@ import { bodyPrefixLineCount, forEachInternalLink, forEachWikilink, resolveLinkP
 import { frontmatterKeyLine, readEntries, readScalar, splitFrontmatter } from '../frontmatter.mjs';
 import { stripCode } from '../markdown.mjs';
 import { classifyTargetPath, isUnderPath } from '../vault.mjs';
-import { GENERIC_PATTERNS, OVERALL_SCAN_TIMEOUT_MS, loadPatterns, scanText } from '../leak.mjs';
+import { OVERALL_SCAN_TIMEOUT_MS, PERSONAL_PATTERN_LABEL, loadPatterns, scanText } from '../leak.mjs';
 
 const RESERVED_FILENAMES = Object.freeze(['index.md', 'log.md']);
 
@@ -662,9 +672,10 @@ const columns = {
 // and no cell exceeds max_cell_chars." Ported from a real awk one-liner
 // (this slice's own plan, "the awk check for a split table"), which read
 // a whole tracked file every run with no notion of which line was old
-// and which was new. This is one of only two rules in LINT_RULES that
-// reads `scope` at all (style, below, is the other), for the identical
-// reason style needs it: a vault that adopts this kit arrives with
+// and which was new. This is one of three rules in LINT_RULES that
+// reads `scope` at all (style and secrets, below, are the other two),
+// for the identical reason style needs it: a vault that adopts this kit
+// arrives with
 // tables written under no such rule, and a table check that reports
 // every old table on its first run is exactly the linter someone
 // switches off in its first minute. A table is judged only when at
@@ -1178,8 +1189,39 @@ const style = {
 // judgment call about what "looks like" a secret.
 const CONFIGURED_PATTERN_LABEL = 'a pattern configured in privacy.secret_patterns';
 
-function displaySecretPattern(rawPattern) {
-  return GENERIC_PATTERNS.includes(rawPattern) ? rawPattern : CONFIGURED_PATTERN_LABEL;
+// Fix round 2 (CRITICAL): this used to take `match.pattern` (leak.mjs's
+// OWN already-rendered display text, `displayPattern`'s output) and
+// re-classify it a SECOND time by checking `GENERIC_PATTERNS.includes`,
+// on the reasoning that only a generic pattern's raw source ever shows
+// up unchanged. That reasoning quietly assumed the only two origins
+// this call site would ever see were 'generic' and 'config', which was
+// true only because this rule's own `loadPatterns` call never passes
+// `env` (see this rule's own header: personal patterns are deliberately
+// never loaded here). It was never actually SAFE, only unreached: a
+// 'personal'-origin match's own `pattern` field is already
+// PERSONAL_PATTERN_LABEL (leak.mjs's neutral text for exactly that
+// origin, never the pattern's real source), a string `GENERIC_PATTERNS`
+// was never going to contain, so this function's old two-way test would
+// have called it "a pattern configured in privacy.secret_patterns" --
+// false, since it was never configured at all, it was personal -- the
+// moment any future caller passed `env` through to `loadPatterns`, one
+// argument away. Classifying by `match.origin` (the fact leak.mjs
+// already knows for certain, exported on every match for exactly this)
+// rather than by re-inspecting the rendered text removes the second,
+// redundant and fragile classifier entirely; a 'personal' match, should
+// one ever reach this rule, is labelled correctly on the day it does,
+// not silently on the day someone happens to read this comment.
+//
+// Exported so this classification can be tested directly against a
+// hand-built match object carrying `origin: 'personal'`: this rule's
+// own `loadPatterns` call never passes `env` (see this rule's own
+// header), so no match with that origin can reach this function through
+// the rule's own public check() today, and a test that could only ever
+// drive it through that path would leave this exact clause exactly as
+// unverified as the bug it replaces was.
+export function displaySecretPattern(match) {
+  if (match.origin === 'personal') return PERSONAL_PATTERN_LABEL;
+  return match.origin === 'generic' ? match.pattern : CONFIGURED_PATTERN_LABEL;
 }
 
 // Extracts only the lines `addedLines` marks, in order, joined back into
@@ -1211,22 +1253,79 @@ const secrets = {
     const configPatterns = Array.isArray(configuredPatterns) ? configuredPatterns.filter((p) => typeof p === 'string') : [];
     const patterns = loadPatterns({ configPatterns });
 
-    // Fix round 1, CRITICAL. One absolute deadline computed ONCE and
-    // threaded through every scanText call this check makes, not a
-    // fresh relative budget handed out per file: leak.mjs's own header
-    // states plainly why a per-call duration cannot bound a whole run
-    // ("every real caller scans more than one file... a per-call
-    // duration budget resets for each one, so a whole run has no
-    // aggregate budget at all"), and a lint run over a whole vault is
-    // exactly that caller.
-    const deadlineAt = Date.now() + OVERALL_SCAN_TIMEOUT_MS;
-
+    // Fix round 2 (CRITICAL): the ONE absolute deadline this check used
+    // to compute ONCE, before this loop, and thread through every file's
+    // own scanText call, was measured for a DIFFERENT unit of work than
+    // it was given: OVERALL_SCAN_TIMEOUT_MS (leak.mjs's own export) is
+    // roughly 13 seconds of real margin for ONE scanText call over
+    // 100,000 lines, and sharing that single budget across an entire
+    // vault's worth of files punishes exactly the adopter this rule
+    // exists to help most, a vault's FIRST run: measured, 800 untracked
+    // notes of about 300 lines each (nothing committed yet, so every
+    // line of every file is in scope, per this rule's own header) under
+    // the shipped configuration exceeded the shared budget partway
+    // through, scanText raised ("refusing to report a partial result as
+    // if it were complete"), the exception escaped this rule entirely,
+    // and the two rules that run after secrets in LINT_RULES (privacy,
+    // attribution) never executed AT ALL, for a vault that had done
+    // nothing more unusual than existing.
+    //
+    // The fix mirrors the equivalent decision src/commands/scan-blobs.mjs
+    // already made and wrote down for the push gate's own version of
+    // this exact question (a fresh deadline per blob, not one shared
+    // across a whole push): a FRESH deadline PER FILE, computed inside
+    // this loop. Each file gets the full, generously-measured budget
+    // leak.mjs's own header describes, which keeps the one guarantee
+    // this rule actually needs (no single file's scan runs unbounded)
+    // without inventing a new, unmeasured number for "a whole vault's
+    // worth of scanning" -- exactly the mistake OVERALL_SCAN_TIMEOUT_MS's
+    // own header warns a caller away from making up, which sharing one
+    // deadline across every file in the vault already was. A lint run
+    // over a vault is closer to scan-blobs' own "one blob to several
+    // hundred" description than it first looks: a first adoption, an
+    // import of an existing wiki, a vendored batch of notes, can all put
+    // hundreds of ordinary files in scope in one run, and none of them
+    // is the caller a single 20-second, whole-run budget was ever sized
+    // for.
+    //
+    // A per-file scan that STILL exceeds its own fresh budget (some
+    // single file large enough that even the full measured margin is not
+    // enough) is caught here, per file, rather than left to escape this
+    // rule and abort every rule that has not run yet: that file's own
+    // secrets check is reported as a DEGRADED result (`defect: true`,
+    // caught by src/commands/lint.mjs's own tool-defect handling, exit
+    // code DEGRADED rather than OK or FAILURE), and the loop continues
+    // to the next file, so one pathological file costs this run exactly
+    // one file's worth of missing coverage, named, rather than the whole
+    // run's worth, unnamed. This is deliberately NARROWER than catching
+    // every exception this whole `check` could ever throw (loadPatterns,
+    // above, can also raise, for an unrelated reason: a malformed
+    // `privacy.secret_patterns` entry, which this rule's own header
+    // says must never be swallowed into a soft finding). Only the
+    // per-file scanText call is guarded here; a compile failure still
+    // escapes this function entirely, exactly as before, to be caught by
+    // runLintRules' own generic per-rule guard instead.
     const findings = [];
     for (const file of files) {
       const addedLines = scope.addedLines(file);
       if (addedLines !== null && addedLines.size === 0) continue; // this change added nothing at all in this file: skip the read, like style above
       const text = context.readFile(file);
       const { text: scanned, lineNumbers } = addedLines === null ? { text, lineNumbers: null } : scopedTextFor(text, addedLines);
+
+      let scanResult;
+      try {
+        scanResult = scanText(scanned, patterns, { deadlineAt: Date.now() + OVERALL_SCAN_TIMEOUT_MS });
+      } catch (error) {
+        findings.push({
+          file,
+          line: null,
+          check: 'file-scan-failed',
+          defect: true,
+          messageKey: 'lint.tool_defect.file_scan_failed',
+          params: { message: error.message },
+        });
+        continue;
+      }
 
       // Fix round 1, CRITICAL. This used to destructure only `matches`
       // out of scanText's own return and silently accept its default
@@ -1237,14 +1336,14 @@ const secrets = {
       // cut... a caller that only ever exercises an override never
       // notices"). The whole record is taken now, and `truncated` is
       // surfaced as its own finding, once per file, rather than dropped.
-      const { matches, truncated, total } = scanText(scanned, patterns, { deadlineAt });
+      const { matches, truncated, total } = scanResult;
       for (const match of matches) {
         findings.push({
           file,
           line: lineNumbers === null ? match.line : lineNumbers[match.line - 1],
           check: 'secret-pattern',
           messageKey: 'lint.secrets.pattern_matched',
-          params: { pattern: displaySecretPattern(match.pattern) },
+          params: { pattern: displaySecretPattern(match) },
         });
       }
       if (truncated) {
@@ -1341,23 +1440,92 @@ const secrets = {
 // confidential directory's own path, or that SAME directory's own
 // `index.md`. Nothing about `log.md`, and nothing about a directory
 // nested any deeper than the confidential boundary itself, is exempt.
-function isUnderAnyConfidentialDir(file, confidentialDirs) {
-  return confidentialDirs.some((dir) => isUnderPath(file, dir));
+// Fix round 2 (MINOR, cheap to fold in): a confidential directory
+// configured as exactly "." is the natural way to spell "the whole
+// vault is confidential", and this file's own header already disclosed,
+// as an inherited and deliberately unfixed limitation, that isUnderPath
+// does not read it that way: its own normalisation strips a trailing
+// slash and then refuses an empty result, so "." matches NOTHING,
+// silently. That silence has a real, visible cost this rule alone can
+// pay for cheaply: with `confidential_dirs: ['.']`, every real file
+// reads as OUTSIDE every confidential directory, which made clause 2
+// (below) flag a note correctly marked `confidential: true` as sitting
+// outside a boundary the vault owner had just declared to cover it
+// entirely. Fixing isUnderPath itself remains out of this task's own
+// scope, unchanged from that original disclosure: every other rule in
+// this codebase depends on its current normalisation for an unrelated
+// exemption (templates_dir), so changing it there is a bigger, riskier
+// change than one MINOR fold-in owns. This reading is local to THIS
+// rule's own two dir-matching call sites instead: a dot, once its own
+// trailing slash (if any) is trimmed, matches every real vault-relative
+// path, since no walked file is ever the vault root itself.
+function isWholeVaultDir(dir) {
+  return (dir.endsWith('/') ? dir.slice(0, -1) : dir) === '.';
 }
 
-function isExemptFrontDoor(path, confidentialDirs) {
+function isUnderAnyConfidentialDir(file, confidentialDirs) {
+  return confidentialDirs.some((dir) => isWholeVaultDir(dir) || isUnderPath(file, dir));
+}
+
+// Fix round 2 (CRITICAL): the exemption used to be computed over the
+// WHOLE confidentialDirs list, separately from which dir a path was
+// found strictly inside of: `isConfidentialContent` asked "is this path
+// inside ANY confidential dir" and "is this path the front door of ANY
+// confidential dir" as two independent questions, then combined them.
+// That let a path exempt itself via a DIFFERENT, more deeply nested
+// confidential directory than the one that made it confidential in the
+// first place: with `confidentialDirs: ['people/', 'people/team/']` (a
+// vault that names both an outer directory and one of its own
+// subdirectories as separately confidential, which the schema permits
+// and nothing here forbids), `people/team/index.md` sits strictly
+// inside `people/` and is ALSO exactly `people/team/`'s own front door.
+// The old code exempted it on the strength of the second fact without
+// ever checking that the first fact came from a DIFFERENT directory:
+// declaring the nested directory confidential MORE, not less, made this
+// rule stop reporting a link into it from a public file, tightening a
+// configuration into a looser rule. The fix asks both questions about
+// the SAME `dir` on each pass: a path is confidential content the
+// moment it is strictly inside SOME confidential directory whose OWN
+// front door it is not, and it stays exempt only when every confidential
+// directory it sits inside of is the one whose front door it actually
+// is.
+// Fix round 2 (CRITICAL), a second, independent asymmetry in the same
+// function: the front-door comparison used to accept only the exact
+// string `${normalized}/index.md`, WITH the extension. A wikilink is the
+// one syntax this codebase resolves BOTH with and without an extension
+// on purpose (`wikilinkPathParts`, above: "a wikilink's own syntax gives
+// no way to tell 'this names a directory' from 'this names a file whose
+// extension I am allowed to omit' apart in advance"), so `[[people]]`
+// written for the directory's own index page can resolve to the bare
+// `people/index`, never `people/index.md`, and that spelling missed the
+// old exact-string check entirely. The result: `[[people/index]]` (no
+// extension) from a public file was reported as leaking into
+// `people/`, while the otherwise-identical `[[people/index.md]]` (same
+// target, extension spelled out) and the ordinary link
+// `[People](people/index.md)` were both correctly exempt, the exact
+// "same link, written two ways, disagreeing with itself" shape Fix
+// round 1's own front-door rewrite (above) already fixed once for a
+// bare-directory link against its own `index.md` link, and this
+// function re-created for a bare-directory link against its own bare
+// `index`. Recognising `${normalized}/index` (no extension) as an
+// equally valid front-door spelling closes it. The bare directory path
+// itself (`path === normalized`) needs no clause of its own here: it
+// can never simultaneously satisfy the `startsWith` guard just above
+// (a string cannot both equal "people" and start with "people/"), so a
+// vault link written as the bare directory front door, `[People](people/)`,
+// already reads as "not even inside this dir" and exits before this
+// exemption is ever consulted; test/rules-lint.test.mjs pins this down
+// directly, by name, rather than leaving it a claim a mutation could
+// quietly falsify.
+function isConfidentialContent(path, confidentialDirs) {
   return confidentialDirs.some((dir) => {
     const normalized = dir.endsWith('/') ? dir.slice(0, -1) : dir;
-    return normalized !== '' && (path === normalized || path === `${normalized}/index.md`);
+    if (normalized === '') return false;
+    if (!path.startsWith(`${normalized}/`)) return false; // not inside THIS dir at all
+    const indexPath = `${normalized}/index`;
+    const isThisDirsOwnFrontDoor = path === `${indexPath}.md` || path === indexPath;
+    return !isThisDirsOwnFrontDoor;
   });
-}
-
-function isConfidentialContent(path, confidentialDirs) {
-  const strictlyInside = confidentialDirs.some((dir) => {
-    const normalized = dir.endsWith('/') ? dir.slice(0, -1) : dir;
-    return normalized !== '' && path.startsWith(`${normalized}/`);
-  });
-  return strictlyInside && !isExemptFrontDoor(path, confidentialDirs);
 }
 
 function reportLinkIntoConfidential(findings, file, target, line) {
@@ -1391,17 +1559,26 @@ const privacy = {
   check(files, context) {
     const findings = [];
     const configuredDirs = context.config?.privacy?.confidential_dirs;
-    // Fix round 1 (MINOR, dead guard removed rather than defended): the
-    // `.length > 0` half of this filter used to exclude an empty-string
-    // entry before it ever reached isUnderPath, but isUnderPath's own
-    // FIRST line (`if (!dir) return false;`, src/vault.mjs) already
-    // treats an empty string exactly as absent -- it contributes `false`
-    // to every `.some()` call below whether or not it survives this
-    // filter. No input can tell the two apart, so the half-guard is
-    // removed rather than left in place looking like a second defence
-    // when isUnderPath already is the whole defence. `typeof d ===
-    // 'string'` stays: THAT half is load-bearing, since a truthy
-    // non-string entry (a number, an object) would still reach
+    // Fix round 2 (CRITICAL, restoring a guard a previous round removed
+    // as provably dead, and it was not dead). That round's argument was
+    // real but incomplete: it checked only whether isUnderPath's OWN
+    // comparison ever tells an empty string apart from absent (it does
+    // not, `if (!dir) return false`), and concluded no input could tell
+    // the two shapes apart anywhere in this function. It never checked
+    // the OTHER place `confidentialDirs` is read two lines below this
+    // one: `confidentialDirs.length === 0`, an early return that never
+    // calls isUnderPath at all. `['']` (an empty string entry, schema-
+    // valid: the schema has no `minLength` on this array's items) has
+    // length ONE, not zero, so that early return does not fire, and
+    // clause 2 below then runs against a boundary every real file reads
+    // as OUTSIDE (isUnderPath('', anything) is always false), which
+    // flags every note correctly marked `confidential: true` as if it
+    // sat outside a boundary that, in every other respect, does not
+    // exist. `[]` and `['']` must read as the SAME configuration (no
+    // boundary declared at all), and only filtering the blank entry out
+    // BEFORE this length check makes that true. `typeof d === 'string'`
+    // stays load-bearing for the identical reason it always was: a
+    // truthy non-string entry (a number, an object) would still reach
     // `dir.endsWith('/')` inside isUnderPath and throw.
     //
     // Inherited limitation, not introduced here (this file's own header
@@ -1413,7 +1590,7 @@ const privacy = {
     // this codebase already depends on for an unrelated exemption
     // (templates_dir); that is a larger, riskier change than this task
     // owns, so it is disclosed here rather than attempted.
-    const confidentialDirs = Array.isArray(configuredDirs) ? configuredDirs.filter((d) => typeof d === 'string') : [];
+    const confidentialDirs = Array.isArray(configuredDirs) ? configuredDirs.filter((d) => typeof d === 'string' && d.length > 0) : [];
     if (confidentialDirs.length === 0) return findings; // nothing declared confidential: nothing for either clause to check against
 
     for (const file of files) {
@@ -1702,17 +1879,60 @@ export function severityFor(rule, config) {
 // duplicate-row check): `undefined` is not a member of that set, so
 // those findings fall straight through to the ordinary rule-level
 // severity exactly as before this existed.
+//
+// Fix round 2 (CRITICAL): `rule.check(...)` used to be called bare, with
+// no catch around it at all. A rule that throws (loadPatterns, inside
+// the secrets rule, raises on purpose for a malformed
+// `privacy.secret_patterns` entry, per that rule's own header: "a
+// skipped pattern is a hole nobody sees") had nothing to catch it here,
+// so the exception escaped THIS function, then src/commands/lint.mjs,
+// then all the way to src/cli.mjs's generic error boundary: no scope
+// line, no rule name, no partial results from every rule that already
+// ran, and exit code 1, the exact same code this ruler's own contract
+// defines as "a finding of severity error" -- indistinguishable, to a
+// machine reading `--json`, from a real finding, except this one comes
+// with an EMPTY envelope, precisely when a caller trusting `--json` has
+// the least information to tell the two apart. Caught here, per rule,
+// pushing ONE synthetic finding (`defect: true`, never a `severity` of
+// 'error' or 'warn': it is not a content finding, it is this tool
+// failing to finish its own job) rather than a filled-in content
+// finding, so a rule that dies on file 3 of 4,000 still lets the other
+// 3,999 files' results, and every OTHER rule's results, reach the
+// report. src/commands/lint.mjs is the one place that turns `defect:
+// true` findings into their own section and the DEGRADED exit code
+// (never OK, never the same FAILURE code an ordinary error finding
+// uses): see that module's own header for why a degraded run is its
+// own category, not a quieter version of either one.
 export function runLintRules(files, context, scope) {
   const findings = [];
   for (const rule of LINT_RULES) {
     const severity = severityFor(rule, context.config);
     if (severity === 'off') continue;
-    for (const partial of rule.check(files, context, scope)) {
+    let partials;
+    try {
+      partials = rule.check(files, context, scope);
+    } catch (error) {
+      findings.push({
+        ruler: 'lint',
+        id: rule.id,
+        check: 'rule-crashed',
+        severity: 'error',
+        defect: true,
+        file: null,
+        line: null,
+        absence: false,
+        messageKey: 'lint.tool_defect.rule_crashed',
+        params: { rule: rule.id, message: error.message },
+      });
+      continue;
+    }
+    for (const partial of partials) {
       findings.push({
         ruler: 'lint',
         id: rule.id,
         check: partial.check,
         severity: VALID_SEVERITIES.has(partial.severity) ? partial.severity : severity,
+        defect: partial.defect === true,
         file: partial.file,
         line: partial.line,
         absence: partial.absence === true,

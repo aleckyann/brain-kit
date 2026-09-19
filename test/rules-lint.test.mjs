@@ -39,8 +39,9 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig } from '../src/config.mjs';
 import { walkVault } from '../src/vault.mjs';
-import { LINT_RULES, runLintRules } from '../src/rules/lint.mjs';
+import { LINT_RULES, runLintRules, displaySecretPattern } from '../src/rules/lint.mjs';
 import { createTranslator } from '../src/lang.mjs';
+import { OVERALL_SCAN_TIMEOUT_MS, PERSONAL_PATTERN_LABEL } from '../src/leak.mjs';
 import { makeVault } from './helpers/vault-fixture.mjs';
 
 const englishFor = createTranslator('en');
@@ -1507,6 +1508,21 @@ test('an unrecognized severity value in the configuration is treated the same as
   assert.equal(findings[0].severity, 'warn');
 });
 
+// displaySecretPattern classifies by `match.origin` directly, never by
+// re-inspecting `match.pattern` (leak.mjs's own already-rendered display
+// text): a 'personal' origin must render PERSONAL_PATTERN_LABEL, never
+// CONFIGURED_PATTERN_LABEL, even though this rule's own `check()` never
+// actually produces a 'personal'-origin match today (loadPatterns is
+// called here without `env`; see this rule's own header). Exercised
+// directly, on a hand-built match object, because a test that could
+// only ever drive it through the rule's own public surface would never
+// see this branch execute at all.
+test("displaySecretPattern labels a 'personal' origin match distinctly from a 'config' one, never claiming a personal pattern was configured in privacy.secret_patterns", () => {
+  assert.equal(displaySecretPattern({ origin: 'personal', pattern: PERSONAL_PATTERN_LABEL }), PERSONAL_PATTERN_LABEL);
+  assert.equal(displaySecretPattern({ origin: 'config', pattern: 'internal-[0-9]{4}' }), 'a pattern configured in privacy.secret_patterns');
+  assert.equal(displaySecretPattern({ origin: 'generic', pattern: 'AKIA[0-9A-Z]{16}' }), 'AKIA[0-9A-Z]{16}');
+});
+
 // --- secrets: "no secret pattern appears on an added line" -------------------------
 //
 // Every secret-shaped fixture string below is built by runtime string
@@ -1650,6 +1666,115 @@ test('secrets defaults to severity "error" when the configuration never names it
   assert.equal(findings[0].severity, 'error');
 });
 
+// --- fix round 2: a fresh scan deadline per file, and a per-file degrade ------------
+//
+// The old shared deadline (one `Date.now() + OVERALL_SCAN_TIMEOUT_MS`,
+// computed once before the per-file loop and threaded through every
+// file's own scanText call) meant a slow-to-scan file left every file
+// AFTER it with less of the shared budget than leak.mjs's own
+// measurement assumed, and if it ran the budget out entirely, scanText's
+// own "refusing to report a partial result as if it were complete"
+// exception escaped this rule uncaught, aborting every rule still to
+// run. Reproduced here without a real wait: a mocked clock reports the
+// REAL time on its very first call (the rule's own deadline computation
+// for file 1), then a FAR-FUTURE time on every call after that. File 1's
+// own scanText call reads that far-future time on its first per-line
+// check and finds itself already past its own (real-time-based)
+// deadline; the fix's whole point is that file 2's deadline is computed
+// AFTER that, from the SAME far-future "now", so file 2's own budget
+// runs from far-future to far-future-plus-twenty-seconds and is not, in
+// fact, already expired: it completes normally. A shared, once-computed
+// deadline would have file 2 inherit file 1's own already-expired
+// budget and fail identically; this fresh-per-file design does not.
+test('a file whose own secrets scan cannot finish in time is reported as a degraded result for THAT FILE alone, and a later file still gets its own full, fresh budget', () => {
+  // walkVault returns files SORTED (its own contract): "index.md" always
+  // sorts before anything under "people/", so it is always the FIRST
+  // file this rule's own per-file loop scans, whatever its content. The
+  // mock clock below reports the REAL time on its very first call (that
+  // first file's own deadline computation) and a FAR-FUTURE time on
+  // every call after that, so "index.md" is the one file whose own
+  // first per-line check reads a time already past ITS deadline; every
+  // file scanned after it computes its OWN deadline from that same
+  // far-future "now" and is never seen as expired against itself, which
+  // is the whole point: a fresh, per-file deadline does not inherit an
+  // earlier file's own overrun.
+  const freshKey = fakeAwsKey('FRESH111FRESH222');
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/fresh.md': `token ${freshKey} here`,
+  };
+  const root = makeVault({ files, config: { privacy: { secret_patterns: [] } } });
+  const config = loadConfig(root);
+  const all = walkVault(root, config, { all: true });
+  const mdFiles = all.filter((path) => path.endsWith('.md'));
+  assert.deepEqual(mdFiles, ['index.md', 'people/fresh.md'], 'this test depends on this exact processing order');
+  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8') };
+
+  const realDateNow = Date.now;
+  const realNow = realDateNow();
+  let calls = 0;
+  Date.now = () => {
+    calls += 1;
+    return calls === 1 ? realNow : realNow + OVERALL_SCAN_TIMEOUT_MS + 1000;
+  };
+  let findings;
+  try {
+    findings = runLintRules(mdFiles, context, IGNORED_SCOPE).filter(isLint('secrets'));
+  } finally {
+    Date.now = realDateNow;
+  }
+
+  const degraded = findings.filter((f) => f.defect === true);
+  assert.equal(degraded.length, 1, 'exactly one file should have failed to finish its own scan');
+  assert.equal(degraded[0].file, 'index.md');
+  assert.equal(degraded[0].check, 'file-scan-failed');
+  assert.match(degraded[0].params.message, /exceeded its deadline/);
+
+  const realFinding = findings.find((f) => f.defect !== true);
+  assert.ok(realFinding, 'the SECOND file must still be scanned, with its own fresh budget, not skipped because an earlier file ran out');
+  assert.equal(realFinding.file, 'people/fresh.md');
+  assert.equal(realFinding.check, 'secret-pattern');
+});
+
+// Fix round 2: a rule that throws for a DIFFERENT reason (loadPatterns'
+// own refusal of a malformed `privacy.secret_patterns` entry, which
+// this rule's own header says must never be swallowed into a soft
+// finding) is NOT caught by the per-file guard above, since it happens
+// before the per-file loop ever starts: it must still escape this
+// rule's own check() function, to be caught by runLintRules' own
+// generic per-rule guard instead, one level up. Proven here by checking
+// that a DIFFERENT rule (orphans) still reports its own real finding in
+// the SAME combined run, which only happens if runLintRules keeps going
+// after catching secrets' own crash rather than letting it escape and
+// abort every rule that has not run yet.
+test('a malformed privacy.secret_patterns entry still crashes the secrets rule as a whole, caught by runLintRules rather than aborting rules that have not run yet', () => {
+  // `privacy` runs AFTER `secrets` in LINT_RULES; a public link straight
+  // into a confidential note gives it a REAL, positive finding to
+  // report, so this test proves privacy actually EXECUTED after
+  // secrets crashed, rather than merely proving it did not ALSO crash
+  // (which would be equally true, and equally uninformative, if the old
+  // uncaught exception had aborted the loop before privacy ever ran:
+  // an aborted rule reports neither a crash nor a real finding).
+  const files = { 'index.md': '# Welcome\n\n[Ghost](people/ghost.md)\n', 'people/ghost.md': '# Ghost\n' };
+  const config = { privacy: { secret_patterns: ['[unterminated'], confidential_dirs: ['people/'] } };
+  const root = makeVault({ files }); // bypasses loadConfig; this hand-built config is deliberately invalid
+  const all = walkVault(root, config, { all: true });
+  const mdFiles = all.filter((path) => path.endsWith('.md'));
+  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8') };
+  const findings = runLintRules(mdFiles, context, IGNORED_SCOPE);
+
+  const crashed = findings.filter((f) => f.id === 'secrets' && f.defect === true);
+  assert.equal(crashed.length, 1);
+  assert.equal(crashed[0].check, 'rule-crashed');
+  assert.equal(crashed[0].file, null);
+  assert.match(crashed[0].params.message, /could not compile/);
+
+  const privacyFindings = findings.filter((f) => f.id === 'privacy');
+  assert.equal(privacyFindings.length, 1, 'privacy runs after secrets and must still report its own real finding');
+  assert.equal(privacyFindings[0].check, 'link-into-confidential');
+  assert.equal(privacyFindings[0].defect, false);
+});
+
 // Fix round 1 (review's own gap list: "no test puts two secrets in one
 // file"). Two DISTINCT secret shapes, on two different added lines of
 // the SAME file, both reported, each with its own correct line number:
@@ -1730,6 +1855,77 @@ test('linking the confidential directory itself, or straight to its own index.md
     'people/ana.md': '# Ana\n',
   };
   const findings = findingsFor({ files }).filter(isLint('privacy'));
+  assert.deepEqual(findings, []);
+});
+
+// Fix round 2, CRITICAL: a wikilink is the one syntax this codebase
+// resolves both with and without an extension on purpose
+// (wikilinkPathParts's own header). `[[people/index]]` (no extension)
+// used to be reported as a leak into the confidential directory, while
+// the otherwise-identical `[[people/index.md]]` (extension spelled out)
+// and the ordinary link `[People index](people/index.md)` were both
+// correctly exempt as the directory's own front door: the same target,
+// spelled three ways, disagreeing about whether it leaks.
+test('a bare wikilink to a confidential directory own index, with no extension, is exempt exactly like the spelling with the extension', () => {
+  const files = {
+    'index.md': '# Welcome\n\n[[people/index]]\n',
+    'people/index.md': '# People\n',
+  };
+  const findings = findingsFor({ files, config: { privacy: { confidential_dirs: ['people/'] } } }).filter(isLintCheck('privacy', 'link-into-confidential'));
+  assert.deepEqual(findings, [], 'a bare-index wikilink into the directory own front door must not be reported as a leak');
+});
+
+// Fix round 2, CRITICAL: declaring a MORE specific, nested directory
+// confidential used to REMOVE a finding rather than add one. With
+// `confidential_dirs: ['people/', 'people/team/']`, a link straight to
+// `people/team/index.md` sits strictly inside the outer `people/`
+// directory (which does not exempt it: index-completeness's own
+// front-door contract only covers a directory's OWN index, not an
+// arbitrary path one level under it) but IS `people/team/`'s own front
+// door. The old code exempted the path on the strength of the SECOND
+// fact without checking the first fact came from a different directory,
+// so tightening the configuration by naming the nested directory too
+// made this rule stop reporting a link that a single, less specific
+// `confidential_dirs: ['people/']` already correctly reported.
+test('naming a nested directory as ALSO confidential never removes a finding a less specific configuration already reported', () => {
+  const files = {
+    'index.md': '# Welcome\n\n[Team](people/team/index.md)\n',
+    'people/team/index.md': '# Team\n',
+  };
+  const singleDir = findingsFor({ files, config: { privacy: { confidential_dirs: ['people/'] } } }).filter(isLintCheck('privacy', 'link-into-confidential'));
+  assert.equal(singleDir.length, 1, 'sanity: the single, outer directory alone already reports this link');
+
+  const nestedAlsoNamed = findingsFor({ files, config: { privacy: { confidential_dirs: ['people/', 'people/team/'] } } }).filter(
+    isLintCheck('privacy', 'link-into-confidential'),
+  );
+  assert.equal(nestedAlsoNamed.length, 1, 'naming the nested directory too must not make this rule go silent about the same link');
+});
+
+// Fix round 2 (CRITICAL, restoring a guard removed in fix round 1 as
+// provably dead): the removal's own reasoning checked only isUnderPath's
+// OWN comparison, never the "confidentialDirs.length === 0" early
+// return two lines above it, which an empty-string entry (schema-valid:
+// no minLength on this array's items) has length ONE, not zero, for.
+// With `confidential_dirs: ['']`, every real file used to read as
+// OUTSIDE every confidential directory, which flagged a note correctly
+// marked `confidential: true` as leaking past a boundary that, in every
+// other respect, does not exist at all.
+test('an empty string in confidential_dirs is treated exactly like no confidential directory at all, never like a real, unmatchable boundary', () => {
+  const files = { 'index.md': '# Welcome\n', 'people/ana.md': '---\nconfidential: true\n---\n# Ana\n' };
+  const findings = findingsFor({ files, config: { privacy: { confidential_dirs: [''] } } }).filter(isLint('privacy'));
+  assert.deepEqual(findings, [], 'a blank entry must behave exactly like an empty confidentialDirs array (no boundary declared)');
+});
+
+// Fix round 2 (MINOR, cheap to fold in): "." is the natural way to spell
+// "the whole vault is confidential", and isUnderPath's own normalisation
+// does not read it that way (a disclosed, inherited limitation this
+// file's own header already named). The visible cost: a note correctly
+// marked `confidential: true` under `confidential_dirs: ['.']` used to
+// be reported as sitting OUTSIDE a boundary that was declared to cover
+// the entire vault.
+test('a confidential directory configured as exactly "." covers the whole vault: a correctly marked note is never reported as outside it', () => {
+  const files = { 'index.md': '# Welcome\n', 'people/ana.md': '---\nconfidential: true\n---\n# Ana\n' };
+  const findings = findingsFor({ files, config: { privacy: { confidential_dirs: ['.'] } } }).filter(isLint('privacy'));
   assert.deepEqual(findings, []);
 });
 

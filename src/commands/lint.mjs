@@ -152,7 +152,19 @@ function sortFindings(findings) {
   });
 }
 
+// Fix round 2 (MINOR): `finding.file` is not guaranteed to be a real
+// path for every finding this command can now render. A `rule-crashed`
+// defect (src/rules/lint.mjs's own runLintRules, on catching a whole
+// rule's own exception) has no one file to blame at all and carries
+// `file: null`; the old fallback (`finding.line != null ? ... :
+// finding.file`) only ever guarded the LINE half of the location, so a
+// null `file` fell straight through to the template literal below and
+// printed the literal word "null" as if it were a real path. Guarded
+// here instead, with a fixed marker rather than the field's own value.
+const NO_FILE_MARKER = '(no file)';
+
 function formatFinding(finding, t) {
+  if (finding.file == null) return `${NO_FILE_MARKER}  ${finding.id}  ${t(finding.messageKey, finding.params ?? {})}`;
   const location = finding.line != null ? `${finding.file}:${finding.line}` : finding.file;
   return `${location}  ${finding.id}  ${t(finding.messageKey, finding.params ?? {})}`;
 }
@@ -207,45 +219,118 @@ function renderGroup(t, key, findings) {
   return lines;
 }
 
-function renderVerdict(t, { errors, warnings, skippedIds }) {
+// The tool-defect section, mirroring validate.mjs's own "tool defect"
+// bucket in spirit (a finding this run cannot vouch for as an ordinary
+// content result, ALWAYS shown when non-empty, never merged into
+// errors or warnings), but HIDDEN entirely, heading and all, when there
+// is nothing in it: unlike errors and warnings, which are always one of
+// this ruler's two possible outcomes, a defect is not an outcome every
+// run has an opinion about, so an empty section here says nothing,
+// rather than "no findings in this group" about a category most runs
+// will never touch at all.
+function renderDefectSection(t, defects) {
+  if (defects.length === 0) return [];
+  const lines = [`== ${t('lint.heading_defect')} ==`, t('lint.explain_defect')];
+  for (const finding of sortFindings(defects)) lines.push(formatFinding(finding, t));
+  lines.push('');
+  return lines;
+}
+
+// Fix round 2 (CRITICAL, the worst output this tool can produce): this
+// used to decide "clean" from `errors`/`warnings`/`skippedIds` alone,
+// never consulting `linesRestricted`, computed one line away in
+// buildReport from the very `base` this run already resolved. A vault
+// whose secret sits already committed on the default branch, checked
+// with the default `auto` scope (which diffs the worktree against HEAD,
+// per src/git.mjs's own header), shows zero findings for exactly that
+// secret, because it is not a line THIS run added; the same vault
+// checked with `--base all` reports it as an error. Before this fix,
+// the first run printed "Result: no findings." with no more caveat than
+// a run that genuinely checked everything, which is indistinguishable,
+// on screen, from an actual clean bill of health: the worst thing this
+// tool can say, since a person who trusts it once and is wrong once
+// stops trusting its true findings too. `linesRestricted` (true for
+// every base but `all`) now joins `skippedIds` under the exact same
+// caveat this module already had a sentence for
+// (`lint.verdict_clean_but_partial`): a clean report from a run that
+// did not check every rule, or did not check every line, is not the
+// same claim as a clean vault, and this verdict says so instead of
+// staying silent about which one it is making.
+function renderVerdict(t, { errors, warnings, defects, skippedIds, linesRestricted }) {
+  if (defects.length > 0) return t('lint.verdict_degraded', { count: defects.length });
   if (errors.length > 0) return t('lint.verdict_failing');
   if (warnings.length > 0) return t('lint.verdict_warnings_only');
-  if (skippedIds.length > 0) return t('lint.verdict_clean_with_skipped', { skipped: skippedIds.length });
+  if (skippedIds.length > 0 || linesRestricted) return t('lint.verdict_clean_but_partial');
   return t('lint.verdict_clean');
 }
 
 // Builds the whole report (text, the --json object, and the exit code)
 // from one findings array already produced by runLintRules, the resolved
-// scope base, the markdown file count and the skipped-rule ids. Exported
-// and pure (no filesystem, no argv), mirroring validate.mjs's own
-// buildReport, so the grouping, the verdict and the JSON shape can all be
-// tested directly against a hand-built findings array without spawning the
-// real binary or running a real rule first.
-export function buildReport(findings, { t, base, fileCount, skippedIds }) {
-  const errors = findings.filter((f) => f.severity === 'error');
-  const warnings = findings.filter((f) => f.severity === 'warn');
+// scope base, the markdown file count, the skipped-rule ids and the
+// --rule restriction (if any). Exported and pure (no filesystem, no
+// argv), mirroring validate.mjs's own buildReport, so the grouping, the
+// verdict and the JSON shape can all be tested directly against a
+// hand-built findings array without spawning the real binary or running
+// a real rule first.
+//
+// `defect: true` findings (src/rules/lint.mjs's own runLintRules, on a
+// rule that threw) are partitioned OUT of `errors`/`warnings` here,
+// never counted as either: a tool malfunction is not a content finding,
+// counting it as an ordinary "error" would fail the run for the WRONG
+// reason and let the true error count silently include a result this
+// tool itself does not vouch for.
+export function buildReport(findings, { t, base, fileCount, skippedIds, restrictedTo = [] }) {
+  const defects = findings.filter((f) => f.defect === true);
+  const errors = findings.filter((f) => f.defect !== true && f.severity === 'error');
+  const warnings = findings.filter((f) => f.defect !== true && f.severity === 'warn');
+  const linesRestricted = base.kind !== 'all';
 
   const scope = {
     base: base.kind,
     reason: base.reason,
     files: fileCount,
-    linesRestricted: base.kind !== 'all',
+    linesRestricted,
   };
-  const counts = { error: errors.length, warn: warnings.length, skipped: skippedIds.length };
-  const json = { version: JSON_VERSION, findings, counts, scope, skipped: skippedIds };
+  const counts = { error: errors.length, warn: warnings.length, defect: defects.length, skipped: skippedIds.length };
+  // Fix round 2 (MINOR): `findings` used to reach the --json envelope in
+  // whatever order runLintRules happened to produce it, while the text
+  // report's own three groups were always sorted (sortFindings, above).
+  // A consumer parsing --json and a person reading the text report of
+  // the SAME run could see the same findings in two different orders;
+  // sorted here too, once, so both halves of one report agree.
+  const sortedFindings = sortFindings(findings);
+  const json = {
+    version: JSON_VERSION,
+    findings: sortedFindings,
+    counts,
+    scope,
+    skipped: skippedIds,
+    restrictedTo,
+  };
 
   const lines = [];
   lines.push(scopeMessage(t, base));
+  if (restrictedTo.length > 0) lines.push(t('lint.restricted_to', { ids: restrictedTo }));
   lines.push('');
+  lines.push(...renderDefectSection(t, defects));
   lines.push(...renderGroup(t, 'error', errors));
   lines.push(...renderGroup(t, 'warn', warnings));
   lines.push(t('lint.counts_summary', { error: errors.length, warn: warnings.length, skipped: skippedIds.length }));
   if (skippedIds.length > 0) lines.push(t('lint.skipped_list', { ids: skippedIds }));
   lines.push('');
-  lines.push(renderVerdict(t, { errors, warnings, skippedIds }));
+  lines.push(renderVerdict(t, { errors, warnings, defects, skippedIds, linesRestricted }));
   const text = `${lines.join('\n')}\n`;
 
-  const exitCode = errors.length > 0 ? EXIT.FAILURE : EXIT.OK;
+  // Fix round 2 (CRITICAL): a rule that crashed used to leave no exit
+  // code of its own at all, since the exception never reached this far
+  // (see src/rules/lint.mjs's own runLintRules for the catch that now
+  // keeps it from escaping). `defects.length > 0` takes priority over
+  // both other outcomes: a degraded run's own error count is not
+  // trustworthy (the rule that crashed might have found more, or might
+  // have found the very thing another rule's error count is missing),
+  // so this is its own exit code, never quietly folded into FAILURE or
+  // OK.
+  const exitCode = defects.length > 0 ? EXIT.DEGRADED : errors.length > 0 ? EXIT.FAILURE : EXIT.OK;
   return { text, json, exitCode };
 }
 
@@ -376,7 +461,13 @@ export async function runLint(argv, io, t, walkVault) {
 
   const findings = runLintRules(files, context, scope);
 
-  const { text, json, exitCode } = buildReport(findings, { t: reportT, base, fileCount: files.length, skippedIds });
+  const { text, json, exitCode } = buildReport(findings, {
+    t: reportT,
+    base,
+    fileCount: files.length,
+    skippedIds,
+    restrictedTo: parsed.ruleIds,
+  });
 
   if (parsed.json) {
     io.stdout.write(`${JSON.stringify(json)}\n`);

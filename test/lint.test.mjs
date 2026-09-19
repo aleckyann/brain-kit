@@ -352,6 +352,32 @@ test('--rule restricts the report to the named rule, excluding a real finding fr
   assert.equal(restrictedWithUnrelatedOff.counts.error, 1); // the secrets finding itself still runs and still reports
 });
 
+// A restriction that changes what a run FOUND (by construction: it
+// changes which rules even execute) must also change what the run
+// SAYS, in both halves of the report. Before this fix, --rule left no
+// trace anywhere: a person reading the text report, or a consumer
+// parsing --json days later with no memory of which flag produced it,
+// had no way to tell "this vault has only one problem" apart from
+// "this run only ever looked for one kind of problem". The JSON
+// envelope already carries a version for exactly this reason (adding a
+// field to a shape a consumer already parses is the breaking change a
+// version exists to prevent); `restrictedTo` is that addition, additive
+// and version-stable.
+test('--rule leaves a visible trace of the restriction in both the text report and the JSON envelope', () => {
+  const root = makeVault({ files: oneErrorOneWarningFiles(), config: NO_DOUBLE_COUNT_CONFIG });
+
+  const restricted = run(['--rule', 'secrets', root]);
+  assert.match(restricted.stdout, /Restricted to: secrets\./);
+
+  const unrestricted = run([root]);
+  assert.doesNotMatch(unrestricted.stdout, /Restricted to:/);
+
+  const parsedRestricted = JSON.parse(run(['--rule', 'secrets', root, '--json']).stdout);
+  assert.deepEqual(parsedRestricted.restrictedTo, ['secrets']);
+  const parsedUnrestricted = JSON.parse(run([root, '--json']).stdout);
+  assert.deepEqual(parsedUnrestricted.restrictedTo, []);
+});
+
 // buildRestrictedConfig must force every EXCLUDED rule's own setting off
 // without disturbing anything else the vault configured, including a
 // DIFFERENT top-level key (privacy) that the ALLOWED rule itself still
@@ -471,6 +497,86 @@ test('inside a git repository, the default scope (auto) reports only a secret on
   assert.match(allResult.stdout, /"all" was requested/);
   const allMatches = allResult.stdout.match(/people\/ana\.md:\d+ {2}secrets\b/g) ?? [];
   assert.equal(allMatches.length, 2, `expected both the old and the new secret under --base all, got:\n${allResult.stdout}`);
+});
+
+// --- CRITICAL: the verdict must consult scope, never call a partial run "clean" ---
+//
+// The worst output this tool can produce: a vault whose secret is
+// already committed on the default branch, checked with the DEFAULT
+// scope (auto), which diffs the worktree against HEAD and sees nothing
+// to add here at all, reports zero findings. Before this fix, the
+// verdict said "Result: no findings." with no more caveat than a run
+// that genuinely checked every line, which is indistinguishable, on
+// screen, from an actual clean bill of health.
+test('a secret already committed on the default branch is invisible to the default scope, but the verdict never calls that a plain clean vault; --base all catches it and fails', () => {
+  const root = makeGitVault({
+    files: { ...cleanFiles(), 'people/ana.md': `${CLEAN_ANA}\nAlready committed, on the default branch: ${fakeAwsKey('OLD1111111111OLD')}\n` },
+    config: NO_DOUBLE_COUNT_CONFIG,
+  });
+
+  const autoResult = run([root]);
+  assert.equal(autoResult.status, EXIT.OK); // nothing NEW to report under the default scope
+  assert.match(autoResult.stdout, /auto/);
+  assert.doesNotMatch(autoResult.stdout, /people\/ana\.md:\d+ {2}secrets\b/);
+  // The exact confident-wrong claim this fix removes: "no findings" on
+  // its own, with no caveat that this run did not check everything.
+  assert.doesNotMatch(autoResult.stdout, /^Result: no findings\.$/m);
+  assert.match(autoResult.stdout, /did not check everything/);
+
+  const allResult = run(['--base', 'all', root]);
+  assert.equal(allResult.status, EXIT.FAILURE);
+  assert.match(allResult.stdout, /people\/ana\.md:\d+ {2}secrets\b/);
+});
+
+// --- CRITICAL: a rule that crashes degrades the run, names itself, and never hides the rest ---
+//
+// Before this fix, a rule that threw (loadPatterns, inside secrets,
+// raises on purpose for a malformed privacy.secret_patterns entry) had
+// nothing to catch it anywhere in this command: the exception reached
+// src/cli.mjs's own generic error boundary, which prints one unlocalised
+// line and exits 1, the SAME code this ruler's own contract defines as
+// "a finding of severity error". Under --json that is exit 1 with
+// EMPTY stdout, indistinguishable from a real error finding to a
+// machine parsing it, precisely when it has the least information to
+// tell the two apart.
+test('a rule that crashes degrades the run (exit code 3, never 0 or the ordinary failure code 1), names itself and its error, and still shows every other rule\'s real findings', () => {
+  const root = makeVault({
+    files: { 'index.md': INDEX_LINKING_PEOPLE, 'people/index.md': PEOPLE_INDEX_LINKING_ANA, 'people/ana.md': CLEAN_ANA, 'people/ghost.md': GHOST },
+    config: { privacy: { secret_patterns: ['[unterminated'] } },
+  });
+  const result = run([root]);
+  assert.equal(result.status, EXIT.DEGRADED);
+  assert.notEqual(result.status, EXIT.OK);
+  assert.notEqual(result.status, EXIT.FAILURE);
+  assert.match(result.stdout, /== Tool defects ==/);
+  assert.match(result.stdout, /secrets/);
+  assert.match(result.stdout, /could not compile/);
+  // The orphan finding (people/ghost.md, a real result from a DIFFERENT
+  // rule) must still reach the report: the crash is caught per rule,
+  // not left to abort every rule that has not run yet.
+  assert.match(result.stdout, /people\/ghost\.md/);
+  assert.match(result.stdout, /degraded/i);
+  // The crash has no one file to blame (`file: null`): the location
+  // column must show a neutral marker, never the literal word "null".
+  assert.match(result.stdout, /\(no file\)\s+secrets/);
+  assert.doesNotMatch(result.stdout, /\bnull\b/);
+
+  const parsed = JSON.parse(run([root, '--json']).stdout);
+  assert.equal(parsed.counts.defect, 1);
+  const defectFinding = parsed.findings.find((f) => f.defect === true);
+  assert.ok(defectFinding);
+  assert.equal(defectFinding.id, 'secrets');
+  assert.equal(defectFinding.check, 'rule-crashed');
+  assert.equal(defectFinding.file, null);
+  assert.ok(parsed.findings.some((f) => f.id === 'orphans' && f.defect !== true));
+  // The crashed rule's own synthetic finding must be counted ONCE, as a
+  // defect, never ALSO as an ordinary error: it carries `severity:
+  // 'error'` for other reasons (see runLintRules' own catch), and a
+  // mutation that stopped excluding `defect: true` findings from the
+  // error/warning partition would double-count it here and print it
+  // twice, once under Tool defects and once under Errors.
+  assert.equal(parsed.counts.error, 0);
+  assert.equal(result.stdout.match(/rule crashed and produced no results/g)?.length, 1, 'the crash must be printed exactly once, in the defects section only');
 });
 
 // --- the single walk: exactly once, and no bypass of the injected seam ---------
@@ -594,6 +700,49 @@ test('buildReport: findings within a group are sorted by file then line, not lef
   const { text } = buildReport(findings, { t: T, base: baseAll(), fileCount: 2, skippedIds: [] });
   const warnSection = text.slice(text.indexOf('== Warnings =='));
   assert.ok(warnSection.indexOf('a.md') < warnSection.indexOf('z.md'), warnSection);
+});
+
+// The three sort clauses arrival order alone cannot exercise (same
+// file, so the FILE clause is a tie every time): line, then id, then
+// check. Each pair below differs in exactly ONE of the three, arrival
+// order reversed from the expected result, so a mutation that dropped
+// or inverted any single clause would still pass if the other two
+// happened to agree with arrival order by coincidence; they do not
+// here, on purpose.
+test('buildReport: findings on the same file are sorted by line, then by rule id, then by check, not left in arrival order', () => {
+  const findings = [
+    { id: 'orphans', file: 'a.md', line: 9, severity: 'warn', messageKey: 'lint.orphans.unreachable', params: {} },
+    { id: 'orphans', file: 'a.md', line: 2, severity: 'warn', messageKey: 'lint.orphans.unreachable', params: {} },
+    { id: 'style', file: 'a.md', line: 5, severity: 'warn', check: 'forbidden-char', messageKey: 'lint.style.forbidden_char', params: { char: 'x' } },
+    { id: 'index-completeness', file: 'a.md', line: 5, severity: 'warn', check: 'directory-has-index', messageKey: 'lint.index_completeness.missing_index', params: { dir: '.' } },
+    { id: 'orphans', file: 'a.md', line: 5, severity: 'warn', check: 'zzz-check', messageKey: 'lint.orphans.unreachable', params: {} },
+    { id: 'orphans', file: 'a.md', line: 5, severity: 'warn', check: 'aaa-check', messageKey: 'lint.orphans.unreachable', params: {} },
+  ];
+  const { text } = buildReport(findings, { t: T, base: baseAll(), fileCount: 1, skippedIds: [] });
+  const warnSection = text.slice(text.indexOf('== Warnings =='));
+  const lineAt = (needle) => warnSection.indexOf(needle);
+  // Line clause: 2 before 5 before 9.
+  assert.ok(lineAt('a.md:2') < lineAt('a.md:5') && lineAt('a.md:5') < lineAt('a.md:9'), warnSection);
+  // Id clause, both at line 5: "index-completeness" < "orphans" < "style" alphabetically.
+  const line5 = warnSection.slice(warnSection.indexOf('a.md:5'), warnSection.indexOf('a.md:9'));
+  assert.ok(line5.indexOf('index-completeness') < line5.indexOf('orphans'), line5);
+  assert.ok(line5.indexOf('orphans') < line5.indexOf('style'), line5);
+  // The check clause (same file, same line, same id) is not visible in
+  // the rendered TEXT at all (formatFinding never prints `check`); the
+  // next test below exercises it directly through json.findings instead.
+});
+
+test('buildReport: json.findings is sorted exactly like the text report, not left in the order runLintRules produced', () => {
+  const findings = [
+    { id: 'orphans', file: 'a.md', line: 5, severity: 'warn', check: 'zzz-check', messageKey: 'lint.orphans.unreachable', params: {} },
+    { id: 'orphans', file: 'a.md', line: 5, severity: 'warn', check: 'aaa-check', messageKey: 'lint.orphans.unreachable', params: {} },
+    { id: 'orphans', file: 'a.md', line: 2, severity: 'warn', check: 'mid-check', messageKey: 'lint.orphans.unreachable', params: {} },
+  ];
+  const { json } = buildReport(findings, { t: T, base: baseAll(), fileCount: 1, skippedIds: [] });
+  assert.deepEqual(
+    json.findings.map((f) => `${f.line}:${f.check}`),
+    ['2:mid-check', '5:aaa-check', '5:zzz-check'],
+  );
 });
 
 // scope.linesRestricted follows the base's OWN kind, never merely whether
