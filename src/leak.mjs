@@ -70,6 +70,22 @@ const DEFAULT_MAX = 5;
 // being relied on here (see the fix-round report).
 const SCAN_TIMEOUT_MS = 2000;
 
+// The wall-clock budget for an entire `scanText` call, across every line
+// and every pattern, in addition to the per-evaluation `SCAN_TIMEOUT_MS`
+// above. The two bound different things and neither substitutes for the
+// other: `SCAN_TIMEOUT_MS` catches the ONE stuck evaluation, but a scan can
+// be made of thousands of evaluations that EACH stay comfortably under
+// that bound and still sum to an unbounded total, because the budget is
+// spent per line and per pattern, not once for the whole call. Twenty
+// lines that each cost just under the per-line budget, or a ten-thousand
+// line file at the same rate, hit exactly this: no single call ever times
+// out, so nothing before this constant existed would ever raise, and the
+// caller would simply wait. This is checked before every per-pattern
+// evaluation (see `scanText`), so the actual overshoot past this deadline
+// is bounded by one more `SCAN_TIMEOUT_MS`, not by however long the rest
+// of the file would have taken.
+const OVERALL_SCAN_TIMEOUT_MS = 10000;
+
 // Versioned in this repository because these name no one: a private key
 // header, the two GitHub token shapes, the Anthropic key shape, the AWS
 // access key id shape, and the Slack token shapes. Always applied, on top
@@ -305,12 +321,24 @@ function scanLineForPattern(regex, text, keep, describe) {
   scanSandbox.keep = keep;
   try {
     return vm.runInContext(SCAN_LINE_SRC, scanSandbox, { timeout: SCAN_TIMEOUT_MS });
-  } catch {
-    // The engine's own timeout error carries no information this module
-    // needs to relay (it never names the pattern, only "script execution
-    // timed out"), so it is replaced rather than wrapped: the message here
-    // is what actually helps whoever reads it decide what to do next.
-    throw new Error(`a leak pattern took longer than ${SCAN_TIMEOUT_MS}ms to scan one line and was aborted rather than left to hang: ${describe}`);
+  } catch (err) {
+    // `vm` tags an actual timeout with this specific code (verified
+    // empirically in this Node version), and that is the ONLY failure this
+    // function is entitled to call a timeout: a bare catch that relabels
+    // every sandbox failure as "took too long" would send whoever reads it
+    // chasing a catastrophic pattern that was never there, when the real
+    // cause could be a bug in `SCAN_LINE_SRC` itself or some other engine
+    // error. Anything else still fails closed (it still throws, never
+    // returns as if the scan had succeeded), but says so honestly.
+    if (err?.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') {
+      // The engine's own timeout error carries no information this module
+      // needs to relay (it never names the pattern, only "script execution
+      // timed out"), so it is replaced rather than wrapped: the message
+      // here is what actually helps whoever reads it decide what to do
+      // next.
+      throw new Error(`a leak pattern took longer than ${SCAN_TIMEOUT_MS}ms to scan one line and was aborted rather than left to hang: ${describe}`);
+    }
+    throw new Error(`scanning one line against a leak pattern failed unexpectedly, not from a timeout: ${describe}: ${err.message}`);
   }
 }
 
@@ -324,51 +352,29 @@ function scanLineForPattern(regex, text, keep, describe) {
 // pattern behaves on that line.
 const REDACTION_SPAN_FLOOR = 200;
 
-// Builds the excerpt for one finding: the (at most twenty characters each
-// side) window of context around its match, with EVERY match that window
-// overlaps replaced by the fixed marker, not only the match the finding is
-// about. `redactionSpans` are FULL-LINE `[start, end)` pairs, not
-// window-local ones, precisely so a neighbouring match that only PARTIALLY
-// overlaps the window (its own span starts before the window, or ends
-// after it) still gets masked wherever it overlaps: rescanning just the
-// window's own text cannot find such a neighbour, because a pattern that
-// requires its whole shape to match will not recognise a fragment of
-// itself, and a match cut off at a window boundary is exactly a fragment.
-// `tooDenseToRedactPrecisely` means the line carried more matches of some
-// pattern than this module is willing to enumerate individually; in that
-// case the whole window is masked rather than risk a fragment surviving in
-// an excerpt this module could not actually verify.
-function buildExcerpt(lineText, start, end, redactionSpans, tooDenseToRedactPrecisely) {
-  // `windowStart` MUST be clamped to zero explicitly: `String.prototype.slice`
-  // treats a NEGATIVE index as counting back from the end of the string
-  // (length + index), not as "clamp to the start", so an unclamped
-  // `start - EXCERPT_CONTEXT_CHARS` near the beginning of a line would wrap
-  // around and read from the wrong end of it entirely. `windowEnd` needs no
-  // matching clamp: `slice` already clamps an END index that overshoots the
-  // string's length down to that length, and `end` (a real match's end
-  // position on THIS line) can never itself exceed `lineText.length`, so
-  // there is no equivalent wraparound to guard against on this side.
-  const windowStart = Math.max(0, start - EXCERPT_CONTEXT_CHARS);
-  const windowEnd = end + EXCERPT_CONTEXT_CHARS;
-  const windowText = lineText.slice(windowStart, windowEnd);
-  if (tooDenseToRedactPrecisely) {
-    return REDACTION_MARKER;
-  }
+// Masks one bounded region of `lineText` (`[regionStart, regionEnd)`,
+// always at most `EXCERPT_CONTEXT_CHARS` wide by construction, see
+// `buildExcerpt`) against every FULL-LINE span in `redactionSpans` that
+// overlaps it, clipping each to the region and replacing it with the fixed
+// marker. Spans are sorted before merging on purpose: the merge step below
+// only ever WIDENS the END of the most recently merged range, on the
+// assumption that nothing still to come could start earlier than what is
+// already merged; unsorted input breaks that assumption, and a later span
+// that starts before an earlier, wider one has already been merged in can
+// be absorbed into it WITHOUT the merged range's own start moving down to
+// meet it, silently dropping everything before that later span's start
+// from being masked at all.
+function maskRegion(lineText, regionStart, regionEnd, redactionSpans) {
+  const regionText = lineText.slice(regionStart, regionEnd);
   const clipped = [];
   for (const [spanStart, spanEnd] of redactionSpans) {
-    const clippedStart = Math.max(spanStart, windowStart);
-    const clippedEnd = Math.min(spanEnd, windowEnd);
+    const clippedStart = Math.max(spanStart, regionStart);
+    const clippedEnd = Math.min(spanEnd, regionEnd);
     if (clippedStart < clippedEnd) {
-      clipped.push([clippedStart - windowStart, clippedEnd - windowStart]);
+      clipped.push([clippedStart - regionStart, clippedEnd - regionStart]);
     }
   }
-  if (clipped.length === 0) {
-    // Only the reported match itself had zero length (an all-optional
-    // pattern matching an empty string) and nothing else overlaps the
-    // window. There is nothing to mask; the window stands as its own
-    // excerpt.
-    return windowText;
-  }
+  if (clipped.length === 0) return regionText;
   clipped.sort((a, b) => a[0] - b[0]);
   const merged = [clipped[0]];
   for (const span of clipped.slice(1)) {
@@ -379,14 +385,60 @@ function buildExcerpt(lineText, start, end, redactionSpans, tooDenseToRedactPrec
       merged.push(span);
     }
   }
-  let excerpt = '';
+  let masked = '';
   let cursor = 0;
   for (const [spanStart, spanEnd] of merged) {
-    excerpt += windowText.slice(cursor, spanStart) + REDACTION_MARKER;
+    masked += regionText.slice(cursor, spanStart) + REDACTION_MARKER;
     cursor = spanEnd;
   }
-  excerpt += windowText.slice(cursor);
-  return excerpt;
+  masked += regionText.slice(cursor);
+  return masked;
+}
+
+// Builds the excerpt for one finding: up to `EXCERPT_CONTEXT_CHARS` of
+// context on EACH SIDE of its match, with every match either side overlaps
+// replaced by the fixed marker, joined around one marker for the match
+// itself. `redactionSpans` are FULL-LINE `[start, end)` pairs, not
+// region-local ones, precisely so a neighbouring match that only PARTIALLY
+// overlaps a side region (its own span starts before it, or ends after it)
+// still gets masked wherever it overlaps: rescanning just the region's own
+// text cannot find such a neighbour, because a pattern that requires its
+// whole shape to match will not recognise a fragment of itself, and a
+// match cut off at a region boundary is exactly a fragment.
+// `tooDenseToRedactPrecisely` means the line carried more matches of some
+// pattern than this module is willing to enumerate individually; in that
+// case both sides are masked outright rather than risk a fragment
+// surviving in an excerpt this module could not actually verify.
+//
+// The match itself is never included in either side region (a side region
+// runs up to, but never across, `start` or `end`), so its own length can
+// never widen the text this function has to consider: the total context
+// this function ever looks at is bounded to `2 * EXCERPT_CONTEXT_CHARS`
+// PLUS the two fixed markers, regardless of how long the match itself is.
+// A single `start - CTX` to `end + CTX` window, by contrast, grows with
+// the match's own length, which is unbounded for several of the generic
+// shapes (`ghp_`, `sk-ant-` and the Slack shapes all end in `{N,}` with no
+// upper bound); a genuinely long committed token would otherwise make the
+// excerpt (and the work spent building it) scale with an attacker's own
+// choice of secret length instead of staying fixed.
+function buildExcerpt(lineText, start, end, redactionSpans, tooDenseToRedactPrecisely) {
+  if (tooDenseToRedactPrecisely) {
+    return REDACTION_MARKER;
+  }
+  // `beforeStart` MUST be clamped to zero explicitly: `String.prototype.slice`
+  // treats a NEGATIVE index as counting back from the end of the string
+  // (length + index), not as "clamp to the start", so an unclamped
+  // `start - EXCERPT_CONTEXT_CHARS` near the beginning of a line would wrap
+  // around and read from the wrong end of it entirely. `afterEnd` needs no
+  // matching clamp: `slice` already clamps an END index that overshoots the
+  // string's length down to that length, and `end` (a real match's end
+  // position on THIS line) can never itself exceed `lineText.length`, so
+  // there is no equivalent wraparound to guard against on this side.
+  const beforeStart = Math.max(0, start - EXCERPT_CONTEXT_CHARS);
+  const afterEnd = end + EXCERPT_CONTEXT_CHARS;
+  const beforeText = maskRegion(lineText, beforeStart, start, redactionSpans);
+  const afterText = maskRegion(lineText, end, afterEnd, redactionSpans);
+  return `${beforeText}${REDACTION_MARKER}${afterText}`;
 }
 
 // Scans `text` against `patterns` (as returned by `loadPatterns`) and
@@ -439,8 +491,16 @@ function buildExcerpt(lineText, start, end, redactionSpans, tooDenseToRedactPrec
 // separate passes (one small, for findings; one large, for redaction)
 // means the accurate total this pattern contributed is counted exactly
 // once per line, not twice.
-export function scanText(text, patterns, { max } = {}) {
+// `overallTimeoutMs` defaults to `OVERALL_SCAN_TIMEOUT_MS` and exists as an
+// explicit parameter (rather than a hardcoded constant with no way in) so
+// this module's own test suite can prove the aggregate deadline actually
+// fires without needing a real multi-second scan to do it: a caller who
+// genuinely needs a different aggregate budget can pass one, and one that
+// does not gets this module's own considered default.
+export function scanText(text, patterns, { max, overallTimeoutMs } = {}) {
   const effectiveMax = Number.isInteger(max) && max >= 0 ? max : DEFAULT_MAX;
+  const effectiveOverallTimeout = Number.isFinite(overallTimeoutMs) && overallTimeoutMs > 0 ? overallTimeoutMs : OVERALL_SCAN_TIMEOUT_MS;
+  const scanStartedAt = Date.now();
   const cleaned = text.replace(/\0/g, '');
   const lines = cleaned.split('\n');
   const matches = [];
@@ -453,6 +513,18 @@ export function scanText(text, patterns, { max } = {}) {
     const redactionSpans = [];
     let tooDenseToRedactPrecisely = false;
     for (const entry of patterns) {
+      // Checked before every per-pattern evaluation, not once per line: the
+      // per-evaluation budget (`SCAN_TIMEOUT_MS`) bounds one stuck
+      // evaluation, but says nothing about the SUM of many evaluations that
+      // each individually finish well under it. Twenty lines, or twenty
+      // patterns on one line, that each cost just under that budget would
+      // otherwise sum to an unbounded total with no single call ever
+      // raising. Checking here bounds how far past this deadline the scan
+      // can overshoot to at most one more `SCAN_TIMEOUT_MS`, rather than
+      // however long the rest of the file would have taken.
+      if (Date.now() - scanStartedAt > effectiveOverallTimeout) {
+        throw new Error(`the overall scan exceeded its ${effectiveOverallTimeout}ms deadline before finishing every line; refusing to report a partial result as if it were complete`);
+      }
       const describe = displayPattern(entry);
       const { kept, count } = scanLineForPattern(entry.regex, lineText, collectCap, describe);
       total += count;

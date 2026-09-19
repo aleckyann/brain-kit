@@ -459,16 +459,49 @@ test('the excerpt redacts a second, neighbouring secret in its context window, n
   }
 });
 
-test('a neighbouring secret is not merely truncated in the excerpt: no run of its characters as long as half its length survives', () => {
+test('the excerpt is EXACTLY the expected before-marker-after shape: an off-by-one or off-by-two boundary shift in either direction would change this string', () => {
+  // A fragment-search assertion (does substring X survive anywhere in the
+  // output) is the wrong tool for a boundary-shift bug specifically: if
+  // only the match's very first character leaks because the mask starts
+  // one position too late, that single leaked character sits directly
+  // against the marker on one side and safe padding on the other, so it
+  // never forms a contiguous run long enough to match a fragment of any
+  // useful length (a run of 1 cannot equal a probe of length 2 or 3, so a
+  // fragment-based test can only catch a shift large enough to leak a run
+  // AS LONG AS the probe, which is exactly the "half-length fragment"
+  // mistake at a smaller scale). Exact string equality has no such blind
+  // spot: ANY shift in either clip boundary, by any amount, changes this
+  // exact string, because the surrounding padding lengths are fixed and
+  // known.
+  const before = 'B'.repeat(15); // under 20, so fully shown either way
+  const after = 'C'.repeat(15);
+  const patterns = loadPatterns({ configPatterns: ['secrettoken'] });
+  const result = scanText(`${before}secrettoken${after}\n`, patterns);
+  assert.equal(result.matches.length, 1);
+  assert.equal(result.matches[0].excerpt, `${before}[REDACTED]${after}`);
+});
+
+test('the smallest fragment that could identify a neighbouring secret does not survive, including at its very first and last character', () => {
+  // Weaker than exact-string equality (see the test above) on its own, but
+  // covers the case that test does not: two DIFFERENT matches close
+  // together, where an exact expected string is harder to predict by
+  // construction. A fragment length of 2 is the smallest that still
+  // distinguishes which key a leaked run came from, since the two fixture
+  // keys are built from different repeated digits.
   const patterns = loadPatterns();
   const text = `${AWS_KEY_ID} ${SECOND_AWS_KEY_ID}\n`;
   const result = scanText(text, patterns);
-  const serialized = JSON.stringify(result);
-  const halfLength = Math.floor(AWS_KEY_ID.length / 2);
+  // Checked against the EXCERPTS only, not the whole serialized record:
+  // a finding's own `pattern` field legitimately shows the generic
+  // pattern's public regex source ("AKIA[0-9A-Z]{16}"), which itself
+  // contains "AK" as a normal, non-leaking substring of the PATTERN NAME,
+  // not of the matched secret.
+  const excerpts = result.matches.map((m) => m.excerpt).join('\n');
+  const FRAGMENT_LENGTH = 2;
   for (const secret of [AWS_KEY_ID, SECOND_AWS_KEY_ID]) {
-    for (let start = 0; start + halfLength <= secret.length; start += 1) {
-      const fragment = secret.slice(start, start + halfLength);
-      assert.ok(!serialized.includes(fragment), `a ${halfLength}-character fragment of a neighbouring secret survived: ${JSON.stringify(fragment)}`);
+    for (let start = 0; start + FRAGMENT_LENGTH <= secret.length; start += 1) {
+      const fragment = secret.slice(start, start + FRAGMENT_LENGTH);
+      assert.ok(!excerpts.includes(fragment), `a ${FRAGMENT_LENGTH}-character fragment survived: ${JSON.stringify(fragment)} (from position ${start})`);
     }
   }
 });
@@ -489,7 +522,14 @@ test('the excerpt does not even reveal the exact length of a redacted neighbouri
 
 // --- catastrophic patterns are bounded, not left to hang ------------------
 
-test('a catastrophically backtracking PERSONAL pattern is aborted without ever naming it: the timeout error uses the same neutral label as a finding would', () => {
+// Both catastrophic-pattern tests below carry an explicit node:test
+// `timeout`. The runner itself has no default deadline, and neither of
+// these tests otherwise passes it one, so a regression that turned the
+// internal timeout into a real, uninterruptible hang would not FAIL this
+// suite, it would HANG it: whoever is watching a CI run gets a stuck
+// process with no readable result, which is strictly worse than a red
+// test. A bounded test either passes, fails, or times out visibly.
+test('a catastrophically backtracking PERSONAL pattern is aborted without ever naming it: the timeout error uses the same neutral label as a finding would', { timeout: 8000 }, () => {
   const dir = tempDir();
   const file = join(dir, 'personal-evil.txt');
   const catastrophicShape = ['(', 'a+', ')+$'].join('');
@@ -506,12 +546,38 @@ test('a catastrophically backtracking PERSONAL pattern is aborted without ever n
   );
 });
 
-test('a catastrophically backtracking pattern is aborted rather than left to hang the scanner', () => {
+test('a catastrophically backtracking pattern is aborted rather than left to hang the scanner', { timeout: 8000 }, () => {
   const patterns = loadPatterns({ configPatterns: ['(a+)+$'] });
   const evilLine = 'a'.repeat(40) + '!'; // never matches "$", forces exponential backtracking
   const start = Date.now();
   assert.throws(() => scanText(evilLine, patterns), /took longer than|aborted/);
-  assert.ok(Date.now() - start < 5000, 'the abort itself must happen well under the reported ten-second hang');
+  const elapsed = Date.now() - start;
+  // Bounded on both sides: an immediate return would mean the pattern was
+  // never actually evaluated (a false pass), and anything near the
+  // reported ten-second hang would mean the internal timeout constant
+  // itself had drifted far from its intended, small value.
+  assert.ok(elapsed > 1000, `the abort happened suspiciously fast (${elapsed}ms); the pattern may not have been evaluated at all`);
+  assert.ok(elapsed < 3000, `the abort took ${elapsed}ms, far longer than the internal timeout should allow`);
+});
+
+test('a sandbox failure that is NOT a timeout is reported honestly, not relabelled as one', () => {
+  // Overriding a compiled pattern's own `exec` to throw is the only way to
+  // trigger a genuine non-timeout sandbox failure through the public API:
+  // this module's own SCAN_LINE_SRC has no other failure mode to reach
+  // from outside it. A bare catch that called every sandbox failure a
+  // timeout would send whoever reads this message chasing a
+  // catastrophically slow pattern that was never there.
+  const patterns = loadPatterns({ configPatterns: ['hit'] });
+  const hitEntry = patterns.find((p) => p.raw === 'hit');
+  hitEntry.regex.exec = () => { throw new Error('deliberate non-timeout failure'); };
+  assert.throws(
+    () => scanText('a hit here\n', patterns),
+    (err) => {
+      assert.match(err.message, /not from a timeout/);
+      assert.ok(!err.message.includes('took longer than'), 'a non-timeout failure must not be described as a timeout');
+      return true;
+    },
+  );
 });
 
 test('a pattern that matches very often on one line is bounded by the same collection cap rather than allocating without limit', () => {
@@ -583,6 +649,39 @@ test('more than the redaction span floor of one pattern matching on one line fal
 
 // --- the lastIndex reset defends against an externally reused regex ------
 
+test('maskRegion merges a span nested inside a wider one within the SAME side region, so the wider span\'s own tail is not re-exposed', () => {
+  // "ABCDEFGHIJKLMNO" (the wide match, declared first) and "DEFG" (the
+  // narrow match nested inside it, declared second) both fall inside
+  // hit's own AFTER region. Without merging, processing them as two
+  // separate clipped entries walks the masking cursor backwards (from the
+  // wide span's own end down to the narrow span's smaller end),
+  // re-exposing the part of the wide span that sits after the narrow one
+  // as raw, unmasked text.
+  const outer = 'ABCDEFGHIJKLMNO'; // 15 chars
+  const inner = 'DEFG'; // nested inside `outer` at its own offset 3, length 4
+  const patterns = loadPatterns({ configPatterns: ['hit', outer, inner] });
+  const text = `hit AA${outer}PQ\n`;
+  const result = scanText(text, patterns);
+  const hitFinding = result.matches.find((m) => m.pattern === 'hit');
+  assert.ok(hitFinding, 'the "hit" finding must be present');
+  assert.ok(!hitFinding.excerpt.includes(outer), `the wide match's own text was re-exposed whole: ${JSON.stringify(hitFinding.excerpt)}`);
+  assert.ok(!hitFinding.excerpt.includes(inner), `the nested match's own text was re-exposed: ${JSON.stringify(hitFinding.excerpt)}`);
+  // Specifically the TAIL of the wide match, past where the nested one
+  // ends, is the part a missing merge would re-expose.
+  const wideTail = outer.slice(3 + inner.length); // "HIJKLMNO"
+  assert.ok(!hitFinding.excerpt.includes(wideTail), `the wide match's own tail leaked: ${JSON.stringify(hitFinding.excerpt)}`);
+});
+
+test('maskRegion appends its trailing safe text after the last masked span, not only up to it', () => {
+  const patterns = loadPatterns({ configPatterns: ['hit', 'nbr'] });
+  const trailingSafe = 'Y'.repeat(14);
+  const text = `hitXXXnbr${trailingSafe}\n`;
+  const result = scanText(text, patterns);
+  const hitFinding = result.matches.find((m) => m.pattern === 'hit');
+  assert.ok(hitFinding, 'the "hit" finding must be present');
+  assert.ok(hitFinding.excerpt.includes(trailingSafe), `trailing safe context after the last masked span was dropped: ${JSON.stringify(hitFinding.excerpt)}`);
+});
+
 test('scanText is not thrown off by a pattern object whose lastIndex was left non-zero by unrelated prior use', () => {
   const patterns = loadPatterns({ configPatterns: ['hit'] });
   // Advance the compiled regex's lastIndex on unrelated text before ever
@@ -593,4 +692,132 @@ test('scanText is not thrown off by a pattern object whose lastIndex was left no
   const result = scanText('a hit right at the start\n', patterns);
   assert.equal(result.matches.length, 1);
   assert.equal(result.matches[0].line, 1);
+});
+
+// --- the context length is exactly twenty characters each side -----------
+
+test('the excerpt keeps exactly twenty characters of context on each side, not nineteen, not twenty-one, when more is available', () => {
+  const before = 'B'.repeat(25); // more than twenty, so this pins the cutoff precisely
+  const after = 'C'.repeat(25);
+  const patterns = loadPatterns({ configPatterns: ['secrettoken'] });
+  const result = scanText(`${before}secrettoken${after}\n`, patterns);
+  assert.equal(result.matches.length, 1);
+  const expectedBefore = 'B'.repeat(20);
+  const expectedAfter = 'C'.repeat(20);
+  assert.equal(result.matches[0].excerpt, `${expectedBefore}[REDACTED]${expectedAfter}`);
+});
+
+// --- the excerpt's total size does not scale with the match's own length -
+
+test('the excerpt does not grow with a very long match: a long token still yields a short, fixed-size excerpt', () => {
+  // ghp_ and several other generic shapes have no upper bound on length
+  // ({20,} or {10,}); a single window spanning [start - CTX, end + CTX)
+  // would grow with a committed token's own length, unbounded by this
+  // module. The two-sided design bounds the excerpt to roughly
+  // `2 * EXCERPT_CONTEXT_CHARS` plus fixed markers, regardless of how long
+  // the match itself is.
+  const patterns = loadPatterns();
+  const longToken = 'ghp_' + 'A'.repeat(2000);
+  const result = scanText(`prefix text ${longToken} trailer text\n`, patterns);
+  assert.equal(result.matches.length, 1);
+  assert.ok(result.matches[0].excerpt.length < 100, `excerpt grew with the match's own length: ${result.matches[0].excerpt.length} characters`);
+});
+
+// --- HIGH: the sort inside maskRegion, whose sibling sort was tested but
+//     this one was not -----------------------------------------------------
+
+test('redaction spans are sorted before merging: two neighbours within the SAME side region, collected out of position order, both still get masked', () => {
+  // The primary match is "hit"; two other patterns each match inside
+  // hit's own AFTER region (within twenty characters of hit's end).
+  // "zzzfar" is declared first in configPatterns and sits FURTHER RIGHT;
+  // "zzznear" is declared second and sits FURTHER LEFT, closer to "hit".
+  // Collection therefore contributes zzzfar's span to redactionSpans
+  // BEFORE zzznear's, even though zzznear's span starts earlier in the
+  // line: the two land in maskRegion's `clipped` array in that same
+  // out-of-position order. Without the sort, the merge step (which only
+  // ever widens the END of the most recently merged range, relying on
+  // ascending order to guarantee it never also needs to move the START)
+  // absorbs zzznear's span into zzzfar's without moving zzzfar's own
+  // start down to meet it, and zzznear's own text is never masked at all.
+  const patterns = loadPatterns({ configPatterns: ['hit', 'zzzfar', 'zzznear'] });
+  const text = 'hit' + 'AAA' + 'zzznear' + 'BB' + 'zzzfar' + '\n';
+  const result = scanText(text, patterns);
+  assert.equal(result.matches.length, 3);
+  const hitFinding = result.matches.find((m) => m.pattern === 'hit');
+  assert.ok(hitFinding, 'the "hit" finding must be present');
+  assert.ok(!hitFinding.excerpt.includes('zzznear'), `zzznear leaked verbatim in hit's own excerpt: ${JSON.stringify(hitFinding.excerpt)}`);
+  assert.ok(!hitFinding.excerpt.includes('zzzfar'), `zzzfar leaked verbatim in hit's own excerpt: ${JSON.stringify(hitFinding.excerpt)}`);
+});
+
+// --- HIGH: an aggregate deadline for the whole scan, not only per unit ---
+
+test('scanText enforces an aggregate deadline across the whole scan, not only a per-line, per-pattern one', () => {
+  // Twenty ordinary, fast lines each cost only a few microseconds against
+  // "hit", nowhere near the per-evaluation SCAN_TIMEOUT_MS. Overriding the
+  // AGGREGATE deadline to something a handful of lines will clear proves
+  // the mechanism fires from accumulation, not from any single slow
+  // evaluation: no per-unit call here is remotely close to slow.
+  const patterns = loadPatterns({ configPatterns: ['hit'] });
+  const manyFastLines = Array.from({ length: 5000 }, () => 'a hit here').join('\n');
+  assert.throws(
+    () => scanText(manyFastLines, patterns, { overallTimeoutMs: 1 }),
+    /overall scan exceeded its 1ms deadline/,
+  );
+});
+
+test('scanText completes normally when the aggregate deadline is generous', () => {
+  const patterns = loadPatterns({ configPatterns: ['hit'] });
+  const lines = Array.from({ length: 20 }, () => 'a hit here').join('\n');
+  const result = scanText(lines, patterns, { overallTimeoutMs: 5000 });
+  assert.equal(result.total, 20);
+});
+
+test('an invalid overallTimeoutMs falls back to this module\'s own default rather than disabling the deadline', () => {
+  const patterns = loadPatterns({ configPatterns: ['hit'] });
+  for (const bad of [0, -5, NaN, 'never', undefined]) {
+    const result = scanText('a hit here\n', patterns, { overallTimeoutMs: bad });
+    assert.equal(result.matches.length, 1, `overallTimeoutMs=${String(bad)} must not break an ordinary scan`);
+  }
+});
+
+// --- NUL bytes are removed, not replaced: column numbers reflect that ----
+
+test('null bytes are stripped from the text entirely, not replaced by a placeholder character: a match after them reports the column it has once they are gone', () => {
+  const NUL = String.fromCharCode(0);
+  const patterns = loadPatterns({ configPatterns: ['hit'] });
+  const text = `${NUL}${NUL}${NUL}hit\n`;
+  const result = scanText(text, patterns);
+  assert.equal(result.matches.length, 1);
+  // If the three NUL bytes were replaced by a placeholder character
+  // instead of removed, "hit" would sit at column 4; stripped outright, it
+  // sits at column 1.
+  assert.equal(result.matches[0].column, 1);
+});
+
+// --- the empty-string override for BRAIN_KIT_LEAK_PATTERNS falls back ----
+
+test('an empty string for BRAIN_KIT_LEAK_PATTERNS falls back to the default path rather than being treated as a literal, useless path', () => {
+  const fakeHome = tempDir();
+  const realHome = process.env.HOME;
+  process.env.HOME = fakeHome;
+  try {
+    assert.throws(
+      () => loadPatterns({ env: { BRAIN_KIT_LEAK_PATTERNS: '' } }),
+      (err) => {
+        assert.match(err.message, /\.config[/\\]brain-kit[/\\]leak-patterns\.txt/);
+        return true;
+      },
+    );
+  } finally {
+    process.env.HOME = realHome;
+  }
+});
+
+// --- GENERIC_PATTERNS is actually frozen, not merely declared const ------
+
+test('GENERIC_PATTERNS is frozen: attempting to mutate it has no effect', () => {
+  assert.equal(Object.isFrozen(GENERIC_PATTERNS), true);
+  const before = [...GENERIC_PATTERNS];
+  assert.throws(() => { GENERIC_PATTERNS.push('should not be allowed'); }, TypeError);
+  assert.deepEqual([...GENERIC_PATTERNS], before);
 });
