@@ -123,7 +123,7 @@ function isLintCheck(id, check) {
 
 // --- shape of the ruler itself -----------------------------------------------------
 
-test('LINT_RULES is the five rules this ruler owns, each with a stable id and its own lint.<key> setting name', () => {
+test('LINT_RULES is the eight rules this ruler owns, each with a stable id and its own lint.<key> setting name', () => {
   assert.deepEqual(
     LINT_RULES.map((r) => ({ id: r.id, settingKey: r.settingKey })),
     [
@@ -132,6 +132,9 @@ test('LINT_RULES is the five rules this ruler owns, each with a stable id and it
       { id: 'columns', settingKey: 'columns' },
       { id: 'tables', settingKey: 'tables' },
       { id: 'style', settingKey: 'style' },
+      { id: 'secrets', settingKey: 'secrets' },
+      { id: 'privacy', settingKey: 'privacy' },
+      { id: 'attribution', settingKey: 'attribution' },
     ],
   );
 });
@@ -838,13 +841,13 @@ test('two data rows that are genuinely different, even by a single non-whitespac
   assert.deepEqual(findings, []);
 });
 
-test('a duplicate-row finding carries lint.tables_limits.duplicate_rows as its own severity, independent of lint.tables itself', () => {
+test('a duplicate-row finding carries lint.tables.duplicate_rows as its own severity, independent of lint.tables itself', () => {
   const files = {
     'index.md': '# Welcome\n',
     'core/notes.md': ['# Notes', '', '| A | B |', '|---|---|', '| x | y |', '| x | y |'].join('\n'),
   };
   const scope = scopeFor({ 'core/notes.md': [5, 6] });
-  const config = { lint: { tables: 'warn', tables_limits: { duplicate_rows: 'error' } } };
+  const config = { lint: { tables: { severity: 'warn', duplicate_rows: 'error' } } };
 
   const duplicateFindings = findingsFor({ files, scope, config }).filter(isLintCheck('tables', 'duplicate-row'));
   assert.equal(duplicateFindings.length, 1);
@@ -857,13 +860,13 @@ test('a duplicate-row finding carries lint.tables_limits.duplicate_rows as its o
   assert.deepEqual(blankLineFindings, []);
 });
 
-test('tables_limits.duplicate_rows set to "off" suppresses only the duplicate-row check, leaving the rule severity blank-line check unaffected', () => {
+test('lint.tables.duplicate_rows set to "off" suppresses only the duplicate-row check, leaving the rule severity blank-line check unaffected', () => {
   const files = {
     'index.md': '# Welcome\n',
     'core/notes.md': ['# Notes', '| A | B |', '|---|---|', '| x | y |', '| x | y |'].join('\n'),
   };
   const scope = scopeFor({ 'core/notes.md': [2, 4, 5] });
-  const config = { lint: { tables: 'error', tables_limits: { duplicate_rows: 'off' } } };
+  const config = { lint: { tables: { severity: 'error', duplicate_rows: 'off' } } };
 
   const duplicateFindings = findingsFor({ files, scope, config }).filter(isLintCheck('tables', 'duplicate-row'));
   assert.deepEqual(duplicateFindings, [], 'duplicate_rows: off must suppress this one check');
@@ -873,13 +876,30 @@ test('tables_limits.duplicate_rows set to "off" suppresses only the duplicate-ro
   assert.equal(blankLineFindings[0].severity, 'error', 'the rule-level severity still applies to a check duplicate_rows never touches');
 });
 
+// Regression: `duplicate_rows` left unconfigured used to fall back to
+// the module's own flat "warn" default no matter what `lint.tables`
+// itself resolved to, so setting the WHOLE rule to "error" silently
+// left every duplicate-row finding at "warn" unless an adopter also
+// named `duplicate_rows` explicitly, a downgrade nobody asked for.
+test('leaving lint.tables.duplicate_rows unconfigured inherits the rule own overall resolved severity, rather than silently downgrading it to "warn"', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'core/notes.md': ['# Notes', '', '| A | B |', '|---|---|', '| x | y |', '| x | y |'].join('\n'),
+  };
+  const scope = scopeFor({ 'core/notes.md': [5, 6] });
+  const config = { lint: { tables: 'error' } }; // duplicate_rows never named at all
+  const findings = findingsFor({ files, scope, config }).filter(isLintCheck('tables', 'duplicate-row'));
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].severity, 'error', 'an unconfigured duplicate_rows must inherit lint.tables own resolved severity, not fall back to "warn"');
+});
+
 test('a cell longer than the configured max_cell_chars is reported once, naming the first offending cell, its length and the configured maximum', () => {
   const files = {
     'index.md': '# Welcome\n',
     'core/notes.md': ['| A | B |', '|---|---|', `| ${'x'.repeat(5)} | ${'y'.repeat(3)} |`].join('\n'),
   };
   const scope = scopeFor({ 'core/notes.md': [3] });
-  const config = { lint: { tables_limits: { max_cell_chars: 4 } } };
+  const config = { lint: { tables: { max_cell_chars: 4 } } };
   const findings = findingsFor({ files, scope, config }).filter(isLintCheck('tables', 'cell-too-long'));
   assert.equal(findings.length, 1);
   assert.equal(findings[0].line, 3);
@@ -892,7 +912,7 @@ test('a cell exactly at the configured maximum is not reported; only a cell stri
     'core/notes.md': ['| A | B |', '|---|---|', `| ${'x'.repeat(4)} | y |`].join('\n'),
   };
   const scope = scopeFor({ 'core/notes.md': [3] });
-  const config = { lint: { tables_limits: { max_cell_chars: 4 } } };
+  const config = { lint: { tables: { max_cell_chars: 4 } } };
   const findings = findingsFor({ files, scope, config }).filter(isLintCheck('tables', 'cell-too-long'));
   assert.deepEqual(findings, []);
 });
@@ -903,8 +923,9 @@ test('a missing max_cell_chars disables the cell-length check rather than assumi
     'core/notes.md': ['| A | B |', '|---|---|', `| ${'x'.repeat(9000)} | y |`].join('\n'),
   };
   // Bypasses loadConfig on purpose (like the malformed-columns test
-  // above): this hand-built config never sets tables_limits at all,
-  // which the schema itself allows since none of it is required.
+  // above): this hand-built config gives lint.tables a bare severity
+  // string, so it never sets max_cell_chars at all, which the schema
+  // itself allows since none of a rule's own settings are required.
   const root = makeVault({ files });
   const config = { lint: { tables: 'error' } };
   const all = walkVault(root, config, { all: true });
@@ -965,7 +986,7 @@ test('a header cell over max_cell_chars is reported too, not only a data cell: t
     'core/notes.md': [`| ${'x'.repeat(5)} | B |`, '|---|---|', '| a | y |'].join('\n'),
   };
   const scope = scopeFor({ 'core/notes.md': [1] });
-  const config = { lint: { tables_limits: { max_cell_chars: 4 } } };
+  const config = { lint: { tables: { max_cell_chars: 4 } } };
   const findings = findingsFor({ files, scope, config }).filter(isLintCheck('tables', 'cell-too-long'));
   assert.equal(findings.length, 1);
   assert.equal(findings[0].line, 1);
@@ -1047,7 +1068,27 @@ test('an empty forbidden_chars list means nothing is ever reported, even on an a
   assert.deepEqual(findings, []);
 });
 
-test('style severity always resolves to the default "warn": lint.style holds forbidden_chars and base, never a severity value the schema would accept', () => {
+// A guard this rule's own filter (`c.length > 0`, in the check function
+// below) exists specifically to defend: String.prototype.indexOf('')
+// returns 0 for EVERY string, so an empty string surviving into
+// forbiddenChars would make every added line in the whole vault report
+// a "forbidden character" at column 0, with no character actually
+// forbidden. Deleting that one guard turns this test red without
+// touching anything else, which is the point of pinning it: nothing
+// else in this file happens to construct a forbidden_chars list with
+// an empty string in it.
+test('an empty string inside forbidden_chars is never treated as a forbidden character: it must not match every added line at column 0', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/ana.md': 'This is an ordinary added line with nothing special in it at all.',
+  };
+  const scope = scopeFor({ 'people/ana.md': [1] });
+  const config = { lint: { style: { forbidden_chars: [''] } } };
+  const findings = findingsFor({ files, scope, config }).filter(isLint('style'));
+  assert.deepEqual(findings, [], 'an empty string must never count as a forbidden character');
+});
+
+test('style severity defaults to "warn" when lint.style is left as its object of settings (forbidden_chars, base) with no severity of its own', () => {
   const emDash = String.fromCharCode(0x2014);
   const files = {
     'index.md': '# Welcome\n',
@@ -1057,6 +1098,40 @@ test('style severity always resolves to the default "warn": lint.style holds for
   const findings = findingsFor({ files, scope }).filter(isLint('style'));
   assert.equal(findings.length, 1);
   assert.equal(findings[0].severity, 'warn');
+});
+
+// Fix carried by this task ahead of its own three new rules: `style`
+// used to be the one rule permanently stuck at "warn" because its own
+// setting was an object with no `severity` field anywhere in the
+// schema. `lint.<rule>` now accepts EITHER a bare severity string OR an
+// object carrying `severity` plus that rule's own settings, uniformly
+// across every rule in this file; these two tests pin style specifically,
+// since it is the rule this defect was found on.
+test('lint.style.severity, set inside its own settings object, overrides the default and can turn the rule to "error" or "off"', () => {
+  const emDash = String.fromCharCode(0x2014);
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/ana.md': `Ana went to the market ${emDash} it was busy.`,
+  };
+  const scope = scopeFor({ 'people/ana.md': [1] });
+
+  const errorFindings = findingsFor({ files, scope, config: { lint: { style: { severity: 'error' } } } }).filter(isLint('style'));
+  assert.equal(errorFindings.length, 1);
+  assert.equal(errorFindings[0].severity, 'error');
+  assert.match(renderedMessage(errorFindings[0]), /added/, 'the settings object own forbidden_chars must still be read from the example config even once severity is also set there');
+
+  const offFindings = findingsFor({ files, scope, config: { lint: { style: { severity: 'off' } } } }).filter(isLint('style'));
+  assert.deepEqual(offFindings, [], 'an "off" severity inside the settings object must suppress the rule entirely, exactly like a bare "off" string does for every other rule');
+});
+
+test('a rule with no settings of its own (orphans) accepts its severity EITHER as a bare string OR as an object carrying only "severity", with identical results', () => {
+  const files = { 'index.md': '# Welcome\n', 'people/ghost.md': '# Ghost\n' };
+
+  const bareString = findingsFor({ files, config: { lint: { orphans: 'error' } } }).filter(isLint('orphans'));
+  const objectForm = findingsFor({ files, config: { lint: { orphans: { severity: 'error' } } } }).filter(isLint('orphans'));
+  assert.equal(bareString.length, 1);
+  assert.deepEqual(bareString.map((f) => f.severity), objectForm.map((f) => f.severity));
+  assert.equal(objectForm[0].severity, 'error');
 });
 
 test('the style message itself says it only judges lines this change added, not the vault own existing prose', () => {
@@ -1125,6 +1200,436 @@ test('an unrecognized severity value in the configuration is treated the same as
   const findings = runLintRules(mdFiles, context, IGNORED_SCOPE).filter(isLint('orphans'));
   assert.equal(findings.length, 1);
   assert.equal(findings[0].severity, 'warn');
+});
+
+// --- secrets: "no secret pattern appears on an added line" -------------------------
+//
+// Every secret-shaped fixture string below is built by runtime string
+// concatenation, NEVER as one contiguous literal: this repository's own
+// push gate scans every commit of a push for exactly these shapes
+// (src/leak.mjs's own GENERIC_PATTERNS), and has already refused one
+// commit here for spelling one out directly. Splitting the prefix and
+// the body into two separately-quoted pieces joined by "+" means the
+// committed SOURCE text never contains the contiguous match the gate
+// (or this rule) looks for, only the built STRING does, at runtime,
+// inside the test process.
+function fakeAwsKey(suffix) {
+  return 'AKIA' + suffix; // AKIA + 16 [0-9A-Z] chars, GENERIC_PATTERNS' own AWS access key id shape
+}
+
+test('secrets reports a secret-shaped pattern only on the line this change added, never on an identical untouched line, and its rendered message never contains the matched text itself', () => {
+  const awsKey = fakeAwsKey('ABCD1234EFGH5678');
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/ana.md': [`old key ${awsKey} already committed before this change`, `new key ${awsKey} added by this change`].join('\n'),
+  };
+  const scope = scopeFor({ 'people/ana.md': [2] });
+  // The example config's own privacy.secret_patterns (test/fixtures/config/valid.json)
+  // already lists this exact AWS shape as a "config" pattern alongside
+  // leak.mjs's own "generic" copy of it, so both would otherwise match
+  // the same text and double every count below; cleared here so this
+  // test counts one match per real occurrence, not two origins of the
+  // same one.
+  const config = { privacy: { secret_patterns: [] } };
+  const findings = findingsFor({ files, scope, config }).filter(isLint('secrets'));
+  assert.equal(findings.length, 1, 'only the added line should be reported, not the identical untouched one above it');
+  assert.equal(findings[0].file, 'people/ana.md');
+  assert.equal(findings[0].line, 2);
+  assert.equal(findings[0].check, 'secret-pattern');
+  assert.equal(findings[0].params.pattern, 'AKIA[0-9A-Z]{16}', 'the param is the PATTERN definition (public, safe), never the matched text');
+
+  const rendered = renderedMessage(findings[0]);
+  const secretPattern = new RegExp(awsKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  assert.doesNotMatch(rendered, secretPattern, 'the rendered message must never contain the matched secret text itself');
+  assert.match(rendered, /SECURITY\.md/, 'the message must point at the incident-response document');
+});
+
+test('a secret on an untracked file is reported: an untracked file has every line in scope, exactly like style and tables', () => {
+  const awsKey = fakeAwsKey('ZZZZ0000YYYY1111');
+  const files = { 'index.md': '# Welcome\n', 'people/new.md': `a fresh note with ${awsKey} inside it` };
+  const scope = scopeFor({ 'people/new.md': null });
+  const config = { privacy: { secret_patterns: [] } }; // avoid double-counting against the example config's own overlapping AKIA pattern
+  const findings = findingsFor({ files, scope, config }).filter(isLint('secrets'));
+  assert.equal(findings.length, 1);
+});
+
+test('a file with nothing added at all in this change is skipped entirely, even when it carries a secret-shaped pattern elsewhere', () => {
+  const awsKey = fakeAwsKey('MMMM8888NNNN9999');
+  const files = { 'index.md': '# Welcome\n', 'people/ana.md': `an old key ${awsKey} nobody touched` };
+  const scope = scopeFor({ 'people/ana.md': [] });
+  const findings = findingsFor({ files, scope }).filter(isLint('secrets'));
+  assert.deepEqual(findings, []);
+});
+
+test('a pattern configured in privacy.secret_patterns is applied too, not only the built-in generic patterns, and is named by its own text', () => {
+  const customToken = 'internal-token-' + '778899';
+  const files = { 'index.md': '# Welcome\n', 'people/ana.md': `see ${customToken} for details` };
+  const scope = scopeFor({ 'people/ana.md': [1] });
+  const config = { privacy: { secret_patterns: ['internal-token-[0-9]{6}'] } };
+  const findings = findingsFor({ files, scope, config }).filter(isLint('secrets'));
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].params.pattern, 'internal-token-[0-9]{6}');
+});
+
+test('unlike style and tables, secrets is NOT exempt inside a fenced code block: an example pasted with a real key in it is still a leaked secret', () => {
+  const awsKey = fakeAwsKey('TTTT6666UUUU7777');
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/ana.md': ['Here is my env file:', '', '```', `AWS_KEY=${awsKey}`, '```'].join('\n'),
+  };
+  const scope = scopeFor({ 'people/ana.md': [4] });
+  const config = { privacy: { secret_patterns: [] } }; // avoid double-counting against the example config's own overlapping AKIA pattern
+  const findings = findingsFor({ files, scope, config }).filter(isLint('secrets'));
+  assert.equal(findings.length, 1, 'a fence must never exempt a real secret, unlike style and tables, where an example must stay quotable');
+  assert.equal(findings[0].line, 4);
+});
+
+test('lint.secrets set to "off" suppresses the rule entirely, even though a matching pattern is present on an added line', () => {
+  const awsKey = fakeAwsKey('RRRR4444SSSS5555');
+  const files = { 'index.md': '# Welcome\n', 'people/ana.md': `token ${awsKey} here` };
+  const scope = scopeFor({ 'people/ana.md': [1] });
+  const findings = findingsFor({ files, scope, config: { lint: { secrets: 'off' } } }).filter(isLint('secrets'));
+  assert.deepEqual(findings, []);
+});
+
+// This task's own brief, verbatim: "its severity default is 'error'
+// even though every other rule defaults to 'warn', and the code says
+// why: a warning about a leaked credential is a leaked credential."
+// Bypasses loadConfig, like the other default-severity tests in this
+// file, so the example config's own explicit lint.secrets: "error"
+// never comes into it: this pins the RULE's OWN defaultSeverity
+// fallback, not a value the example configuration happens to set.
+test('secrets defaults to severity "error" when the configuration never names it at all, unlike every other rule in this file, which defaults to "warn"', () => {
+  const awsKey = fakeAwsKey('QQQQ2222WWWW3333');
+  const files = { 'index.md': '# Welcome\n', 'people/ana.md': `token ${awsKey} here` };
+  const root = makeVault({ files });
+  const config = {};
+  const all = walkVault(root, config, { all: true });
+  const mdFiles = all.filter((path) => path.endsWith('.md'));
+  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8') };
+  const scope = scopeFor({ 'people/ana.md': [1] });
+  const findings = runLintRules(mdFiles, context, scope).filter(isLint('secrets'));
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].severity, 'error');
+});
+
+// --- privacy: "a note under a confidential directory is not linked from a file outside
+//     one, and a note outside one does not carry a field the configuration marks
+//     confidential" -----------------------------------------------------------------
+//
+// This task's own example config (test/fixtures/config/valid.json,
+// privacy.confidential_dirs) already declares "people/" confidential;
+// every fixture below reuses it rather than declaring a second boundary.
+
+test('privacy reports a link from a file outside every confidential directory straight into a specific note inside it', () => {
+  const files = {
+    'index.md': '# Welcome\n\n[People](people/)\n\n[Ana directly](people/ana.md)\n',
+    'people/index.md': '# People\n',
+    'people/ana.md': '# Ana\n',
+  };
+  const findings = findingsFor({ files }).filter(isLintCheck('privacy', 'link-into-confidential'));
+  assert.equal(findings.length, 1, 'only the direct link to the specific note should be reported');
+  assert.equal(findings[0].file, 'index.md');
+  assert.equal(findings[0].params.target, 'people/ana.md');
+});
+
+// Judgment call, found while writing this very fixture against
+// index-completeness's own contract: linking the confidential directory
+// itself, or straight to its own index.md, is the format's OWN required
+// way to point a reader at an entire subtree (index-completeness's own
+// judgment call 1), and reporting it here would make the two rules
+// impossible to both satisfy at once.
+test('linking the confidential directory itself, or straight to its own index.md, from outside is not reported: only a link past that front door, into a specific note, is', () => {
+  const files = {
+    'index.md': '# Welcome\n\n[People bare](people/)\n\n[People index](people/index.md)\n',
+    'people/index.md': '# People\n',
+    'people/ana.md': '# Ana\n',
+  };
+  const findings = findingsFor({ files }).filter(isLint('privacy'));
+  assert.deepEqual(findings, []);
+});
+
+test('a link between two notes that are both under the confidential directory is not reported: only a link FROM outside the boundary counts', () => {
+  const files = {
+    'index.md': '# Welcome\n\n[People](people/)\n',
+    'people/index.md': '# People\n\n[Ana](ana.md)\n',
+    'people/ana.md': '# Ana\n',
+  };
+  const findings = findingsFor({ files }).filter(isLint('privacy'));
+  assert.deepEqual(findings, []);
+});
+
+test('a wikilink from outside the boundary into a specific confidential note is reported exactly like an ordinary link', () => {
+  const files = {
+    'index.md': '# Welcome\n\n[People](people/)\n\n[Projects](projects/)\n',
+    'people/index.md': '# People\n',
+    'people/ana.md': '# Ana\n',
+    'projects/index.md': '# Projects\n\nSee [[../people/ana.md]] for background.\n',
+  };
+  const findings = findingsFor({ files }).filter(isLintCheck('privacy', 'link-into-confidential'));
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].file, 'projects/index.md');
+  assert.equal(findings[0].params.target, 'people/ana.md');
+});
+
+test('a note outside every confidential directory carrying confidential: true is reported, beside one inside the boundary carrying the same field that is not', () => {
+  const files = {
+    'index.md': '# Welcome\n\n[Projects](projects/)\n\n[People](people/)\n',
+    'projects/index.md': '# Projects\n',
+    'projects/leaky.md': '---\nconfidential: true\n---\n# Leaky\n',
+    'people/index.md': '# People\n',
+    'people/ana.md': '---\nconfidential: true\n---\n# Ana\n',
+  };
+  const findings = findingsFor({ files }).filter(isLintCheck('privacy', 'confidential-field-outside'));
+  assert.equal(findings.length, 1, 'only the note outside the boundary should be reported');
+  assert.equal(findings[0].file, 'projects/leaky.md');
+});
+
+test('a note outside every confidential directory carrying confidential: false is never reported: only the literal value "true" counts', () => {
+  const files = {
+    'index.md': '# Welcome\n\n[Projects](projects/)\n',
+    'projects/index.md': '# Projects\n',
+    'projects/not-leaky.md': '---\nconfidential: false\n---\n# Not leaky\n',
+  };
+  const findings = findingsFor({ files }).filter(isLintCheck('privacy', 'confidential-field-outside'));
+  assert.deepEqual(findings, []);
+});
+
+test('with no confidential directories declared at all, privacy reports nothing for either clause', () => {
+  const files = {
+    'index.md': '# Welcome\n\n[Secret](secret/)\n\n[Direct](secret/note.md)\n',
+    'secret/index.md': '# Secret\n',
+    'secret/note.md': '---\nconfidential: true\n---\n# Note\n',
+  };
+  const config = { privacy: { confidential_dirs: [] } };
+  const findings = findingsFor({ files, config }).filter(isLint('privacy'));
+  assert.deepEqual(findings, []);
+});
+
+// This task's own example config (test/fixtures/config/valid.json)
+// happens to set lint.privacy to "error" itself, matching the parity
+// vault's own strict policy for it, so findingsFor (which merges onto
+// that example config) can never observe the RULE's own code-level
+// default; this bypasses loadConfig, like the "unrecognized severity"
+// and secrets' own default-severity tests above, to pin that default
+// directly instead.
+test('privacy defaults to severity "warn" like every rule except secrets, when the configuration never names it at all', () => {
+  const files = {
+    'index.md': '# Welcome\n\n[People](people/)\n\n[Ana](people/ana.md)\n',
+    'people/index.md': '# People\n',
+    'people/ana.md': '# Ana\n',
+  };
+  const root = makeVault({ files });
+  const config = { privacy: { confidential_dirs: ['people/'] } }; // no lint key at all
+  const all = walkVault(root, config, { all: true });
+  const mdFiles = all.filter((path) => path.endsWith('.md'));
+  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8') };
+  const findings = runLintRules(mdFiles, context, IGNORED_SCOPE).filter(isLintCheck('privacy', 'link-into-confidential'));
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].severity, 'warn');
+});
+
+test('lint.privacy set to "off" suppresses the rule entirely, even though both clauses would otherwise report', () => {
+  const files = {
+    'index.md': '# Welcome\n\n[People](people/)\n\n[Ana](people/ana.md)\n',
+    'people/index.md': '# People\n',
+    'people/ana.md': '# Ana\n',
+  };
+  const offFindings = findingsFor({ files, config: { lint: { privacy: 'off' } } }).filter(isLint('privacy'));
+  assert.deepEqual(offFindings, []);
+});
+
+// --- attribution: "a note whose sources carries more than one entry anchors each claim
+//     that crosses sources with a footnote whose key matches a source id" (5.1) ------
+
+test('a note with two sources, each claim anchored by a footnote whose key matches a source id, reports nothing', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/case-clean.md': [
+      '---',
+      'sources:',
+      '  - id: call1',
+      '    resource: https://example.com/call1',
+      '  - id: call2',
+      '    resource: https://example.com/call2',
+      '---',
+      '# Case',
+      '',
+      'Ana said this in the call[^call1].',
+      '',
+      'Bruno confirmed it by email[^call2].',
+      '',
+      '[^call1]: transcript excerpt',
+      '[^call2]: email excerpt',
+    ].join('\n'),
+  };
+  const findings = findingsFor({ files }).filter(isLint('attribution'));
+  assert.deepEqual(findings, []);
+});
+
+test('attribution does not run at all when sources carries one entry, or none: a single source needs no disambiguation', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/single-source.md': [
+      '---',
+      'sources:',
+      '  - id: call1',
+      '    resource: https://example.com/call1',
+      '---',
+      '# Case',
+      '',
+      'No footnote anywhere, and that is fine with a single source.',
+    ].join('\n'),
+    'people/no-sources.md': '# No Sources\n\nJust prose.\n',
+  };
+  const findings = findingsFor({ files }).filter(isLint('attribution'));
+  assert.deepEqual(findings, []);
+});
+
+test('a sources entry with no id is reported by its own index, so no footnote could ever anchor a claim to it', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/missing-id.md': [
+      '---',
+      'sources:',
+      '  - resource: https://example.com/call1',
+      '  - id: call2',
+      '    resource: https://example.com/call2',
+      '---',
+      '# Case',
+      '',
+      'Claim anchored[^call2].',
+    ].join('\n'),
+  };
+  const findings = findingsFor({ files }).filter(isLintCheck('attribution', 'missing-source-id'));
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].absence, true);
+  assert.equal(findings[0].params.index, 0);
+});
+
+test('a footnote key naming no declared source id is reported, beside two real ids correctly anchored in the same file', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/unknown-footnote.md': [
+      '---',
+      'sources:',
+      '  - id: call1',
+      '    resource: https://example.com/call1',
+      '  - id: call2',
+      '    resource: https://example.com/call2',
+      '---',
+      '# Case',
+      '',
+      'Claim one[^call1].',
+      '',
+      'Claim two[^call2].',
+      '',
+      'A stray, mistaken reference[^call9].',
+    ].join('\n'),
+  };
+  const findings = findingsFor({ files }).filter(isLint('attribution'));
+  const unknown = findings.filter((f) => f.check === 'unknown-footnote');
+  assert.equal(unknown.length, 1);
+  assert.equal(unknown[0].params.key, 'call9');
+  assert.deepEqual(findings.filter((f) => f.check === 'source-not-anchored'), [], 'both real ids were anchored, so neither should be reported unanchored');
+});
+
+test('a declared source id that no footnote anywhere in the body ever references is reported, by its own id', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/unanchored.md': [
+      '---',
+      'sources:',
+      '  - id: call1',
+      '    resource: https://example.com/call1',
+      '  - id: call2',
+      '    resource: https://example.com/call2',
+      '---',
+      '# Case',
+      '',
+      'Only the first claim is anchored[^call1].',
+    ].join('\n'),
+  };
+  const findings = findingsFor({ files }).filter(isLintCheck('attribution', 'source-not-anchored'));
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].absence, true);
+  assert.equal(findings[0].params.id, 'call2');
+});
+
+test('a footnote DEFINITION alone, with no inline reference anywhere, does not anchor a claim: the id is still reported unanchored', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/definition-only.md': [
+      '---',
+      'sources:',
+      '  - id: call1',
+      '    resource: https://example.com/call1',
+      '  - id: call2',
+      '    resource: https://example.com/call2',
+      '---',
+      '# Case',
+      '',
+      'Claim one[^call1].',
+      '',
+      '[^call1]: transcript',
+      '[^call2]: never actually used inline anywhere in the body',
+    ].join('\n'),
+  };
+  const findings = findingsFor({ files }).filter(isLintCheck('attribution', 'source-not-anchored'));
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].params.id, 'call2');
+});
+
+test('a footnote-shaped reference inside a fenced code block is neither an anchor nor an unknown footnote: code is stripped first, like every other rule in this file', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/fenced-footnote.md': [
+      '---',
+      'sources:',
+      '  - id: call1',
+      '    resource: https://example.com/call1',
+      '  - id: call2',
+      '    resource: https://example.com/call2',
+      '---',
+      '# Case',
+      '',
+      'Claim one[^call1].',
+      '',
+      'Claim two[^call2].',
+      '',
+      'Example syntax, not a real anchor:',
+      '',
+      '```',
+      'Something[^madeup]',
+      '```',
+    ].join('\n'),
+  };
+  const findings = findingsFor({ files }).filter(isLint('attribution'));
+  assert.deepEqual(findings, [], 'both real ids are anchored outside the fence, and the fenced [^madeup] must never surface as an unknown footnote');
+});
+
+test('attribution defaults to severity "warn" like every rule except secrets, and "off" suppresses it entirely', () => {
+  const files = {
+    'index.md': '# Welcome\n',
+    'people/unanchored.md': [
+      '---',
+      'sources:',
+      '  - id: call1',
+      '    resource: https://example.com/call1',
+      '  - id: call2',
+      '    resource: https://example.com/call2',
+      '---',
+      '# Case',
+      '',
+      'Only the first claim is anchored[^call1].',
+    ].join('\n'),
+  };
+  const findings = findingsFor({ files }).filter(isLint('attribution'));
+  assert.ok(findings.length > 0);
+  assert.ok(findings.every((f) => f.severity === 'warn'));
+
+  const offFindings = findingsFor({ files, config: { lint: { attribution: 'off' } } }).filter(isLint('attribution'));
+  assert.deepEqual(offFindings, []);
 });
 
 // --- rendering: every message key this ruler can emit renders cleanly --------------

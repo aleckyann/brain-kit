@@ -226,16 +226,54 @@
 //   actually points at in a real markdown renderer's own resolution
 //   rule for the same bracket syntax, since none is standardised. This
 //   is the cost of judgment call 3, paid once, here.
+//
+// --- Task 5: the safety rules (secrets, privacy, attribution), and one
+// configuration-shape fix carried ahead of them ---------------------------
+//
+// The fix, first, because the three rules below need somewhere to put
+// their own settings and would otherwise have invented a fourth shape
+// for it. Before this task, seven rules read `lint.<rule>` as a bare
+// severity string, `style` was an object with NO severity field at all
+// (permanently 'warn', with no way to turn it to 'error' or 'off'), and
+// `tables_limits` sat beside `lint.tables` as a sibling key that was not
+// a rule's own setting at all. `lint.<rule>` now accepts EITHER a bare
+// severity string OR an object carrying `severity` plus that rule's own
+// settings (see severityFor's own comment, below every rule
+// definition), `tables_limits` folded into `tables.max_cell_chars` and
+// `tables.duplicate_rows`, and the schema and all three configuration
+// fixtures follow. This is the same defect as the columns object one
+// task earlier (this file's own fix round 1, item 1), in different
+// clothes: a configuration shape that makes one kind of thing
+// impossible to say.
+//
+// The three rules themselves, each documented at its own definition
+// below (search "--- secrets", "--- privacy", "--- attribution"):
+// `secrets` calls src/leak.mjs and never writes its own regular
+// expression, is scoped to added lines like `style`, and defaults to
+// 'error' where every other rule defaults to 'warn'. `privacy` reads
+// `privacy.confidential_dirs` and judges the whole vault, like
+// index-completeness, orphans and columns. `attribution` is the only
+// rule in this file that cites the Open Knowledge Format directly
+// (section 5.1), and also judges the whole vault.
 import { posix } from 'node:path';
 import { bodyPrefixLineCount, forEachInternalLink, forEachWikilink, resolveLinkPath } from './house.mjs';
-import { splitFrontmatter } from '../frontmatter.mjs';
+import { frontmatterKeyLine, readEntries, readScalar, splitFrontmatter } from '../frontmatter.mjs';
 import { stripCode } from '../markdown.mjs';
 import { classifyTargetPath, isUnderPath } from '../vault.mjs';
+import { loadPatterns, scanText } from '../leak.mjs';
 
 const RESERVED_FILENAMES = Object.freeze(['index.md', 'log.md']);
 
 function isReserved(file) {
   return RESERVED_FILENAMES.includes(posix.basename(file));
+}
+
+// A second copy of house.mjs's own private isBlank, not an export
+// reused from there: the same trivial, two-line, no-drift-possible
+// duplication this file's own header already accepts for
+// RESERVED_FILENAMES/isReserved, for the identical reason.
+function isBlank(value) {
+  return value === undefined || value === null || String(value).trim() === '';
 }
 
 // The vault path a directory's own index page must sit at: "index.md"
@@ -618,7 +656,7 @@ const columns = {
   },
 };
 
-// --- tables (lint.tables, lint.tables_limits) ---------------------------------------
+// --- tables (lint.tables, lint.tables.max_cell_chars, lint.tables.duplicate_rows) ---
 //
 // "A table is preceded by a blank line, carries no duplicated data row,
 // and no cell exceeds max_cell_chars." Ported from a real awk one-liner
@@ -657,7 +695,7 @@ const columns = {
 //   escaped pipe as literal content) is reused rather than a second,
 //   simpler row split that could disagree with it on that escape.
 // - cell-too-long: any cell (header or data), once trimmed, longer than
-//   `lint.tables_limits.max_cell_chars` is reported at its own row's
+//   `lint.tables.max_cell_chars` is reported at its own row's
 //   line, naming the first offending cell only: the same "first
 //   divergence" discipline the columns rule above already follows,
 //   because a message naming every offense on a row at once is worse
@@ -667,7 +705,7 @@ const columns = {
 //   (the same silent-skip posture columns' own judgment call 2 takes
 //   for a configured file absent from the walk).
 //
-// `lint.tables_limits.duplicate_rows` is a SEPARATE severity from
+// `lint.tables.duplicate_rows` is a SEPARATE severity from
 // `lint.tables` itself: the configuration's own schema
 // (schema/config.schema.json) gives duplicate-row detection its own
 // error/warn/off knob, distinct from the blank-line and cell-length
@@ -741,10 +779,24 @@ const tables = {
   settingKey: 'tables',
   check(files, context, scope) {
     const findings = [];
-    const maxCellCharsRaw = context.config?.lint?.tables_limits?.max_cell_chars;
+    const maxCellCharsRaw = context.config?.lint?.tables?.max_cell_chars;
     const maxCellChars = Number.isInteger(maxCellCharsRaw) && maxCellCharsRaw > 0 ? maxCellCharsRaw : null;
-    const duplicateSeverityRaw = context.config?.lint?.tables_limits?.duplicate_rows;
-    const duplicateSeverity = VALID_SEVERITIES.has(duplicateSeverityRaw) ? duplicateSeverityRaw : DEFAULT_SEVERITY;
+    // Fix (review of this task's own severity-shape change): an
+    // unconfigured `duplicate_rows` used to fall back to the module's
+    // flat DEFAULT_SEVERITY ('warn') no matter what `lint.tables` itself
+    // resolved to, so setting the WHOLE rule to 'error' silently left
+    // every duplicate-row finding at 'warn' unless an adopter ALSO named
+    // `duplicate_rows` explicitly. `duplicate_rows` is a genuine
+    // override, not an independent setting with its own default: when
+    // absent, it inherits `tables`'s OWN resolved severity (via
+    // severityFor, below, called with `tables` itself rather than a
+    // second copy of that resolution), so "set the rule to error" reads
+    // as "everything this rule reports is an error" unless something
+    // more specific says otherwise, and "off" (the one case this must
+    // still refuse to silently escalate) is guarded separately below by
+    // the check `duplicateSeverity !== 'off'`, never by this fallback.
+    const duplicateSeverityRaw = context.config?.lint?.tables?.duplicate_rows;
+    const duplicateSeverity = VALID_SEVERITIES.has(duplicateSeverityRaw) ? duplicateSeverityRaw : severityFor(tables, context.config);
 
     for (const file of files) {
       const text = context.readFile(file);
@@ -892,7 +944,383 @@ const style = {
   },
 };
 
-export const LINT_RULES = Object.freeze([indexCompleteness, orphans, columns, tables, style]);
+// --- secrets (lint.secrets, privacy.secret_patterns) --------------------------------
+//
+// "No secret pattern appears on an added line." The one rule in this
+// module whose failure cannot be undone, so it is the one with the
+// strictest contract, and its own defaultSeverity below (see
+// severityFor) is 'error' where every other rule in this file defaults
+// to 'warn': a warning about a leaked credential is a leaked
+// credential, already out, whatever this tool goes on to say about it.
+// An adopter who never touches lint.secrets still gets a failing run
+// the day one appears, not one line among warnings a busy person skims
+// past.
+//
+// This rule calls src/leak.mjs (loadPatterns, scanText) and writes NO
+// regular expression of its own: that module took two review rounds and
+// three fix rounds to earn its one hard guarantee (never print what it
+// found), and a second, independent pattern-matching implementation
+// here would be a second chance to disagree with it, exactly the hazard
+// this file's own header already names for a link scanner and a code
+// stripper. GENERIC_PATTERNS (a private key header, the two GitHub
+// token shapes, the Anthropic key shape, the AWS access key id shape,
+// the Slack token shapes) are always applied, on top of whatever the
+// vault's own `privacy.secret_patterns` adds.
+//
+// Personal patterns (BRAIN_KIT_LEAK_PATTERNS, read by loadPatterns only
+// when a caller passes an `env`) are deliberately NEVER loaded here:
+// this rule runs as part of an ordinary `brain-kit lint` invocation, on
+// whatever machine that happens to be, and a personal file missing,
+// empty or unreadable makes loadPatterns THROW by design (leak.mjs's
+// own fail-closed contract). Wiring that into every lint run would turn
+// a file that exists on one maintainer's own machine, for that
+// maintainer's own push gate, into a hard requirement for every
+// adopter's `lint` command everywhere else it does not exist. The push
+// gate (a later task) is the one caller with reason to ask for the
+// personal list, because refusing a PUSH over a missing personal file
+// is exactly what that gate exists to do; refusing an ordinary lint run
+// over the same absent file would not be failing closed, it would be
+// breaking lint on every machine that never had a reason to have one.
+//
+// Scoped to added lines, like style, and for the same reason (see that
+// rule's own header above): a vault adopting this kit arrives with
+// years of prose already committed, and a scanner that reports every
+// pre-existing match on day one is exactly the linter someone switches
+// off in its first minute. `blankLinesOutsideScope` below turns every
+// line NOT in scope into an empty string while leaving the file's own
+// line COUNT unchanged, so scanText's own line numbers still land on
+// the correct whole-file line without this rule reimplementing
+// scanText's own line-splitting or column arithmetic.
+//
+// Deliberately NOT run through stripCode first, unlike every other rule
+// in this file that reads a note's own prose: a secret pasted inside a
+// fenced code example ("here is my .env file") is still a leaked
+// secret, and treating a fence as automatically safe here would open
+// exactly the blind spot stripCode exists to create ON PURPOSE for
+// style and for tables, where an example legitimately needs to stay
+// quotable. A secret is never an example.
+//
+// A compile failure in the vault's OWN `privacy.secret_patterns` (an
+// invalid regular expression) is allowed to escape this rule as an
+// exception rather than being swallowed into a soft finding:
+// leak.mjs's own contract for a pattern that fails to compile is to
+// raise, naming the pattern, because "a skipped pattern is a hole
+// nobody sees" (leak.mjs's own header), and silently continuing a scan
+// with fewer patterns than the vault configured is exactly that hole.
+// Every OTHER rule in this file declines a malformed setting in silence
+// (see e.g. the columns rule's own comment on a malformed
+// taxonomy.columns entry); this one does not, because the two silences
+// cost differently: a malformed column contract produces a wrong
+// report about formatting, a silently narrowed secrets scan produces a
+// wrong report about whether a credential is safe to push.
+//
+// The finding's own message carries ONLY the pattern that matched
+// (`match.pattern`, always the safe, public form here: this rule's own
+// pattern list is generic-plus-config, never personal, so
+// displayPattern in leak.mjs never has occasion to substitute the
+// neutral personal label for anything this rule reports) and points at
+// SECURITY.md, this project's own incident-response document. It NEVER
+// carries `match.excerpt`: even a redacted excerpt is text derived from
+// the file's own content, and the one thing this rule must never do is
+// put content derived from a match into a log, a terminal or a CI
+// record. "Only which rule matched and where" is the finding's whole
+// message; there is no third field.
+function blankLinesOutsideScope(text, addedLines) {
+  return text
+    .split('\n')
+    .map((line, index) => (addedLines.has(index + 1) ? line : ''))
+    .join('\n');
+}
+
+const secrets = {
+  id: 'secrets',
+  settingKey: 'secrets',
+  defaultSeverity: 'error',
+  check(files, context, scope) {
+    const configuredPatterns = context.config?.privacy?.secret_patterns;
+    const configPatterns = Array.isArray(configuredPatterns) ? configuredPatterns.filter((p) => typeof p === 'string') : [];
+    const patterns = loadPatterns({ configPatterns });
+
+    const findings = [];
+    for (const file of files) {
+      const addedLines = scope.addedLines(file);
+      if (addedLines !== null && addedLines.size === 0) continue; // this change added nothing at all in this file: skip the read, like style above
+      const text = context.readFile(file);
+      const scanned = addedLines === null ? text : blankLinesOutsideScope(text, addedLines);
+      const { matches } = scanText(scanned, patterns);
+      for (const match of matches) {
+        findings.push({
+          file,
+          line: match.line,
+          check: 'secret-pattern',
+          messageKey: 'lint.secrets.pattern_matched',
+          params: { pattern: match.pattern },
+        });
+      }
+    }
+    return findings;
+  },
+};
+
+// --- privacy (lint.privacy, privacy.confidential_dirs) -------------------------------
+//
+// Two symmetric leaks, both about the one boundary the vault's own
+// configuration draws with `privacy.confidential_dirs`: a set of
+// directories the vault owner has already decided hold something that
+// must not travel further than that directory's own edge.
+//
+// Clause 1: a note under a confidential directory must never be linked
+// TO from a file that itself sits OUTSIDE every confidential directory.
+// A file outside the boundary is, by construction, a file the vault
+// owner treats as safe to read, quote or share more broadly than
+// whatever lives inside the boundary; a link from it into a
+// confidential path leaks the confidential note's own PATH (and,
+// depending on how the link renders, its title or a preview) to
+// exactly the audience the boundary exists to keep it from. Judgment
+// call: the target's path text is checked with the same isUnderPath
+// prefix test the vault's own configuration already uses to declare the
+// boundary, whether or not the target actually resolves to a real file
+// in this walk (classifyTargetPath is not consulted here at all): a
+// link into a confidential-shaped path that happens to be broken still
+// leaks a name and an intent, so this rule does not first ask whether
+// the target is real before judging where it points.
+//
+// Clause 2: a note OUTSIDE every confidential directory must not carry
+// `confidential: true` in its own frontmatter (frontmatter.extensions'
+// own "confidential" field, declared boolean in this project's example
+// configuration). A note that marks itself confidential but lives
+// outside the one boundary the vault's tooling and its owner both
+// already treat as confidential is exactly the shape of file a
+// directory-level access control, a sync rule or a sharing habit built
+// around `privacy.confidential_dirs` will never actually protect: the
+// field says "handle me carefully" in a place nothing else agrees is
+// careful.
+//
+// Both clauses read the FULL vault, like index-completeness, orphans
+// and columns (this file's own header): "is this note's own directory,
+// or the directory of whatever it links to, inside the boundary" is a
+// question about the vault's whole shape, not about what one change
+// happened to touch, and scoping either clause to added lines would let
+// an old, already-committed leak go unreported forever the moment its
+// own line stopped being "added".
+//
+// Link scanning reuses forEachInternalLink, forEachWikilink,
+// resolveLinkPath and wikilinkPathParts exactly as the orphan rule does
+// above, for the identical reason: two independent readings of "what
+// does this link resolve to" are two chances to disagree about it.
+//
+// Judgment call, found while writing this rule's own fixtures against
+// index-completeness's own contract rather than against this rule in
+// isolation: the format's OWN required way to point a reader at an
+// entire confidential subtree is a bare directory link or a link
+// straight to that directory's own index.md ("[People](people/)",
+// exactly the shape index-completeness's own judgment call 1, above,
+// already accepts as "linking the directory"). If clause 1 flagged
+// that link as a leak, this rule would contradict index-completeness's
+// own requirement that the root link every first-level directory,
+// confidential ones included: a vault could never simultaneously
+// satisfy both rules. `isConfidentialContent` below is therefore
+// STRICTER than `isUnderAnyConfidentialDir`: a link into the boundary's
+// own front door (the bare directory, or a reserved filename anywhere
+// under it, `index.md`/`log.md` per this file's own RESERVED_FILENAMES,
+// "structure, not content" exactly as the orphan rule already treats
+// them) is not itself a leak of any one note's identity; a link PAST
+// that front door, into a specific note, is.
+function isUnderAnyConfidentialDir(file, confidentialDirs) {
+  return confidentialDirs.some((dir) => isUnderPath(file, dir));
+}
+
+function isConfidentialContent(path, confidentialDirs) {
+  const strictlyInside = confidentialDirs.some((dir) => {
+    const normalized = dir.endsWith('/') ? dir.slice(0, -1) : dir;
+    return normalized !== '' && path.startsWith(`${normalized}/`);
+  });
+  return strictlyInside && !isReserved(path);
+}
+
+function reportLinkIntoConfidential(findings, file, target, line) {
+  findings.push({
+    file,
+    line,
+    check: 'link-into-confidential',
+    messageKey: 'lint.privacy.linked_into_confidential',
+    params: { target },
+  });
+}
+
+const privacy = {
+  id: 'privacy',
+  settingKey: 'privacy',
+  check(files, context) {
+    const findings = [];
+    const configuredDirs = context.config?.privacy?.confidential_dirs;
+    const confidentialDirs = Array.isArray(configuredDirs) ? configuredDirs.filter((d) => typeof d === 'string' && d.length > 0) : [];
+    if (confidentialDirs.length === 0) return findings; // nothing declared confidential: nothing for either clause to check against
+
+    for (const file of files) {
+      if (isUnderAnyConfidentialDir(file, confidentialDirs)) continue; // only a file OUTSIDE the boundary can leak across it
+
+      forEachInternalLink(file, context, (target, pathPart, fileLine) => {
+        const resolved = resolveLinkPath(file, pathPart);
+        if (isConfidentialContent(resolved, confidentialDirs)) reportLinkIntoConfidential(findings, file, resolved, fileLine);
+      });
+      forEachWikilink(file, context, (rawTarget, fileLine) => {
+        for (const pathPart of wikilinkPathParts(rawTarget)) {
+          const resolved = resolveLinkPath(file, pathPart);
+          if (isConfidentialContent(resolved, confidentialDirs)) reportLinkIntoConfidential(findings, file, resolved, fileLine);
+        }
+      });
+
+      const { frontmatter } = splitFrontmatter(context.readFile(file));
+      if (readScalar(frontmatter, 'confidential') === 'true') {
+        findings.push({
+          file,
+          line: frontmatterKeyLine(frontmatter, 'confidential'),
+          check: 'confidential-field-outside',
+          messageKey: 'lint.privacy.confidential_outside',
+          params: {},
+        });
+      }
+    }
+    return findings;
+  },
+};
+
+// --- attribution (lint.attribution) ---------------------------------------------------
+//
+// "A note whose sources carries more than one entry anchors each claim
+// that crosses sources with a footnote whose key matches a source id."
+// Open Knowledge Format, section 5.1: the only rule in this file that
+// reads the format directly rather than a house convention layered on
+// top of it (every other rule here cites this file's own header, or a
+// house record such as docs/incidents.md, instead). This rule never
+// re-reports what src/rules/spec.mjs's own sourcesResource rule (5.1)
+// already covers there: a non-blank `resource` and a well-formed
+// `last_modified` per entry. This rule only ever reads `sources` for
+// its own ids, never for those two fields.
+//
+// "Anchors each claim" cannot be verified by reading which SENTENCE a
+// fact came from: that is a judgment about meaning, not a shape this
+// rule can check. What IS a shape: every declared source has an id a
+// footnote could name, and every id that is declared is actually named
+// by at least one footnote somewhere in the body. A source nobody ever
+// footnotes is, definitionally, a source no claim in the body is
+// anchored to; a footnote key naming no declared source is a typo or a
+// stale reference, exactly what "a footnote whose key matches a source
+// id" rules out. Together these two checks are the closest a
+// shape-only reader gets to "each claim crossing sources is anchored"
+// without pretending to read the prose itself.
+//
+// Skips entirely when `sources` carries fewer than two entries (this
+// task's own brief, verbatim: "a single source needs no
+// disambiguation") or is absent, or is not the block-of-mappings shape
+// readEntries expects at all: an unreadable `sources` is
+// sourcesResource's own concern to report, not this rule's to report a
+// second time under a different messageKey.
+//
+// A footnote REFERENCE ("...as Bruno mentioned[^bruno]...") anchors a
+// claim; a footnote DEFINITION ("[^bruno]: said on the call") only
+// gives that key its text and anchors nothing by itself. The two are
+// told apart by position: a definition is the shape "[^key]:" starting
+// the line, with nothing but whitespace before it, the one place this
+// syntax is legal at the very start of a line; anywhere else, the exact
+// same bracket text is a reference sitting next to whatever claim it
+// anchors. `stripCode` runs first, exactly as every other rule in this
+// file that reads a note's own prose: a footnote key mentioned inside a
+// fenced example documenting this very syntax is not a real anchor.
+const FOOTNOTE_PATTERN = /\[\^([^\]]+)\]/g;
+
+function isFootnoteDefinition(line, matchIndex, matchLength) {
+  return line.slice(0, matchIndex).trim() === '' && line[matchIndex + matchLength] === ':';
+}
+
+// Every footnote REFERENCE (never a definition, see isFootnoteDefinition
+// above) in `strippedBody`, each tagged with its own 0-based body line
+// index. The caller cross-checks `key` against the note's own declared
+// source ids; this function knows nothing about sources at all, on
+// purpose, so it can never drift from what "a footnote reference" means
+// independently of what it is being checked against.
+function scanFootnoteReferences(strippedBody) {
+  const refs = [];
+  const lines = strippedBody.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    FOOTNOTE_PATTERN.lastIndex = 0;
+    let match;
+    while ((match = FOOTNOTE_PATTERN.exec(line)) !== null) {
+      if (isFootnoteDefinition(line, match.index, match[0].length)) continue;
+      refs.push({ key: match[1], lineIndex: i });
+    }
+  }
+  return refs;
+}
+
+const attribution = {
+  id: 'attribution',
+  settingKey: 'attribution',
+  check(files, context) {
+    const findings = [];
+    for (const file of files) {
+      const text = context.readFile(file);
+      const { frontmatter, body } = splitFrontmatter(text);
+      const sources = readEntries(frontmatter, 'sources');
+      if (sources === null || sources === undefined) continue; // absent, or a shape sourcesResource (spec.mjs) already reports as unreadable
+      if (sources.length < 2) continue; // a single source, or none, needs no disambiguation
+
+      const sourcesLine = frontmatterKeyLine(frontmatter, 'sources');
+      const ids = [];
+      sources.forEach((entry, index) => {
+        if (isBlank(entry.id)) {
+          findings.push({
+            file,
+            line: sourcesLine,
+            check: 'missing-source-id',
+            absence: true,
+            messageKey: 'lint.attribution.missing_source_id',
+            params: { index },
+          });
+          return;
+        }
+        ids.push(String(entry.id).trim());
+      });
+      if (ids.length === 0) continue; // every entry lacked an id, already reported above; nothing left to cross-check footnotes against
+
+      const idSet = new Set(ids);
+      const stripped = stripCode(body);
+      const prefixLineCount = bodyPrefixLineCount(text, body);
+      const referencedIds = new Set();
+
+      for (const { key, lineIndex } of scanFootnoteReferences(stripped)) {
+        if (idSet.has(key)) {
+          referencedIds.add(key);
+        } else {
+          findings.push({
+            file,
+            line: prefixLineCount + lineIndex,
+            check: 'unknown-footnote',
+            messageKey: 'lint.attribution.unknown_footnote',
+            params: { key },
+          });
+        }
+      }
+      for (const id of ids) {
+        if (!referencedIds.has(id)) {
+          findings.push({
+            file,
+            line: sourcesLine,
+            check: 'source-not-anchored',
+            absence: true,
+            messageKey: 'lint.attribution.source_not_anchored',
+            params: { id },
+          });
+        }
+      }
+    }
+    return findings;
+  },
+};
+
+export const LINT_RULES = Object.freeze([indexCompleteness, orphans, columns, tables, style, secrets, privacy, attribution]);
 
 const VALID_SEVERITIES = new Set(['error', 'warn', 'off']);
 const DEFAULT_SEVERITY = 'warn';
@@ -901,17 +1329,43 @@ const DEFAULT_SEVERITY = 'warn';
 // `rule.id`: index-completeness is the one rule in this array whose
 // setting name differs from its id, "index_completeness" against
 // "index-completeness", and the two must never be conflated here even
-// though every other rule's id and settingKey happen to read the same):
+// though every other rule's id and settingKey happen to read the same).
+//
+// This task's own first requirement, carried before its three new
+// rules: `lint.<rule>` now accepts EITHER a bare severity string OR an
+// object carrying `severity` plus that rule's own settings (tables'
+// `max_cell_chars`/`duplicate_rows`, style's `forbidden_chars`/`base`).
+// Before this, `style` was an object with no `severity` field AT ALL,
+// so it was permanently 'warn' with no way to configure it to 'error'
+// or 'off', and `tables_limits` sat beside `lint.tables` as a sibling
+// key that was not a rule's own setting at all, a shape the schema
+// validator (src/schema.mjs) cannot express as "one field, two shapes"
+// (it has no `oneOf`), so the object branch below reads `.severity` off
+// whatever the configuration gave it and lets `VALID_SEVERITIES` decide
+// whether that was usable, exactly as the bare-string branch always
+// did. A configured object with no `severity` key at all (every rule's
+// settings-only shape, until an adopter adds one) reads as `undefined`
+// here, which `VALID_SEVERITIES.has` correctly rejects, falling through
+// to this rule's own default below.
+//
 // 'error', 'warn' or 'off' when the configuration names one of those
-// three values explicitly, 'warn' for anything else at all, including a
-// value the schema would itself reject (a malformed hand-built config in
-// a test, or a config this function is handed before validation) - this
+// three values explicitly (as a bare string, or as `.severity` inside
+// an object), the rule's own `defaultSeverity` for anything else at
+// all -- including a value the schema would itself reject (a malformed
+// hand-built config in a test, or a config this function is handed
+// before validation) -- falling back further to `DEFAULT_SEVERITY`
+// ('warn') when a rule declares no `defaultSeverity` of its own. Only
+// `secrets` (see its own header above) declares one: 'error', because a
+// warning about a leaked credential is a leaked credential, and an
+// adopter who never touches `lint.secrets` should still get a failing
+// run the day one appears rather than a warning among warnings. This
 // rule module never trusts config shape and always has a safe default,
 // the same posture every rule in house.mjs already takes for a setting
 // it reads.
 function severityFor(rule, config) {
-  const value = config?.lint?.[rule.settingKey];
-  return VALID_SEVERITIES.has(value) ? value : DEFAULT_SEVERITY;
+  const raw = config?.lint?.[rule.settingKey];
+  const value = raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? raw.severity : raw;
+  return VALID_SEVERITIES.has(value) ? value : (rule.defaultSeverity ?? DEFAULT_SEVERITY);
 }
 
 // Runs every rule over `files`, in order, and returns their findings
@@ -933,7 +1387,7 @@ function severityFor(rule, config) {
 //
 // A finding may carry its OWN `severity`, read in preference to the one
 // rule-level severity this function otherwise stamps on everything a
-// rule returns: `lint.tables_limits.duplicate_rows` is a real,
+// rule returns: `lint.tables.duplicate_rows` is a real,
 // separately configurable severity the schema already gives one single
 // check inside the `tables` rule (see that rule's own header above), and
 // a runner that only ever had one severity per rule could not honour it

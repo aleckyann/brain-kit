@@ -139,25 +139,44 @@
     "lint": {
       "type": "object", "additionalProperties": false,
       "properties": {
-        "columns": { "type": "string", "enum": ["error", "warn", "off"] },
-        "tables": { "type": "string", "enum": ["error", "warn", "off"] },
-        "orphans": { "type": "string", "enum": ["error", "warn", "off"] },
-        "index_completeness": { "type": "string", "enum": ["error", "warn", "off"] },
-        "secrets": { "type": "string", "enum": ["error", "warn", "off"] },
-        "privacy": { "type": "string", "enum": ["error", "warn", "off"] },
-        "attribution": { "type": "string", "enum": ["error", "warn", "off"] },
-        "style": {
-          "type": "object", "additionalProperties": false,
-          "properties": {
-            "forbidden_chars": { "type": "array", "items": { "type": "string" } },
-            "base": { "type": "string", "enum": ["auto", "worktree", "merge-base", "all"] }
-          }
+        "columns": {
+          "type": ["string", "object"], "pattern": "^(error|warn|off)$", "additionalProperties": false,
+          "properties": { "severity": { "type": "string", "enum": ["error", "warn", "off"] } }
         },
-        "tables_limits": {
-          "type": "object", "additionalProperties": false,
+        "tables": {
+          "type": ["string", "object"], "pattern": "^(error|warn|off)$", "additionalProperties": false,
           "properties": {
+            "severity": { "type": "string", "enum": ["error", "warn", "off"] },
             "max_cell_chars": { "type": "integer", "minimum": 1 },
             "duplicate_rows": { "type": "string", "enum": ["error", "warn", "off"] }
+          }
+        },
+        "orphans": {
+          "type": ["string", "object"], "pattern": "^(error|warn|off)$", "additionalProperties": false,
+          "properties": { "severity": { "type": "string", "enum": ["error", "warn", "off"] } }
+        },
+        "index_completeness": {
+          "type": ["string", "object"], "pattern": "^(error|warn|off)$", "additionalProperties": false,
+          "properties": { "severity": { "type": "string", "enum": ["error", "warn", "off"] } }
+        },
+        "secrets": {
+          "type": ["string", "object"], "pattern": "^(error|warn|off)$", "additionalProperties": false,
+          "properties": { "severity": { "type": "string", "enum": ["error", "warn", "off"] } }
+        },
+        "privacy": {
+          "type": ["string", "object"], "pattern": "^(error|warn|off)$", "additionalProperties": false,
+          "properties": { "severity": { "type": "string", "enum": ["error", "warn", "off"] } }
+        },
+        "attribution": {
+          "type": ["string", "object"], "pattern": "^(error|warn|off)$", "additionalProperties": false,
+          "properties": { "severity": { "type": "string", "enum": ["error", "warn", "off"] } }
+        },
+        "style": {
+          "type": ["string", "object"], "pattern": "^(error|warn|off)$", "additionalProperties": false,
+          "properties": {
+            "severity": { "type": "string", "enum": ["error", "warn", "off"] },
+            "forbidden_chars": { "type": "array", "items": { "type": "string" } },
+            "base": { "type": "string", "enum": ["auto", "worktree", "merge-base", "all"] }
           }
         }
       }

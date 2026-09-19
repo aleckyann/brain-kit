@@ -73,5 +73,11 @@
   "lint.tables.missing_blank_line": "this table has no blank line before its header row",
   "lint.tables.duplicate_row": "this data row duplicates the row at line {line}",
   "lint.tables.cell_too_long": "cell {index} has {length} characters, over the configured maximum of {max}",
-  "lint.style.forbidden_char": "this line was added by this change and uses the forbidden character \"{char}\"; style only judges lines a change added, not prose that was already in the vault"
+  "lint.style.forbidden_char": "this line was added by this change and uses the forbidden character \"{char}\"; style only judges lines a change added, not prose that was already in the vault",
+  "lint.secrets.pattern_matched": "an added line matches a secret-shaped pattern ({pattern}); never paste, print or share the matched text, rotate the credential now and follow the incident response steps in SECURITY.md",
+  "lint.privacy.linked_into_confidential": "this file sits outside every confidential directory but links into one (\"{target}\"), exposing a confidential note from a place meant to be shared more broadly",
+  "lint.privacy.confidential_outside": "this note carries confidential: true but sits outside every directory the configuration marks confidential",
+  "lint.attribution.missing_source_id": "sources[{index}] has no id, so no footnote can ever anchor a claim to it",
+  "lint.attribution.unknown_footnote": "this footnote key (\"{key}\") matches no id in sources; per section 5.1, a footnote anchors a claim to a real source",
+  "lint.attribution.source_not_anchored": "sources declares the id \"{id}\" but no footnote in the body ever anchors a claim to it; per section 5.1, a note crossing more than one source anchors each claim"
 }

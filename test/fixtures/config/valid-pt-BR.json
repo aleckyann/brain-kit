@@ -154,7 +154,11 @@
   },
   "lint": {
     "columns": "error",
-    "tables": "error",
+    "tables": {
+      "severity": "error",
+      "max_cell_chars": 600,
+      "duplicate_rows": "error"
+    },
     "orphans": "warn",
     "index_completeness": "warn",
     "secrets": "error",
@@ -165,10 +169,6 @@
         "\u2014"
       ],
       "base": "auto"
-    },
-    "tables_limits": {
-      "max_cell_chars": 600,
-      "duplicate_rows": "error"
     }
   },
   "privacy": {

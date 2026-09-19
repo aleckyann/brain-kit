@@ -185,9 +185,9 @@ const PARITY_CONFIG = {
     timestamp_deviation: 'allow',
   },
   lint: {
-    columns: 'error', tables: 'error', orphans: 'warn', index_completeness: 'warn', secrets: 'error', privacy: 'error', attribution: 'warn',
+    columns: 'error', tables: { severity: 'error', max_cell_chars: 600, duplicate_rows: 'error' }, orphans: 'warn', index_completeness: 'warn',
+    secrets: 'error', privacy: 'error', attribution: 'warn',
     style: { forbidden_chars: ['\u2014'], base: 'auto' },
-    tables_limits: { max_cell_chars: 600, duplicate_rows: 'error' },
   },
   privacy: {
     confidential_dirs: ['pessoas/'],
