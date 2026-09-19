@@ -171,6 +171,11 @@ Two behaviours to pin: a forbidden character inside a fenced code block is not a
 
 ### Task 5: The safety lint rules
 
+**First, uniform severity, because this task adds three rules and would otherwise inherit an inconsistency and triple it.** Today seven rules are configured with a severity string, `style` is an object carrying its settings and NO severity, so it can never be set to error or off and is permanently a warning, and `tables_limits` is a sibling object that is not a rule at all. A task 4 implementer found this and disclosed it rather than papering over it.
+
+Make `lint.<rule>` accept EITHER a severity string OR an object carrying `severity` plus that rule's own settings, fold `tables_limits` into `lint.tables`, and update the schema, all three fixtures and the rules. One shape, every rule configurable, and no rule silently unconfigurable because its settings needed somewhere to live. This is the same defect as the columns object one task earlier, in a different costume: a configuration shape that makes one kind of thing impossible to say.
+
+
 **Files:**
 - Modify: `src/rules/lint.mjs`
 - Modify: `test/rules-lint.test.mjs`
