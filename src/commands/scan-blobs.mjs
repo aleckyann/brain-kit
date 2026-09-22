@@ -194,9 +194,10 @@ export function perScanBudgetMs(env) {
   return parsed;
 }
 
-// Splits the NUL-separated stream this command's stdin is built from (see
-// .githooks/pre-push, which writes it) into typed records. Every record is
-// a kind followed by exactly the fields that kind takes, each field
+// Splits the NUL-separated record stream (see src/push/records.sh, which
+// writes it, and which `push-gate` runs and hands to scanRecordStream; the
+// maintainer's hook used to write it itself) into typed records. Every
+// record is a kind followed by exactly the fields that kind takes, each field
 // NUL-terminated:
 //
 //   blob   NUL <commit> NUL <mode> NUL <path> NUL
@@ -574,21 +575,38 @@ function readPushingIdentity() {
   return `${readName} <${readEmail}>`;
 }
 
+// The personal pattern list and the per-scan budget, loaded the one way
+// both callers load them (`scan-blobs` below and `push-gate`, which hands
+// the enumeration's stream to scanRecordStream instead of reading stdin).
+// Returns null after saying why when either cannot be loaded, and null
+// REFUSES: the caller returns EXIT.FAILURE without scanning anything, which
+// is this module's fail-closed contract (see its header), kept in one place
+// so the two callers cannot come to disagree about it.
+export function preparePersonalScan(io, env = process.env) {
+  try {
+    return { patterns: loadPatterns({ env }), budgetMs: perScanBudgetMs(env) };
+  } catch (error) {
+    io.stderr.write(`pre-push: ${error.message}; refusing to push.\n`);
+    return null;
+  }
+}
+
 export async function runScanBlobs(argv, io, { metadataBatch = METADATA_BATCH } = {}) {
   // Checked before a single byte of stdin is read, and before a single git
   // call runs: see this module's own header on why the fail-closed check
   // must not be scoped to "only once something was found to scan".
-  let patterns;
-  let budgetMs;
-  try {
-    patterns = loadPatterns({ env: process.env });
-    budgetMs = perScanBudgetMs(process.env);
-  } catch (error) {
-    io.stderr.write(`pre-push: ${error.message}; refusing to push.\n`);
-    return EXIT.FAILURE;
-  }
-
+  const prepared = preparePersonalScan(io, process.env);
+  if (prepared === null) return EXIT.FAILURE;
   const raw = await readStdin(io.stdin, { encoding: 'latin1' });
+  return scanRecordStream(raw, { ...prepared, io, metadataBatch });
+}
+
+// Parses and scans one record stream (see parseEntries for its framing),
+// held as latin1 text, one character per byte. Returns the exit code: OK
+// when every channel was read and nothing matched (an exempt identity
+// aside), FAILURE otherwise. Everything a push is refused or accepted for,
+// once the stream exists, is decided here, for both callers.
+export function scanRecordStream(raw, { patterns, budgetMs, io, metadataBatch = METADATA_BATCH }) {
   let entries;
   try {
     entries = parseEntries(raw);

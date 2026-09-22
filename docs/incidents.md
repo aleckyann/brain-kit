@@ -315,7 +315,9 @@ require a shell or a userland newer than the one the people and the runners
 actually have: pin the scan to bytes with a byte locale, check the versions
 your continuous integration runs on, and where a convenience tool may be
 missing, degrade to more scanning, never to less.
-**Where it lives in brain-kit.** `.githooks/pre-push` (`remote_sha..local_sha`
+**Where it lives in brain-kit.** `src/push/records.sh`, the push enumeration
+`brain-kit push-gate` runs, moved there unchanged from `.githooks/pre-push` on
+22/09/2026 (`remote_sha..local_sha`
 for a ref the remote already has; `query_remote`'s live `git ls-remote`,
 cached per hook run, for one it does not; full-history fallback if the remote
 cannot be reached or the range fails to compute; `diff-tree -m` with a

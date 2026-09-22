@@ -143,5 +143,16 @@
   "lint.secrets_exclude_unmatched": "lint.secrets.exclude_paths cita {paths}, que n\u00e3o correspondem a nenhum arquivo que este vault publicaria, ent\u00e3o n\u00e3o excluem nada e esses arquivos foram lidos: um caminho ali \u00e9 escrito relativo \u00e0 raiz do vault, como o git o lista, sem ./ ou / no in\u00edcio.",
   "lint.secrets_other_repositories": "N\u00e3o varrido em busca de segredos: {paths}, cada um um subm\u00f3dulo ou um reposit\u00f3rio pr\u00f3prio, cujo conte\u00fado n\u00e3o est\u00e1 neste reposit\u00f3rio.",
   "lint.secrets_absent": "N\u00e3o varrido em busca de segredos: {count} arquivo(s) que o git rastreia est\u00e3o ausentes da \u00e1rvore de trabalho ({paths}), ent\u00e3o o que um commit guarda para eles n\u00e3o foi lido.",
-  "lint.list_more": "e mais {count}"
+  "lint.list_more": "e mais {count}",
+  "push_gate.usage": "Uso: brain-kit push-gate <nome-do-remoto> <url-do-remoto> --patterns personal (as linhas de referência do pre-push na entrada padrão)",
+  "push_gate.bad_argument": "brain-kit push-gate: argumento não reconhecido \"{arg}\".",
+  "push_gate.missing_remote": "brain-kit push-gate: o nome e a URL do remoto são obrigatórios, nessa ordem, como o git os entrega a um hook de pre-push; recusando em vez de adivinhar para qual remoto vai este push.",
+  "push_gate.missing_patterns": "brain-kit push-gate: --patterns é obrigatório e nomeia a lista de padrões que julga este push ({expected}); não há valor implícito, porque um valor implícito é uma lista que ninguém escolheu.",
+  "push_gate.unknown_patterns": "brain-kit push-gate: --patterns \"{value}\" não é uma lista de padrões que esta barreira conhece (esperado: {expected}); recusando em vez de varrer com uma lista que ninguém escolheu.",
+  "push_gate.git_unrunnable": "brain-kit push-gate: não foi possível executar o git ({reason}), então esta barreira não consegue perguntar o que o push contém; recusando o push.",
+  "push_gate.not_a_repository": "brain-kit push-gate: o diretório atual não está dentro de um repositório git, então não há push aqui para enumerar; recusando em vez de ler isso como um push vazio.",
+  "push_gate.enumeration_unrunnable": "brain-kit push-gate: não foi possível executar a enumeração do push, src/push/records.sh ({reason}); recusando o push sem saber o que ele carrega.",
+  "push_gate.stream_too_large": "brain-kit push-gate: a enumeração do push listou mais de {limit} bytes de registros, mais do que esta barreira lê para um push; recusando em vez de varrer só uma parte.",
+  "push_gate.enumeration_failed": "brain-kit push-gate: a enumeração do push saiu com {status}, então a lista do que este push carrega não é o push inteiro; recusando sem varrer uma lista parcial.",
+  "push_gate.enumeration_killed": "brain-kit push-gate: a enumeração do push foi interrompida pelo sinal {signal} antes de terminar, então a lista do que este push carrega não é o push inteiro; recusando sem varrer uma lista parcial."
 }

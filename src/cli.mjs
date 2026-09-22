@@ -5,6 +5,7 @@ import { runHook } from './commands/hook.mjs';
 import { runValidate } from './commands/validate.mjs';
 import { runLint } from './commands/lint.mjs';
 import { runScanBlobs } from './commands/scan-blobs.mjs';
+import { runPushGate } from './commands/push-gate.mjs';
 import { walkVault } from './vault.mjs';
 import { ConfigError } from './config.mjs';
 
@@ -26,11 +27,17 @@ import { ConfigError } from './config.mjs';
 // either. It still goes through the same command map and the same error
 // boundary as every public command, because a second, parallel dispatch
 // path for "the internal one" would be a second thing to keep correct.
+// `push-gate` is the gate behind one command (src/commands/push-gate.mjs):
+// it runs the push enumeration and hands its stream to the same scanner.
+// It is called by a pre-push hook, not by a person, so it is not listed in
+// cli.usage either; unlike scan-blobs, its own refusals are translated,
+// because it is the entry point the gate shipped to other people calls.
 const BUILTIN_COMMANDS = new Map([
   ['hook', runHook],
   ['validate', (argv, io, t) => runValidate(argv, io, t, walkVault)],
   ['lint', (argv, io, t) => runLint(argv, io, t, walkVault)],
   ['scan-blobs', (argv, io) => runScanBlobs(argv, io)],
+  ['push-gate', (argv, io, t) => runPushGate(argv, io, t)],
 ]);
 
 export async function main(argv, io, { commands = BUILTIN_COMMANDS } = {}) {

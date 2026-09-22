@@ -143,5 +143,16 @@
   "lint.secrets_exclude_unmatched": "lint.secrets.exclude_paths names {paths}, which match no file this vault would publish, so they exclude nothing and those files were read: a path there is written relative to the vault root, the way git lists it, with no leading ./ or /.",
   "lint.secrets_other_repositories": "Not scanned for secrets: {paths}, each a submodule or a repository of its own, whose content is not in this repository.",
   "lint.secrets_absent": "Not scanned for secrets: {count} file(s) git tracks are missing from the working tree ({paths}), so what a commit holds for them was not read.",
-  "lint.list_more": "and {count} more"
+  "lint.list_more": "and {count} more",
+  "push_gate.usage": "Usage: brain-kit push-gate <remote-name> <remote-url> --patterns personal (the pre-push reference lines on standard input)",
+  "push_gate.bad_argument": "brain-kit push-gate: unrecognized argument \"{arg}\".",
+  "push_gate.missing_remote": "brain-kit push-gate: the remote name and the remote URL are required, in that order, as git hands them to a pre-push hook; refusing rather than guessing which remote this push goes to.",
+  "push_gate.missing_patterns": "brain-kit push-gate: --patterns is required, naming the pattern list that judges this push ({expected}); there is no default, because a default is a list nobody chose.",
+  "push_gate.unknown_patterns": "brain-kit push-gate: --patterns \"{value}\" is not a pattern list this gate knows (expected: {expected}); refusing rather than scanning with a list nobody chose.",
+  "push_gate.git_unrunnable": "brain-kit push-gate: git could not be run ({reason}), so this gate cannot ask what the push contains; refusing to push.",
+  "push_gate.not_a_repository": "brain-kit push-gate: the current directory is not inside a git repository, so there is no push here to enumerate; refusing rather than reading that as a push with nothing in it.",
+  "push_gate.enumeration_unrunnable": "brain-kit push-gate: could not run the push enumeration, src/push/records.sh ({reason}); refusing to push without knowing what it carries.",
+  "push_gate.stream_too_large": "brain-kit push-gate: the push enumeration listed more than {limit} bytes of records, more than this gate reads for one push; refusing rather than scanning part of it.",
+  "push_gate.enumeration_failed": "brain-kit push-gate: the push enumeration exited {status}, so its list of what this push carries is not the whole push; refusing without scanning a partial list.",
+  "push_gate.enumeration_killed": "brain-kit push-gate: the push enumeration was stopped by signal {signal} before it finished, so its list of what this push carries is not the whole push; refusing without scanning a partial list."
 }

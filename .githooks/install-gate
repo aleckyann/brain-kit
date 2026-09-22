@@ -23,8 +23,9 @@
 # directory and points core.hooksPath at that copy:
 #
 #   <git common dir>/brain-kit-gate/pre-push        the hook
-#   <git common dir>/brain-kit-gate/engine/         bin, src, lang, schema,
-#                                                   package.json
+#   <git common dir>/brain-kit-gate/engine/         bin, src (with the push
+#                                                   enumeration, src/push/),
+#                                                   lang, schema, package.json
 #   <git common dir>/brain-kit-gate/SNAPSHOT        what was installed, when
 #
 # WHY THE GIT DIRECTORY. It is the one place with all four properties this
@@ -200,9 +201,13 @@ if [ -L "$SOURCE_HOOK" ]; then
   exit 1
 fi
 
-# Checked here and not only trusted: the two files the hook will refuse
+# Checked here and not only trusted: the files the hook will refuse
 # without. Finding out at install time beats finding out on a push.
-for path in bin/brain-kit.mjs src/commands/scan-blobs.mjs; do
+# src/push/records.sh is the enumeration push-gate runs out of this
+# snapshot (the half of the gate that decides what is scanned at all); it
+# arrives with src/ like everything else, and is named here because a
+# snapshot without it is a gate that cannot say what a push contains.
+for path in bin/brain-kit.mjs src/commands/scan-blobs.mjs src/commands/push-gate.mjs src/push/records.sh; do
   if [ ! -f "$STAGING_DIR/engine/$path" ]; then
     echo "install-gate: the engine snapshot has no $path in it; refusing to install a gate that cannot run." >&2
     rm -rf "$STAGING_DIR"
