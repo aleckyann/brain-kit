@@ -155,8 +155,35 @@ function currentBranchName(root) {
 // signals above, and there is no local information left to try; asking
 // the remote live is the only way to learn more, and this module never
 // makes a network call.
+// The remote whose notion of a default branch this ladder should read.
+//
+// Fix round 3 (finding F): this ladder and the one in
+// templates/githooks/pre-push are the same three steps written twice,
+// and they had already drifted on exactly this field. The template takes
+// the remote from git itself, which hands a pre-push hook the remote
+// being pushed to as its first argument; this module hardcoded
+// "origin". The TEMPLATE is the one that was right, because a remote
+// called something else is an ordinary thing and neither copy should
+// assume otherwise. This module has no push to read a remote from, so it
+// reads the one this checkout actually tracks -- the current branch's
+// upstream remote -- and falls back to "origin" only when there is no
+// upstream to ask. Both copies now say the same thing: the remote this
+// context names, and "origin" only as a last resort.
+function remoteNameFor(root) {
+  const branch = currentBranchName(root);
+  if (branch !== null) {
+    const configured = git(root, ['config', '--get', `branch.${branch}.remote`]);
+    if (configured.status === 0) {
+      const name = configured.stdout.trim();
+      if (name !== '') return name;
+    }
+  }
+  return 'origin';
+}
+
 function findDefaultBranch(root) {
-  const symref = git(root, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
+  const remote = remoteNameFor(root);
+  const symref = git(root, ['symbolic-ref', '--short', `refs/remotes/${remote}/HEAD`]);
   if (symref.status === 0) {
     return symref.stdout.trim();
   }
@@ -165,9 +192,9 @@ function findDefaultBranch(root) {
       return candidate;
     }
   }
-  for (const candidate of ['origin/main', 'origin/master']) {
-    if (git(root, ['show-ref', '--verify', '--quiet', `refs/remotes/${candidate}`]).status === 0) {
-      return candidate;
+  for (const candidate of ['main', 'master']) {
+    if (git(root, ['show-ref', '--verify', '--quiet', `refs/remotes/${remote}/${candidate}`]).status === 0) {
+      return `${remote}/${candidate}`;
     }
   }
   return null;
@@ -184,9 +211,20 @@ function findDefaultBranch(root) {
 // reported with complete confidence, which is precisely the kind of
 // status-zero wrong answer this module exists to catch before a caller
 // believes it.
+// Fix round 3 (finding F): the bare name is taken by stripping whatever
+// is before the FIRST slash, not the literal "origin/" this used to
+// assume. A qualified ref from findDefaultBranch above can now name any
+// remote ("upstream/main"), and a comparison that only knew how to strip
+// one remote's name would have read "upstream/main" as a branch called
+// "upstream/main" and quietly decided it was never the current branch,
+// which is the "diffing a branch against itself" answer this guard
+// exists to refuse. A local branch name never contains a slash produced
+// this way, because both other rungs of the ladder return either a bare
+// "main"/"master" or a ref this same function qualified.
 function branchNamesMatch(defaultBranchRef, currentBranch) {
   if (currentBranch === null) return false;
-  const bare = defaultBranchRef.startsWith('origin/') ? defaultBranchRef.slice('origin/'.length) : defaultBranchRef;
+  const slash = defaultBranchRef.indexOf('/');
+  const bare = slash === -1 ? defaultBranchRef : defaultBranchRef.slice(slash + 1);
   return bare === currentBranch;
 }
 
@@ -351,12 +389,23 @@ function unionOf(lists) {
 // a flag that cannot be proven to matter is exactly the kind of clause
 // this project's own review process flags as undefended; `addedLines`,
 // which actually reads hunks, is where `--text` earns its place.
+// `--relative` (fix round 3, finding H): the paths come back relative to
+// the directory git was run in, which is the VAULT root, not the
+// repository root. Without it, a vault nested inside a larger repository
+// got repository-relative paths here while every other path in the scope
+// contract, and every path a rule ever sees, is vault-relative. The two
+// agreed only for a vault that happens to BE the repository root, which
+// is every fixture in this suite and most real vaults, which is exactly
+// how a mismatch like this survives. `git ls-files` (untrackedPaths
+// below) already printed paths relative to its own cwd, so this flag is
+// also what makes the two halves of the `auto` union agree with each
+// other.
 function diffNameOnly(root, refArgs) {
-  const result = gitOrThrow(root, ['diff', '--name-only', '-z', '--diff-filter=d', '-M', ...refArgs]);
+  const result = gitOrThrow(root, ['diff', '--name-only', '--relative', '-z', '--diff-filter=d', '-M', ...refArgs]);
   return result.stdout.split('\0').filter((path) => path.length > 0);
 }
 
-// The repo-relative paths a resolved base considers changed. `null` for
+// The VAULT-relative paths a resolved base considers changed. `null` for
 // the `all` base: the caller's own vault walk is the file list. For
 // `auto`, the union also includes every untracked path, for the same
 // reason `addedLines` treats an untracked file as entirely in scope: a
@@ -477,7 +526,8 @@ export function addedLines(root, base, relPath) {
   return added;
 }
 
-// The repo-relative paths git has never seen at all: not in the index, not
+// The vault-relative paths git has never seen at all (`git ls-files`
+// prints relative to the directory it runs in, which is the vault root): not in the index, not
 // in any commit. `--exclude-standard` honours .gitignore, so an ignored
 // file (a build artifact, an editor's scratch file) is never treated as
 // vault content. `[]` outside a repository, without ever invoking git:

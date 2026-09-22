@@ -39,7 +39,7 @@ import { KIT_ROOT } from '../src/version.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { walkVault } from '../src/vault.mjs';
-import { runValidate, buildReport, partitionFindings, makeReadFile, computeStale } from '../src/commands/validate.mjs';
+import { runValidate, buildReport, partitionFindings, isMarkdown, makeReadFile, makeScanFile, computeStale } from '../src/commands/validate.mjs';
 import { makeVault } from './helpers/vault-fixture.mjs';
 
 const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
@@ -1084,4 +1084,55 @@ test('an unclassifiable finding blocks under every fail_on setting, including "m
     assert.equal(report.exitCode, EXIT.FAILURE, failOn);
     assert.equal(report.json.blocking, true, failOn);
   }
+});
+
+// --- fix round 3, finding G: the markdown predicate, defended directly -------
+//
+// The whole-slice review found this predicate had no test at all, in
+// either direction, and that a mutation flipping its case sensitivity
+// passed the entire suite. It is one of the two clauses that decide what
+// a vault even contains, so it gets its own assertions rather than only
+// being exercised through a walk.
+test('isMarkdown accepts a .md extension whatever its case', () => {
+  for (const path of ['note.md', 'NOTE.MD', 'Note.Md', 'deep/dir/note.mD']) {
+    assert.equal(isMarkdown(path), true, `${path} is a markdown note`);
+  }
+});
+
+test('isMarkdown rejects anything that is not exactly a .md extension', () => {
+  for (const path of ['note.mdx', 'note.markdown', 'note.md.txt', 'notes.json', 'md', '.md.png', 'attachments/plan.pdf']) {
+    assert.equal(isMarkdown(path), false, `${path} is not a markdown note`);
+  }
+  // A file literally NAMED ".md" has no extension at all by node's own
+  // reading (a leading dot makes it a dotfile name, not an extension),
+  // and this predicate follows that rather than inventing a second rule.
+  assert.equal(isMarkdown('.md'), false);
+});
+
+// --- fix round 3: the scanner's own reader ----------------------------------
+test('makeScanFile reads bytes rather than normalised text, so the scanner and the push gate see the same file', () => {
+  const root = makeVault({ files: { 'index.md': '# Index\n' } });
+  writeFileSync(join(root, 'raw.bin'), Buffer.from([0xef, 0xbb, 0xbf, 0x41, 0x0d, 0x0a, 0x42, 0xff, 0x43]));
+  const read = makeScanFile(root)('raw.bin');
+  assert.equal(read.tooLarge, false);
+  // The byte-order mark survives, the CR survives, and the byte no utf8
+  // decoder can represent survives as itself. makeReadFile would have
+  // removed the first two and replaced the third.
+  assert.equal(read.text, 'ï»¿A\r\nBÿC');
+});
+
+test('makeScanFile refuses a file over its ceiling and says how big it was, rather than returning nothing', () => {
+  const root = makeVault({ files: { 'index.md': '# Index\n' } });
+  writeFileSync(join(root, 'big.bin'), 'x'.repeat(200));
+  const scanFile = makeScanFile(root, { maxBytes: 100 });
+  const read = scanFile('big.bin');
+  assert.equal(read.tooLarge, true);
+  assert.equal(read.text, null);
+  assert.equal(read.bytes, 200);
+  assert.equal(read.maxBytes, 100);
+  // The boundary is "over", not "at": a file exactly at the ceiling is read.
+  writeFileSync(join(root, 'exact.bin'), 'y'.repeat(100));
+  const exact = scanFile('exact.bin');
+  assert.equal(exact.tooLarge, false);
+  assert.equal(exact.text.length, 100);
 });

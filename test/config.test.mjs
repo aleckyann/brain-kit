@@ -37,7 +37,8 @@ test('the English fixture is pinned as English, not merely schema-valid', () => 
   assert.equal(config.curate.signature, 'Second brain curator (example)');
   assert.equal(config.briefing.signature, 'Second brain morning briefing (example)');
   // The forbidden-characters example is the em dash ITSELF (U+2014),
-  // parsed back from its JSON escape (— in the file, ASCII on
+  // parsed back from its JSON escape (the \\u2014 sequence in the
+  // file, ASCII on
   // disk): a literal em dash byte sitting in this file would parse to
   // the exact same character and pass unnoticed by anything checking
   // only the parsed VALUE, so the byte-level shape is guarded

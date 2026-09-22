@@ -353,3 +353,30 @@ test('relativePosix returns the path relative to root, with forward slashes', ()
   assert.equal(relativePosix(root, join(root, 'people', 'ana.md')), 'people/ana.md');
   assert.equal(relativePosix(root, join(root, 'index.md')), 'index.md');
 });
+
+// --- fix round 3, finding G: what counts as a markdown file, in both directions ---
+//
+// The whole-slice review found this predicate undefended in BOTH
+// directions: mutating `extname(name) === '.md'` to a case-insensitive
+// comparison kept all 801 tests green, which means no test could tell
+// the two readings apart. The reading was also wrong. On a
+// case-insensitive filesystem (macOS by default, Windows always)
+// `NOTE.MD` and `note.md` are the same file, so the old predicate made
+// what belongs to a vault depend on which platform walked it, and a note
+// somebody saved with a capitalised extension was invisible to both
+// `validate` and `lint`, in silence. The two tests below pin the fold
+// itself and the one thing that must still be excluded.
+test('walkVault includes a note whose extension is capitalised, on every platform', () => {
+  const root = makeVault({ files: { 'index.md': '# Index\n', 'notes/LOUD.MD': '# Loud\n', 'notes/Mixed.Md': '# Mixed\n' } });
+  const config = loadConfig(root);
+  assert.deepEqual(walkVault(root, config), ['index.md', 'notes/LOUD.MD', 'notes/Mixed.Md']);
+});
+
+test('walkVault still excludes a file whose extension is not markdown at all, whatever its case', () => {
+  const root = makeVault({ files: { 'index.md': '# Index\n', 'notes/data.JSON': '{}\n', 'notes/photo.PNG': 'not really a photo\n', 'notes/readme.mdx': '# Not markdown\n' } });
+  const config = loadConfig(root);
+  assert.deepEqual(walkVault(root, config), ['index.md']);
+  // And the same walk, asked for everything, still returns every file,
+  // the vault's own configuration among them.
+  assert.equal(walkVault(root, config, { all: true }).length, 5);
+});

@@ -175,8 +175,7 @@
           "type": ["string", "object"], "pattern": "^(error|warn|off)$", "additionalProperties": false,
           "properties": {
             "severity": { "type": "string", "enum": ["error", "warn", "off"] },
-            "forbidden_chars": { "type": "array", "items": { "type": "string" } },
-            "base": { "type": "string", "enum": ["auto", "worktree", "merge-base", "all"] }
+            "forbidden_chars": { "type": "array", "items": { "type": "string" } }
           }
         }
       }

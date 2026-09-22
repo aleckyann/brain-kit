@@ -63,7 +63,7 @@ import { findVaultRoot } from '../vault.mjs';
 import { createTranslator, REFERENCE_LANG } from '../lang.mjs';
 import { LINT_RULES, runLintRules, severityFor } from '../rules/lint.mjs';
 import { KNOWN_BASES, addedLines, changedPaths, resolveBase } from '../git.mjs';
-import { isMarkdown, makeReadFile } from './validate.mjs';
+import { isMarkdown, makeReadFile, makeScanFile } from './validate.mjs';
 
 const ROOT_INDEX = 'index.md';
 const RULE_IDS = Object.freeze(LINT_RULES.map((rule) => rule.id));
@@ -281,7 +281,7 @@ function renderVerdict(t, { errors, warnings, defects, skippedIds, linesRestrict
 // counting it as an ordinary "error" would fail the run for the WRONG
 // reason and let the true error count silently include a result this
 // tool itself does not vouch for.
-export function buildReport(findings, { t, base, fileCount, skippedIds, restrictedTo = [] }) {
+export function buildReport(findings, { t, base, fileCount, skippedIds, restrictedTo = [], ignoredPaths = [] }) {
   const defects = findings.filter((f) => f.defect === true);
   const errors = findings.filter((f) => f.defect !== true && f.severity === 'error');
   const warnings = findings.filter((f) => f.defect !== true && f.severity === 'warn');
@@ -308,10 +308,28 @@ export function buildReport(findings, { t, base, fileCount, skippedIds, restrict
     scope,
     skipped: skippedIds,
     restrictedTo,
+    ignoredPaths,
   };
 
   const lines = [];
   lines.push(scopeMessage(t, base));
+  // Always printed, whatever the scope, because it is true whatever the
+  // scope (fix round 3): the `secrets` rule ignores the base entirely
+  // and reads every file in the vault on every run. Every OTHER line of
+  // this report is about a scope a person can narrow; this one exists so
+  // nobody reads a narrowed scope line and concludes the secret scan was
+  // narrowed with it.
+  lines.push(t('lint.scope_secrets_always'));
+  // And the one thing that CAN still keep a file away from the secrets
+  // rule, said out loud whenever it is in force (fix round 3's own
+  // sweep). `validate.ignore_paths` excludes a prefix from the single
+  // walk this command makes, so a credential under an ignored path is
+  // not scanned; that is the vault owner's own configured decision, not
+  // this tool's, but a run that does not name it would be making the
+  // same false claim about its own reach that this whole fix round is
+  // about. Printed only when the setting actually excludes something:
+  // an empty list is not a caveat anybody needs to read.
+  if (ignoredPaths.length > 0) lines.push(t('lint.scope_ignored_paths', { paths: ignoredPaths }));
   if (restrictedTo.length > 0) lines.push(t('lint.restricted_to', { ids: restrictedTo }));
   lines.push('');
   lines.push(...renderDefectSection(t, defects));
@@ -410,9 +428,20 @@ export async function runLint(argv, io, t, walkVault) {
   });
 
   // The single walkVault call this whole command depends on, exactly one,
-  // with everything included: both the markdown file list and the
-  // `context.all` set every rule's link resolution needs come from this
+  // with everything included: the markdown file list, the `context.all`
+  // set every rule's link resolution needs, and (fix round 3) the file
+  // list the `secrets` rule is actually scanned over all come from this
   // ONE result, never a second walk (see this module's own header).
+  //
+  // `{ all: true }` used to be UNDEFENDED here, and the whole-slice
+  // review proved it: dropping the argument passed all 801 tests, while
+  // silently changing what `classifyTargetPath` answered about every
+  // attachment in the vault and making `lint` and `validate` disagree
+  // about what the vault contains. It is defended now, and not by a test
+  // written around it: the `secrets` rule reads `context.all` directly
+  // (src/rules/lint.mjs's own filesForRule), so without this argument a
+  // credential committed in a non-markdown file is invisible again,
+  // which is the same defect from the other end.
   const all = walkVault(root, config, { all: true });
   const files = all.filter(isMarkdown);
 
@@ -433,7 +462,19 @@ export async function runLint(argv, io, t, walkVault) {
   // silently-equivalent `restrictedConfig` would not survive.
   const skippedIds = computeSkippedRuleIds(config, parsed.ruleIds);
   const restrictedConfig = buildRestrictedConfig(config, parsed.ruleIds);
-  const context = { root, config: restrictedConfig, all: new Set(all), readFile: makeReadFile(root) };
+  // `scanFile` is the second reader this context carries, used by the
+  // `secrets` rule alone: unnormalised bytes, read latin1 exactly as
+  // src/commands/scan-blobs.mjs reads a blob, with this project's own
+  // per-file size ceiling. See makeScanFile (src/commands/validate.mjs)
+  // for why a scanner must not share the markdown reader's
+  // normalisation.
+  const context = {
+    root,
+    config: restrictedConfig,
+    all: new Set(all),
+    readFile: makeReadFile(root),
+    scanFile: makeScanFile(root),
+  };
 
   const base = resolveBase(root, parsed.base);
   // The scope contract src/git.mjs's own header promises runLintRules:
@@ -454,6 +495,13 @@ export async function runLint(argv, io, t, walkVault) {
   // line numbers, wrapped in a Set, is what actually builds the contract
   // runLintRules was promised, not merely something shaped similarly to it.
   const scope = {
+    // Fix round 3 (finding H): `changedPaths` now returns VAULT-relative
+    // paths (src/git.mjs, `--relative`), so `scope.files` finally speaks
+    // the same path language as `files` and `context.all`. It used to be
+    // repository-relative, which agreed with everything else only for a
+    // vault that IS the repository root; in a vault nested inside a
+    // larger repository the first rule to read this field would have
+    // inherited the mismatch in silence, since no rule reads it today.
     files: changedPaths(root, base),
     addedLines: (relPath) => {
       const raw = addedLines(root, base, relPath);
@@ -469,6 +517,7 @@ export async function runLint(argv, io, t, walkVault) {
     fileCount: files.length,
     skippedIds,
     restrictedTo: parsed.ruleIds,
+    ignoredPaths: Array.isArray(config?.validate?.ignore_paths) ? config.validate.ignore_paths : [],
   });
 
   if (parsed.json) {

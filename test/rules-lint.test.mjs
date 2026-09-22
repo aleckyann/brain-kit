@@ -42,6 +42,7 @@ import { walkVault } from '../src/vault.mjs';
 import { LINT_RULES, runLintRules, displaySecretPattern } from '../src/rules/lint.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { OVERALL_SCAN_TIMEOUT_MS, PERSONAL_PATTERN_LABEL } from '../src/leak.mjs';
+import { makeScanFile } from '../src/commands/validate.mjs';
 import { makeVault } from './helpers/vault-fixture.mjs';
 
 const englishFor = createTranslator('en');
@@ -95,6 +96,7 @@ function rulerArgsFor(root, config) {
     root,
     config,
     all: new Set(all),
+    scanFile: makeScanFile(root),
     readFile(relPath) {
       if (!cache.has(relPath)) {
         let text = readFileSync(join(root, relPath), 'utf8');
@@ -747,7 +749,7 @@ test('a null or malformed taxonomy.columns.<name> entry, reached by bypassing lo
   };
   const all = walkVault(root, config, { all: true });
   const mdFiles = all.filter((path) => path.endsWith('.md'));
-  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8') };
+  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root) };
   assert.doesNotThrow(() => runLintRules(mdFiles, context, IGNORED_SCOPE));
   const findings = runLintRules(mdFiles, context, IGNORED_SCOPE).filter(isLint('columns'));
   assert.deepEqual(findings, []);
@@ -981,7 +983,7 @@ test('a non-integer max_cell_chars disables the cell-length check rather than en
   const config = { lint: { tables: { max_cell_chars: 6.5 } } };
   const all = walkVault(root, config, { all: true });
   const mdFiles = all.filter((path) => path.endsWith('.md'));
-  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8') };
+  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root) };
   const scope = scopeFor({ 'core/notes.md': [3] });
   const findings = runLintRules(mdFiles, context, scope).filter(isLintCheck('tables', 'cell-too-long'));
   assert.deepEqual(findings, []);
@@ -997,7 +999,7 @@ test('a max_cell_chars of zero disables the cell-length check rather than flaggi
   const config = { lint: { tables: { max_cell_chars: 0 } } };
   const all = walkVault(root, config, { all: true });
   const mdFiles = all.filter((path) => path.endsWith('.md'));
-  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8') };
+  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root) };
   const scope = scopeFor({ 'core/notes.md': [3] });
   const findings = runLintRules(mdFiles, context, scope).filter(isLintCheck('tables', 'cell-too-long'));
   assert.deepEqual(findings, []);
@@ -1044,6 +1046,7 @@ test('tables skips reading a file entirely when this change added nothing in it,
     root,
     config,
     all: new Set(all),
+    scanFile: makeScanFile(root),
     readFile(relPath) {
       readCount++;
       return readFileSync(join(root, relPath), 'utf8');
@@ -1227,7 +1230,7 @@ test('a missing max_cell_chars disables the cell-length check rather than assumi
   const config = { lint: { tables: 'error' } };
   const all = walkVault(root, config, { all: true });
   const mdFiles = all.filter((path) => path.endsWith('.md'));
-  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8') };
+  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root) };
   const scope = scopeFor({ 'core/notes.md': [3] });
   const findings = runLintRules(mdFiles, context, scope).filter(isLintCheck('tables', 'cell-too-long'));
   assert.deepEqual(findings, []);
@@ -1362,7 +1365,54 @@ test('an empty forbidden_chars list means nothing is ever reported, even on an a
   const scope = scopeFor({ 'people/ana.md': [1] });
   const config = { lint: { style: { forbidden_chars: [] } } };
   const findings = findingsFor({ files, scope, config }).filter(isLint('style'));
-  assert.deepEqual(findings, []);
+  // Fix round 3 (finding H): no forbidden character is still no
+  // forbidden-character finding, and that half has not changed. What
+  // changed is that the rule no longer returns in SILENCE: a vault that
+  // NAMES lint.style and gives it nothing to look for is told so, once,
+  // with no file to blame.
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].check, 'nothing-configured');
+  assert.equal(findings[0].file, null);
+  assert.match(renderedMessage(findings[0]), /forbidden_chars/);
+});
+
+// The other half of the pair above, and the one that keeps the new
+// finding from becoming noise for every adopter: a vault whose
+// configuration never mentions lint.style at all has not made a mistake.
+// The rule is on by default at `warn`, it has nothing to look for, and
+// saying so would be telling somebody about a setting they never touched.
+// Driven at the rule directly rather than through a fixture vault, for
+// one reason: every fixture vault in this file is built from the shipped
+// example configuration, which DOES name lint.style, and the fixture
+// helper merges rather than replaces, so "a configuration that never
+// mentions this rule" is not a vault this helper can build. The clause
+// under test is a single read of context.config, so driving it directly
+// is the only way to put it in the state that matters.
+test('a vault that never names lint.style at all is not told the style rule has nothing configured', () => {
+  const styleRule = LINT_RULES.find((rule) => rule.id === 'style');
+  const context = {
+    config: { lint: {} },
+    readFile: () => {
+      throw new Error('the style rule must not read a single file when it has nothing to look for');
+    },
+  };
+  assert.deepEqual(styleRule.check(['people/ana.md'], context, IGNORED_SCOPE), []);
+});
+
+// The other side of the same clause, driven the same way: NAMING the
+// rule and leaving it empty is the half-set configuration that gets told.
+test('a vault that names lint.style with no forbidden characters is told the rule had nothing to look for', () => {
+  const styleRule = LINT_RULES.find((rule) => rule.id === 'style');
+  const context = {
+    config: { lint: { style: { severity: 'error' } } },
+    readFile: () => {
+      throw new Error('the style rule must not read a single file when it has nothing to look for');
+    },
+  };
+  const findings = styleRule.check(['people/ana.md'], context, IGNORED_SCOPE);
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].check, 'nothing-configured');
+  assert.equal(findings[0].messageKey, 'lint.style.nothing_configured');
 });
 
 // A guard this rule's own filter (`c.length > 0`, in the check function
@@ -1382,7 +1432,15 @@ test('an empty string inside forbidden_chars is never treated as a forbidden cha
   const scope = scopeFor({ 'people/ana.md': [1] });
   const config = { lint: { style: { forbidden_chars: [''] } } };
   const findings = findingsFor({ files, scope, config }).filter(isLint('style'));
-  assert.deepEqual(findings, [], 'an empty string must never count as a forbidden character');
+  // One finding, and it is the "nothing configured" notice (fix round
+  // 3), never a forbidden-character finding: the empty string was
+  // filtered out, leaving a rule the vault named with nothing usable in
+  // it, which is exactly the half-set configuration that notice exists
+  // for. A per-line match at column 0 would show up here as a finding
+  // with a `line`, which is what this test still pins.
+  assert.equal(findings.length, 1, 'an empty string must never count as a forbidden character');
+  assert.equal(findings[0].check, 'nothing-configured');
+  assert.equal(findings[0].line, null);
 });
 
 test('style severity defaults to "warn" when lint.style is left as its object of settings (forbidden_chars, base) with no severity of its own', () => {
@@ -1502,7 +1560,7 @@ test('an unrecognized severity value in the configuration is treated the same as
   const config = { lint: { orphans: 'not-a-real-severity' } };
   const all = walkVault(root, config, { all: true });
   const mdFiles = all.filter((path) => path.endsWith('.md'));
-  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8') };
+  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root) };
   const findings = runLintRules(mdFiles, context, IGNORED_SCOPE).filter(isLint('orphans'));
   assert.equal(findings.length, 1);
   assert.equal(findings[0].severity, 'warn');
@@ -1538,7 +1596,7 @@ function fakeAwsKey(suffix) {
   return 'AKIA' + suffix; // AKIA + 16 [0-9A-Z] chars, GENERIC_PATTERNS' own AWS access key id shape
 }
 
-test('secrets reports a secret-shaped pattern only on the line this change added, never on an identical untouched line, and its rendered message never contains the matched text itself', () => {
+test('secrets reports EVERY secret-shaped line, including one that predates this change, and its rendered message never contains the matched text itself', () => {
   const awsKey = fakeAwsKey('ABCD1234EFGH5678');
   const files = {
     'index.md': '# Welcome\n',
@@ -1553,20 +1611,26 @@ test('secrets reports a secret-shaped pattern only on the line this change added
   // same one.
   const config = { privacy: { secret_patterns: [] } };
   const findings = findingsFor({ files, scope, config }).filter(isLint('secrets'));
-  assert.equal(findings.length, 1, 'only the added line should be reported, not the identical untouched one above it');
-  assert.equal(findings[0].file, 'people/ana.md');
-  assert.equal(findings[0].line, 2);
-  assert.equal(findings[0].check, 'secret-pattern');
-  assert.equal(findings[0].params.pattern, 'AKIA[0-9A-Z]{16}', 'the param is the PATTERN definition (public, safe), never the matched text');
-  // Fix round 2: this file's scope IS a real added-lines Set (not the
-  // whole file), so the message correctly claims the narrower thing:
-  // an added line, specifically, matched.
-  assert.equal(findings[0].messageKey, 'lint.secrets.pattern_matched');
+  // Fix round 3 (CRITICAL, finding B). The scope above says line 2 is
+  // the only added line, and this rule now ignores that entirely: BOTH
+  // lines are reported. The old behaviour is the defect, not the
+  // contract. A credential that was already committed is the finding an
+  // adopter most needs, and while this rule read the scope, one
+  // unrelated untracked file in the working tree was enough to re-narrow
+  // a default run and drop an already-found committed secret to exit 0.
+  assert.equal(findings.length, 2, 'the already-committed line must be reported too, not only the added one');
+  assert.deepEqual(findings.map((f) => f.line), [1, 2]);
+  for (const finding of findings) {
+    assert.equal(finding.file, 'people/ana.md');
+    assert.equal(finding.check, 'secret-pattern');
+    assert.equal(finding.params.pattern, 'AKIA[0-9A-Z]{16}', 'the param is the PATTERN definition (public, safe), never the matched text');
+    assert.equal(finding.messageKey, 'lint.secrets.pattern_matched_full');
+  }
 
   const rendered = renderedMessage(findings[0]);
   const secretPattern = new RegExp(awsKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
   assert.doesNotMatch(rendered, secretPattern, 'the rendered message must never contain the matched secret text itself');
-  assert.match(rendered, /added line/, 'this file was scoped to added lines, and the message must say so');
+  assert.doesNotMatch(rendered, /added line/, 'this rule no longer reads a scope, so no message of its may claim a line was added');
   assert.match(rendered, /SECURITY\.md/, 'the message must point at the incident-response document');
 });
 
@@ -1585,12 +1649,21 @@ test('a secret on an untracked file is reported: an untracked file has every lin
   assert.doesNotMatch(renderedMessage(findings[0]), /added line/);
 });
 
-test('a file with nothing added at all in this change is skipped entirely, even when it carries a secret-shaped pattern elsewhere', () => {
+// The scope lever, driven directly at the rule. `scopeFor` here says
+// this change added NOTHING in this file, which is the exact shape one
+// stray untracked scratch file produced in a real vault on the default
+// branch, and which used to make the rule skip the file's read
+// altogether. Fix round 3 (finding B): the rule does not consult the
+// scope at all any more, so the emptiest possible scope cannot hide
+// anything from it.
+test('an empty scope (this change added nothing in this file) cannot hide a secret-shaped pattern from the secrets rule', () => {
   const awsKey = fakeAwsKey('MMMM8888NNNN9999');
   const files = { 'index.md': '# Welcome\n', 'people/ana.md': `an old key ${awsKey} nobody touched` };
   const scope = scopeFor({ 'people/ana.md': [] });
   const findings = findingsFor({ files, scope }).filter(isLint('secrets'));
-  assert.deepEqual(findings, []);
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].file, 'people/ana.md');
+  assert.equal(findings[0].line, 1);
 });
 
 test('a pattern configured in privacy.secret_patterns is applied too, not only the built-in generic patterns, but is named by a NEUTRAL label, never its own text', () => {
@@ -1670,7 +1743,7 @@ test('secrets defaults to severity "error" when the configuration never names it
   const config = {};
   const all = walkVault(root, config, { all: true });
   const mdFiles = all.filter((path) => path.endsWith('.md'));
-  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8') };
+  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root) };
   const scope = scopeFor({ 'people/ana.md': [1] });
   const findings = runLintRules(mdFiles, context, scope).filter(isLint('secrets'));
   assert.equal(findings.length, 1);
@@ -1698,9 +1771,14 @@ test('secrets defaults to severity "error" when the configuration never names it
 // deadline would have file 2 inherit file 1's own already-expired
 // budget and fail identically; this fresh-per-file design does not.
 test('a file whose own secrets scan cannot finish in time is reported as a degraded result for THAT FILE alone, and a later file still gets its own full, fresh budget', () => {
-  // walkVault returns files SORTED (its own contract): "index.md" always
-  // sorts before anything under "people/", so it is always the FIRST
-  // file this rule's own per-file loop scans, whatever its content. The
+  // walkVault returns files SORTED (its own contract), and since fix
+  // round 3 the secrets rule is handed EVERY file that walk returned,
+  // not the markdown subset, so the first file its own per-file loop
+  // scans is the vault's own configuration, which sorts before both
+  // notes. What this test actually needs is only that SOME file is
+  // first and a LATER one still gets its own budget; the name of the
+  // first one is pinned below so this test fails loudly, rather than
+  // quietly testing nothing, if that order ever changes again. The
   // mock clock below reports the REAL time on its very first call (that
   // first file's own deadline computation) and a FAR-FUTURE time on
   // every call after that, so "index.md" is the one file whose own
@@ -1719,7 +1797,8 @@ test('a file whose own secrets scan cannot finish in time is reported as a degra
   const all = walkVault(root, config, { all: true });
   const mdFiles = all.filter((path) => path.endsWith('.md'));
   assert.deepEqual(mdFiles, ['index.md', 'people/fresh.md'], 'this test depends on this exact processing order');
-  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8') };
+  assert.deepEqual(all, ['brain-kit.config.json', 'index.md', 'people/fresh.md'], 'the secrets rule walks this full set, in this order');
+  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root) };
 
   const realDateNow = Date.now;
   const realNow = realDateNow();
@@ -1737,7 +1816,7 @@ test('a file whose own secrets scan cannot finish in time is reported as a degra
 
   const degraded = findings.filter((f) => f.defect === true);
   assert.equal(degraded.length, 1, 'exactly one file should have failed to finish its own scan');
-  assert.equal(degraded[0].file, 'index.md');
+  assert.equal(degraded[0].file, 'brain-kit.config.json');
   assert.equal(degraded[0].check, 'file-scan-failed');
   assert.match(degraded[0].params.message, /exceeded its deadline/);
 
@@ -1771,7 +1850,7 @@ test('a malformed privacy.secret_patterns entry still crashes the secrets rule a
   const root = makeVault({ files }); // bypasses loadConfig; this hand-built config is deliberately invalid
   const all = walkVault(root, config, { all: true });
   const mdFiles = all.filter((path) => path.endsWith('.md'));
-  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8') };
+  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root) };
   const findings = runLintRules(mdFiles, context, IGNORED_SCOPE);
 
   const crashed = findings.filter((f) => f.id === 'secrets' && f.defect === true);
@@ -2090,7 +2169,7 @@ test('privacy defaults to severity "warn" like every rule except secrets, when t
   const config = { privacy: { confidential_dirs: ['people/'] } }; // no lint key at all
   const all = walkVault(root, config, { all: true });
   const mdFiles = all.filter((path) => path.endsWith('.md'));
-  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8') };
+  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root) };
   const findings = runLintRules(mdFiles, context, IGNORED_SCOPE).filter(isLintCheck('privacy', 'link-into-confidential'));
   assert.equal(findings.length, 1);
   assert.equal(findings[0].severity, 'warn');
@@ -2405,4 +2484,124 @@ test('every lint message key renders in English with its real parameters, leavin
       `"${finding.messageKey}" rendered the bare key name itself: ${rendered}`,
     );
   }
+});
+
+// --- fix round 3, finding C: the two rules that still read a scope must say which ---
+//
+// `secrets` was given a second message in fix round 2 precisely because
+// one sentence cannot describe both a scoped run and an unscoped one.
+// The sibling rules that read the same contract never got the same
+// treatment, so under `--base all`, in a repository where nothing has
+// changed, `style` said a line "was added by this change" and `tables`
+// said "this change touched the table". There was no change. Each rule
+// below is driven twice, once with a real added-lines Set and once with
+// the null the contract uses for "no restriction at all".
+test('style names the right message for a scoped run and for a whole-vault run', () => {
+  const emDash = String.fromCharCode(0x2014);
+  const files = { 'index.md': '# Welcome\n', 'people/ana.md': `Ana went to the market ${emDash} it was busy.` };
+
+  const scoped = findingsFor({ files, scope: scopeFor({ 'people/ana.md': [1] }) }).filter(isLint('style'));
+  assert.equal(scoped.length, 1);
+  assert.equal(scoped[0].messageKey, 'lint.style.forbidden_char');
+  assert.match(renderedMessage(scoped[0]), /added by this change/);
+
+  const whole = findingsFor({ files, scope: IGNORED_SCOPE }).filter(isLint('style'));
+  assert.equal(whole.length, 1);
+  assert.equal(whole[0].messageKey, 'lint.style.forbidden_char_full');
+  assert.doesNotMatch(renderedMessage(whole[0]), /this change/);
+});
+
+test('tables names the right message for a scoped run and for a whole-vault run, for all three of its checks', () => {
+  const table = [
+    '# Ana',
+    'Text with no blank line after it, deliberately:',
+    '| Name | Note |',
+    '| --- | --- |',
+    '| one | a very long cell indeed, well past any sane maximum |',
+    '| one | a very long cell indeed, well past any sane maximum |',
+    '',
+  ].join('\n');
+  const files = { 'index.md': '# Welcome\n', 'people/ana.md': table };
+  const config = { lint: { tables: { max_cell_chars: 10, duplicate_rows: 'warn' } } };
+
+  const scopedLines = [1, 2, 3, 4, 5, 6, 7];
+  const scoped = findingsFor({ files, config, scope: scopeFor({ 'people/ana.md': scopedLines }) }).filter(isLint('tables'));
+  const scopedKeys = new Set(scoped.map((f) => f.messageKey));
+  assert.deepEqual(
+    [...scopedKeys].sort(),
+    ['lint.tables.cell_too_long', 'lint.tables.duplicate_row', 'lint.tables.missing_blank_line'],
+    'a scoped run must use the scoped wording for every check this rule has',
+  );
+
+  const whole = findingsFor({ files, config, scope: IGNORED_SCOPE }).filter(isLint('tables'));
+  const wholeKeys = new Set(whole.map((f) => f.messageKey));
+  assert.deepEqual(
+    [...wholeKeys].sort(),
+    ['lint.tables.cell_too_long_full', 'lint.tables.duplicate_row_full', 'lint.tables.missing_blank_line_full'],
+    'a whole-vault run must not claim a change touched anything',
+  );
+  for (const finding of whole) {
+    assert.doesNotMatch(renderedMessage(finding), /this change/);
+  }
+});
+
+// --- fix round 3: one unreadable file costs one file, named, not the rest ----
+//
+// Driven at the rule with a reader that throws, because the state that
+// matters (a file the walk returned and the scanner cannot open) is not
+// one a fixture vault can hold reliably on every machine this suite runs
+// on. The clause under test is what the rule DOES with the exception:
+// a defect finding, which src/commands/lint.mjs turns into its own
+// section and the DEGRADED exit code, and then the loop carries on.
+test('a file the scanner cannot read is reported as a defect for that file alone, and later files are still scanned', () => {
+  const secretsRule = LINT_RULES.find((rule) => rule.id === 'secrets');
+  const awsKey = fakeAwsKey('LATER11111LATER1');
+  const context = {
+    config: { privacy: { secret_patterns: [] } },
+    all: new Set(['attachments/locked.bin', 'people/ana.md']),
+    scanFile: (relPath) => {
+      if (relPath === 'attachments/locked.bin') throw new Error('EACCES: permission denied');
+      return { text: `a note holding ${awsKey}`, tooLarge: false, bytes: 40, maxBytes: 1000 };
+    },
+  };
+  const findings = secretsRule.check([...context.all], context, IGNORED_SCOPE);
+  const defects = findings.filter((f) => f.defect === true);
+  assert.equal(defects.length, 1);
+  assert.equal(defects[0].file, 'attachments/locked.bin');
+  assert.equal(defects[0].messageKey, 'lint.tool_defect.file_read_failed');
+  assert.match(defects[0].params.message, /permission denied/);
+
+  const real = findings.filter((f) => f.defect !== true);
+  assert.equal(real.length, 1, 'the file after the unreadable one must still be scanned');
+  assert.equal(real[0].file, 'people/ana.md');
+});
+
+// --- fix round 3: a credential pasted into the pattern list itself ----------
+//
+// Found by this fix round's own sweep, closing a hole this same round
+// opened. The configuration file is now scanned, and the vault's own
+// pattern texts are blanked inside it so a pattern cannot match its own
+// definition; that blanking would also hide a REAL credential pasted
+// into privacy.secret_patterns by somebody typing a denylist rather than
+// a detection pattern, which is a mistake this rule already takes
+// seriously elsewhere. Each configured pattern's own text is therefore
+// checked against the shipped generic shapes.
+test('a real credential pasted into privacy.secret_patterns is reported as exactly that, without echoing it', () => {
+  const awsKey = fakeAwsKey('PASTED1111PASTED');
+  const files = { 'index.md': '# Welcome\n', 'people/ana.md': 'Nothing secret here.\n' };
+  const findings = findingsFor({ files, scope: IGNORED_SCOPE, config: { privacy: { secret_patterns: [awsKey] } } }).filter(isLint('secrets'));
+  const pasted = findings.filter((f) => f.check === 'credential-as-pattern');
+  assert.equal(pasted.length, 1);
+  assert.equal(pasted[0].file, 'brain-kit.config.json');
+  assert.equal(pasted[0].severity, 'error');
+  const rendered = renderedMessage(pasted[0]);
+  assert.doesNotMatch(rendered, new RegExp(awsKey), 'the message must never contain the credential itself');
+  assert.match(rendered, /privacy\.secret_patterns/);
+});
+
+test('an ordinary detection pattern is never mistaken for a credential', () => {
+  const files = { 'index.md': '# Welcome\n', 'people/ana.md': 'Nothing secret here.\n' };
+  const config = { privacy: { secret_patterns: ['internal-token-[0-9]{6}', 'sk-ant-'] } };
+  const findings = findingsFor({ files, scope: IGNORED_SCOPE, config }).filter(isLint('secrets'));
+  assert.deepEqual(findings.filter((f) => f.check === 'credential-as-pattern'), []);
 });

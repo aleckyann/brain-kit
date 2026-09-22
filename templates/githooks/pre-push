@@ -71,7 +71,24 @@ if ! "$BRAIN_KIT" validate; then
   exit 1
 fi
 
-if ! "$BRAIN_KIT" lint; then
+# --base all, explicitly, never the interactive default.
+#
+# This hook reads an EXIT CODE and nothing else, so every caveat the lint
+# report prints in prose is invisible here. The default base is "auto",
+# which resolves against the repository's own state: on the default
+# branch it widens to the whole vault only when the tree is clean and
+# nothing is untracked, so one unrelated scratch file lying around
+# narrows it again. A gate whose reach a stray file can change is not a
+# gate. "all" is the one base that cannot be re-derived by anything in
+# the working tree, and it is also the right question for a push: what
+# is about to exist on the remote, not what this working copy happens to
+# have touched since some anchor.
+#
+# It does not make this hook noisier about prose. The rules that judge
+# added lines (style, tables) default to `warn`, and a warning does not
+# fail a lint run; only a rule this vault itself escalated to `error`,
+# and `secrets`, which defaults to `error`, can refuse a push here.
+if ! "$BRAIN_KIT" lint --base all; then
   echo "pre-push: brain-kit lint found a problem with this vault; refusing to push." >&2
   exit 1
 fi

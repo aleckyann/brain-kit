@@ -242,7 +242,13 @@ test('a clean vault exits 0 and says so, with no rule skipped', () => {
   assert.equal(result.status, EXIT.OK);
   assert.equal(result.stderr, '');
   assert.match(result.stdout, /no findings/i);
-  assert.doesNotMatch(result.stdout, /skipped: index-completeness|orphans|columns|tables|style|secrets|privacy|attribution/);
+  // Grouped, deliberately: the alternation used to be ungrouped, so the
+  // pattern was "skipped: index-completeness" OR the bare word "orphans"
+  // OR the bare word "secrets" and so on, and any report that merely
+  // MENTIONED one of those words tripped it. It caught nothing this test
+  // is about and broke the moment the report gained an unrelated
+  // sentence with the word "secrets" in it.
+  assert.doesNotMatch(result.stdout, /skipped: (index-completeness|orphans|columns|tables|style|secrets|privacy|attribution)/);
 });
 
 // --- one error and one warning: grouped by severity, errors first ----------
@@ -474,7 +480,14 @@ test('outside a git repository the scope line says so, and every line of the vau
 
 // --- git-backed scoping: --base auto sees only the new line, --base all sees both ---
 
-test('inside a git repository, the default scope (auto) reports only a secret on a line this change actually added; --base all also reports the one already committed', () => {
+// Fix round 3 (finding B): this test used to assert that `auto` reported
+// ONLY the newly written key and not the one already committed. That is
+// no longer true and was never a property worth having: the secrets rule
+// ignores the scope entirely now (src/rules/lint.mjs's own fix-round-3
+// header), so both keys are reported under every base. What this test
+// still pins is the thing that made the old behaviour dangerous: the two
+// bases must AGREE about secrets, whatever the scope line says.
+test('a secret is reported under the default scope and under --base all alike, whether it was just written or committed long ago', () => {
   const root = makeGitVault({
     files: { ...cleanFiles(), 'people/ana.md': `${CLEAN_ANA}\nAlready committed before this change: ${fakeAwsKey('OLD1111111111OLD')}\n` },
     config: NO_DOUBLE_COUNT_CONFIG,
@@ -490,7 +503,7 @@ test('inside a git repository, the default scope (auto) reports only a secret on
   assert.equal(autoResult.status, EXIT.FAILURE);
   assert.match(autoResult.stdout, /auto/);
   const autoMatches = autoResult.stdout.match(/people\/ana\.md:\d+ {2}secrets\b/g) ?? [];
-  assert.equal(autoMatches.length, 1, `expected exactly one secrets finding under auto, got:\n${autoResult.stdout}`);
+  assert.equal(autoMatches.length, 2, `expected BOTH secrets under auto, got:\n${autoResult.stdout}`);
 
   const allResult = run(['--base', 'all', root]);
   assert.equal(allResult.status, EXIT.FAILURE);
@@ -543,7 +556,7 @@ test('a secret already committed on a clean default-branch checkout is caught by
 // unlike the fixed case above where there was nothing left to be narrower
 // THAN. This is the run the "partial run is not the same as a clean
 // vault" caveat exists for.
-test('a secret that predates a feature branch stays correctly out of the default scope, and the verdict still says the run was partial', () => {
+test('a secret that predates a feature branch is reported by the default scope anyway, even though the run is otherwise partial', () => {
   const root = makeGitVault({
     files: { ...cleanFiles(), 'people/ana.md': `${CLEAN_ANA}\nAlready shared with main before this branch existed: ${fakeAwsKey('PRE1111111111PRE')}\n` },
     config: NO_DOUBLE_COUNT_CONFIG,
@@ -559,10 +572,18 @@ test('a secret that predates a feature branch stays correctly out of the default
   assert.equal(git(root, ['commit', '-q', '-m', 'extend ana with an unrelated line']).status, 0);
 
   const autoResult = run([root]);
-  assert.equal(autoResult.status, EXIT.OK); // the branch's own commits never touch ana.md
+  // Fix round 3 (finding B). This used to be EXIT.OK with no secrets
+  // finding at all, on the grounds that the branch's own commits never
+  // touch the line the key sits on. That reading is what let one
+  // unrelated untracked file drop an already-found committed secret to
+  // exit 0 in an adopting vault whose gate reads only the exit code. The
+  // run is still genuinely partial for style and tables, and still says
+  // so in its scope line; the secrets rule is not part of what "partial"
+  // can mean any more.
+  assert.equal(autoResult.status, EXIT.FAILURE);
   assert.match(autoResult.stdout, /auto/);
-  assert.doesNotMatch(autoResult.stdout, /people\/ana\.md:\d+ {2}secrets\b/);
-  assert.match(autoResult.stdout, /partial run/i);
+  assert.match(autoResult.stdout, /people\/ana\.md:\d+ {2}secrets\b/);
+  assert.match(autoResult.stdout, /never narrowed by the scope/i);
 
   const allResult = run(['--base', 'all', root]);
   assert.equal(allResult.status, EXIT.FAILURE);
@@ -714,7 +735,7 @@ test('buildReport: no findings but a skipped rule renders the distinct "partial 
 
 test('buildReport: any error finding fails the run regardless of how many warnings also exist', () => {
   const findings = [
-    { id: 'secrets', file: 'a.md', line: 1, severity: 'error', messageKey: 'lint.secrets.pattern_matched', params: { pattern: 'x' } },
+    { id: 'secrets', file: 'a.md', line: 1, severity: 'error', messageKey: 'lint.secrets.pattern_matched_full', params: { pattern: 'x' } },
     { id: 'orphans', file: 'b.md', line: null, severity: 'warn', messageKey: 'lint.orphans.unreachable', params: {} },
   ];
   const { text, exitCode, json } = buildReport(findings, { t: T, base: baseAll(), fileCount: 2, skippedIds: [] });
@@ -847,4 +868,119 @@ test("a finding's own message and the scope line both render through the vault's
   assert.match(ptResult.stdout, /não é alcançável a partir do index raiz/);
   assert.doesNotMatch(ptResult.stdout, /lint\.orphans\.unreachable/);
   assert.doesNotMatch(ptResult.stdout, /not reachable by following links/);
+});
+
+// --- fix round 3, finding A: the vault is every file, not the markdown half ---
+//
+// The whole-slice review's live defect, driven end to end through the
+// real binary. Nothing below is edited into the engine to make it fail;
+// before fix round 3 every one of these runs printed zero errors and
+// exited 0 while telling the reader the whole vault had been checked.
+
+test('a credential committed in a non-markdown file is an error under --base all', () => {
+  const root = makeVault({
+    files: { ...cleanFiles(), 'deploy/secrets.env': `AWS_ACCESS_KEY_ID=${fakeAwsKey('OLD1111111111OLD')}\n` },
+    config: NO_DOUBLE_COUNT_CONFIG,
+  });
+  const result = run(['--base', 'all', root]);
+  assert.equal(result.status, EXIT.FAILURE, result.stdout);
+  assert.match(result.stdout, /deploy\/secrets\.env:1 {2}secrets\b/);
+});
+
+test('a credential in a non-markdown file is an error under the DEFAULT scope too, with no base given', () => {
+  const root = makeVault({
+    files: { ...cleanFiles(), 'deploy/config.yml': `token: ${fakeAwsKey('NEW1111111111NEW')}\n` },
+    config: NO_DOUBLE_COUNT_CONFIG,
+  });
+  const result = run([root]);
+  assert.equal(result.status, EXIT.FAILURE, result.stdout);
+  assert.match(result.stdout, /deploy\/config\.yml:1 {2}secrets\b/);
+});
+
+// The SURVIVING CLAUSE of the whole-slice review (its mutation N8), now
+// defended. Dropping `{ all: true }` from src/commands/lint.mjs's single
+// walkVault call used to change nothing any test could observe; the lint
+// ruler simply stopped seeing the non-markdown half of the vault, and
+// `lint` and `validate` quietly disagreed about what the vault contained.
+// This test is the input that tells the two variants apart: with the
+// argument the key below is found, without it the walk hands the secrets
+// rule markdown only and this run reports nothing at all.
+test('the lint command walks EVERY file, not the markdown subset: the secrets rule reads what that walk returned', () => {
+  const root = makeVault({
+    files: { ...cleanFiles(), 'attachments/notes.json': `{"token": "${fakeAwsKey('WALK111111111ALL')}"}\n` },
+    config: NO_DOUBLE_COUNT_CONFIG,
+  });
+  let seen = null;
+  const io = { stdout: { write() {} }, stderr: { write() {} } };
+  const spy = (dir, config, options) => {
+    seen = options;
+    return walkVault(dir, config, options);
+  };
+  const t = createTranslator('en');
+  return runLint([root, '--base', 'all'], io, t, spy).then((status) => {
+    assert.deepEqual(seen, { all: true }, 'the one walk this command makes must ask for every file');
+    assert.equal(status, EXIT.FAILURE, 'the key inside the JSON attachment must be found');
+  });
+});
+
+// --- fix round 3: the size ceiling announces itself -------------------------
+//
+// Reading every file in the vault means a vault may hand this rule
+// something enormous. The rule declines to read it, and SAYS SO: this
+// project's standing rule is that every ceiling reports how much it cut,
+// and a file the scanner skipped in silence would be the exact shape of
+// defect this whole fix round is about.
+test('a file over the per-file scan ceiling is reported, never skipped in silence', () => {
+  const big = 'x'.repeat(5 * 1024 * 1024);
+  const root = makeVault({ files: { ...cleanFiles(), 'attachments/huge.bin': big }, config: NO_DOUBLE_COUNT_CONFIG });
+  const result = run(['--base', 'all', root]);
+  assert.match(result.stdout, /attachments\/huge\.bin {2}secrets\b/);
+  assert.match(result.stdout, /was NOT scanned for secrets/);
+  // A warning, not an error: the tool is reporting a gap in its own
+  // coverage, not claiming to have found a credential. It is still enough
+  // to keep the run from calling itself simply clean.
+  assert.doesNotMatch(result.stdout, /Result: no findings\./);
+});
+
+// The vault's own configuration declares the very patterns this rule
+// applies, so scanning it naively makes every vault report its own
+// configuration as a leak on its first run. The exemption is exactly one
+// thing wide, and this pins both halves of it.
+test("the vault's own pattern list does not match itself, but a real credential elsewhere in the same file still does", () => {
+  const key = fakeAwsKey('CONF11111111CONF');
+  const root = makeVault({ files: cleanFiles(), config: { privacy: { secret_patterns: ['sk-ant-', 'internal-token-[0-9]{6}'] } } });
+  const clean = run(['--base', 'all', root]);
+  assert.doesNotMatch(clean.stdout, /brain-kit\.config\.json.* {2}secrets\b/);
+
+  const leaky = makeVault({
+    files: cleanFiles(),
+    config: { privacy: { secret_patterns: ['sk-ant-'] }, curate: { signature: `curator ${key}` } },
+  });
+  const found = run(['--base', 'all', leaky]);
+  assert.match(found.stdout, /brain-kit\.config\.json:\d+ {2}secrets\b/);
+  assert.equal(found.status, EXIT.FAILURE);
+});
+
+// The one remaining way a file can stay away from the secrets rule, and
+// it is the vault owner's own configured decision rather than this
+// tool's. It used to be completely silent: a credential under an ignored
+// prefix produced zero errors and exit 0, under a report that claimed
+// every file had been scanned. The prefix is named now.
+test('validate.ignore_paths still hides a path from every rule, and the report says so instead of claiming otherwise', () => {
+  const root = makeVault({
+    files: { ...cleanFiles(), 'build/out.env': `AWS_ACCESS_KEY_ID=${fakeAwsKey('IGNORED11IGNORED')}\n` },
+    config: { ...NO_DOUBLE_COUNT_CONFIG, validate: { ignore_paths: ['build/'] } },
+  });
+  const result = run(['--base', 'all', root]);
+  assert.doesNotMatch(result.stdout, /build\/out\.env/, 'an ignored path is not read by any rule, which is the configured behaviour');
+  assert.match(result.stdout, /validate\.ignore_paths excludes build\//);
+  // And the claim about the secrets rule's own reach is bounded by the
+  // walk, not stated as "every file in the vault".
+  assert.match(result.stdout, /every file this vault's walk includes/);
+});
+
+test('a vault with no ignore_paths is not shown a caveat about an empty list', () => {
+  const root = makeVault({ files: cleanFiles(), config: NO_DOUBLE_COUNT_CONFIG });
+  const result = run(['--base', 'all', root]);
+  assert.doesNotMatch(result.stdout, /ignore_paths/);
 });

@@ -177,7 +177,12 @@ export function walkVault(root, config = {}, { all = false } = {}) {
   const results = [];
 
   function includeFile(name, relPosixPath) {
-    if (all || extname(name) === '.md') results.push(relPosixPath);
+    // Case-insensitive, fix round 3 (finding G): src/commands/validate.mjs's
+    // own isMarkdown folds the case too, and these two are the pair that
+    // must never disagree about what a markdown file is. See that
+    // function's own comment for why the fold, and not the sensitive
+    // comparison, is the defensible reading.
+    if (all || extname(name).toLowerCase() === '.md') results.push(relPosixPath);
   }
 
   function visit(dir) {

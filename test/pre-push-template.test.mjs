@@ -9,7 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, chmodSync, copyFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, chmodSync, copyFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 import { makeVault } from './helpers/vault-fixture.mjs';
@@ -111,12 +111,13 @@ test('a vault that fails validate is refused before lint or the identity guard e
 });
 
 test('a vault that fails lint (an error-severity finding) is refused', () => {
-  // The `secrets` and `style` rules only judge lines a change ADDED
-  // (src/git.mjs's own `auto` base), which is empty by construction for a
-  // single commit that is already fully committed on the default branch
-  // with nothing left in the worktree: there is nothing "added" left to
-  // see by the time a push happens. `privacy` (lint.privacy, error by
-  // default in the fixture config) has no such scope: a link from OUTSIDE
+  // `style` only judges lines a change ADDED (src/git.mjs's own scope
+  // contract), which is empty by construction for a single commit
+  // already fully committed with nothing left in the worktree: there is
+  // nothing "added" left to see by the time a push happens. `secrets`
+  // used to work that way too and no longer does (fix round 3); it is
+  // exercised on its own below. `privacy` (lint.privacy, error by
+  // default in the fixture config) never had a scope: a link from OUTSIDE
   // a confidential directory (privacy.confidential_dirs: ["people/"])
   // INTO one is a whole-vault check, so it fires here regardless.
   const files = { ...cleanFiles(), 'index.md': `${INDEX}\n[Ana](people/ana.md)\n` };
@@ -287,4 +288,59 @@ test('the ladder warning does NOT fire when the guard IS running, so it never be
   const r = git(work, ['push', '-q', 'origin', 'agent/work'], AGENT);
   assert.equal(r.status, 0, r.stderr);
   assert.doesNotMatch(r.stderr, /could not determine this vault's default branch/);
+});
+
+// --- fix round 3: the two defects this template shipped to adopters -----------
+//
+// These two are the whole-slice review's findings A and B, driven where
+// they actually bit: through the TEMPLATE gate, the one that ships in the
+// tarball and refuses a push on a non-zero `lint` exit and nothing else.
+// The maintainer's own gate (.githooks/pre-push) always covered both,
+// because it scans blobs rather than notes; that difference is exactly
+// why these two survived a whole slice of review.
+//
+// A fake credential, built at runtime from pieces, so no line of this
+// repository ever holds something shaped like a real key.
+const FAKE_AWS_KEY = `AKIA${'IOSFODNN7EXAMPL2'}`;
+
+test('a credential committed in a NON-markdown file refuses the push, although no lint rule reads markdown from it', () => {
+  // Before fix round 3 this push succeeded, silently: `lint` read
+  // markdown and nothing else, reported zero errors, exited 0, and the
+  // hook below has no other signal to read. The vault's own
+  // privacy.secret_patterns and the shipped generic shapes both name this
+  // key shape; neither could see the file it was in.
+  const files = { ...cleanFiles(), 'deploy/secrets.env': `AWS_ACCESS_KEY_ID=${FAKE_AWS_KEY}\n` };
+  const { work } = setup({ files });
+  commitEverything(work, 'init');
+  const r = git(work, ['push', '-q', 'origin', 'main']);
+  assert.notEqual(r.status, 0, 'a credential in a .env file must refuse the push');
+  assert.match(r.stderr, /brain-kit lint found a problem/);
+});
+
+test('one unrelated untracked scratch file cannot narrow the gate into accepting a committed secret', () => {
+  // The exact reproduction from the review: the same vault refuses the
+  // push, then a single unrelated untracked file appears and the same
+  // push succeeds with exit 0. Two levers were closed for this, and both
+  // are exercised here at once: the secrets rule no longer reads the
+  // scope at all, and this hook now asks for `--base all` rather than the
+  // default, which is the base a stray file can re-derive.
+  const files = { ...cleanFiles(), 'people/ana.md': `${CLEAN_PERSON}\nKey: ${FAKE_AWS_KEY}\n` };
+  const { work } = setup({ files });
+  commitEverything(work, 'init');
+
+  const before = git(work, ['push', '-q', 'origin', 'main']);
+  assert.notEqual(before.status, 0, 'the committed secret must refuse the push');
+
+  writeFileSync(join(work, 'scratch.tmp.txt'), 'an unrelated scratch file\n');
+  const after = git(work, ['push', '-q', 'origin', 'main']);
+  assert.notEqual(after.status, 0, 'one stray untracked file must not buy a push');
+  assert.match(after.stderr, /brain-kit lint found a problem/);
+});
+
+test('the template asks lint for a base nothing in the working tree can re-derive', () => {
+  // Read from the file itself, not inferred from behaviour: the base is
+  // the one thing in this hook a person can change by accident and only
+  // find out when a secret is already on a remote.
+  const text = readFileSync(TEMPLATE_HOOK, 'utf8');
+  assert.match(text, /"\$BRAIN_KIT" lint --base all/);
 });

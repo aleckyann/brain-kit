@@ -167,8 +167,7 @@
     "style": {
       "forbidden_chars": [
         "\u2014"
-      ],
-      "base": "auto"
+      ]
     }
   },
   "privacy": {

@@ -20,17 +20,16 @@
 //
 // The three rules in this task judge the VAULT AS A WHOLE, not a
 // change: every one of them reads the full `files` argument and ignores
-// the `scope` argument entirely. THREE rules read it instead: tables and
-// style (task 4), and secrets (task 5, below). An earlier version of
-// this project's own plan said two, that count was repeated in dispatch
-// after dispatch and then into an earlier draft of this very header, so
-// the plan, this file and a command's own report once held three
-// mutually inconsistent statements about the same fact at once (see
-// docs/superpowers/plans/2026-09-18-phase-1b-lint-and-leak-scanner.md's
-// own fix). The consequence was never cosmetic: a reader who believes
-// secrets sweeps the whole vault does not expect a committed secret to
-// print as no findings under a narrowed scope, which is exactly what a
-// narrowed scope does to it (see secrets' own header below). This is
+// the `scope` argument entirely. TWO rules read it instead: tables and
+// style. That count has been wrong twice in this file's own life. It
+// said two when three rules read the scope, was corrected to three, and
+// is now two again because fix round 3 took the scope away from
+// `secrets` on purpose (that rule's own header says why). Both times
+// the count was wrong it was wrong in the direction that matters: a
+// reader who believes secrets sweeps the whole vault does not expect a
+// committed secret to print as no findings under a narrowed scope. It
+// now does sweep the whole vault, so the belief and the code finally
+// agree. This is
 // not an optimisation this module
 // declines to make; narrowing any of these three questions to a
 // change's own files would make the answer WRONG, in the confident
@@ -269,6 +268,7 @@ import { posix } from 'node:path';
 import { bodyPrefixLineCount, forEachInternalLink, forEachWikilink, resolveLinkPath } from './house.mjs';
 import { frontmatterKeyLine, readEntries, readScalar, splitFrontmatter } from '../frontmatter.mjs';
 import { stripCode } from '../markdown.mjs';
+import { CONFIG_FILENAME } from '../config.mjs';
 import { classifyTargetPath, isUnderPath } from '../vault.mjs';
 import { OVERALL_SCAN_TIMEOUT_MS, PERSONAL_PATTERN_LABEL, loadPatterns, scanText } from '../leak.mjs';
 
@@ -933,13 +933,32 @@ const tables = {
         if (!inScope) continue; // every one of this table's own lines already existed before this change
 
         if (table.headerLineIndex > 0 && bodyLines[table.headerLineIndex - 1].trim() !== '') {
-          findings.push({
-            file,
-            line: prefixLineCount + table.headerLineIndex,
-            check: 'blank-line-before-table',
-            messageKey: 'lint.tables.missing_blank_line',
-            params: {},
-          });
+          // Fix round 3 (finding C). Two literal key sites, exactly as
+          // `secrets` was given in fix round 2 and for the identical
+          // reason: `added === null` means this run carries no line
+          // restriction for this file at all (`--base all`, or an
+          // untracked file), and the old single message asserted "this
+          // change touched the table" about a run where there is no
+          // change. The keys are spelled out at each site rather than
+          // computed, because test/message-keys.test.mjs can only
+          // defend a key it can see statically in this source.
+          if (added === null) {
+            findings.push({
+              file,
+              line: prefixLineCount + table.headerLineIndex,
+              check: 'blank-line-before-table',
+              messageKey: 'lint.tables.missing_blank_line_full',
+              params: {},
+            });
+          } else {
+            findings.push({
+              file,
+              line: prefixLineCount + table.headerLineIndex,
+              check: 'blank-line-before-table',
+              messageKey: 'lint.tables.missing_blank_line',
+              params: {},
+            });
+          }
         }
 
         if (duplicateSeverity !== 'off') {
@@ -948,14 +967,25 @@ const tables = {
             const key = rowKey(row.cells);
             const firstLineIndex = seenAt.get(key);
             if (firstLineIndex !== undefined) {
-              findings.push({
-                file,
-                line: prefixLineCount + row.lineIndex,
-                check: 'duplicate-row',
-                severity: duplicateSeverity,
-                messageKey: 'lint.tables.duplicate_row',
-                params: { line: prefixLineCount + firstLineIndex },
-              });
+              if (added === null) {
+                findings.push({
+                  file,
+                  line: prefixLineCount + row.lineIndex,
+                  check: 'duplicate-row',
+                  severity: duplicateSeverity,
+                  messageKey: 'lint.tables.duplicate_row_full',
+                  params: { line: prefixLineCount + firstLineIndex },
+                });
+              } else {
+                findings.push({
+                  file,
+                  line: prefixLineCount + row.lineIndex,
+                  check: 'duplicate-row',
+                  severity: duplicateSeverity,
+                  messageKey: 'lint.tables.duplicate_row',
+                  params: { line: prefixLineCount + firstLineIndex },
+                });
+              }
             } else {
               seenAt.set(key, row.lineIndex);
             }
@@ -972,13 +1002,23 @@ const tables = {
             const measured = normalizedRowCells(row.cells).map(unescapeSeparator);
             const overIndex = measured.findIndex((cell) => cell.length > maxCellChars);
             if (overIndex !== -1) {
-              findings.push({
-                file,
-                line: prefixLineCount + row.lineIndex,
-                check: 'cell-too-long',
-                messageKey: 'lint.tables.cell_too_long',
-                params: { index: overIndex + 1, length: measured[overIndex].length, max: maxCellChars },
-              });
+              if (added === null) {
+                findings.push({
+                  file,
+                  line: prefixLineCount + row.lineIndex,
+                  check: 'cell-too-long',
+                  messageKey: 'lint.tables.cell_too_long_full',
+                  params: { index: overIndex + 1, length: measured[overIndex].length, max: maxCellChars },
+                });
+              } else {
+                findings.push({
+                  file,
+                  line: prefixLineCount + row.lineIndex,
+                  check: 'cell-too-long',
+                  messageKey: 'lint.tables.cell_too_long',
+                  params: { index: overIndex + 1, length: measured[overIndex].length, max: maxCellChars },
+                });
+              }
             }
           }
         }
@@ -1033,17 +1073,41 @@ const style = {
   check(files, context, scope) {
     const configuredChars = context.config?.lint?.style?.forbidden_chars;
     const forbiddenChars = Array.isArray(configuredChars) ? configuredChars.filter((c) => typeof c === 'string' && c.length > 0) : [];
-    // Both early exits below are unfalsifiable by any OUTPUT this
-    // function can produce: the per-line loop already reads `added.has`
-    // and `forbiddenChars` the same way either exit shortcuts, so
-    // removing either one changes no finding this rule ever returns, in
-    // any fixture. They are kept anyway, deliberately, for what they are
-    // not dead FOR: the first skips readFile+stripCode for every file in
-    // the vault when style has nothing configured to look for at all,
-    // and the second skips the same per file this change never touched.
-    // Neither is defended by a test that could tell its removal apart
-    // from keeping it; a mutation of either survives the whole suite.
-    if (forbiddenChars.length === 0) return [];
+    // Fix round 3 (finding H): this early exit used to return an empty
+    // array in SILENCE, so a vault owner who wrote `"style": {"severity":
+    // "error"}` and forgot `forbidden_chars` got a green run and no word
+    // that the rule they had just escalated had nothing to look for. A
+    // configuration mistake that produces silence is the exact failure
+    // this slice is about. It now says so, ONCE for the whole run
+    // (`file: null`, rendered by src/commands/lint.mjs as its "(no file)"
+    // marker), at this rule's own configured severity, so escalating the
+    // rule to `error` and then giving it nothing to do fails the run
+    // rather than passing it quietly.
+    //
+    // The finding is emitted ONLY when the vault's configuration NAMES
+    // `lint.style` at all, in any shape. A vault that never mentions the
+    // rule has not made a mistake: style is on by default at `warn`, and
+    // telling every adopter who never asked for it that it has nothing
+    // configured would be noise, not a warning. This is the difference
+    // between an unset setting and a half-set one.
+    if (forbiddenChars.length === 0) {
+      if (context.config?.lint?.style === undefined) return [];
+      return [{
+        file: null,
+        line: null,
+        check: 'nothing-configured',
+        absence: true,
+        messageKey: 'lint.style.nothing_configured',
+        params: {},
+      }];
+    }
+    // The remaining early exit below is still unfalsifiable by any
+    // OUTPUT this function can produce (the per-line loop reads
+    // `added.has` the same way it shortcuts), and is still kept
+    // deliberately, for what it is not dead FOR: it skips
+    // readFile+stripCode for every file this change never touched. A
+    // mutation removing it survives the whole suite, and this sentence
+    // is the disclosure this project's own method asks for instead.
 
     const findings = [];
     for (const file of files) {
@@ -1063,13 +1127,25 @@ const style = {
           }
         }
         if (firstChar !== null) {
-          findings.push({
-            file,
-            line: lineNumber,
-            check: 'forbidden-char',
-            messageKey: 'lint.style.forbidden_char',
-            params: { char: firstChar },
-          });
+          // Fix round 3 (finding C), the same two-key treatment tables
+          // above just received and secrets received in fix round 2.
+          if (added === null) {
+            findings.push({
+              file,
+              line: lineNumber,
+              check: 'forbidden-char',
+              messageKey: 'lint.style.forbidden_char_full',
+              params: { char: firstChar },
+            });
+          } else {
+            findings.push({
+              file,
+              line: lineNumber,
+              check: 'forbidden-char',
+              messageKey: 'lint.style.forbidden_char',
+              params: { char: firstChar },
+            });
+          }
         }
       }
     }
@@ -1115,25 +1191,17 @@ const style = {
 // over the same absent file would not be failing closed, it would be
 // breaking lint on every machine that never had a reason to have one.
 //
-// Scoped to added lines, like style, and for the same reason (see that
-// rule's own header above): a vault adopting this kit arrives with
-// years of prose already committed, and a scanner that reports every
-// pre-existing match on day one is exactly the linter someone switches
-// off in its first minute.
-//
-// Fix round 1 (review of the round that added this rule). The FIRST
-// version scoped by BLANKING every out-of-scope line and then scanning
-// the whole file text unchanged: every line still went through
-// scanText's own per-line vm sandbox call, blank or not, so the
-// "optimisation" bought nothing measurable (measured: roughly 26 extra
-// seconds over 200 notes versus simply scanning, for zero difference in
-// output) while adding a whole extra pass over the file just to build
-// the blanked string. `scopedTextFor` below instead EXTRACTS only the
-// lines the scope says were added into a smaller text blob, so
-// scanText's own per-line work is proportional to what actually changed,
-// not to the file's own total length; `originalLineNumbers` remaps each
-// match back to its real whole-file line, since the extracted blob's
-// own line numbers are no longer the file's.
+// NOT scoped at all, unlike style: every line of every file, every run.
+// Fix round 3 reversed the earlier reading here; the argument is in this
+// rule's own fix-round-3 block below, immediately above the rule object.
+// The history is worth keeping because it is the reason a whole scoping
+// apparatus once existed in this rule: an early version scoped by
+// BLANKING every out-of-scope line and scanning the whole text anyway,
+// which bought nothing measurable (roughly 26 extra seconds over 200
+// notes, for identical output); its replacement extracted only the added
+// lines into a smaller blob and remapped each match back to its real
+// line. Both are gone. A scanner with no scope has no line numbers to
+// remap and nothing a caller can narrow.
 //
 // Deliberately NOT run through stripCode first, unlike every other rule
 // in this file that reads a note's own prose: a secret pasted inside a
@@ -1224,31 +1292,102 @@ export function displaySecretPattern(match) {
   return match.origin === 'generic' ? match.pattern : CONFIGURED_PATTERN_LABEL;
 }
 
-// Extracts only the lines `addedLines` marks, in order, joined back into
-// one text blob small enough that scanText's own per-line cost is paid
-// only for what this change actually added (see this rule's own header,
-// fix round 1). `lineNumbers[i]` is the REAL, whole-file line number the
-// extracted blob's own line `i + 1` came from, so a match's `line` (an
-// index into the SMALL blob) can be mapped back to the line a person
-// would actually find open in their editor.
-function scopedTextFor(text, addedLines) {
-  const lineNumbers = [];
-  const kept = [];
-  text.split('\n').forEach((line, index) => {
-    const lineNumber = index + 1;
-    if (addedLines.has(lineNumber)) {
-      kept.push(line);
-      lineNumbers.push(lineNumber);
-    }
-  });
-  return { text: kept.join('\n'), lineNumbers };
+// Fix round 3 (CRITICAL, findings A and B of the whole-slice review).
+// TWO clauses of this rule changed, and they are one decision: what
+// "scan this vault for secrets" means.
+//
+// 1. WHICH FILES. This rule used to receive the same markdown subset
+//    every other rule in this module gets, so an AWS access key
+//    committed as `secrets.env`, `config.json` or a `.yml` was never
+//    read by anything in `brain-kit lint`, while the report's own scope
+//    line said "the whole vault was checked, every line". The
+//    maintainer's own push gate (.githooks/pre-push, through
+//    src/commands/scan-blobs.mjs) scans every BLOB and always did, so
+//    the two halves of this slice disagreed about what a vault is, and
+//    the half that disagreed was the one that ships to adopters: their
+//    template gate (templates/githooks/pre-push) refuses only on a
+//    non-zero `lint` exit. `scansEveryFile` below makes runLintRules
+//    hand this rule the FULL walk instead (`context.all`, the set the
+//    one walkVault call already produced). No other rule's reach
+//    changed: the other seven are about prose and markdown structure,
+//    and a table check that started reading a PNG would report
+//    nonsense.
+//
+// 2. WHICH LINES. This rule no longer reads `scope` at all. It used to
+//    be scoped to added lines, like style, on the adoption-noise
+//    argument that rule states. That argument does not transfer: years
+//    of pre-existing PROSE really will light up a forbidden-character
+//    rule on day one, which is why style is scoped, but a
+//    pre-existing CREDENTIAL is not noise, it is the single finding an
+//    adopter most needs on day one, and the six shipped GENERIC_PATTERNS
+//    match shapes (an AWS key id, a GitHub token, a private key header)
+//    that essentially never occur in prose by accident. The scoped
+//    reading also carried a live defect nothing else could close: on
+//    the default branch `auto` widens to the whole vault only when the
+//    tree is clean AND nothing is untracked, so ONE unrelated scratch
+//    file re-narrowed the scope and dropped a committed, already-found
+//    secret to zero errors and exit 0 -- and an adopter's template gate
+//    reads the exit code, not the prose caveat the report printed. A
+//    rule that ignores the scope cannot be narrowed by a scratch file,
+//    by a base, or by anything else. This also settles what a PARTIAL
+//    run's exit code may mean: it may still be 0, because after this
+//    change no rule that can find a secret is scoped at all.
+//
+// The `scope` parameter is therefore gone from the signature, exactly as
+// it is absent from the three whole-vault rules above.
+// The one exemption reading every file in the vault made necessary, and
+// it is a SELF-REFERENCE, not a blind spot (fix round 3).
+//
+// `privacy.secret_patterns` lives in brain-kit.config.json, which is a
+// file in the vault, which this rule now reads. The shipped example
+// configuration lists `sk-ant-` as a pattern; that literal text sits in
+// the configuration file, so the pattern matches its own definition and
+// every vault in the world would report its own configuration as a
+// leaked credential on its first run. A rule whose first output on every
+// vault is a false positive is a rule adopters switch off, and then the
+// true finding never arrives either.
+//
+// The exemption is as narrow as it can be: in THAT ONE FILE, each
+// configured pattern's own literal text is replaced by an equal-length
+// run of asterisks before the scan. Equal length, so every line number
+// and column after it is still the real one. Nothing else in the
+// configuration file is touched: an API key pasted into
+// `curate.signature`, an access token in a URL, a private key header in
+// any field at all is still read and still reported, and the generic
+// shapes this repository ships are applied to this file exactly like any
+// other. What is removed is only the text the vault itself wrote down
+// AS a detection pattern.
+//
+// Not applied to any other file: the same string appearing in a NOTE is
+// a real match, because a note is not where a detection pattern is
+// declared.
+//
+// Disclosed, per this project's own method: the EQUAL LENGTH of the
+// replacement is unfalsifiable by any output this rule can produce. A
+// configured pattern never contains a newline, so replacing it with an
+// empty string would shift no line number, and a lint finding carries a
+// line but not a column, so nothing a test can read changes. It is kept
+// deliberately, for what it is not dead FOR: leak.mjs reports a column
+// on every match and scan-blobs prints it, so the day anything here
+// reports a column, an unequal replacement would point a person at the
+// wrong character of their own configuration file. A mutation of this
+// one clause survives the whole suite; this sentence is the report the
+// method asks for instead of a test that cannot exist yet.
+function withoutOwnPatternList(text, configPatterns) {
+  let out = text;
+  for (const pattern of configPatterns) {
+    if (pattern === '') continue;
+    out = out.split(pattern).join('*'.repeat(pattern.length));
+  }
+  return out;
 }
 
 const secrets = {
   id: 'secrets',
   settingKey: 'secrets',
   defaultSeverity: 'error',
-  check(files, context, scope) {
+  scansEveryFile: true,
+  check(files, context) {
     const configuredPatterns = context.config?.privacy?.secret_patterns;
     const configPatterns = Array.isArray(configuredPatterns) ? configuredPatterns.filter((p) => typeof p === 'string') : [];
     const patterns = loadPatterns({ configPatterns });
@@ -1306,11 +1445,75 @@ const secrets = {
     // escapes this function entirely, exactly as before, to be caught by
     // runLintRules' own generic per-rule guard instead.
     const findings = [];
+
+    // The hole the exemption above would otherwise open, closed in the
+    // same commit that opened it (the sweep for this fix round found it).
+    // `withoutOwnPatternList` blanks each configured pattern's own text
+    // inside the configuration file, so a vault owner who pasted a REAL
+    // credential into `privacy.secret_patterns` by mistake -- typing a
+    // denylist rather than a detection pattern, the exact mistake this
+    // rule's fix round 1 already went to some length over -- would have
+    // their credential blanked out of the one file it sits in and never
+    // reported at all. So each configured pattern's own TEXT is scanned
+    // here, against the six shipped generic shapes only, and a pattern
+    // that looks like a credential is reported as one. The finding names
+    // no line (the configuration is JSON and this rule does not parse it)
+    // and, obviously, never echoes the text.
+    for (const configured of configPatterns) {
+      let looksLikeCredential;
+      try {
+        looksLikeCredential = scanText(configured, loadPatterns({}), { deadlineAt: Date.now() + OVERALL_SCAN_TIMEOUT_MS }).matches.length > 0;
+      } catch {
+        continue; // an unscannable pattern is loadPatterns' own problem, raised elsewhere; this check never invents one
+      }
+      if (looksLikeCredential) {
+        findings.push({
+          file: CONFIG_FILENAME,
+          line: null,
+          check: 'credential-as-pattern',
+          messageKey: 'lint.secrets.pattern_is_a_credential',
+          params: {},
+        });
+      }
+    }
+
     for (const file of files) {
-      const addedLines = scope.addedLines(file);
-      if (addedLines !== null && addedLines.size === 0) continue; // this change added nothing at all in this file: skip the read, like style above
-      const text = context.readFile(file);
-      const { text: scanned, lineNumbers } = addedLines === null ? { text, lineNumbers: null } : scopedTextFor(text, addedLines);
+      // context.scanFile, not context.readFile: the bytes, unnormalised,
+      // read the same way src/commands/scan-blobs.mjs reads a blob, with
+      // this project's own per-file size ceiling applied. See
+      // makeScanFile in src/commands/validate.mjs for all three reasons.
+      let read;
+      try {
+        read = context.scanFile(file);
+      } catch (error) {
+        // One unreadable file (a permission, a file deleted between the
+        // walk and this read) costs this run that one file's coverage,
+        // NAMED, rather than aborting the whole rule and taking every
+        // file after it down unnamed, which is what letting this escape
+        // to runLintRules' own per-rule guard would do.
+        findings.push({
+          file,
+          line: null,
+          check: 'file-read-failed',
+          defect: true,
+          messageKey: 'lint.tool_defect.file_read_failed',
+          params: { message: error.message },
+        });
+        continue;
+      }
+      // The ceiling announces itself, per this project's standing rule.
+      // A file too large to read is NOT a file that passed.
+      if (read.tooLarge) {
+        findings.push({
+          file,
+          line: null,
+          check: 'file-too-large',
+          messageKey: 'lint.secrets.file_too_large',
+          params: { bytes: read.bytes, max: read.maxBytes },
+        });
+        continue;
+      }
+      const scanned = file === CONFIG_FILENAME ? withoutOwnPatternList(read.text, configPatterns) : read.text;
 
       let scanResult;
       try {
@@ -1337,37 +1540,22 @@ const secrets = {
       // notices"). The whole record is taken now, and `truncated` is
       // surfaced as its own finding, once per file, rather than dropped.
       const { matches, truncated, total } = scanResult;
-      // Fix round 2: this used to say "an added line matches" even when
-      // `addedLines` was null (every line of the file in scope: an
-      // untracked note, or a run whose base is "all"), a leftover from
-      // the scope this rule usually runs under. Two separate literal
-      // messageKey sites below, not one chosen by a ternary or a
-      // computed key, on purpose: test/message-keys.test.mjs derives its
-      // expected key set by parsing this file's own source for a plain
-      // quoted key immediately followed by its own params object, and a
-      // key it cannot see statically is a key it cannot defend, which is
-      // exactly the gap that check exists to catch. (Spelled out here
-      // without the literal field syntax itself, so this very sentence
-      // does not get read as a third, fake site by that same parser.)
+      // ONE message key now, not two. Fix round 2 added a second key
+      // here because this rule could run either scoped or unscoped and
+      // said "an added line matches" for both; fix round 3 removed the
+      // scoped reading entirely (see this rule's own header), so the
+      // scoped key would be dead the day it was kept and
+      // `lint.secrets.pattern_matched` is gone from both language packs
+      // rather than left in them saying something no run can any longer
+      // mean.
       for (const match of matches) {
-        const line = lineNumbers === null ? match.line : lineNumbers[match.line - 1];
-        if (addedLines === null) {
-          findings.push({
-            file,
-            line,
-            check: 'secret-pattern',
-            messageKey: 'lint.secrets.pattern_matched_full',
-            params: { pattern: displaySecretPattern(match) },
-          });
-        } else {
-          findings.push({
-            file,
-            line,
-            check: 'secret-pattern',
-            messageKey: 'lint.secrets.pattern_matched',
-            params: { pattern: displaySecretPattern(match) },
-          });
-        }
+        findings.push({
+          file,
+          line: match.line,
+          check: 'secret-pattern',
+          messageKey: 'lint.secrets.pattern_matched_full',
+          params: { pattern: displaySecretPattern(match) },
+        });
       }
       if (truncated) {
         findings.push({
@@ -1821,7 +2009,16 @@ const DEFAULT_SEVERITY = 'warn';
 // This task's own first requirement, carried before its three new
 // rules: `lint.<rule>` now accepts EITHER a bare severity string OR an
 // object carrying `severity` plus that rule's own settings (tables'
-// `max_cell_chars`/`duplicate_rows`, style's `forbidden_chars`/`base`).
+// `max_cell_chars`/`duplicate_rows`, style's `forbidden_chars`).
+// Fix round 3 (finding D) removed a fourth, `lint.style.base`: it was
+// declared in the schema, named here, and set in every shipped example
+// configuration, and NOTHING read it. Removed rather than implemented,
+// because a per-rule base is not a knob this report can honour: the
+// report prints exactly ONE scope line for the whole run, so a rule
+// quietly running against a different base than the line describes
+// would make the report lie about itself, which is the defect this
+// whole fix round is about. A person who wants a different base has
+// `--base`, which the scope line always reflects.
 // Before this, `style` was an object with no `severity` field AT ALL,
 // so it was permanently 'warn' with no way to configure it to 'error'
 // or 'off', and `tables_limits` sat beside `lint.tables` as a sibling
@@ -1926,6 +2123,26 @@ export function severityFor(rule, config) {
 // (never OK, never the same FAILURE code an ordinary error finding
 // uses): see that module's own header for why a degraded run is its
 // own category, not a quieter version of either one.
+// Fix round 3 (CRITICAL, finding A): the file list a rule receives is now
+// a property OF THE RULE, one data field beside `id` and `settingKey`,
+// exactly the shape this module is built on. `files` is the markdown
+// subset for the seven rules that read prose and markdown structure; a
+// rule declaring `scansEveryFile` gets every path the ONE walkVault call
+// returned instead, `context.all`, sorted so the order is the walk's own
+// and not a Set's insertion order. Only `secrets` declares it, for the
+// reason that rule's own header gives.
+//
+// This is also what finally makes `walkVault(root, config, { all: true })`
+// in src/commands/lint.mjs load-bearing. Before this, dropping that
+// argument passed the entire suite (the whole-slice review's mutation
+// N8): nothing the lint command did with the non-markdown half of the
+// walk could change any finding. It can now, and a test drives exactly
+// that mutation's input.
+function filesForRule(rule, files, context) {
+  if (rule.scansEveryFile !== true) return files;
+  return [...context.all].sort();
+}
+
 export function runLintRules(files, context, scope) {
   const findings = [];
   for (const rule of LINT_RULES) {
@@ -1933,7 +2150,7 @@ export function runLintRules(files, context, scope) {
     if (severity === 'off') continue;
     let partials;
     try {
-      partials = rule.check(files, context, scope);
+      partials = rule.check(filesForRule(rule, files, context), context, scope);
     } catch (error) {
       findings.push({
         ruler: 'lint',

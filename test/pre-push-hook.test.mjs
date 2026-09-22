@@ -1635,7 +1635,15 @@ test('scan-blobs refuses a replaced object on its own, without the hook having e
   assert.doesNotMatch(r.stderr, /hunter2corp/i);
 });
 
-test('scan-blobs accepts a push where every blob is clean, printing nothing', () => {
+// Fix round 3 (finding E). This test used to assert the opposite, that a
+// clean push printed NOTHING, and it was the one test standing behind
+// the worst property this gate had: a clean run was byte-for-byte
+// indistinguishable from no gate at all. Delete the installed hook
+// directory and the same push succeeded with the same empty output and
+// the same exit 0, and there was no line a maintainer could look for
+// that meant "this push was scanned". There is now exactly one, and its
+// ABSENCE is the signal.
+test('scan-blobs accepts a clean push and says, in one line, that it ran and what it checked', () => {
   const { work, patterns } = setup();
   commit(work, 'a.md', 'nothing secret here\n', 'a');
   commit(work, 'b.md', 'also nothing secret\n', 'b');
@@ -1643,7 +1651,38 @@ test('scan-blobs accepts a push where every blob is clean, printing nothing', ()
 
   const r = scanBlobs(work, blobRecord(sha, 'a.md') + blobRecord(sha, 'b.md'), { BRAIN_KIT_LEAK_PATTERNS: patterns });
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(r.stderr, '');
+  const lines = r.stderr.split('\n').filter((line) => line !== '');
+  assert.equal(lines.length, 1, `a clean push says exactly one thing about itself, got:\n${r.stderr}`);
+  assert.match(lines[0], /brain-kit leak gate ran/);
+  // The counts are real, not decoration: two blob paths and two blob
+  // contents are four channels, and this push carries no reference
+  // records at all.
+  assert.match(lines[0], /scanned 4 channel\(s\) across 0 reference\(s\)/);
+  assert.match(lines[0], /nothing matched/);
+});
+
+// The counting half, driven from the other side: a push that carries a
+// reference record must say so, or the number is decoration.
+test('the gate summary counts the references of the push it actually read', () => {
+  const { work, patterns } = setup();
+  commit(work, 'a.md', 'nothing secret here\n', 'a');
+  const sha = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+
+  const r = scanBlobs(work, `ref\u00001\u0000refs/heads/main\u0000${blobRecord(sha, 'a.md')}`, { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /scanned 3 channel\(s\) across 1 reference\(s\)/);
+});
+
+// And the refusing side, which must NOT claim to have run clean.
+test('a push the gate refuses never prints the clean summary line', () => {
+  const { work, patterns } = setup();
+  commit(work, 'leak.md', 'Meeting with Hunter2Corp tomorrow\n', 'leak');
+  const sha = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+
+  const r = scanBlobs(work, blobRecord(sha, 'leak.md'), { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0);
+  assert.doesNotMatch(r.stderr, /brain-kit leak gate ran/);
+  assert.doesNotMatch(r.stderr, /nothing matched/);
 });
 
 test('scan-blobs surfaces truncation rather than silently capping at its print limit', () => {

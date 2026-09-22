@@ -617,7 +617,17 @@ export async function runScanBlobs(argv, io, { metadataBatch = METADATA_BATCH } 
   // The text is still SCANNED when it is exempt, not skipped: a scan that
   // cannot run still refuses. Only a match is forgiven, and it says so.
   // The identity itself is never printed, exactly because it matched.
+  // Fix round 3 (finding E): counted so a clean push can SAY what it
+  // checked. A clean run of this gate used to print nothing at all,
+  // which made it byte-for-byte indistinguishable from no gate: delete
+  // the installed hook directory and the same push succeeds with the
+  // same empty output. That is this slice's own recurring shape (silence
+  // read as safety) sitting in the one place where being wrong about it
+  // publishes a credential. One line on success is the whole fix; its
+  // ABSENCE is now the signal a maintainer can look for.
+  let channelsScanned = 0;
   const scan = (text, channel, { exemptIfMatched = false } = {}) => {
+    channelsScanned += 1;
     let result;
     try {
       result = scanText(text, patterns, { deadlineAt: Date.now() + budgetMs });
@@ -770,6 +780,10 @@ export async function runScanBlobs(argv, io, { metadataBatch = METADATA_BATCH } 
 
   const seenCommits = new Set();
   const commitQueue = [];
+  // Counted for the one-line summary at the end (fix round 3, finding
+  // E): references this gate actually READ, not references the hook
+  // claimed, so a refusing record above is never counted as one checked.
+  let refsSeen = 0;
 
   for (const entry of entries) {
     if (entry.kind === 'commit') {
@@ -806,6 +820,7 @@ export async function runScanBlobs(argv, io, { metadataBatch = METADATA_BATCH } 
         continue;
       }
       scan(entry.name, `the destination name of reference #${entry.number} of this push (REFERENCE NAME, the name itself is withheld)`);
+      refsSeen += 1;
       continue;
     }
 
@@ -960,5 +975,13 @@ export async function runScanBlobs(argv, io, { metadataBatch = METADATA_BATCH } 
     }
   }
 
-  return failed ? EXIT.FAILURE : EXIT.OK;
+  if (failed) return EXIT.FAILURE;
+  // stderr, like every other line this gate writes: git's own stdout for
+  // a push is the push's own report, and this is the gate talking about
+  // itself. It names counts only, never a path, a name or a ref: the
+  // number of channels is not a fact any pattern could hide in, which is
+  // the same reasoning the reference-number record above already states
+  // for the one other number this module prints.
+  io.stderr.write(`pre-push: brain-kit leak gate ran: scanned ${channelsScanned} channel(s) across ${refsSeen} reference(s) of this push; nothing matched.\n`);
+  return EXIT.OK;
 }

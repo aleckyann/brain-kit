@@ -145,8 +145,69 @@ export function makeReadFile(root) {
 // would be the identical mistake this function's own comment already
 // describes fixing once (a second definition that happens to agree with
 // this one for every fixture in the suite, until it does not).
+// Fix round 3 (finding G). The comparison is CASE-INSENSITIVE, and
+// src/vault.mjs's own walk filter was changed in the same commit so the
+// two still cannot diverge. The case-sensitive reading was never
+// defended by a test in either direction, and it was wrong in the one
+// direction that costs something: a note saved as `NOTE.MD` is an
+// ordinary note to whoever wrote it, but it was invisible to `validate`
+// and to `lint` alike, silently, which is this slice's own recurring
+// shape (a command that succeeds while saying nothing). Worse, on a
+// case-insensitive filesystem (macOS by default, Windows always, both
+// platforms this project's own continuous integration targets)
+// `NOTE.MD` and `note.md` are THE SAME FILE, so the old predicate made
+// vault membership depend on which platform the walk ran on. Folding
+// the case makes the answer the same everywhere, and the cost of the
+// other direction is a file deliberately named `.MD` that its author
+// did not want linted, which is not a thing this project has ever
+// promised: `validate.ignore_paths` is how a vault excludes a file.
 export function isMarkdown(path) {
-  return extname(path) === '.md';
+  return extname(path).toLowerCase() === '.md';
+}
+
+// The ceiling on how much of ONE file the `secrets` rule will read into
+// memory, in bytes. It exists because that rule now reads EVERY file the
+// walk returned rather than the markdown subset (see src/rules/lint.mjs's
+// own secrets header, fix round 3), and a vault may legitimately carry an
+// attachment far larger than any note: a video, a disk image, a database
+// dump. Reading one of those into a string is not a scan, it is an
+// out-of-memory crash on a machine that was only asked to lint.
+//
+// It ANNOUNCES ITSELF, per this project's standing rule that every
+// ceiling reports how much it cut: a file over this size is not skipped
+// in silence, it produces its own finding naming the file, its size and
+// this limit (`lint.secrets.file_too_large`), so the one thing a person
+// can never conclude from a clean run is that a file this rule declined
+// to read was clean. 4 MiB is comfortably above any markdown note or
+// ordinary document a vault carries and far below what a single string
+// allocation costs anything.
+export const MAX_SCAN_BYTES = 4 * 1024 * 1024;
+
+// The reader the `secrets` rule uses, separate from makeReadFile above
+// and deliberately NOT a normalising one.
+//
+// Three differences, each of them the point:
+//   - It reads `latin1`, byte for byte, exactly as
+//     src/commands/scan-blobs.mjs reads a blob for the maintainer's own
+//     push gate. Those two scanners must agree about what the bytes of a
+//     file are, or the same credential is a leak to one half of this
+//     slice and not to the other; `utf8` would replace every invalid
+//     sequence in a binary file with U+FFFD, which is a different byte
+//     stream than the one that will actually be pushed.
+//   - It does not fold CRLF or strip a byte-order mark. Those are
+//     markdown-reading conveniences; a scanner wants the bytes.
+//   - It is not cached. The secrets rule reads each file once, and the
+//     files it reads are the ones no other rule wants.
+// A file over MAX_SCAN_BYTES is reported rather than read; a file that
+// cannot be read at all raises, and the rule turns that into its own
+// per-file defect rather than losing the rest of the vault.
+export function makeScanFile(root, { maxBytes = MAX_SCAN_BYTES } = {}) {
+  return function scanFile(relPath) {
+    const full = join(root, relPath);
+    const bytes = statSync(full).size;
+    if (bytes > maxBytes) return { text: null, tooLarge: true, bytes, maxBytes };
+    return { text: readFileSync(full, 'latin1'), tooLarge: false, bytes, maxBytes };
+  };
 }
 
 // Notes whose stale_after has passed: informational only, computed here

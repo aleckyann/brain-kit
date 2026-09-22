@@ -30,7 +30,7 @@ test('every supported pack has the same keys as the reference pack', () => {
 
 test('pt-BR values contain no em dash and no emoji', () => {
   for (const [key, value] of Object.entries(loadMessages('pt-BR'))) {
-    assert.doesNotMatch(value, /—/, `${key} contains an em dash`);
+    assert.doesNotMatch(value, /\u2014/, `${key} contains an em dash`);
     assert.doesNotMatch(value, /\p{Extended_Pictographic}/u, `${key} contains an emoji`);
   }
 });

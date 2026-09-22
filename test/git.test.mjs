@@ -649,3 +649,106 @@ test('changedPaths under auto raises rather than silently reporting half a union
   corruptIndex(root);
   assert.throws(() => changedPaths(root, base), (error) => error.status !== 0);
 });
+
+// --- fix round 3, finding F: which remote decides the default branch ---------
+//
+// The same three-step ladder is written twice, here and in
+// templates/githooks/pre-push, and the two had already drifted on this
+// exact field: the template takes the remote from git itself (which
+// hands a pre-push hook the remote being pushed to), this module
+// hardcoded "origin". The template was right. This module has no push to
+// read a remote from, so it reads the remote the current branch actually
+// tracks, and falls back to "origin" only when there is none.
+test('the default-branch ladder follows the remote the current branch tracks, not a hardcoded "origin"', () => {
+  const upstream = makeTempDir('brain-kit-git-upstream-');
+  ok(spawnSync('git', ['init', '-q', '--bare', '-b', 'main', upstream]), 'bare init');
+
+  // No local branch called main or master anywhere, so the ladder's
+  // second rung cannot answer and the remote-tracking rung has to. The
+  // remote is called "upstream", and there is no "origin" at all: before
+  // fix round 3 this repository had no identifiable default branch and
+  // `merge-base` degraded to the whole vault, silently.
+  const root = initRepo('work');
+  writeAndCommit(root, 'index.md', '# Index\n', 'init');
+  ok(git(root, ['remote', 'add', 'upstream', upstream]), 'remote add');
+  ok(git(root, ['push', '-q', 'upstream', 'work:main']), 'push');
+  ok(git(root, ['fetch', '-q', 'upstream']), 'fetch');
+  ok(git(root, ['branch', '--set-upstream-to=upstream/main', 'work']), 'set upstream');
+  writeAndCommit(root, 'notes/new.md', '# New\n', 'add a note after the shared point');
+
+  const base = resolveBase(root, 'merge-base');
+  assert.equal(base.kind, 'merge-base', `expected a real merge base, got ${base.reason}`);
+  assert.equal(base.defaultBranch, 'upstream/main');
+  assert.deepEqual(changedPaths(root, base), ['notes/new.md']);
+});
+
+// The other direction: nothing tracked, so "origin" is still the answer,
+// which is what every ordinary clone relies on.
+test('with no upstream to read, the ladder still falls back to origin', () => {
+  const origin = makeTempDir('brain-kit-git-origin-');
+  ok(spawnSync('git', ['init', '-q', '--bare', '-b', 'main', origin]), 'bare init');
+
+  const root = initRepo('work');
+  writeAndCommit(root, 'index.md', '# Index\n', 'init');
+  ok(git(root, ['remote', 'add', 'origin', origin]), 'remote add');
+  ok(git(root, ['push', '-q', 'origin', 'work:main']), 'push');
+  ok(git(root, ['fetch', '-q', 'origin']), 'fetch');
+  writeAndCommit(root, 'notes/new.md', '# New\n', 'add a note after the shared point');
+
+  const base = resolveBase(root, 'merge-base');
+  assert.equal(base.kind, 'merge-base', `expected a real merge base, got ${base.reason}`);
+  assert.equal(base.defaultBranch, 'origin/main');
+});
+
+// --- fix round 3, finding H: the scope contract speaks vault-relative paths ---
+//
+// `changedPaths` used to return REPOSITORY-relative paths while `files`,
+// `context.all` and every path a rule ever sees are VAULT-relative. The
+// two agreed for a vault that IS the repository root, which is every
+// other fixture in this file, which is exactly how a mismatch like this
+// survives until the first rule reads the field.
+test('changedPaths returns paths relative to the vault, not to an enclosing repository', () => {
+  const repo = initRepo('main');
+  writeAndCommit(repo, 'README.md', '# Repo\n', 'init');
+  const vault = join(repo, 'vault');
+  mkdirSync(vault, { recursive: true });
+  writeAndCommit(repo, 'vault/index.md', '# Index\n', 'add the vault');
+
+  writeFileSync(join(vault, 'index.md'), '# Index\n\nOne more line.\n');
+  writeFileSync(join(vault, 'scratch.md'), '# Scratch\n');
+
+  const base = resolveBase(vault, 'auto');
+  const changed = changedPaths(vault, base);
+  assert.ok(changed.includes('index.md'), `expected a vault-relative "index.md", got ${JSON.stringify(changed)}`);
+  assert.ok(changed.includes('scratch.md'), `expected a vault-relative "scratch.md", got ${JSON.stringify(changed)}`);
+  assert.ok(!changed.some((path) => path.startsWith('vault/')), `no path may be repository-relative: ${JSON.stringify(changed)}`);
+  // Both halves of the union agree with each other, which is the half of
+  // this that was never true before: the diff was repository-relative and
+  // `git ls-files` was already cwd-relative.
+  assert.deepEqual(untrackedPaths(vault), ['scratch.md']);
+});
+
+// The companion to the ladder above, and the clause a hardcoded "origin"
+// prefix hid: once the ladder can name a remote other than origin, the
+// "is this qualified ref the branch I am already on" guard has to strip
+// whatever remote name it is actually given. Stripping the literal
+// "origin/" read "upstream/main" as a branch called "upstream/main",
+// decided it was never the current branch, and diffed a branch against
+// itself, which git reports as an EMPTY range with complete confidence:
+// exactly the status-zero wrong answer this guard exists to catch.
+test('merge-base degrades loudly when the default branch on a non-origin remote IS the branch already checked out', () => {
+  const upstream = makeTempDir('brain-kit-git-same-');
+  ok(spawnSync('git', ['init', '-q', '--bare', '-b', 'main', upstream]), 'bare init');
+
+  const root = initRepo('main');
+  writeAndCommit(root, 'index.md', '# Index\n', 'init');
+  ok(git(root, ['remote', 'add', 'upstream', upstream]), 'remote add');
+  ok(git(root, ['push', '-q', 'upstream', 'main']), 'push');
+  ok(git(root, ['fetch', '-q', 'upstream']), 'fetch');
+  ok(git(root, ['remote', 'set-head', 'upstream', '--auto']), 'set-head');
+  ok(git(root, ['branch', '--set-upstream-to=upstream/main', 'main']), 'set upstream');
+
+  const base = resolveBase(root, 'merge-base');
+  assert.equal(base.kind, 'all');
+  assert.equal(base.reason, 'merge-base-same-as-current');
+});

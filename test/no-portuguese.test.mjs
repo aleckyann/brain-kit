@@ -286,3 +286,87 @@ test('self-check: collectFiles walks a real, previously untracked file the momen
     },
   );
 });
+
+// --- the em dash, everywhere, not only where the non-ASCII scan reaches -----
+//
+// Fix round 3 (finding H). The plan's Global Constraints say the em dash
+// (U+2014) is banned EVERYWHERE in this repository, and until now the
+// only thing enforcing that was the non-ASCII scan above, which
+// deliberately covers src/, bin/ and the English language pack and says
+// why. Nothing watched test/, schema/, templates/, hooks/, .githooks/
+// or the top-level markdown, and the one violation in the whole
+// repository was sitting in test/config.test.mjs.
+//
+// The scan below covers the whole repository instead, minus the
+// directories no check of ours owns: .git, node_modules, and the two
+// internal working areas (docs/superpowers and .superpowers), which
+// hold plan, review and report documents that quote other people's
+// prose verbatim and are not shipped; npm pack excludes them.
+// The character itself is never written literally in this file, for the
+// obvious reason.
+const EM_DASH = String.fromCharCode(0x2014);
+const EM_DASH_EXEMPT = ['.git', 'node_modules', 'docs/superpowers', '.superpowers'];
+
+function collectRepoFiles(base = KIT_ROOT) {
+  const files = [];
+  function walk(path, rel) {
+    if (EM_DASH_EXEMPT.includes(rel)) return;
+    const st = statSync(path);
+    if (st.isDirectory()) {
+      for (const entry of readdirSync(path, { withFileTypes: true })) {
+        walk(join(path, entry.name), rel === '' ? entry.name : `${rel}/${entry.name}`);
+      }
+    } else if (st.isFile()) {
+      files.push({ path, rel });
+    }
+  }
+  walk(base, '');
+  return files;
+}
+
+function findEmDashViolations(files) {
+  const violations = [];
+  for (const { path, rel } of files) {
+    let text;
+    try {
+      text = readFileSync(path, 'utf8');
+    } catch {
+      continue; // unreadable is not a violation; nothing here claims to read every byte of every file
+    }
+    const index = text.indexOf(EM_DASH);
+    if (index !== -1) violations.push({ rel, line: text.slice(0, index).split('\n').length });
+  }
+  return violations;
+}
+
+test('the em dash scan covers the whole repository, not a corner of it', () => {
+  const files = collectRepoFiles();
+  assert.ok(files.length > 50, `expected the repository walk to find a real set of files, found ${files.length}`);
+  const dirs = new Set(files.map(({ rel }) => rel.split('/')[0]));
+  for (const expected of ['src', 'test', 'schema', 'templates', 'lang', 'bin']) {
+    assert.ok(dirs.has(expected), `the em dash scan must reach ${expected}/, and it did not`);
+  }
+});
+
+test('no file anywhere in this repository contains a literal em dash', () => {
+  const violations = findEmDashViolations(collectRepoFiles());
+  assert.deepEqual(
+    violations,
+    [],
+    `em dash (U+2014) found at: ${violations.map((v) => `${v.rel}:${v.line}`).join(', ')}`,
+  );
+});
+
+test('self-check: the em dash scan flags a planted em dash in a file no other check in this suite watches', () => {
+  withTempDir(
+    (dir) => {
+      mkdirSync(join(dir, 'schema'), { recursive: true });
+      writeFileSync(join(dir, 'schema', 'planted.json'), `{"note": "a${EM_DASH}b"}\n`);
+    },
+    (dir) => {
+      const violations = findEmDashViolations(collectRepoFiles(dir));
+      assert.equal(violations.length, 1);
+      assert.equal(violations[0].rel, 'schema/planted.json');
+    },
+  );
+});
