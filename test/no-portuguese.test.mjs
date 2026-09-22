@@ -297,15 +297,22 @@ test('self-check: collectFiles walks a real, previously untracked file the momen
 // or the top-level markdown, and the one violation in the whole
 // repository was sitting in test/config.test.mjs.
 //
-// The scan below covers the whole repository instead, minus the
-// directories no check of ours owns: .git, node_modules, and the two
-// internal working areas (docs/superpowers and .superpowers), which
-// hold plan, review and report documents that quote other people's
-// prose verbatim and are not shipped; npm pack excludes them.
+// The scan below covers the whole repository instead, minus exactly the
+// three directories that are not part of it: .git, which is git's record
+// of the repository rather than a file in it, and node_modules and
+// .superpowers, which .gitignore keeps out of every commit (.superpowers
+// is the internal working area where review and report documents quote
+// other people's prose verbatim).
+//
+// Final fix round 2 narrowed this. It used to exempt docs/superpowers as
+// well, which IS tracked, and a file there still held an em dash, so the
+// test's own name ("no file anywhere in this repository") claimed more
+// than it checked. That file is fixed and the exemption is gone, so the
+// plans directory is held to the same rule as everything else tracked.
 // The character itself is never written literally in this file, for the
 // obvious reason.
 const EM_DASH = String.fromCharCode(0x2014);
-const EM_DASH_EXEMPT = ['.git', 'node_modules', 'docs/superpowers', '.superpowers'];
+const EM_DASH_EXEMPT = ['.git', 'node_modules', '.superpowers'];
 
 function collectRepoFiles(base = KIT_ROOT) {
   const files = [];
@@ -346,6 +353,13 @@ test('the em dash scan covers the whole repository, not a corner of it', () => {
   for (const expected of ['src', 'test', 'schema', 'templates', 'lang', 'bin']) {
     assert.ok(dirs.has(expected), `the em dash scan must reach ${expected}/, and it did not`);
   }
+  // The tracked plans directory is part of the repository and is held to
+  // the same rule; exempting it again would make this suite's own name
+  // for the check below untrue.
+  assert.ok(
+    files.some(({ rel }) => rel.startsWith('docs/superpowers/plans/')),
+    'the em dash scan must reach the tracked plans under docs/superpowers/plans/, and it did not',
+  );
 });
 
 test('no file anywhere in this repository contains a literal em dash', () => {

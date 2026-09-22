@@ -146,6 +146,15 @@ unstated gets trusted past them.
   invocation by a flag that leaves no trace.
 - **Content the pattern list does not describe is not found.** The list is the whole of
   the gate's knowledge, and keeping it current is a person's job, not the tool's.
+- **Write a pattern the way you would write the name.** The pattern list and every
+  channel are decoded the same way: UTF-8 where the bytes are UTF-8, and any other byte
+  as itself. A name with an accent, written the ordinary way, matches that name. Until
+  22/09/2026 the channels were decoded one byte per character and only a pattern written
+  as its mojibake matched; a list written that way should be rewritten.
+- **A file over 100 MiB is not read, and refuses the push.** That is the one ceiling both
+  this gate and the adopting vault's template share, and it is the largest file the
+  most common git host accepts in an ordinary push. The refusal says the file was too
+  large; it never calls it clean.
 
 The only way to close the first two is a check the person pushing cannot skip, which means
 a server-side hook or a required status check. This repository has neither today.

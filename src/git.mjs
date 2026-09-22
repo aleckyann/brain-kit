@@ -58,7 +58,9 @@
 // are known to hold (the diff itself, once a base has resolved to concrete
 // refs) uses `runOrThrow`, which raises naming the command and the
 // captured error rather than returning empty.
+import { isUtf8 } from 'node:buffer';
 import { run, runOrThrow } from './exec.mjs';
+import { decodeBytes } from './io.mjs';
 
 // Exported (task 6, src/commands/lint.mjs): the lint command validates a
 // requested --base itself, before ever calling resolveBase, so a bad value
@@ -181,20 +183,50 @@ function remoteNameFor(root) {
   return 'origin';
 }
 
+// Returns `{ name, ref, bare }`, or null: `name` is what a person reads
+// and what this module has always returned ("origin/main", "main"),
+// `ref` is the full reference git is asked about, and `bare` is the
+// branch name alone, with the remote's own name and its slash removed by
+// the rung that KNOWS which remote it read (final fix round 2). The
+// same-branch guard below compares `bare`, and it used to derive it by
+// stripping everything before the first slash of `name`, which is wrong
+// the moment a remote's own name contains a slash: git accepts a remote
+// called "team/up", whose default branch then read as a branch called
+// "up/main", never the branch checked out, and the guard answered "not the
+// same branch" about the same branch, which is the empty range at status
+// zero it exists to refuse. The symbolic reference is read in full, not
+// with --short, because --short shortens to whatever is unambiguous and
+// grows a "remotes/" prefix when a local branch shares the name, which no
+// fixed strip can undo.
 function findDefaultBranch(root) {
   const remote = remoteNameFor(root);
-  const symref = git(root, ['symbolic-ref', '--short', `refs/remotes/${remote}/HEAD`]);
+  const remotePrefix = `refs/remotes/${remote}/`;
+  const symref = git(root, ['symbolic-ref', `${remotePrefix}HEAD`]);
   if (symref.status === 0) {
-    return symref.stdout.trim();
+    const target = symref.stdout.trim();
+    if (target.startsWith(remotePrefix)) {
+      const bare = target.slice(remotePrefix.length);
+      return { name: `${remote}/${bare}`, ref: target, bare };
+    }
+    // git itself only ever points this at a branch under the same remote,
+    // but a person can point it at a local branch, and that still has a
+    // bare name to compare. Anything else has none, so the guard cannot
+    // run and the caller degrades rather than trusting a range it cannot
+    // check.
+    if (target.startsWith('refs/heads/')) {
+      const bare = target.slice('refs/heads/'.length);
+      return { name: bare, ref: target, bare };
+    }
+    return { name: target, ref: target, bare: null };
   }
   for (const candidate of ['main', 'master']) {
     if (git(root, ['show-ref', '--verify', '--quiet', `refs/heads/${candidate}`]).status === 0) {
-      return candidate;
+      return { name: candidate, ref: `refs/heads/${candidate}`, bare: candidate };
     }
   }
   for (const candidate of ['main', 'master']) {
-    if (git(root, ['show-ref', '--verify', '--quiet', `refs/remotes/${remote}/${candidate}`]).status === 0) {
-      return `${remote}/${candidate}`;
+    if (git(root, ['show-ref', '--verify', '--quiet', `${remotePrefix}${candidate}`]).status === 0) {
+      return { name: `${remote}/${candidate}`, ref: `${remotePrefix}${candidate}`, bare: candidate };
     }
   }
   return null;
@@ -211,21 +243,14 @@ function findDefaultBranch(root) {
 // reported with complete confidence, which is precisely the kind of
 // status-zero wrong answer this module exists to catch before a caller
 // believes it.
-// Fix round 3 (finding F): the bare name is taken by stripping whatever
-// is before the FIRST slash, not the literal "origin/" this used to
-// assume. A qualified ref from findDefaultBranch above can now name any
-// remote ("upstream/main"), and a comparison that only knew how to strip
-// one remote's name would have read "upstream/main" as a branch called
-// "upstream/main" and quietly decided it was never the current branch,
-// which is the "diffing a branch against itself" answer this guard
-// exists to refuse. A local branch name never contains a slash produced
-// this way, because both other rungs of the ladder return either a bare
-// "main"/"master" or a ref this same function qualified.
-function branchNamesMatch(defaultBranchRef, currentBranch) {
+// The bare name is the one findDefaultBranch computed from the remote it
+// actually read, never a strip of the qualified name: see that
+// function's own comment for the remote whose name holds a slash, which
+// defeated both the literal "origin/" strip this used to do and the
+// strip-to-the-first-slash that replaced it.
+function branchNamesMatch(defaultBranch, currentBranch) {
   if (currentBranch === null) return false;
-  const slash = defaultBranchRef.indexOf('/');
-  const bare = slash === -1 ? defaultBranchRef : defaultBranchRef.slice(slash + 1);
-  return bare === currentBranch;
+  return defaultBranch.bare === currentBranch;
 }
 
 // The merge-base of HEAD and `ref`, or `null` when none exists. A missing
@@ -250,17 +275,17 @@ function tryMergeBase(root, ref) {
 // out to be the branch already checked out, or no common ancestor at all.
 function resolveMergeBase(root, requested, reason) {
   const defaultBranch = findDefaultBranch(root);
-  if (defaultBranch === null) {
+  if (defaultBranch === null || defaultBranch.bare === null) {
     return { kind: 'all', requested, reason: 'merge-base-unavailable' };
   }
   if (branchNamesMatch(defaultBranch, currentBranchName(root))) {
     return { kind: 'all', requested, reason: 'merge-base-same-as-current' };
   }
-  const mergeBaseSha = tryMergeBase(root, defaultBranch);
+  const mergeBaseSha = tryMergeBase(root, defaultBranch.ref);
   if (mergeBaseSha === null) {
     return { kind: 'all', requested, reason: 'merge-base-unavailable' };
   }
-  return { kind: 'merge-base', requested, reason, defaultBranch, mergeBaseSha };
+  return { kind: 'merge-base', requested, reason, defaultBranch: defaultBranch.name, mergeBaseSha };
 }
 
 // Resolves a requested base ("all" | "worktree" | "merge-base" | "auto")
@@ -329,12 +354,16 @@ export function resolveBase(root, requested) {
   // auto: union. The merge-base component is included only when it is
   // both identifiable and not degenerate; otherwise the union simply has
   // one fewer term, never a different STRATEGY.
-  const defaultBranch = findDefaultBranch(root);
+  const found = findDefaultBranch(root);
+  // A default branch whose bare name could not be read cannot be compared
+  // against the branch checked out, so it is treated as no default branch
+  // at all: the union anchors at HEAD, and says why.
+  const defaultBranch = found !== null && found.bare !== null ? found : null;
   const current = currentBranchName(root);
   if (defaultBranch !== null && !branchNamesMatch(defaultBranch, current)) {
-    const mergeBaseSha = tryMergeBase(root, defaultBranch);
+    const mergeBaseSha = tryMergeBase(root, defaultBranch.ref);
     if (mergeBaseSha !== null) {
-      return { kind: 'auto', requested, reason: 'auto-since-merge-base', anchor: mergeBaseSha, defaultBranch };
+      return { kind: 'auto', requested, reason: 'auto-since-merge-base', anchor: mergeBaseSha, defaultBranch: defaultBranch.name };
     }
     return { kind: 'auto', requested, reason: 'auto-merge-base-unavailable', anchor: 'HEAD' };
   }
@@ -524,6 +553,88 @@ export function addedLines(root, base, relPath) {
     // pointer does not move for it.
   }
   return added;
+}
+
+// Splits git's NUL-terminated `-z` output, held as BYTES, into its fields,
+// each still bytes: a path is decoded only once it is known to be valid
+// UTF-8 (see publishablePaths), never before.
+function splitNulFields(bytes) {
+  const fields = [];
+  let start = 0;
+  for (let at = bytes.indexOf(0, start); at !== -1; at = bytes.indexOf(0, start)) {
+    if (at > start) fields.push(bytes.subarray(start, at));
+    start = at + 1;
+  }
+  if (start < bytes.length) fields.push(bytes.subarray(start));
+  return fields;
+}
+
+// EVERY FILE A PUSH FROM THIS VAULT COULD PUBLISH, as git itself answers
+// it (final fix round 2): what git tracks under `root`, plus what `git add
+// -A` would add, which is every untracked file git does not ignore. This
+// is the set the `secrets` lint rule reads inside a repository, and the
+// question it answers is deliberately git's, not the vault walk's:
+//
+//   - DOT-PATHS ARE IN IT. `.env`, `.aws/credentials`, a workflow file, a
+//     note-taking app's plugin settings: the walk skips every one of them
+//     by design, and they are the most likely places in a vault for a
+//     credential to be. A committed `.env` used to pass with exit 0.
+//   - IGNORED FILES ARE NOT. A local file git will never push used to
+//     refuse every push of a clean branch, telling the owner to rotate a
+//     credential that never left the machine.
+//   - `.git` NEVER IS: git does not list its own directory.
+//
+// Four kinds of entry are returned apart from `files`, because none of
+// them is a file whose bytes this vault publishes, and each must be SAID
+// rather than dropped:
+//
+//   - `gitlinks`: a submodule (mode 160000). What the push publishes is a
+//     commit id in another repository; there is nothing here to read.
+//   - `embedded`: an untracked directory holding a repository of its own,
+//     which git lists as the directory itself (with a trailing slash)
+//     rather than its files; `git add -A` would add it as a gitlink.
+//   - `undecodable`: a path whose bytes are not valid UTF-8, which Node
+//     cannot hand to the filesystem by name. It exists, and it is
+//     published, so the caller must refuse rather than pass it; each is
+//     given here in the one decoding every scanner shares, for display.
+//
+// `null` outside a repository. A git call that fails raises, naming the
+// command, like every other must-succeed call in this module.
+export function publishablePaths(root) {
+  if (!isGitRepo(root)) return null;
+  const options = { cwd: root, ...GIT_OPTS, encoding: 'buffer' };
+  const staged = runOrThrow('git', gitArgs('ls-files', '-z', '--stage'), options).stdout;
+  const others = runOrThrow('git', gitArgs('ls-files', '-z', '--others', '--exclude-standard'), options).stdout;
+
+  const files = new Set();
+  const gitlinks = new Set();
+  const embedded = new Set();
+  const undecodable = new Set();
+  const place = (pathBytes, into) => {
+    if (!isUtf8(pathBytes)) {
+      undecodable.add(decodeBytes(pathBytes));
+      return;
+    }
+    into.add(pathBytes.toString('utf8'));
+  };
+
+  // `--stage` prints "<mode> <object> <stage>\t<path>". An unmerged path
+  // appears once per stage; the sets fold the repeats.
+  for (const record of splitNulFields(staged)) {
+    const tab = record.indexOf(0x09);
+    if (tab === -1) throw new Error('git ls-files --stage produced a record with no path in it');
+    const mode = record.subarray(0, record.indexOf(0x20)).toString('latin1');
+    place(record.subarray(tab + 1), mode === '160000' ? gitlinks : files);
+  }
+  for (const record of splitNulFields(others)) {
+    if (record[record.length - 1] === 0x2f) {
+      place(record.subarray(0, record.length - 1), embedded);
+    } else {
+      place(record, files);
+    }
+  }
+  const sorted = (set) => [...set].sort();
+  return { files: sorted(files), gitlinks: sorted(gitlinks), embedded: sorted(embedded), undecodable: sorted(undecodable) };
 }
 
 // The vault-relative paths git has never seen at all (`git ls-files`

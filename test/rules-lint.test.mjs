@@ -43,6 +43,7 @@ import { LINT_RULES, runLintRules, displaySecretPattern } from '../src/rules/lin
 import { createTranslator } from '../src/lang.mjs';
 import { OVERALL_SCAN_TIMEOUT_MS, PERSONAL_PATTERN_LABEL } from '../src/leak.mjs';
 import { makeScanFile } from '../src/commands/validate.mjs';
+import { buildSecretScan } from '../src/commands/lint.mjs';
 import { makeVault } from './helpers/vault-fixture.mjs';
 
 const englishFor = createTranslator('en');
@@ -84,6 +85,17 @@ function scopeFor(linesByFile) {
   };
 }
 
+// The set the secrets rule reads, built exactly as src/commands/lint.mjs
+// builds it for a vault outside a git repository (every vault makeVault
+// creates is one): the walk with dot-entries, through the command's own
+// buildSecretScan. The rule refuses a context without it rather than
+// falling back to some other list, so every hand-built context below
+// carries one.
+function secretScanFor(root, config) {
+  const walked = walkVault(root, config, { all: true, dotEntries: true });
+  return buildSecretScan(root, config, { listing: { listed: null }, walked });
+}
+
 // Builds the { files, context } pair src/commands/lint.mjs (a later
 // task) will hand this ruler, from a real, on-disk vault, exactly as
 // test/rules-house.test.mjs's own rulerArgsFor does for the other two
@@ -97,6 +109,7 @@ function rulerArgsFor(root, config) {
     config,
     all: new Set(all),
     scanFile: makeScanFile(root),
+    secretScan: secretScanFor(root, config),
     readFile(relPath) {
       if (!cache.has(relPath)) {
         let text = readFileSync(join(root, relPath), 'utf8');
@@ -749,7 +762,7 @@ test('a null or malformed taxonomy.columns.<name> entry, reached by bypassing lo
   };
   const all = walkVault(root, config, { all: true });
   const mdFiles = all.filter((path) => path.endsWith('.md'));
-  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root) };
+  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root), secretScan: secretScanFor(root, config) };
   assert.doesNotThrow(() => runLintRules(mdFiles, context, IGNORED_SCOPE));
   const findings = runLintRules(mdFiles, context, IGNORED_SCOPE).filter(isLint('columns'));
   assert.deepEqual(findings, []);
@@ -983,7 +996,7 @@ test('a non-integer max_cell_chars disables the cell-length check rather than en
   const config = { lint: { tables: { max_cell_chars: 6.5 } } };
   const all = walkVault(root, config, { all: true });
   const mdFiles = all.filter((path) => path.endsWith('.md'));
-  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root) };
+  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root), secretScan: secretScanFor(root, config) };
   const scope = scopeFor({ 'core/notes.md': [3] });
   const findings = runLintRules(mdFiles, context, scope).filter(isLintCheck('tables', 'cell-too-long'));
   assert.deepEqual(findings, []);
@@ -999,7 +1012,7 @@ test('a max_cell_chars of zero disables the cell-length check rather than flaggi
   const config = { lint: { tables: { max_cell_chars: 0 } } };
   const all = walkVault(root, config, { all: true });
   const mdFiles = all.filter((path) => path.endsWith('.md'));
-  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root) };
+  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root), secretScan: secretScanFor(root, config) };
   const scope = scopeFor({ 'core/notes.md': [3] });
   const findings = runLintRules(mdFiles, context, scope).filter(isLintCheck('tables', 'cell-too-long'));
   assert.deepEqual(findings, []);
@@ -1047,6 +1060,7 @@ test('tables skips reading a file entirely when this change added nothing in it,
     config,
     all: new Set(all),
     scanFile: makeScanFile(root),
+    secretScan: secretScanFor(root, config),
     readFile(relPath) {
       readCount++;
       return readFileSync(join(root, relPath), 'utf8');
@@ -1230,7 +1244,7 @@ test('a missing max_cell_chars disables the cell-length check rather than assumi
   const config = { lint: { tables: 'error' } };
   const all = walkVault(root, config, { all: true });
   const mdFiles = all.filter((path) => path.endsWith('.md'));
-  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root) };
+  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root), secretScan: secretScanFor(root, config) };
   const scope = scopeFor({ 'core/notes.md': [3] });
   const findings = runLintRules(mdFiles, context, scope).filter(isLintCheck('tables', 'cell-too-long'));
   assert.deepEqual(findings, []);
@@ -1560,7 +1574,7 @@ test('an unrecognized severity value in the configuration is treated the same as
   const config = { lint: { orphans: 'not-a-real-severity' } };
   const all = walkVault(root, config, { all: true });
   const mdFiles = all.filter((path) => path.endsWith('.md'));
-  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root) };
+  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root), secretScan: secretScanFor(root, config) };
   const findings = runLintRules(mdFiles, context, IGNORED_SCOPE).filter(isLint('orphans'));
   assert.equal(findings.length, 1);
   assert.equal(findings[0].severity, 'warn');
@@ -1743,7 +1757,7 @@ test('secrets defaults to severity "error" when the configuration never names it
   const config = {};
   const all = walkVault(root, config, { all: true });
   const mdFiles = all.filter((path) => path.endsWith('.md'));
-  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root) };
+  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root), secretScan: secretScanFor(root, config) };
   const scope = scopeFor({ 'people/ana.md': [1] });
   const findings = runLintRules(mdFiles, context, scope).filter(isLint('secrets'));
   assert.equal(findings.length, 1);
@@ -1798,7 +1812,7 @@ test('a file whose own secrets scan cannot finish in time is reported as a degra
   const mdFiles = all.filter((path) => path.endsWith('.md'));
   assert.deepEqual(mdFiles, ['index.md', 'people/fresh.md'], 'this test depends on this exact processing order');
   assert.deepEqual(all, ['brain-kit.config.json', 'index.md', 'people/fresh.md'], 'the secrets rule walks this full set, in this order');
-  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root) };
+  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root), secretScan: secretScanFor(root, config) };
 
   const realDateNow = Date.now;
   const realNow = realDateNow();
@@ -1817,7 +1831,10 @@ test('a file whose own secrets scan cannot finish in time is reported as a degra
   const degraded = findings.filter((f) => f.defect === true);
   assert.equal(degraded.length, 1, 'exactly one file should have failed to finish its own scan');
   assert.equal(degraded[0].file, 'brain-kit.config.json');
-  assert.equal(degraded[0].check, 'file-scan-failed');
+  // A scan that ran out of time is named as one, never as a failure of
+  // some other kind, so the verdict can say "timed out" and not "crashed".
+  assert.equal(degraded[0].check, 'file-scan-timed-out');
+  assert.equal(degraded[0].messageKey, 'lint.tool_defect.file_scan_timed_out');
   assert.match(degraded[0].params.message, /exceeded its deadline/);
 
   const realFinding = findings.find((f) => f.defect !== true);
@@ -1850,7 +1867,7 @@ test('a malformed privacy.secret_patterns entry still crashes the secrets rule a
   const root = makeVault({ files }); // bypasses loadConfig; this hand-built config is deliberately invalid
   const all = walkVault(root, config, { all: true });
   const mdFiles = all.filter((path) => path.endsWith('.md'));
-  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root) };
+  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root), secretScan: secretScanFor(root, config) };
   const findings = runLintRules(mdFiles, context, IGNORED_SCOPE);
 
   const crashed = findings.filter((f) => f.id === 'secrets' && f.defect === true);
@@ -2169,7 +2186,7 @@ test('privacy defaults to severity "warn" like every rule except secrets, when t
   const config = { privacy: { confidential_dirs: ['people/'] } }; // no lint key at all
   const all = walkVault(root, config, { all: true });
   const mdFiles = all.filter((path) => path.endsWith('.md'));
-  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root) };
+  const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root), secretScan: secretScanFor(root, config) };
   const findings = runLintRules(mdFiles, context, IGNORED_SCOPE).filter(isLintCheck('privacy', 'link-into-confidential'));
   assert.equal(findings.length, 1);
   assert.equal(findings[0].severity, 'warn');
@@ -2556,20 +2573,28 @@ test('tables names the right message for a scoped run and for a whole-vault run,
 test('a file the scanner cannot read is reported as a defect for that file alone, and later files are still scanned', () => {
   const secretsRule = LINT_RULES.find((rule) => rule.id === 'secrets');
   const awsKey = fakeAwsKey('LATER11111LATER1');
+  // The operating system's own message carries the ABSOLUTE path it was
+  // given, which names the machine; this one is shaped like it.
+  const machinePath = '/home/somebody/vault/attachments/locked.bin';
   const context = {
     config: { privacy: { secret_patterns: [] } },
-    all: new Set(['attachments/locked.bin', 'people/ana.md']),
+    secretScan: { files: ['attachments/locked.bin', 'people/ana.md'], undecodable: [], failure: null },
     scanFile: (relPath) => {
-      if (relPath === 'attachments/locked.bin') throw new Error('EACCES: permission denied');
+      if (relPath === 'attachments/locked.bin') throw Object.assign(new Error(`EACCES: permission denied, open '${machinePath}'`), { code: 'EACCES' });
       return { text: `a note holding ${awsKey}`, tooLarge: false, bytes: 40, maxBytes: 1000 };
     },
   };
-  const findings = secretsRule.check([...context.all], context, IGNORED_SCOPE);
+  const findings = secretsRule.check(context.secretScan.files, context, IGNORED_SCOPE);
   const defects = findings.filter((f) => f.defect === true);
   assert.equal(defects.length, 1);
   assert.equal(defects[0].file, 'attachments/locked.bin');
   assert.equal(defects[0].messageKey, 'lint.tool_defect.file_read_failed');
-  assert.match(defects[0].params.message, /permission denied/);
+  // Final fix round 2: the error CODE, never the message, so the absolute
+  // path in it never reaches a report. The finding names the file
+  // relative to the vault already.
+  assert.deepEqual(defects[0].params, { code: 'EACCES' });
+  assert.match(renderedMessage(defects[0]), /EACCES/);
+  assert.doesNotMatch(renderedMessage(defects[0]), /\/home\//);
 
   const real = findings.filter((f) => f.defect !== true);
   assert.equal(real.length, 1, 'the file after the unreadable one must still be scanned');
@@ -2604,4 +2629,78 @@ test('an ordinary detection pattern is never mistaken for a credential', () => {
   const config = { privacy: { secret_patterns: ['internal-token-[0-9]{6}', 'sk-ant-'] } };
   const findings = findingsFor({ files, scope: IGNORED_SCOPE, config }).filter(isLint('secrets'));
   assert.deepEqual(findings.filter((f) => f.check === 'credential-as-pattern'), []);
+});
+
+// --- final fix round 2: what the runner and the rule refuse -----------------
+
+test('a rule that crashes with an error naming the vault\'s absolute path is reported with that path made relative', () => {
+  // An absolute path names the machine and the person it belongs to, and a
+  // lint report is read in pull requests. The error below is shaped like
+  // the one the operating system raises when a note vanishes mid-run.
+  const root = makeVault({ files: { 'index.md': '# Welcome\n\n[Ana](people/ana.md)\n', 'people/ana.md': '# Ana\n' } });
+  const config = loadConfig(root);
+  const { files, context } = rulerArgsFor(root, config);
+  context.readFile = (relPath) => {
+    throw Object.assign(new Error(`ENOENT: no such file or directory, open '${join(root, relPath)}'`), { code: 'ENOENT' });
+  };
+  const crashed = runLintRules(files, context, IGNORED_SCOPE).filter((f) => f.check === 'rule-crashed');
+  assert.ok(crashed.length > 0, 'the stand-in reader must make at least one rule crash');
+  for (const finding of crashed) {
+    assert.ok(!finding.params.message.includes(root), `a crash message kept the absolute path: ${finding.params.message}`);
+    assert.match(finding.params.message, /open '\.[\\/]/);
+  }
+});
+
+test('the secrets rule refuses a context that carries no set of files to read, rather than falling back to some other list', () => {
+  const root = makeVault({ files: { 'index.md': '# Welcome\n', 'people/ana.md': `token ${fakeAwsKey('NOSET1111NOSET11')}\n` } });
+  const config = loadConfig(root);
+  const { files, context } = rulerArgsFor(root, config);
+  delete context.secretScan;
+  const findings = runLintRules(files, context, IGNORED_SCOPE).filter(isLint('secrets'));
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].check, 'rule-crashed');
+  assert.match(findings[0].params.message, /handed it no such set/);
+});
+
+test('the secrets set\'s own defects are reported by the rule: a name it cannot open, and a listing git could not produce', () => {
+  const secretsRule = LINT_RULES.find((rule) => rule.id === 'secrets');
+  const context = {
+    config: { privacy: { secret_patterns: [] } },
+    secretScan: { files: [], undecodable: ['people/bad\u00FF.txt'], failure: { status: 128 } },
+    scanFile: () => { throw new Error('never called'); },
+  };
+  const findings = secretsRule.check([], context, IGNORED_SCOPE);
+  assert.deepEqual(findings.map((f) => [f.check, f.file, f.defect]), [
+    ['file-name-undecodable', 'people/bad\u00FF.txt', true],
+    ['publishable-list-failed', null, true],
+  ]);
+  assert.deepEqual(findings[1].params, { status: 128 });
+});
+
+test('each file\'s budget grows with the file: a scan past the flat twenty seconds, but inside what its lines earned, finishes', () => {
+  // The rule reads the real clock through Date.now, so the clock is
+  // replaced for the length of one check() call. Readings: the rule's own
+  // deadline for the one file, the scan's check before its first run of
+  // 1024 lines, then the check before the second run, set a second past
+  // the flat floor. The first run earned about 1.27 seconds, so the
+  // second check is inside the budget, and without the accrual it is not.
+  const secretsRule = LINT_RULES.find((rule) => rule.id === 'secrets');
+  const text = Array.from({ length: 1025 }, () => 'an ordinary line').join('\n');
+  const context = {
+    config: { privacy: { secret_patterns: [] } },
+    secretScan: { files: ['notes/long.md'], undecodable: [], failure: null },
+    scanFile: () => ({ text, tooLarge: false, bytes: text.length, maxBytes: 1e9 }),
+  };
+  const realDateNow = Date.now;
+  const start = realDateNow();
+  const readings = [start, start, start + OVERALL_SCAN_TIMEOUT_MS + 1000];
+  let call = 0;
+  Date.now = () => readings[Math.min(call++, readings.length - 1)];
+  let findings;
+  try {
+    findings = secretsRule.check(context.secretScan.files, context, IGNORED_SCOPE);
+  } finally {
+    Date.now = realDateNow;
+  }
+  assert.deepEqual(findings, [], 'the file earned its own budget and must not be reported as having run out of it');
 });

@@ -31,6 +31,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import vm from 'node:vm';
+import { decodeBytes, decodeLatin1Text } from './io.mjs';
 
 // A fixed, non-secret string that stands in for whatever matched. Never
 // derived from the input, so it can never itself leak a fragment of a
@@ -125,6 +126,76 @@ const SCAN_TIMEOUT_MS = 2000;
 // including one that would turn a bounded scan back into an effectively
 // unbounded one.
 export const OVERALL_SCAN_TIMEOUT_MS = 20000;
+
+// THE BUDGET GROWS WITH THE WORK (final fix round 2). OVERALL_SCAN_TIMEOUT_MS
+// above is a FLOOR now, not the whole budget: a caller that passes
+// `accrue: true` to scanText gets that floor plus the rates below for every
+// line it actually scans, so a large file is given time in proportion to
+// how large it is, and a small one keeps the flat twenty seconds it always
+// had.
+//
+// The unit is the LINE, not the byte, and that is a measurement, not a
+// preference. On the machine this was written on, with the nine patterns a
+// shipped configuration applies: one sandbox call per line costs about 120
+// microseconds whatever the line holds, against about 1.6 NANOseconds per
+// character for the regular expression work itself. A megabyte of two-byte
+// lines therefore took 62 seconds and a megabyte of one long line took 2
+// milliseconds: the same bytes, thirty thousand times apart. A budget in
+// bytes alone would have to be sized for the first and would then bound
+// the second by nothing, or be sized for ordinary prose and time out on an
+// ordinary CSV, which is what the flat budget did (an export of 248,412
+// short lines and no secret, refused as a crash). Both costs also grow with
+// the number of patterns (about 95 microseconds plus 4 per pattern per
+// line, and about 0.085 nanoseconds per pattern per character, measured at
+// 9, 54 and 204 patterns), so the rates are per pattern too.
+//
+// Each rate below is about ten times what was measured, so a slower
+// machine, a loaded one or a continuous-integration runner does not trip on
+// ordinary content, while a pattern that is slow on every line still runs
+// out a few seconds past the floor instead of hours later. The scanner's
+// pre-filter (see scanText) makes most lines far cheaper than the full
+// per-line cost these rates allow for; the rates are sized for the case
+// where every line needs the full scan anyway, because a file where every
+// line matches is a real file too (an export of addresses, say) and must
+// not be refused as having timed out when it should be refused for what it
+// holds.
+export const ACCRUAL_PER_LINE_MS = 1;
+export const ACCRUAL_PER_LINE_PER_PATTERN_MS = 0.04;
+export const ACCRUAL_PER_CHAR_PER_PATTERN_MS = 0.000001;
+
+// The ceiling on how much ONE file or ONE blob either gate will read into
+// memory to scan, in bytes, and the SAME number for both gates (final fix
+// round 2). It used to be two numbers sixty-four times apart: 4 MiB for the
+// `secrets` lint rule, chosen rather than measured, which refused the first
+// push of the one real vault in sight over an ordinary PDF; and 256 MiB for
+// the maintainer's gate, which was not a scan ceiling at all but the output
+// buffer of a git call, so a larger blob was refused as "git show could not
+// be run". Neither was the right number and neither said what it was.
+//
+// 100 MiB is what an ordinary vault attachment is: it is the largest file
+// the most common git host accepts in an ordinary push (GitHub refuses any
+// file over 100 MiB outright), so an attachment an ordinary vault can hold
+// at all is one this reads. Measured, not assumed: decoding 100 MiB of
+// random bytes and splitting it into lines peaks at about 1.1 GB of
+// resident memory, well inside a default Node heap. A file over it is
+// refused, loudly and truthfully as too large, never skipped; the adopting
+// vault's escape is `lint.secrets.exclude_paths`, which a pull request
+// shows, and the maintainer's gate has no escape because its repository
+// has no business holding such a file.
+export const MAX_SCAN_BYTES = 100 * 1024 * 1024;
+
+// The codes every error this scanner raises carries, so a caller can say
+// WHICH failure it was rather than guessing from prose: a scan that ran out
+// of time is not a scan that crashed, and a report that calls one the other
+// sends its reader to debug the wrong thing.
+export const SCAN_TIMEOUT = 'BRAIN_KIT_SCAN_TIMEOUT';
+export const SCAN_FAILED = 'BRAIN_KIT_SCAN_FAILED';
+
+function scanError(message, code) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
 
 // Versioned in this repository because these name no one: a private key
 // header, the two GitHub token shapes, the Anthropic key shape, the AWS
@@ -246,9 +317,15 @@ function readPersonalPatternLines(path) {
   if (!stat.isFile()) {
     throw new Error(`leak patterns file is not a regular file (it may be a directory): ${path}`);
   }
+  // Decoded exactly as the content it is matched against is decoded
+  // (src/io.mjs, decodeBytes), so a name written the ordinary way, accents
+  // and all, matches that name wherever it appears. It used to be read as
+  // UTF-8 while every channel was decoded one byte per character, and a
+  // pattern holding an accented letter, written the ordinary way, matched
+  // nothing at all, in silence; only its mojibake spelling refused.
   let content;
   try {
-    content = readFileSync(path, 'utf8');
+    content = decodeBytes(readFileSync(path));
   } catch (err) {
     throw new Error(`leak patterns file is not readable: ${path} (${err.code ?? err.message})`);
   }
@@ -265,11 +342,32 @@ function readPersonalPatternLines(path) {
   return usable;
 }
 
+// A pattern spelled as the mojibake of a name: every character of it one
+// byte wide, and, read back as the bytes those characters stand for, it
+// holds a well-formed UTF-8 sequence (an accented letter written as the two
+// characters its UTF-8 bytes make when read one byte per character). Until
+// 22/09/2026 that was the only spelling of an accented name that matched
+// anything, because content was decoded one byte per character; now that
+// content and patterns are decoded alike, it no longer matches the name it
+// was written for. A list written that way would go on saying "nothing
+// matched" about the very name it exists to catch, which is the useless
+// list this gate refuses rather than accepts. No real name holds such a
+// pair: the second character would be a C1 control or a symbol such as
+// the copyright or the degree sign straight after an accented letter.
+function isMojibakeSpelling(raw) {
+  return !/[^\x00-\xff]/.test(raw) && decodeLatin1Text(raw) !== raw;
+}
+
 // Compiles the personal patterns file into tagged, compiled patterns.
 function loadPersonalPatterns(env) {
   const path = personalPatternsPath(env);
   const usable = readPersonalPatternLines(path);
-  return usable.map(({ raw, lineNumber }) => compilePattern(raw, 'personal', { path, lineNumber }));
+  return usable.map(({ raw, lineNumber }) => {
+    if (isMojibakeSpelling(raw)) {
+      throw new Error(`the personal leak pattern on line ${lineNumber} of ${path} is spelled as the mojibake of a name (its UTF-8 bytes read one byte per character), which no longer matches that name: write it the way you would write the name`);
+    }
+    return compilePattern(raw, 'personal', { path, lineNumber });
+  });
 }
 
 // Builds the full, compiled pattern list this scanner will apply.
@@ -447,10 +545,115 @@ function scanLineForAllPatterns(regexes, text, keep) {
       // timed out"), so it is replaced rather than wrapped: the message
       // here is what actually helps whoever reads it decide what to do
       // next.
-      throw new Error(`one or more leak patterns took longer than ${SCAN_TIMEOUT_MS}ms to scan this line and were aborted rather than left to hang`);
+      throw scanError(`one or more leak patterns took longer than ${SCAN_TIMEOUT_MS}ms to scan this line and were aborted rather than left to hang`, SCAN_TIMEOUT);
     }
-    throw new Error('scanning this line against the leak patterns failed unexpectedly, not from a timeout');
+    throw scanError('scanning this line against the leak patterns failed unexpectedly, not from a timeout', SCAN_FAILED);
   }
+}
+
+// THE PRE-FILTER (final fix round 2): which lines of a run of lines ANY
+// pattern matches at all, asked in ONE sandbox call for the whole run
+// rather than one call per line.
+//
+// The sandbox call is what a scan's time is made of (see
+// OVERALL_SCAN_TIMEOUT_MS and the accrual rates above: about 120
+// microseconds per call whatever is inside it), and most lines of most
+// files match nothing. So the question "does anything match here" is asked
+// of up to PREFILTER_MAX_LINES lines at once, and only a line that answers
+// yes goes on to the full per-line scan below, which counts every match,
+// keeps the spans and builds the redaction map exactly as before. Measured
+// on ordinary content, that is the difference between about 120
+// microseconds and well under one microsecond per line.
+//
+// EXACT, NOT A HEURISTIC, and the argument is short. Each line is tested
+// ON ITS OWN, as the same string, by the same compiled pattern, from
+// position zero: `test` from lastIndex 0 is true exactly when the full
+// scan's first `exec` would find a match. A line every pattern answers
+// false for is therefore a line the full scan would have found nothing on,
+// which it would have added nothing to: no match, no span, zero to the
+// total. Skipping it changes no result. A pattern that can match the empty
+// string answers true on every line, so every line is scanned in full,
+// which is slower and still exact. Testing the whole text at once instead
+// would NOT be exact (an anchor or a lookaround behaves differently at a
+// line boundary than at the edge of a string), which is why the lines are
+// tested one by one inside the call.
+//
+// lastIndex is reset before every test, because a global pattern's `test`
+// starts wherever the last use left it; a successful test leaves it past
+// the match, and the full scan resets it again before its own first exec.
+//
+// The loop runs inside a function whose parameters are the sandbox's
+// bindings, not over the bindings themselves: every read of a sandbox
+// global goes through the context's property interceptor, and inside a
+// loop of a thousand lines that interception, not the regular expression
+// work, was measured as most of the call's cost (about 17 microseconds a
+// line against about one once the bindings are locals).
+const PREFILTER_SRC = `
+(function (lines, patterns, from, to) {
+  var hits = [];
+  for (var i = from; i < to; i += 1) {
+    var line = lines[i];
+    for (var p = 0; p < patterns.length; p += 1) {
+      var regex = patterns[p];
+      regex.lastIndex = 0;
+      if (regex.test(line)) { hits.push(i); break; }
+    }
+  }
+  return hits;
+})(lines, patterns, from, to);
+`;
+
+// How many lines, and how many characters, one pre-filter call covers at
+// most. Bounded on both, so that one call stays far inside SCAN_TIMEOUT_MS
+// for any content a real pattern list meets: at these sizes a call does
+// about a millisecond of work. A single line longer than the character
+// bound is a run of its own.
+export const PREFILTER_MAX_LINES = 1024;
+export const PREFILTER_MAX_CHARS = 256 * 1024;
+
+function prefilterRunEnd(lines, start) {
+  let end = start;
+  let chars = 0;
+  while (end < lines.length && end - start < PREFILTER_MAX_LINES) {
+    const next = chars + lines[end].length;
+    if (end > start && next > PREFILTER_MAX_CHARS) break;
+    chars = next;
+    end += 1;
+  }
+  return end;
+}
+
+// Runs PREFILTER_SRC over lines [from, to). The same failure handling as
+// scanLineForAllPatterns: a timeout is called one, with its code, and
+// anything else fails closed without relaying the engine's own text.
+function linesWithAnyMatch(regexes, lines, from, to) {
+  scanSandbox.patterns = regexes;
+  scanSandbox.lines = lines;
+  scanSandbox.from = from;
+  scanSandbox.to = to;
+  try {
+    return vm.runInContext(PREFILTER_SRC, scanSandbox, { timeout: SCAN_TIMEOUT_MS });
+  } catch (err) {
+    if (err?.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') {
+      throw scanError(`one or more leak patterns took longer than ${SCAN_TIMEOUT_MS}ms to scan this line and were aborted rather than left to hang`, SCAN_TIMEOUT);
+    }
+    throw scanError('scanning this line against the leak patterns failed unexpectedly, not from a timeout', SCAN_FAILED);
+  } finally {
+    // The lines array is the whole text; it is not kept alive by the
+    // sandbox past the call that needed it.
+    scanSandbox.lines = undefined;
+  }
+}
+
+// Lines end at LF, at CRLF, and at a lone CR (final fix round 2). A file
+// whose only line breaks are carriage returns (classic Mac line endings)
+// used to be one line here, so every finding in it was reported at line 1,
+// while every other rule in this project, which reads through a reader that
+// folds CR to LF, numbered the same file correctly: two readers disagreeing
+// about one file. CRLF is still ONE line break, so a Windows file numbers
+// exactly as it did.
+function splitLines(text) {
+  return text.includes('\r') ? text.split(/\r\n|\r|\n/) : text.split('\n');
 }
 
 // The floor on how many matches, per (line, pattern), this module is
@@ -580,9 +783,9 @@ function buildExcerpt(lineText, start, end, redactionSpans, tooDenseToRedactPrec
 // NUL bytes are stripped before scanning, and the result is still scanned
 // as text: the shell version of this scanner treated any blob containing a
 // NUL as binary and skipped it outright, which was one of its five holes.
-// Line splitting happens on `\n` alone; a file with no trailing newline
-// still yields its last line as a scannable line, since `String.split`
-// never drops a trailing non-terminated segment.
+// Lines end at LF, CRLF or a lone CR (see splitLines); a file with no
+// trailing newline still yields its last line as a scannable line, since
+// `String.split` never drops a trailing non-terminated segment.
 //
 // The cap is applied WHILE scanning, not after: each pattern retains at
 // most the line's remaining budget of matches (never more objects than
@@ -634,33 +837,53 @@ function buildExcerpt(lineText, start, end, redactionSpans, tooDenseToRedactPrec
 // make this function give up sooner or later, never skip a pattern or drop
 // a match. No production caller passes it: src/commands/scan-blobs.mjs and
 // src/rules/lint.mjs both leave it out and get the real clock.
-export function scanText(text, patterns, { max, deadlineAt, now } = {}) {
+//
+// `accrue: true` makes `deadlineAt` a floor that grows by the accrual rates
+// above for every line scanned, so the budget is proportional to the work
+// (see ACCRUAL_PER_LINE_MS for the measurement that says the unit is the
+// line). Anything but `true` leaves the deadline absolute. It cannot open a
+// hole either: it can only make this function wait longer, and by a bounded,
+// fixed amount per line, never forever.
+export function scanText(text, patterns, { max, deadlineAt, now, accrue = false } = {}) {
   const effectiveMax = Number.isInteger(max) && max >= 0 ? max : DEFAULT_MAX;
   const clock = typeof now === 'function' ? now : Date.now;
-  const effectiveDeadline = Number.isFinite(deadlineAt) ? deadlineAt : clock() + OVERALL_SCAN_TIMEOUT_MS;
+  let allowedUntil = Number.isFinite(deadlineAt) ? deadlineAt : clock() + OVERALL_SCAN_TIMEOUT_MS;
   const cleaned = text.replace(/\0/g, '');
-  const lines = cleaned.split('\n');
+  const lines = splitLines(cleaned);
   const matches = [];
   let total = 0;
   // Hoisted once, outside the per-line loop: `patterns` itself does not
   // change across lines, so there is no reason to rebuild this array
   // ten thousand times for a ten thousand line file.
   const regexes = patterns.map((entry) => entry.regex);
-  lines.forEach((lineText, index) => {
-    const lineNumber = index + 1;
-    // Checked once per line, not once per (line, pattern): the per-line
-    // sandbox call below already evaluates every pattern together (see
-    // `SCAN_LINE_SRC`), so a line is the smallest unit of work this
-    // function can interrupt between. The per-evaluation budget
-    // (`SCAN_TIMEOUT_MS`) bounds one stuck call; this bounds the SUM of
-    // every call a scan makes, which many lines that each finish
-    // comfortably under that per-call budget can still exceed with no
-    // single call ever raising. Checking here bounds how far past this
-    // deadline the scan can overshoot to at most one more line's worth of
-    // work, never the whole rest of the file.
-    if (clock() > effectiveDeadline) {
-      throw new Error(`the scan exceeded its deadline before finishing every line; refusing to report a partial result as if it were complete`);
+  // The accrual (see ACCRUAL_PER_LINE_MS): what each line scanned adds to
+  // the budget, only when the caller asked for a budget that grows with the
+  // work. Off by default, so a caller that passes nothing keeps exactly the
+  // absolute deadline it always had.
+  const perLineMs = accrue === true ? ACCRUAL_PER_LINE_MS + ACCRUAL_PER_LINE_PER_PATTERN_MS * patterns.length : 0;
+  const perCharMs = accrue === true ? ACCRUAL_PER_CHAR_PER_PATTERN_MS * patterns.length : 0;
+  const accrueFor = (from, to) => {
+    for (let i = from; i < to; i += 1) allowedUntil += perLineMs + lines[i].length * perCharMs;
+  };
+
+  // Checked before every sandbox call, the pre-filter's and the full
+  // scan's alike: a sandbox call is the smallest unit of work this
+  // function can interrupt between. The per-evaluation budget
+  // (`SCAN_TIMEOUT_MS`) bounds one stuck call; this bounds the SUM of
+  // every call a scan makes, which many calls that each finish comfortably
+  // under that per-call budget can still exceed with no single call ever
+  // raising. Checking here bounds how far past this deadline the scan can
+  // overshoot to at most one more call's worth of work, never the whole
+  // rest of the file.
+  const checkDeadline = () => {
+    if (clock() > allowedUntil) {
+      throw scanError('the scan exceeded its deadline before finishing every line; refusing to report a partial result as if it were complete', SCAN_TIMEOUT);
     }
+  };
+
+  const scanOneLine = (index) => {
+    const lineText = lines[index];
+    const lineNumber = index + 1;
     const remainingBudget = effectiveMax - matches.length;
     const collectCap = Math.max(remainingBudget, REDACTION_SPAN_FLOOR);
     const findingCandidates = [];
@@ -725,7 +948,45 @@ export function scanText(text, patterns, { max, deadlineAt, now } = {}) {
         excerpt: buildExcerpt(lineText, candidate.start, candidate.end, redactionSpans, tooDenseToRedactPrecisely),
       });
     }
-  });
+  };
+
+  // The pre-filter first, a run of lines per sandbox call, and the full
+  // per-line scan only for a line some pattern matched (see PREFILTER_SRC
+  // for why that is exact). A run whose call times out is not a verdict on
+  // the run: a pattern that is merely slow on many lines together can
+  // outlast one call's budget where each line on its own would not, so the
+  // rest of the text is scanned one line per call instead, which is how
+  // this function worked before it had a pre-filter, and every line is
+  // still read. A run of ONE line is the exception: the pre-filter's test
+  // does no more than the full scan's first exec on that same line, so
+  // that line cannot be scanned in its own call either, and the timeout is
+  // the answer.
+  let prefilter = true;
+  let at = 0;
+  while (at < lines.length) {
+    checkDeadline();
+    if (!prefilter) {
+      scanOneLine(at);
+      accrueFor(at, at + 1);
+      at += 1;
+      continue;
+    }
+    const end = prefilterRunEnd(lines, at);
+    let hits;
+    try {
+      hits = linesWithAnyMatch(regexes, lines, at, end);
+    } catch (error) {
+      if (error.code !== SCAN_TIMEOUT || end - at === 1) throw error;
+      prefilter = false;
+      continue;
+    }
+    accrueFor(at, end);
+    for (const index of hits) {
+      checkDeadline();
+      scanOneLine(index);
+    }
+    at = end;
+  }
   return {
     matches,
     truncated: total > matches.length,

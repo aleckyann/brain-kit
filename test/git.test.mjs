@@ -11,6 +11,7 @@ import {
   changedPaths,
   addedLines,
   untrackedPaths,
+  publishablePaths,
 } from '../src/git.mjs';
 
 // Every case here builds a REAL temporary git repository via spawnSync with
@@ -751,4 +752,178 @@ test('merge-base degrades loudly when the default branch on a non-origin remote 
   const base = resolveBase(root, 'merge-base');
   assert.equal(base.kind, 'all');
   assert.equal(base.reason, 'merge-base-same-as-current');
+});
+
+// --- final fix round 2: the bare name comes from the remote actually read ---
+//
+// git accepts a remote whose own name holds a slash. The guard against
+// diffing a branch against itself used to strip everything before the
+// FIRST slash of the qualified default branch, so "team/up/main" read as a
+// branch called "up/main", never the branch checked out, and an explicit
+// merge-base on the default branch resolved to an empty range at status
+// zero: the exact answer the guard exists to refuse.
+function repoTrackingRemote(remote, { localBranchNamedLikeRemote = false } = {}) {
+  const bare = makeTempDir('brain-kit-git-slash-');
+  ok(spawnSync('git', ['init', '-q', '--bare', '-b', 'main', bare]), 'bare init');
+  const root = initRepo('main');
+  writeAndCommit(root, 'index.md', '# Index\n', 'init');
+  ok(git(root, ['remote', 'add', remote, bare]), 'remote add');
+  ok(git(root, ['push', '-q', remote, 'main']), 'push');
+  ok(git(root, ['fetch', '-q', remote]), 'fetch');
+  ok(git(root, ['remote', 'set-head', remote, '--auto']), 'set-head');
+  ok(git(root, ['branch', `--set-upstream-to=${remote}/main`, 'main']), 'set upstream');
+  if (localBranchNamedLikeRemote) ok(git(root, ['branch', `${remote}/main`]), 'a local branch named like the remote-tracking one');
+  return root;
+}
+
+test('a remote whose name holds a slash does not defeat the same-branch guard', () => {
+  const root = repoTrackingRemote('team/up');
+  const explicit = resolveBase(root, 'merge-base');
+  assert.equal(explicit.kind, 'all');
+  assert.equal(explicit.reason, 'merge-base-same-as-current');
+  // auto on a clean default branch widens to the whole vault, as it does
+  // for any remote, rather than anchoring at a merge base that is HEAD.
+  assert.equal(resolveBase(root, 'auto').reason, 'auto-on-default-branch-clean');
+  // And from a feature branch that tracks the same remote, the ladder
+  // names the default branch in full and diffs against it.
+  ok(git(root, ['checkout', '-q', '-b', 'feature']), 'feature');
+  ok(git(root, ['branch', '--set-upstream-to=team/up/main', 'feature']), 'feature tracks the slash remote');
+  writeAndCommit(root, 'notes.md', '# Notes\n', 'feature work');
+  const feature = resolveBase(root, 'merge-base');
+  assert.equal(feature.kind, 'merge-base');
+  assert.equal(feature.defaultBranch, 'team/up/main');
+  assert.deepEqual(changedPaths(root, feature), ['notes.md']);
+});
+
+test('a local branch named like the remote-tracking default does not make the ladder read a shortened, ambiguous name', () => {
+  // --short prints "remotes/origin/main" once a local "origin/main"
+  // exists; the ladder reads the symbolic reference in full instead.
+  const root = repoTrackingRemote('origin', { localBranchNamedLikeRemote: true });
+  assert.equal(git(root, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).stdout.trim(), 'remotes/origin/main', 'the ambiguity this test exists for');
+  assert.equal(resolveBase(root, 'merge-base').reason, 'merge-base-same-as-current');
+});
+
+test('a remote HEAD pointed by hand at a local branch still has a bare name to compare; pointed anywhere else, the ladder degrades rather than trust a range it cannot check', () => {
+  const root = initRepo('main');
+  writeAndCommit(root, 'index.md', '# Index\n', 'init');
+  ok(git(root, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/heads/main']), 'symref to a local branch');
+  assert.equal(resolveBase(root, 'merge-base').reason, 'merge-base-same-as-current');
+
+  ok(git(root, ['tag', 'anchor']), 'tag');
+  ok(git(root, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/tags/anchor']), 'symref to a tag');
+  ok(git(root, ['checkout', '-q', '-b', 'feature']), 'feature');
+  assert.equal(resolveBase(root, 'merge-base').reason, 'merge-base-unavailable');
+  assert.equal(resolveBase(root, 'auto').reason, 'auto-no-default-branch');
+});
+
+// --- final fix round 2: what a push from this vault could publish ---------
+
+test('publishablePaths is null outside a repository', () => {
+  assert.equal(publishablePaths(makeTempDir('brain-kit-git-norepo-')), null);
+});
+
+test('publishablePaths lists what git tracks and what it would add, dot-paths included and ignored files not, relative to the vault', () => {
+  const outer = initRepo('main');
+  const vault = join(outer, 'vault');
+  writeAndCommit(outer, 'vault/.env', 'KEY=1\n', 'env');
+  writeAndCommit(outer, 'vault/notes/a.md', '# A\n', 'a');
+  writeAndCommit(outer, 'vault/.gitignore', 'local/\n*.log\n', 'ignore');
+  writeAndCommit(outer, 'elsewhere.md', '# outside the vault\n', 'outside');
+  mkdirSync(join(vault, 'local'));
+  writeFileSync(join(vault, 'local', 'secret'), 'never pushed\n');
+  writeFileSync(join(vault, 'debug.log'), 'never pushed\n');
+  writeFileSync(join(vault, '.env.local'), 'would be added\n');
+  writeFileSync(join(vault, 'new.md'), 'would be added\n');
+  const listed = publishablePaths(vault);
+  assert.deepEqual(listed.files, ['.env', '.env.local', '.gitignore', 'new.md', 'notes/a.md']);
+  assert.deepEqual(listed.gitlinks, []);
+  assert.deepEqual(listed.embedded, []);
+  assert.deepEqual(listed.undecodable, []);
+});
+
+test('publishablePaths sets apart a submodule, a repository of its own and a name that is not UTF-8, and lists each path once', { skip: process.platform !== 'linux' ? 'only Linux lets a file name hold arbitrary bytes' : false }, () => {
+  const inner = initRepo('main');
+  writeAndCommit(inner, 'inside.txt', 'inside\n', 'inner');
+  const root = initRepo('main');
+  writeAndCommit(root, 'index.md', '# Index\n', 'init');
+  ok(git(root, ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', inner, 'sub']), 'submodule add');
+  ok(git(root, ['commit', '-q', '-m', 'submodule']), 'commit submodule');
+  ok(spawnSync('git', ['init', '-q', join(root, 'embedded')]), 'an untracked repository inside');
+  writeFileSync(Buffer.concat([Buffer.from(join(root, 'bad'), 'utf8'), Buffer.from([0xff]), Buffer.from('.txt')]), 'x\n');
+  const listed = publishablePaths(root);
+  assert.deepEqual(listed.gitlinks, ['sub']);
+  assert.deepEqual(listed.embedded, ['embedded']);
+  assert.deepEqual(listed.undecodable, ['bad\u00ff.txt']);
+  assert.deepEqual(listed.files, ['.gitmodules', 'index.md']);
+});
+
+test('publishablePaths raises, naming the command, when git cannot list the index', () => {
+  const root = initRepo('main');
+  writeAndCommit(root, 'index.md', '# Index\n', 'init');
+  writeFileSync(join(root, '.git', 'index'), 'not an index');
+  assert.throws(() => publishablePaths(root), /git .*ls-files/);
+});
+
+// git stood in for, for one listing, by a script first on PATH: when the
+// listing's own flag is among the arguments it prints `output` (a printf
+// format) and nothing else; every other call reaches the real git.
+function withListingStandIn(flag, output, body) {
+  const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
+  const shims = makeTempDir('brain-kit-git-shim-');
+  writeFileSync(join(shims, 'git'), [
+    '#!/bin/sh',
+    'for arg in "$@"; do',
+    `  if [ "$arg" = "${flag}" ]; then printf '${output}'; exit 0; fi`,
+    'done',
+    `exec '${realGit}' "$@"`,
+    '',
+  ].join('\n'), { mode: 0o755 });
+  const path = process.env.PATH;
+  process.env.PATH = `${shims}:${path}`;
+  try {
+    return body();
+  } finally {
+    process.env.PATH = path;
+  }
+}
+
+// A record the parser cannot read is refused, never read as a path. Were
+// it read as one, a change in what git prints would turn every tracked
+// file into a path that does not exist, reported as absent, and the scan
+// would read nothing while its own exit said the push was fine.
+test('publishablePaths refuses a listing record with no path in it rather than reading the record as a path', { skip: process.platform === 'win32' ? 'the stand-in is a shell script' : false }, () => {
+  const root = initRepo('main');
+  writeAndCommit(root, 'index.md', '# Index\n', 'init');
+  withListingStandIn('--stage', '100644 0123456789abcdef0123456789abcdef01234567 0 index.md\\000', () => {
+    assert.throws(() => publishablePaths(root), /no path in it/);
+  });
+});
+
+// The last record of a listing that does not end in a NUL is still a
+// record. Dropped, it would be the one file the scan never reads, with
+// nothing said about it.
+test('publishablePaths keeps the last record of a listing that does not end in a NUL', { skip: process.platform === 'win32' ? 'the stand-in is a shell script' : false }, () => {
+  const root = initRepo('main');
+  writeAndCommit(root, 'index.md', '# Index\n', 'init');
+  withListingStandIn('--others', 'first.md\\000last.md', () => {
+    assert.deepEqual(publishablePaths(root).files, ['first.md', 'index.md', 'last.md']);
+  });
+});
+
+test('the merge base is computed against the remote-tracking reference itself, never a short name a local branch of the same name shadows', () => {
+  const root = repoTrackingRemote('origin');
+  const initial = git(root, ['rev-parse', 'HEAD']).stdout.trim();
+  writeAndCommit(root, 'published.md', '# Published\n', 'published on main');
+  ok(git(root, ['push', '-q', 'origin', 'main']), 'push');
+  ok(git(root, ['fetch', '-q', 'origin']), 'fetch');
+  // A local branch called "origin/main", left at an OLDER commit: the
+  // short name "origin/main" now means this branch to git, not the
+  // remote-tracking one.
+  ok(git(root, ['branch', 'origin/main', initial]), 'a stale local branch named like the remote-tracking one');
+  ok(git(root, ['checkout', '-q', '-b', 'feature']), 'feature');
+  ok(git(root, ['branch', '--set-upstream-to=refs/remotes/origin/main', 'feature']), 'feature tracks origin');
+  writeAndCommit(root, 'notes.md', '# Notes\n', 'feature work');
+  const base = resolveBase(root, 'merge-base');
+  assert.equal(base.kind, 'merge-base');
+  assert.deepEqual(changedPaths(root, base), ['notes.md'], 'the file already on the remote-tracking default branch must not count as changed');
 });

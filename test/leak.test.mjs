@@ -6,7 +6,22 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { loadPatterns, scanText, GENERIC_PATTERNS, OVERALL_SCAN_TIMEOUT_MS } from '../src/leak.mjs';
+import vm from 'node:vm';
+import {
+  loadPatterns,
+  scanText,
+  GENERIC_PATTERNS,
+  OVERALL_SCAN_TIMEOUT_MS,
+  ACCRUAL_PER_LINE_MS,
+  ACCRUAL_PER_LINE_PER_PATTERN_MS,
+  ACCRUAL_PER_CHAR_PER_PATTERN_MS,
+  MAX_SCAN_BYTES,
+  PREFILTER_MAX_LINES,
+  PREFILTER_MAX_CHARS,
+  SCAN_TIMEOUT,
+  SCAN_FAILED,
+} from '../src/leak.mjs';
+import { decodeBytes } from '../src/io.mjs';
 
 const CATASTROPHIC_SCAN_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'leak', 'catastrophic-scan.mjs');
 
@@ -599,6 +614,9 @@ test('a catastrophically backtracking pattern is aborted rather than left to han
   assert.equal(result.status, 0, `the child exited ${result.status}, stdout: ${result.stdout}, stderr: ${result.stderr}`);
   assert.match(result.stdout, /^THREW:/);
   assert.match(result.stdout, /took longer than|aborted/);
+  // A timeout carries the timeout code, which is what lets the lint
+  // report say "timed out" rather than "crashed" (final fix round 2).
+  assert.match(result.stdout, new RegExp(`code=${SCAN_TIMEOUT}`));
   // Bounded on both sides: an immediate return would mean the pattern was
   // never actually evaluated (a false pass), and anything near the child's
   // own 8-second spawnSync timeout would mean the internal timeout
@@ -623,6 +641,9 @@ test('a sandbox failure that is NOT a timeout is reported honestly, not relabell
     (err) => {
       assert.match(err.message, /not from a timeout/);
       assert.ok(!err.message.includes('took longer than'), 'a non-timeout failure must not be described as a timeout');
+      // And its code says the same, so a caller can tell the two apart
+      // without reading prose (final fix round 2).
+      assert.equal(err.code, SCAN_FAILED);
       return true;
     },
   );
@@ -912,22 +933,25 @@ test('the same deadlineAt threaded across two separate scanText calls shares one
   // passes, so it does.
   //
   // The clock advances one millisecond per reading, which is exactly how
-  // this module spends time: one reading per line scanned. That makes the
-  // budget a COUNT OF LINES, and both halves of the claim exact. Twenty
-  // lines against a twenty millisecond budget consume all of it and finish
-  // on the boundary (the comparison is strict, so the twentieth line is
-  // the last one that fits); the second call then reads a clock that has
-  // already moved past the shared deadline and must refuse. Were the
-  // deadline re-read as a duration from each call's own start, the second
-  // call would get a fresh twenty lines and this would pass.
+  // this module spends time: one reading before every sandbox call. Twenty
+  // lines that all match cost twenty-one: one for the pre-filter over the
+  // whole run of twenty, then one before each line it found a match on.
+  // That makes the budget a COUNT OF CALLS, and both halves of the claim
+  // exact. Twenty-one readings against a twenty-one millisecond budget
+  // consume all of it and finish on the boundary (the comparison is
+  // strict, so the last reading is the last one that fits); the second
+  // call then reads a clock that has already moved past the shared
+  // deadline and must refuse. Were the deadline re-read as a duration from
+  // each call's own start, the second call would get a fresh budget and
+  // this would pass.
   const patterns = loadPatterns({ configPatterns: ['hit'] });
   let tick = 0;
   const clock = () => { tick += 1; return tick; };
-  const deadlineAt = 20;
+  const deadlineAt = 21;
   const lines = Array.from({ length: 20 }, () => 'a hit here').join('\n');
   const first = scanText(lines, patterns, { deadlineAt, now: clock }); // spends the whole shared budget
   assert.equal(first.total, 20, 'the first call must finish, spending the budget rather than failing inside it');
-  assert.equal(tick, 20, 'the first call must have consumed exactly one tick per line');
+  assert.equal(tick, 21, 'the first call must have read the clock once for the pre-filter and once per matching line');
   assert.throws(() => scanText('a hit here\n', patterns, { deadlineAt, now: clock }), /exceeded its deadline/);
 });
 
@@ -1054,4 +1078,356 @@ test('GENERIC_PATTERNS is frozen: attempting to mutate it has no effect', () => 
   const before = [...GENERIC_PATTERNS];
   assert.throws(() => { GENERIC_PATTERNS.push('should not be allowed'); }, TypeError);
   assert.deepEqual([...GENERIC_PATTERNS], before);
+});
+
+// --- final fix round 2: one decoding, one ceiling, a budget that grows ----
+
+test('a personal pattern holding an accented letter, written the ordinary way, matches that word in UTF-8 content', () => {
+  // The patterns file and the content are decoded the same way now
+  // (src/io.mjs). It used to be read as UTF-8 while the content was
+  // decoded one byte per character, so this matched nothing.
+  const dir = tempDir();
+  const file = join(dir, 'patterns.txt');
+  writeFileSync(file, 'caf\u00e9 da manh\u00e3\n', 'utf8');
+  const patterns = loadPatterns({ env: { BRAIN_KIT_LEAK_PATTERNS: file } });
+  const content = decodeBytes(Buffer.from('um caf\u00e9 da manh\u00e3 aqui\n', 'utf8'));
+  const result = scanText(content, patterns);
+  assert.equal(result.total, 1);
+  assert.equal(result.matches[0].pattern, 'a personal pattern');
+});
+
+test('a personal patterns file saved in another encoding still reads its accented letters as those letters, never as a replacement character', () => {
+  // "caf" and 0xE9 is the word in latin1, which is not UTF-8. Read as
+  // UTF-8 it would become a replacement character no content can match.
+  const dir = tempDir();
+  const file = join(dir, 'patterns.txt');
+  writeFileSync(file, Buffer.concat([Buffer.from('caf', 'latin1'), Buffer.from([0xe9, 0x0a])]));
+  const patterns = loadPatterns({ env: { BRAIN_KIT_LEAK_PATTERNS: file } });
+  const result = scanText(decodeBytes(Buffer.from('um caf\u00e9 aqui\n', 'utf8')), patterns);
+  assert.equal(result.total, 1);
+});
+
+// A list written the only way an accented name used to match, as its
+// mojibake, would now match nothing at all about the name it was written
+// for and go on saying "nothing matched". It is refused, naming the line
+// and never the text, the way every other useless list is. A natural
+// spelling, a name with a letter beyond latin1, a latin1 file and a plain
+// ASCII list are not.
+test('a personal pattern spelled as the mojibake of a name is refused by line number, never by its text', () => {
+  const dir = tempDir();
+  const file = join(dir, 'patterns.txt');
+  const name = 'caf\u00e9 da manh\u00e3';
+  const mojibake = Buffer.from(name, 'utf8').toString('latin1');
+  writeFileSync(file, `# a comment\nplain-pattern\n${mojibake}\n`, 'utf8');
+  assert.throws(
+    () => loadPatterns({ env: { BRAIN_KIT_LEAK_PATTERNS: file } }),
+    (err) => /line 3 of /.test(err.message) && /mojibake/.test(err.message) && !err.message.includes(mojibake) && !err.message.includes('caf'),
+  );
+  for (const fine of [Buffer.from(`${name}\n`, 'utf8'), Buffer.from('\u0141\u00f3d\u017a\n', 'utf8'), Buffer.from(`${name}\n`, 'latin1'), Buffer.from('plain-pattern\n', 'utf8')]) {
+    writeFileSync(file, fine);
+    assert.doesNotThrow(() => loadPatterns({ env: { BRAIN_KIT_LEAK_PATTERNS: file } }));
+  }
+});
+
+test('the scan ceiling both gates share is 100 MiB', () => {
+  assert.equal(MAX_SCAN_BYTES, 100 * 1024 * 1024);
+});
+
+test('the accrual rates are the measured ones with their margin, not zero and not unbounded', () => {
+  assert.equal(ACCRUAL_PER_LINE_MS, 1);
+  assert.equal(ACCRUAL_PER_LINE_PER_PATTERN_MS, 0.04);
+  assert.equal(ACCRUAL_PER_CHAR_PER_PATTERN_MS, 0.000001);
+});
+
+// A clock that answers from a list, one reading at a time, and says how
+// many readings were taken: the budget here is exact arithmetic over
+// readings, never a race against a real clock.
+function scriptedClock(readings) {
+  let at = 0;
+  const clock = () => {
+    const value = readings[Math.min(at, readings.length - 1)];
+    at += 1;
+    return value;
+  };
+  clock.count = () => at;
+  return clock;
+}
+
+test('with accrue, the budget grows by the per-line rate for every line scanned, per pattern, and without it the deadline stays absolute', () => {
+  // 1025 short lines are two pre-filter runs, 1024 and 1, so the clock
+  // is read twice: once before each run. The floor is zero. After the
+  // first run the six generic patterns have earned 1024 * (1 + 0.04 * 6)
+  // milliseconds plus a sliver per character, about 1269.8, so a second
+  // reading of 1269 is inside the budget and 1270 is past it.
+  const text = Array.from({ length: 1025 }, () => 'x').join('\n');
+  const six = loadPatterns({});
+  assert.equal(scanText(text, six, { deadlineAt: 0, now: scriptedClock([0, 1269]), accrue: true }).total, 0);
+  assert.throws(() => scanText(text, six, { deadlineAt: 0, now: scriptedClock([0, 1270]), accrue: true }), /exceeded its deadline/);
+  // The per-pattern part: seven patterns earn 1024 * 1.28, about 1310.7.
+  const seven = loadPatterns({ configPatterns: ['zzz-never-present'] });
+  assert.equal(scanText(text, seven, { deadlineAt: 0, now: scriptedClock([0, 1300]), accrue: true }).total, 0);
+  assert.throws(() => scanText(text, six, { deadlineAt: 0, now: scriptedClock([0, 1300]), accrue: true }), /exceeded its deadline/);
+  // No accrual at all unless it is asked for, and asked for exactly.
+  assert.throws(() => scanText(text, six, { deadlineAt: 0, now: scriptedClock([0, 1]) }), /exceeded its deadline/);
+  assert.throws(() => scanText(text, six, { deadlineAt: 0, now: scriptedClock([0, 1]), accrue: 'yes' }), /exceeded its deadline/);
+});
+
+test('with accrue, the budget also grows with the characters scanned, per pattern', () => {
+  // A line longer than one pre-filter run's character bound is a run of
+  // its own, so this is two runs: the 300,000 character line, then "x".
+  // The six patterns earn 1.24 for the line plus 300,000 * 0.000006 = 1.8
+  // for its characters, 3.04 in all.
+  const text = `${'x'.repeat(300000)}\nx`;
+  const six = loadPatterns({});
+  assert.equal(scanText(text, six, { deadlineAt: 0, now: scriptedClock([0, 3]), accrue: true }).total, 0);
+  assert.throws(() => scanText(text, six, { deadlineAt: 0, now: scriptedClock([0, 3.1]), accrue: true }), /exceeded its deadline/);
+});
+
+test('a run earns its budget before the lines it matched on are scanned in full, so those scans are not judged against a budget that ignores them', () => {
+  const patterns = loadPatterns({ configPatterns: ['hit'] });
+  const result = scanText('hit\nhit\nhit\n', patterns, { deadlineAt: 0, now: scriptedClock([0, 1, 1, 1]), accrue: true });
+  assert.equal(result.total, 3);
+});
+
+test('a deadline that is exceeded raises with the timeout code, so a caller can call it a timeout and nothing else', () => {
+  const patterns = loadPatterns({ configPatterns: ['hit'] });
+  assert.throws(() => scanText('a hit here\n', patterns, { deadlineAt: 0, now: () => 1 }), (err) => err.code === SCAN_TIMEOUT);
+});
+
+test('lines end at LF, at CRLF and at a lone CR, so a file with classic Mac line endings is numbered like every other reader numbers it', () => {
+  const patterns = loadPatterns({});
+  const crOnly = scanText(`first\rsecond\rkey ${AWS_KEY_ID}\rlast`, patterns);
+  assert.equal(crOnly.matches.length, 1);
+  assert.equal(crOnly.matches[0].line, 3);
+  // CRLF is still ONE line break: a Windows file numbers as it always did.
+  const crlf = scanText(`first\r\nsecond\r\nkey ${AWS_KEY_ID}\r\n`, patterns);
+  assert.equal(crlf.matches[0].line, 3);
+  const mixed = scanText(`one\ntwo\rthree\r\nfour ${AWS_KEY_ID}\n`, patterns);
+  assert.equal(mixed.matches[0].line, 4);
+  assert.equal(mixed.matches[0].column, 6);
+});
+
+// The pre-filter asks "does any pattern match this line at all" of a run
+// of lines in one sandbox call, and only a line that answers yes is
+// scanned in full. It must change NO result. The oracle here scans every
+// line on its own and stitches the answers together, which cannot share a
+// bug in how runs are cut, how lines are indexed inside one, or what a
+// pattern's lastIndex carries from one line to the next.
+function scanLineByLine(text, patterns, max) {
+  const matches = [];
+  let total = 0;
+  text.split('\n').forEach((line, index) => {
+    const one = scanText(line, patterns, { max: 1000 });
+    total += one.total;
+    for (const match of one.matches) matches.push({ ...match, line: index + 1 });
+  });
+  const kept = matches.slice(0, max);
+  return { matches: kept, truncated: total > kept.length, total };
+}
+
+test('the pre-filter changes no result: every match on every line, across run boundaries, anchors and lookarounds included, exactly as a line-by-line scan finds it', () => {
+  const lines = Array.from({ length: 3000 }, (_, i) => `an ordinary line number ${i} with nothing in it`);
+  const key = (n) => `AKIA${String(n).padStart(16, '0')}`;
+  // Matches at the edges of every run of 1024 lines, anchored at the
+  // start and the end of a line, behind a lookbehind, and one line whose
+  // match ends far to the right followed by a short line whose match is
+  // at column one (what a pattern's leftover lastIndex would miss).
+  const placed = {
+    0: `${key(1)} at the very start`,
+    699: `middle of a run ${key(2)}`,
+    1022: `${'y'.repeat(80)} ${key(3)}`,
+    1023: key(4),
+    1024: `${key(5)} first line of the second run`,
+    2047: `trailing KEY`,
+    2048: `KEY`,
+    // A line longer than one run's character bound, the shape of a
+    // minified file, with its match at the very end.
+    2500: `${'m'.repeat(PREFILTER_MAX_CHARS + 10)} ${key(7)}`,
+    2999: `last line ${key(6)}`,
+  };
+  for (const [index, text] of Object.entries(placed)) lines[Number(index)] = text;
+  const text = lines.join('\n');
+  const patterns = loadPatterns({ configPatterns: ['^AKIA[0-9]{4}', 'KEY$', '(?<![a-z])AKIA0{15}6'] });
+  for (const max of [5, 100]) {
+    const expected = scanLineByLine(text, patterns, max);
+    const actual = scanText(text, patterns, { max });
+    assert.deepEqual(actual, expected, `max=${max}`);
+  }
+  // And the matches really are where they were put.
+  const lineNumbers = [...new Set(scanText(text, patterns, { max: 100 }).matches.map((m) => m.line))];
+  assert.deepEqual(lineNumbers, [1, 700, 1023, 1024, 1025, 2048, 2049, 2501, 3000]);
+});
+
+test('a pattern that ends its match far to the right does not make the pre-filter miss the same pattern at the start of the next line', () => {
+  const patterns = loadPatterns({ configPatterns: ['hit'] });
+  const result = scanText(`${'z'.repeat(60)} hit\nhit\n`, patterns);
+  assert.deepEqual(result.matches.map((m) => [m.line, m.column]), [[1, 62], [2, 1]]);
+});
+
+test('a pre-filter run covers at most PREFILTER_MAX_LINES lines: the clock is read once per run of lines that match nothing', () => {
+  assert.equal(PREFILTER_MAX_LINES, 1024);
+  const patterns = loadPatterns({});
+  const lines = (n) => Array.from({ length: n }, () => 'x').join('\n');
+  for (const [count, runs] of [[1024, 1], [1025, 2], [2048, 2], [2049, 3]]) {
+    const clock = scriptedClock([0]);
+    scanText(lines(count), patterns, { deadlineAt: 1, now: clock });
+    assert.equal(clock.count(), runs, `${count} lines`);
+  }
+});
+
+test('a pre-filter run covers at most PREFILTER_MAX_CHARS characters, and a longer line is a run of its own', () => {
+  assert.equal(PREFILTER_MAX_CHARS, 256 * 1024);
+  const patterns = loadPatterns({});
+  const lines = (n, width) => Array.from({ length: n }, () => 'x'.repeat(width)).join('\n');
+  // 256 lines of 1024 characters are exactly the bound: one run. One more
+  // line is a second run.
+  for (const [text, runs] of [[lines(256, 1024), 1], [lines(257, 1024), 2], [`${'x'.repeat(PREFILTER_MAX_CHARS + 1)}\nx\nx`, 2]]) {
+    const clock = scriptedClock([0]);
+    scanText(text, patterns, { deadlineAt: 1, now: clock });
+    assert.equal(clock.count(), runs);
+  }
+});
+
+// The pre-filter's own timeout cannot be reached with a real pattern
+// without a test that takes seconds and depends on how fast the machine
+// is, so the sandbox call is replaced for these two, and only these two:
+// the pre-filter's call is answered with the engine's own timeout error,
+// every other call runs for real.
+function withPrefilterTimingOut(body) {
+  const real = vm.runInContext;
+  const calls = { prefilter: 0, full: 0 };
+  vm.runInContext = function stub(source, context, options) {
+    if (source.includes('hits.push')) {
+      calls.prefilter += 1;
+      throw Object.assign(new Error('Script execution timed out.'), { code: 'ERR_SCRIPT_EXECUTION_TIMEOUT' });
+    }
+    calls.full += 1;
+    return real.call(this, source, context, options);
+  };
+  try {
+    return body(calls);
+  } finally {
+    vm.runInContext = real;
+  }
+}
+
+test('a pre-filter run of several lines that times out falls back to one call per line and still reads every line', () => {
+  withPrefilterTimingOut((calls) => {
+    const result = scanText('clean\nhit\nclean\nhit here\n', loadPatterns({ configPatterns: ['hit'] }));
+    assert.equal(result.total, 2);
+    assert.deepEqual(result.matches.map((m) => m.line), [2, 4]);
+    assert.equal(calls.prefilter, 1, 'after one run timed out, the rest is scanned line by line, not retried');
+    assert.equal(calls.full, 5, 'every line, the trailing empty one included, gets its own full scan');
+  });
+});
+
+test('a pre-filter run of ONE line that times out is the answer: that line cannot be scanned either, and the scan refuses', () => {
+  withPrefilterTimingOut((calls) => {
+    assert.throws(() => scanText('hit', loadPatterns({ configPatterns: ['hit'] })), (err) => err.code === SCAN_TIMEOUT);
+    assert.equal(calls.full, 0);
+  });
+});
+
+test('after a pre-filter timeout, each line scanned one by one still earns its budget', () => {
+  // In the one-line-per-call fallback the clock is read before every line
+  // and each line adds its accrual after it is scanned. A floor of zero
+  // with a clock that has moved by one millisecond only passes if the
+  // lines already scanned paid for it.
+  withPrefilterTimingOut(() => {
+    const patterns = loadPatterns({ configPatterns: ['hit'] });
+    const result = scanText('hit\nplain\nhit\n', patterns, { deadlineAt: 0, now: scriptedClock([0, 0, 1, 1, 1]), accrue: true });
+    assert.equal(result.total, 2);
+  });
+});
+
+// The pre-filter hands the sandbox the WHOLE text, split into lines, and
+// the sandbox is one object reused for every scan of the process. The
+// binding is cleared when the call returns, so a scan of a large file does
+// not stay reachable, whole, until the next scan happens to overwrite it.
+test('the sandbox does not keep the text of a scan alive once the scan has returned', () => {
+  const real = vm.runInContext;
+  let context = null;
+  vm.runInContext = function stub(source, ctx, options) {
+    if (source.includes('hits.push')) context = ctx;
+    return real.call(this, source, ctx, options);
+  };
+  try {
+    scanText('one line\nanother line\n', loadPatterns({ configPatterns: ['hit'] }));
+  } finally {
+    vm.runInContext = real;
+  }
+  assert.ok(context !== null, 'the pre-filter ran');
+  assert.equal(context.lines, undefined);
+});
+
+// The full per-line scan's own two failures, reached the same way: its
+// sandbox call answered with the engine's timeout, or with some other
+// error, while the pre-filter runs for real and sends the line through.
+function withFullScanFailing(error, body) {
+  const real = vm.runInContext;
+  vm.runInContext = function stub(source, context, options) {
+    if (!source.includes('hits.push')) throw error;
+    return real.call(this, source, context, options);
+  };
+  try {
+    return body();
+  } finally {
+    vm.runInContext = real;
+  }
+}
+
+test('the full per-line scan names a timeout as one and any other failure as something else, each with its code', () => {
+  const patterns = loadPatterns({ configPatterns: ['hit'] });
+  withFullScanFailing(Object.assign(new Error('Script execution timed out.'), { code: 'ERR_SCRIPT_EXECUTION_TIMEOUT' }), () => {
+    assert.throws(() => scanText('a hit here', patterns), (err) => err.code === SCAN_TIMEOUT && /took longer than/.test(err.message));
+  });
+  withFullScanFailing(new TypeError('something the engine said'), () => {
+    assert.throws(() => scanText('a hit here', patterns), (err) => err.code === SCAN_FAILED && /not from a timeout/.test(err.message) && !/engine said/.test(err.message));
+  });
+});
+
+// The pre-filter's own failure that is NOT a timeout. It refuses at once,
+// as a failure: falling back to one call per line would treat a broken
+// scanner as a slow one, and a fallback that then happened to succeed
+// would hide the defect behind a clean result. The stub answers only the
+// pre-filter's call with an engine error, so a fallback WOULD succeed here,
+// which is what makes the difference visible on a text of several lines.
+function withPrefilterFailing(error, body) {
+  const real = vm.runInContext;
+  const calls = { prefilter: 0, full: 0 };
+  vm.runInContext = function stub(source, context, options) {
+    if (source.includes('hits.push')) {
+      calls.prefilter += 1;
+      throw error;
+    }
+    calls.full += 1;
+    return real.call(this, source, context, options);
+  };
+  try {
+    return body(calls);
+  } finally {
+    vm.runInContext = real;
+  }
+}
+
+test('a pre-filter failure that is not a timeout refuses at once, as a failure, never falling back, on one line or many', () => {
+  const patterns = loadPatterns({ configPatterns: ['hit'] });
+  for (const text of ['plain', 'plain\nhit\nplain\n']) {
+    withPrefilterFailing(new TypeError('something the engine said'), (calls) => {
+      assert.throws(() => scanText(text, patterns), (err) => err.code === SCAN_FAILED && /not from a timeout/.test(err.message) && !/engine said/.test(err.message));
+      assert.equal(calls.prefilter, 1);
+      assert.equal(calls.full, 0, 'no line is scanned in full once the pre-filter itself has failed');
+    });
+  }
+});
+
+// The same failure reached for real, with no stub: a compiled list holding
+// an entry that is not a regular expression. The line matches nothing
+// before that entry, so it is the pre-filter, not the full scan, that meets
+// it.
+test('a real broken entry in the pattern list fails the pre-filter as a failure, not as a timeout', () => {
+  const patterns = loadPatterns({ configPatterns: ['hit'] });
+  patterns.push({ raw: 'not-really-a-pattern', origin: 'config', regex: 'not-a-regex-object' });
+  assert.throws(() => scanText('plain words', patterns), (err) => err.code === SCAN_FAILED);
+  assert.throws(() => scanText('plain\nwords\n', patterns), (err) => err.code === SCAN_FAILED);
 });

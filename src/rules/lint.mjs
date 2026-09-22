@@ -258,7 +258,8 @@
 // The three rules themselves, each documented at its own definition
 // below (search "--- secrets", "--- privacy", "--- attribution"):
 // `secrets` calls src/leak.mjs and never writes its own regular
-// expression, is scoped to added lines like `style`, and defaults to
+// expression, reads every file a push could publish rather than the
+// notes (see its own header for how that set is drawn), and defaults to
 // 'error' where every other rule defaults to 'warn'. `privacy` reads
 // `privacy.confidential_dirs` and judges the whole vault, like
 // index-completeness, orphans and columns. `attribution` is the only
@@ -270,7 +271,7 @@ import { frontmatterKeyLine, readEntries, readScalar, splitFrontmatter } from '.
 import { stripCode } from '../markdown.mjs';
 import { CONFIG_FILENAME } from '../config.mjs';
 import { classifyTargetPath, isUnderPath } from '../vault.mjs';
-import { OVERALL_SCAN_TIMEOUT_MS, PERSONAL_PATTERN_LABEL, loadPatterns, scanText } from '../leak.mjs';
+import { OVERALL_SCAN_TIMEOUT_MS, PERSONAL_PATTERN_LABEL, SCAN_TIMEOUT, loadPatterns, scanText } from '../leak.mjs';
 
 const RESERVED_FILENAMES = Object.freeze(['index.md', 'log.md']);
 
@@ -1307,9 +1308,12 @@ export function displaySecretPattern(match) {
 //    the half that disagreed was the one that ships to adopters: their
 //    template gate (templates/githooks/pre-push) refuses only on a
 //    non-zero `lint` exit. `scansEveryFile` below makes runLintRules
-//    hand this rule the FULL walk instead (`context.all`, the set the
-//    one walkVault call already produced). No other rule's reach
-//    changed: the other seven are about prose and markdown structure,
+//    hand this rule a set of its own instead. Fix round 3 made that set
+//    the whole walk, and the walk skips every dot-path, so a committed
+//    `.env` still passed with exit 0 under a line claiming every file
+//    had been scanned; final fix round 2 made it every file a push could
+//    publish (see filesForRule, at the bottom of this file). No other
+//    rule's reach changed: the other seven are about prose and markdown structure,
 //    and a table check that started reading a PNG would report
 //    nonsense.
 //
@@ -1335,53 +1339,41 @@ export function displaySecretPattern(match) {
 //
 // The `scope` parameter is therefore gone from the signature, exactly as
 // it is absent from the three whole-vault rules above.
-// The one exemption reading every file in the vault made necessary, and
-// it is a SELF-REFERENCE, not a blind spot (fix round 3).
+// THE CONFIGURATION FILE IS SCANNED FOR CREDENTIAL SHAPES ONLY (final fix
+// round 2), and never for the privacy patterns it declares.
 //
-// `privacy.secret_patterns` lives in brain-kit.config.json, which is a
-// file in the vault, which this rule now reads. The shipped example
-// configuration lists `sk-ant-` as a pattern; that literal text sits in
-// the configuration file, so the pattern matches its own definition and
-// every vault in the world would report its own configuration as a
-// leaked credential on its first run. A rule whose first output on every
-// vault is a false positive is a rule adopters switch off, and then the
-// true finding never arrives either.
+// `privacy.secret_patterns` lives in brain-kit.config.json, which is a file
+// this rule reads. Scanning it with the patterns it declares makes every
+// declaration match itself, which is why fix round 3 blanked each
+// configured pattern's literal text out of the file first. That exemption
+// was wrong in both directions, and both were proven:
 //
-// The exemption is as narrow as it can be: in THAT ONE FILE, each
-// configured pattern's own literal text is replaced by an equal-length
-// run of asterisks before the scan. Equal length, so every line number
-// and column after it is still the real one. Nothing else in the
-// configuration file is touched: an API key pasted into
-// `curate.signature`, an access token in a URL, a private key header in
-// any field at all is still read and still reported, and the generic
-// shapes this repository ships are applied to this file exactly like any
-// other. What is removed is only the text the vault itself wrote down
-// AS a detection pattern.
+//   - It hid real credentials. The blanking replaced every occurrence of a
+//     configured pattern's text ANYWHERE in the file, and the shipped
+//     example configuration declares the literal prefixes `sk-ant-` and
+//     `github_pat_`, so an Anthropic key or a fine-grained GitHub token
+//     pasted into any other field lost its prefix before the scan and
+//     passed.
+//   - It flagged the owner. Only a pattern whose text appears VERBATIM was
+//     blanked, so a pattern written as a regular expression for the
+//     owner's own domain or company matched the owner's own address and
+//     name in the same file and told them to rotate a credential that was
+//     their e-mail.
 //
-// Not applied to any other file: the same string appearing in a NOTE is
-// a real match, because a note is not where a detection pattern is
-// declared.
+// So the file is read raw, every byte, against the generic credential
+// shapes this repository ships (src/leak.mjs, GENERIC_PATTERNS), which
+// never match a detection pattern's own text unless that text is itself
+// credential-shaped (and that case is reported on purpose, see the
+// credential-as-pattern check below). Nothing is blanked, so nothing can be
+// blanked out of a real credential.
 //
-// Disclosed, per this project's own method: the EQUAL LENGTH of the
-// replacement is unfalsifiable by any output this rule can produce. A
-// configured pattern never contains a newline, so replacing it with an
-// empty string would shift no line number, and a lint finding carries a
-// line but not a column, so nothing a test can read changes. It is kept
-// deliberately, for what it is not dead FOR: leak.mjs reports a column
-// on every match and scan-blobs prints it, so the day anything here
-// reports a column, an unequal replacement would point a person at the
-// wrong character of their own configuration file. A mutation of this
-// one clause survives the whole suite; this sentence is the report the
-// method asks for instead of a test that cannot exist yet.
-function withoutOwnPatternList(text, configPatterns) {
-  let out = text;
-  for (const pattern of configPatterns) {
-    if (pattern === '') continue;
-    out = out.split(pattern).join('*'.repeat(pattern.length));
-  }
-  return out;
-}
-
+// THE TRADE-OFF, stated because it is real: a privacy pattern such as a
+// client's name, appearing in the configuration, is not caught there. That
+// is accepted because the configuration is the one file in the vault that
+// is authored by its owner, reviewed in a pull request whenever it changes,
+// and is where those very patterns are declared by design; every other
+// file, a copy of the configuration at any other path included, is read
+// against every pattern.
 const secrets = {
   id: 'secrets',
   settingKey: 'secrets',
@@ -1391,6 +1383,10 @@ const secrets = {
     const configuredPatterns = context.config?.privacy?.secret_patterns;
     const configPatterns = Array.isArray(configuredPatterns) ? configuredPatterns.filter((p) => typeof p === 'string') : [];
     const patterns = loadPatterns({ configPatterns });
+    // What the configuration file itself is read against: the generic
+    // credential shapes and nothing the configuration declares (see the
+    // comment above this rule).
+    const shapesOnly = loadPatterns({});
 
     // Fix round 2 (CRITICAL): the ONE absolute deadline this check used
     // to compute ONCE, before this loop, and thread through every file's
@@ -1427,6 +1423,14 @@ const secrets = {
     // is the caller a single 20-second, whole-run budget was ever sized
     // for.
     //
+    // Final fix round 2: each file's twenty seconds is a FLOOR, and the
+    // budget grows with the file (`accrue: true`, src/leak.mjs's accrual
+    // rates), because a flat per-file budget made an ordinary CSV of a
+    // quarter of a million short lines time out, with no secret in it,
+    // and the verdict called that a crash. A large file gets time in
+    // proportion to the lines and characters it actually holds, and the
+    // report says "timed out" for a file that still runs out of it.
+    //
     // A per-file scan that STILL exceeds its own fresh budget (some
     // single file large enough that even the full measured margin is not
     // enough) is caught here, per file, rather than left to escape this
@@ -1446,23 +1450,20 @@ const secrets = {
     // runLintRules' own generic per-rule guard instead.
     const findings = [];
 
-    // The hole the exemption above would otherwise open, closed in the
-    // same commit that opened it (the sweep for this fix round found it).
-    // `withoutOwnPatternList` blanks each configured pattern's own text
-    // inside the configuration file, so a vault owner who pasted a REAL
-    // credential into `privacy.secret_patterns` by mistake -- typing a
-    // denylist rather than a detection pattern, the exact mistake this
-    // rule's fix round 1 already went to some length over -- would have
-    // their credential blanked out of the one file it sits in and never
-    // reported at all. So each configured pattern's own TEXT is scanned
-    // here, against the six shipped generic shapes only, and a pattern
-    // that looks like a credential is reported as one. The finding names
-    // no line (the configuration is JSON and this rule does not parse it)
-    // and, obviously, never echoes the text.
+    // A vault owner who pasted a REAL credential into
+    // `privacy.secret_patterns` by mistake (typing a denylist rather than
+    // a detection pattern, the exact mistake this rule's fix round 1
+    // already went to some length over) is told so in those words. The
+    // raw scan of the configuration below already reports a credential
+    // shape anywhere in that file, this list included, at its line; this
+    // check reads each pattern AFTER JSON has decoded it, so a credential
+    // written with escapes that hide it from a raw read is still caught,
+    // and it names the mistake rather than only the symptom. The finding
+    // names no line and never echoes the text.
     for (const configured of configPatterns) {
       let looksLikeCredential;
       try {
-        looksLikeCredential = scanText(configured, loadPatterns({}), { deadlineAt: Date.now() + OVERALL_SCAN_TIMEOUT_MS }).matches.length > 0;
+        looksLikeCredential = scanText(configured, shapesOnly, { deadlineAt: Date.now() + OVERALL_SCAN_TIMEOUT_MS }).matches.length > 0;
       } catch {
         continue; // an unscannable pattern is loadPatterns' own problem, raised elsewhere; this check never invents one
       }
@@ -1477,32 +1478,77 @@ const secrets = {
       }
     }
 
+    // What the set this rule was handed could not include, and must not
+    // pass in silence (src/commands/lint.mjs, buildSecretScan). A file
+    // whose name is not valid UTF-8 exists and would be published, and
+    // cannot be opened by name here, so it is a defect for that file, the
+    // same answer the maintainer's gate gives a path it cannot hand to
+    // git. A listing git itself could not produce is a defect for the
+    // whole set.
+    const scan = context.secretScan;
+    for (const name of scan.undecodable ?? []) {
+      findings.push({
+        file: name,
+        line: null,
+        check: 'file-name-undecodable',
+        defect: true,
+        messageKey: 'lint.tool_defect.file_name_undecodable',
+        params: {},
+      });
+    }
+    if (scan.failure) {
+      findings.push({
+        file: null,
+        line: null,
+        check: 'publishable-list-failed',
+        defect: true,
+        messageKey: 'lint.tool_defect.publishable_list_failed',
+        params: { status: scan.failure.status },
+      });
+    }
+
     for (const file of files) {
       // context.scanFile, not context.readFile: the bytes, unnormalised,
-      // read the same way src/commands/scan-blobs.mjs reads a blob, with
-      // this project's own per-file size ceiling applied. See
-      // makeScanFile in src/commands/validate.mjs for all three reasons.
+      // decoded the one way every scanner in this project decodes, with
+      // the per-file size ceiling both gates share applied, and a
+      // symbolic link read as the link. See makeScanFile in
+      // src/commands/validate.mjs for the reasons.
       let read;
       try {
         read = context.scanFile(file);
       } catch (error) {
         // One unreadable file (a permission, a file deleted between the
-        // walk and this read) costs this run that one file's coverage,
+        // listing and this read) costs this run that one file's coverage,
         // NAMED, rather than aborting the whole rule and taking every
         // file after it down unnamed, which is what letting this escape
         // to runLintRules' own per-rule guard would do.
+        //
+        // The operating system's error CODE, never its message (final fix
+        // round 2): the message is "EACCES: permission denied, open" plus
+        // the ABSOLUTE path, which names the machine and the person it
+        // belongs to, and it reached both the text report and --json. The
+        // finding already names the file, relative to the vault.
         findings.push({
           file,
           line: null,
           check: 'file-read-failed',
           defect: true,
           messageKey: 'lint.tool_defect.file_read_failed',
-          params: { message: error.message },
+          params: { code: error.code ?? 'unknown' },
         });
         continue;
       }
       // The ceiling announces itself, per this project's standing rule.
-      // A file too large to read is NOT a file that passed.
+      // A file too large to read is NOT a file that passed, and it FAILS
+      // CLOSED: this finding carries the rule's own severity, which is
+      // 'error' unless the vault lowered it for every secret finding at
+      // once, so a run with a file this rule could not read exits 1,
+      // exactly like a run with a credential in it, and the adopting
+      // vault's gate refuses the push. Demoting it to a warning on its
+      // own was proven to walk a key on the last line of a large log onto
+      // a remote with the suite green; test/lint.test.mjs now pins both
+      // the severity and the exit code. The remedy the message names is
+      // lint.secrets.exclude_paths, a decision a pull request shows.
       if (read.tooLarge) {
         findings.push({
           file,
@@ -1513,20 +1559,37 @@ const secrets = {
         });
         continue;
       }
-      const scanned = file === CONFIG_FILENAME ? withoutOwnPatternList(read.text, configPatterns) : read.text;
+      // The vault's own configuration file, at the vault root and only
+      // there, is read against the credential shapes alone (see this
+      // rule's header). A copy of it anywhere else is an ordinary file.
+      const applied = file === CONFIG_FILENAME ? shapesOnly : patterns;
 
       let scanResult;
       try {
-        scanResult = scanText(scanned, patterns, { deadlineAt: Date.now() + OVERALL_SCAN_TIMEOUT_MS });
+        scanResult = scanText(read.text, applied, { deadlineAt: Date.now() + OVERALL_SCAN_TIMEOUT_MS, accrue: true });
       } catch (error) {
-        findings.push({
-          file,
-          line: null,
-          check: 'file-scan-failed',
-          defect: true,
-          messageKey: 'lint.tool_defect.file_scan_failed',
-          params: { message: error.message },
-        });
+        // A scan that ran out of time is not a scan that crashed, and the
+        // verdict must be able to say which (src/leak.mjs tags every
+        // error it raises with a code for exactly this).
+        if (error.code === SCAN_TIMEOUT) {
+          findings.push({
+            file,
+            line: null,
+            check: 'file-scan-timed-out',
+            defect: true,
+            messageKey: 'lint.tool_defect.file_scan_timed_out',
+            params: { message: error.message },
+          });
+        } else {
+          findings.push({
+            file,
+            line: null,
+            check: 'file-scan-failed',
+            defect: true,
+            messageKey: 'lint.tool_defect.file_scan_failed',
+            params: { message: error.message },
+          });
+        }
         continue;
       }
 
@@ -2132,15 +2195,39 @@ export function severityFor(rule, config) {
 // and not a Set's insertion order. Only `secrets` declares it, for the
 // reason that rule's own header gives.
 //
-// This is also what finally makes `walkVault(root, config, { all: true })`
-// in src/commands/lint.mjs load-bearing. Before this, dropping that
-// argument passed the entire suite (the whole-slice review's mutation
-// N8): nothing the lint command did with the non-markdown half of the
-// walk could change any finding. It can now, and a test drives exactly
-// that mutation's input.
+// Final fix round 2: that set is no longer the walk. A rule declaring
+// `scansEveryFile` gets `context.secretScan.files`, EVERY FILE A PUSH
+// COULD PUBLISH, derived ONCE per run by src/commands/lint.mjs
+// (buildSecretScan) and handed down in the context exactly the way the
+// walk's own result is, never re-derived here: inside a git repository it
+// is what git tracks plus what it would add, dot-paths included and
+// ignored files excluded; outside one it is the walk plus dot-paths. The
+// walk's dot-path exclusion is right for the seven rules that read notes
+// and wrong for the one that reads credentials, where `.env` is the
+// canonical place for one to be.
+//
+// A context that carries no such set is refused, loudly (runLintRules'
+// own catch turns this into a rule-crashed defect), rather than quietly
+// falling back to some other list: a fallback here is exactly how the
+// secrets rule came to read a set nobody enumerated.
 function filesForRule(rule, files, context) {
   if (rule.scansEveryFile !== true) return files;
-  return [...context.all].sort();
+  const handed = context.secretScan?.files;
+  if (!Array.isArray(handed)) {
+    throw new Error(`the ${rule.id} rule reads every file a push could publish, and this run handed it no such set`);
+  }
+  return handed;
+}
+
+// A vault's absolute path, removed from a message before it is shown
+// (final fix round 2). An error raised while a rule ran can carry the
+// path the operating system was given, and an absolute path names the
+// machine and the person it belongs to; a report is read in pull requests
+// and pasted into issues. Every occurrence of the vault root is replaced
+// by the vault itself, ".", so what is left still says which file it was.
+function withoutVaultRoot(message, root) {
+  if (typeof message !== 'string' || typeof root !== 'string' || root === '') return message;
+  return message.split(root).join('.');
 }
 
 export function runLintRules(files, context, scope) {
@@ -2162,7 +2249,7 @@ export function runLintRules(files, context, scope) {
         line: null,
         absence: false,
         messageKey: 'lint.tool_defect.rule_crashed',
-        params: { rule: rule.id, message: error.message },
+        params: { rule: rule.id, message: withoutVaultRoot(error.message, context.root) },
       });
       continue;
     }

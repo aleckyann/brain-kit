@@ -26,11 +26,13 @@
 // swallowing the fourth would tell them nothing is wrong when the tool
 // itself does not know what it just found. Both are the confident-wrong
 // reading this command exists to prevent.
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readlinkSync, statSync } from 'node:fs';
 import { extname, join, resolve } from 'node:path';
 import { EXIT } from '../exit-codes.mjs';
 import { CONFIG_FILENAME, loadConfig } from '../config.mjs';
 import { findVaultRoot } from '../vault.mjs';
+import { decodeBytes } from '../io.mjs';
+import { MAX_SCAN_BYTES } from '../leak.mjs';
 import { createTranslator, REFERENCE_LANG } from '../lang.mjs';
 import { PARSER_LIMITS, frontmatterKeyLine, readScalar, splitFrontmatter } from '../frontmatter.mjs';
 import { runSpecRules } from '../rules/spec.mjs';
@@ -165,48 +167,70 @@ export function isMarkdown(path) {
   return extname(path).toLowerCase() === '.md';
 }
 
-// The ceiling on how much of ONE file the `secrets` rule will read into
-// memory, in bytes. It exists because that rule now reads EVERY file the
-// walk returned rather than the markdown subset (see src/rules/lint.mjs's
-// own secrets header, fix round 3), and a vault may legitimately carry an
-// attachment far larger than any note: a video, a disk image, a database
-// dump. Reading one of those into a string is not a scan, it is an
-// out-of-memory crash on a machine that was only asked to lint.
-//
-// It ANNOUNCES ITSELF, per this project's standing rule that every
-// ceiling reports how much it cut: a file over this size is not skipped
-// in silence, it produces its own finding naming the file, its size and
-// this limit (`lint.secrets.file_too_large`), so the one thing a person
-// can never conclude from a clean run is that a file this rule declined
-// to read was clean. 4 MiB is comfortably above any markdown note or
-// ordinary document a vault carries and far below what a single string
-// allocation costs anything.
-export const MAX_SCAN_BYTES = 4 * 1024 * 1024;
-
 // The reader the `secrets` rule uses, separate from makeReadFile above
 // and deliberately NOT a normalising one.
 //
-// Three differences, each of them the point:
-//   - It reads `latin1`, byte for byte, exactly as
-//     src/commands/scan-blobs.mjs reads a blob for the maintainer's own
-//     push gate. Those two scanners must agree about what the bytes of a
-//     file are, or the same credential is a leak to one half of this
-//     slice and not to the other; `utf8` would replace every invalid
-//     sequence in a binary file with U+FFFD, which is a different byte
-//     stream than the one that will actually be pushed.
+// Four differences, each of them the point:
+//   - It decodes with src/io.mjs's decodeBytes, the one decoding the
+//     maintainer's own push gate (src/commands/scan-blobs.mjs) and the
+//     pattern sources use too: UTF-8 where the bytes are UTF-8, and each
+//     byte of anything else as itself. Those scanners must agree with
+//     each other AND with the patterns about what the bytes of a file
+//     are. It used to read latin1 while patterns were read as UTF-8, and
+//     every pattern holding an accented letter stopped matching anything.
 //   - It does not fold CRLF or strip a byte-order mark. Those are
 //     markdown-reading conveniences; a scanner wants the bytes.
-//   - It is not cached. The secrets rule reads each file once, and the
-//     files it reads are the ones no other rule wants.
-// A file over MAX_SCAN_BYTES is reported rather than read; a file that
-// cannot be read at all raises, and the rule turns that into its own
-// per-file defect rather than losing the rest of the vault.
+//   - A SYMBOLIC LINK IS READ AS THE LINK. What git publishes for a
+//     symbolic link is the path it points at, never the file behind it,
+//     so that path is what this scans: a link to a large file is not a
+//     large file, and a link to a credentials file somewhere outside the
+//     vault neither publishes that file nor refuses a push over it. The
+//     measurement and the read are of the SAME object, the link, so a
+//     link can no longer be measured as small and then read as whatever
+//     it points at; that pairing (a stat that followed the link beside a
+//     read that followed it too) is what used to decide the ceiling, and
+//     the choice between following and not following was defended by
+//     nothing.
+//   - Nothing that is not a regular file or a symbolic link is ever
+//     opened: a named pipe opened for reading blocks until something
+//     writes to it, which would hang a push gate. It is refused instead.
+// It is not cached. The secrets rule reads each file once, and most of
+// the files it reads are ones no other rule wants.
+//
+// A file over the ceiling (MAX_SCAN_BYTES, src/leak.mjs, the one number
+// both gates share) is reported rather than read, and the size is taken
+// from the open file itself, the same file the read then reads. A file
+// that cannot be read at all raises, carrying the operating system's
+// error code, and the rule turns that into its own per-file defect rather
+// than losing the rest of the vault.
+const OPEN_FOR_SCAN = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0);
+
+function notRegularFile() {
+  const error = new Error('not a regular file or a symbolic link');
+  error.code = 'BRAIN_KIT_NOT_REGULAR';
+  return error;
+}
+
 export function makeScanFile(root, { maxBytes = MAX_SCAN_BYTES } = {}) {
   return function scanFile(relPath) {
     const full = join(root, relPath);
-    const bytes = statSync(full).size;
-    if (bytes > maxBytes) return { text: null, tooLarge: true, bytes, maxBytes };
-    return { text: readFileSync(full, 'latin1'), tooLarge: false, bytes, maxBytes };
+    const entry = lstatSync(full);
+    if (entry.isSymbolicLink()) {
+      const target = readlinkSync(full, { encoding: 'buffer' });
+      if (target.length > maxBytes) return { text: null, tooLarge: true, bytes: target.length, maxBytes };
+      return { text: decodeBytes(target), tooLarge: false, bytes: target.length, maxBytes };
+    }
+    if (!entry.isFile()) throw notRegularFile();
+    const fd = openSync(full, OPEN_FOR_SCAN);
+    try {
+      const opened = fstatSync(fd);
+      if (!opened.isFile()) throw notRegularFile();
+      if (opened.size > maxBytes) return { text: null, tooLarge: true, bytes: opened.size, maxBytes };
+      const bytes = readFileSync(fd);
+      return { text: decodeBytes(bytes), tooLarge: false, bytes: bytes.length, maxBytes };
+    } finally {
+      closeSync(fd);
+    }
   };
 }
 

@@ -16,7 +16,12 @@
 #   2. Runs `brain-kit lint`, refusing the push if this vault's own health
 #      rules (orphans, tables, the `secrets` rule against
 #      privacy.secret_patterns and the shapes in src/leak.mjs, and the
-#      rest) find a problem.
+#      rest) find a problem. The `secrets` rule reads every file git
+#      tracks or would add, dot-files such as `.env` included and ignored
+#      files not; a file too large for it to read refuses the push, and
+#      the vault's deliberate escape for one known to be safe is
+#      lint.secrets.exclude_paths in brain-kit.config.json, which a pull
+#      request shows.
 #   3. Refuses a push made under the vault's own automation identity
 #      (brain-kit.config.json's git.agent_identity) whose DESTINATION is
 #      the vault's default branch, whatever the ref being pushed from is
@@ -34,21 +39,45 @@
 #      personal pattern list is, by that hook's own design, never
 #      something a generic template could carry.
 #
-# WHAT THIS DOES NOT COVER, measured on 22/09/2026. The linter reads the
-# vault as it stands in the working tree; a push sends commits. So a secret
-# that was committed and then deleted is invisible to step 2 and still
-# travels in the history this push carries: a vault whose first commit held
-# a credential in a file, and whose second commit deleted that file, pushed
-# both to a fresh remote with this hook passing, and the credential was
-# readable there in plaintext. That is the most common way a secret leaks
-# through git, and this template does not stop it yet. Closing it means
-# scanning the objects the push carries, as the maintainer's own gate in a
-# brain-kit checkout already does; until then, a credential that ever
-# reached a commit must be treated as published and rotated, whatever this
-# hook says.
+# WHAT THIS DOES NOT COVER, measured on 22/09/2026. This hook checks the
+# WORKING TREE, whatever is checked out right now, uncommitted edits and
+# untracked files included, and it NEVER examines the commits a push
+# carries. Those are two different things, and git sends the second:
+#
+#   - Not the history. A credential committed and then deleted in a later
+#     commit is gone from the working tree and still travels in the
+#     history this push sends: pushed to a fresh remote with this hook
+#     passing, it was readable there in plaintext.
+#   - Not even the tip. A credential in the very commit being pushed,
+#     hidden by an uncommitted edit that emptied the file, passes: the
+#     hook reads the edited file, git pushes the commit, and the remote
+#     holds the credential.
+#   - Not another branch. `git push origin <a branch that is not checked
+#     out>`, or `git push --all`, sends commits the working tree never
+#     showed this hook at all.
+#
+# All three were proven against a throwaway bare remote. That is the most
+# common way a secret leaks through git, and this template does not stop
+# it yet. Closing it means scanning the objects the push carries, as the
+# maintainer's own gate in a brain-kit checkout already does; until then,
+# a credential that ever reached a commit must be treated as published and
+# rotated, whatever this hook says.
+#
+# Two smaller gaps, proven the same way, remain even in the working tree.
+# The `secrets` rule reads what a file contains, never what it is called:
+# a note NAMED after a configured pattern passes where the same name in
+# its text refuses. And it reads bytes as they are stored: a credential
+# inside a compressed file (a zip archive, an office document, most PDFs)
+# passes, here and in the maintainer's gate alike.
 #
 # Activate once per clone of the adopting vault:
 #   git config core.hooksPath .githooks
+# and keep node_modules/ in the vault's .gitignore. brain-kit is installed
+# there, and the `secrets` rule reads whatever git would add: a
+# node_modules git does not ignore is read like any other file, and the
+# engine's own source spells out the literal key prefixes a configuration
+# commonly lists, so this file does not. Measured on 22/09/2026, a vault
+# set up that way had its first push refused over brain-kit's own files.
 set -u
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
@@ -136,19 +165,39 @@ try {
 AGENT_EMAIL="$(node -e "$READ_AGENT_GUARD_SCRIPT" "$CONFIG_FILE" 2>/dev/null)"
 
 # The default branch, the same three-step fallback src/git.mjs's own
-# findDefaultBranch uses: the remote's own notion of it, kept qualified
-# (origin/main), a local branch named main or master, or a remote-tracking
-# branch by either of those names. `git symbolic-ref` for the local case is
-# stripped to a bare name so it compares directly against the branch a
-# pushed ref lands on below.
+# findDefaultBranch uses: the remote's own notion of it, a local branch
+# named main or master, or a remote-tracking branch by either of those
+# names, each reduced to a bare branch name so it compares directly against
+# the branch a pushed ref lands on below.
+#
+# The remote's notion of it is read as the FULL reference and reduced by
+# removing exactly "refs/remotes/<this remote>/", never with --short
+# (final fix round 2). --short prints the shortest name that is not
+# ambiguous, and a local branch that happens to be called "origin/main" (an
+# easy thing to create by mistake) makes that "remotes/origin/main", which
+# no strip of "origin/" undoes: the guard then compared every push against
+# a branch name nothing can be pushed to, and an automated push straight to
+# the default branch went through with exit 0 and no line from this hook.
+# A symbolic reference that points anywhere else is not something git
+# writes; it yields nothing here, and the warning below says the guard is
+# not running rather than guessing.
 remote_name="${1:-origin}"
 
 default_branch() {
   local symref candidate
-  symref="$(git symbolic-ref --short "refs/remotes/${remote_name}/HEAD" 2>/dev/null)"
+  symref="$(git symbolic-ref "refs/remotes/${remote_name}/HEAD" 2>/dev/null)"
   if [ -n "$symref" ]; then
-    printf '%s' "${symref#${remote_name}/}"
-    return 0
+    case "$symref" in
+      "refs/remotes/${remote_name}/"*)
+        printf '%s' "${symref#"refs/remotes/${remote_name}/"}"
+        return 0
+        ;;
+      refs/heads/*)
+        printf '%s' "${symref#refs/heads/}"
+        return 0
+        ;;
+    esac
+    return 1
   fi
   for candidate in main master; do
     if git show-ref --verify --quiet "refs/heads/$candidate"; then

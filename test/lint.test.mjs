@@ -18,13 +18,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { walkVault } from '../src/vault.mjs';
-import { runLint, buildReport } from '../src/commands/lint.mjs';
+import { runLint, buildReport, buildSecretScan } from '../src/commands/lint.mjs';
+import { MAX_SCAN_BYTES } from '../src/leak.mjs';
 import { makeVault } from './helpers/vault-fixture.mjs';
 import { makeTempDir } from './helpers/tmp.mjs';
 
@@ -748,6 +749,16 @@ test('buildReport: any error finding fails the run regardless of how many warnin
   assert.match(text, /^Result: this run fails because of the error\(s\) above\.$/m);
 });
 
+// A degraded run's exit is DEGRADED even when it also found an error: its
+// error count cannot be trusted, since what failed might have found more.
+test('buildReport: a defect outranks an error in the exit code', () => {
+  const findings = [
+    { id: 'secrets', file: 'a.md', line: 1, severity: 'error', messageKey: 'lint.secrets.pattern_matched_full', params: { pattern: 'x' } },
+    { id: 'secrets', file: 'b.csv', line: null, severity: 'error', defect: true, check: 'file-read-failed', messageKey: 'lint.tool_defect.file_read_failed', params: { code: 'EACCES' } },
+  ];
+  assert.equal(buildReport(findings, { t: T, base: baseAll(), fileCount: 2, skippedIds: [] }).exitCode, EXIT.DEGRADED);
+});
+
 test('buildReport: only warnings never fails the run', () => {
   const findings = [{ id: 'orphans', file: 'b.md', line: null, severity: 'warn', messageKey: 'lint.orphans.unreachable', params: {} }];
   const { exitCode } = buildReport(findings, { t: T, base: baseAll(), fileCount: 1, skippedIds: [] });
@@ -865,7 +876,7 @@ test("a finding's own message and the scope line both render through the vault's
 
   const ptRoot = makeVault({ files: oneErrorOneWarningFiles(), config: { ...NO_DOUBLE_COUNT_CONFIG, lang: 'pt-BR' } });
   const ptResult = run([ptRoot]);
-  assert.match(ptResult.stdout, /não é alcançável a partir do index raiz/);
+  assert.match(ptResult.stdout, /n\u00E3o \u00E9 alcan\u00E7\u00E1vel a partir do index raiz/);
   assert.doesNotMatch(ptResult.stdout, /lint\.orphans\.unreachable/);
   assert.doesNotMatch(ptResult.stdout, /not reachable by following links/);
 });
@@ -918,28 +929,153 @@ test('the lint command walks EVERY file, not the markdown subset: the secrets ru
   };
   const t = createTranslator('en');
   return runLint([root, '--base', 'all'], io, t, spy).then((status) => {
-    assert.deepEqual(seen, { all: true }, 'the one walk this command makes must ask for every file');
+    // Outside a git repository the secrets rule's set IS this walk, so it
+    // asks for dot-entries too (final fix round 2); the note rules get the
+    // same walk with every dot-path dropped.
+    assert.deepEqual(seen, { all: true, dotEntries: true }, 'the one walk this command makes must ask for every file, dot-entries included, outside a repository');
     assert.equal(status, EXIT.FAILURE, 'the key inside the JSON attachment must be found');
   });
 });
 
-// --- fix round 3: the size ceiling announces itself -------------------------
+// The other two cases of the same walk. Inside a repository the secrets
+// rule reads git's own list, so the walk the note rules get is asked for no
+// dot-entries at all; and with the secrets rule off nothing needs them, so
+// they are not walked either. Walking them anyway reads directories no rule
+// asked for, and an unreadable one of them fails the whole run.
+test('the lint command walks dot-entries only when the secrets rule runs outside a repository', async () => {
+  const spyOn = async (root, config) => {
+    let seen = null;
+    const io = { stdout: { write() {} }, stderr: { write() {} } };
+    const spy = (dir, cfg, options) => {
+      seen = options;
+      return walkVault(dir, cfg, options);
+    };
+    await runLint([root, '--base', 'all'], io, createTranslator('en'), spy);
+    return seen;
+  };
+  const inRepo = makeVault({ files: cleanFiles(), config: NO_DOUBLE_COUNT_CONFIG });
+  assert.equal(spawnSync('git', ['init', '-q', inRepo]).status, 0);
+  assert.deepEqual(await spyOn(inRepo), { all: true, dotEntries: false }, 'inside a repository the secrets rule reads git\'s list, not the walk');
+  const secretsOff = makeVault({ files: cleanFiles(), config: { ...NO_DOUBLE_COUNT_CONFIG, lint: { ...NO_DOUBLE_COUNT_CONFIG.lint, secrets: 'off' } } });
+  assert.deepEqual(await spyOn(secretsOff), { all: true, dotEntries: false }, 'with the secrets rule off no rule reads a dot-entry');
+});
+
+// --- the size ceiling announces itself, and FAILS CLOSED --------------------
 //
 // Reading every file in the vault means a vault may hand this rule
 // something enormous. The rule declines to read it, and SAYS SO: this
 // project's standing rule is that every ceiling reports how much it cut,
 // and a file the scanner skipped in silence would be the exact shape of
 // defect this whole fix round is about.
-test('a file over the per-file scan ceiling is reported, never skipped in silence', () => {
-  const big = 'x'.repeat(5 * 1024 * 1024);
-  const root = makeVault({ files: { ...cleanFiles(), 'attachments/huge.bin': big }, config: NO_DOUBLE_COUNT_CONFIG });
+//
+// Final fix round 2 pins the two things the review proved nothing
+// defended. The SEVERITY is an error, and the EXIT CODE is 1: a file the
+// scanner could not read is something it should have read, so the run
+// fails exactly like a run with a credential in it, and the adopting
+// vault's gate, which reads only the exit code, refuses. Demoting this
+// finding to a warning used to keep the whole suite green while a key on
+// the last line of a large log reached a remote with exit 0; letting the
+// too-large file fall through into a scan turned exit 1 into exit 3 and
+// nothing noticed either. The comment that stood here said "a warning,
+// not an error", which described the mutation, not the code.
+//
+// The file is SPARSE: its size is past the ceiling without a byte of it
+// written, which is enough, because a file over the ceiling is measured
+// and never read. The credential sits on its last line, the shape the
+// review built.
+function vaultWithOversizedLog() {
+  const root = makeVault({ files: cleanFiles(), config: NO_DOUBLE_COUNT_CONFIG });
+  const log = join(root, 'attachments', 'export.log');
+  mkdirSync(dirname(log), { recursive: true });
+  const tail = `\naws_access_key_id = ${fakeAwsKey('TAIL1111TAIL2222')}\n`;
+  writeFileSync(log, '');
+  truncateSync(log, MAX_SCAN_BYTES + 64 - Buffer.byteLength(tail));
+  appendFileSync(log, tail);
+  return root;
+}
+
+test('a file over the per-file scan ceiling fails the run as an error with exit 1, and the verdict says it was too large to read', () => {
+  const root = vaultWithOversizedLog();
   const result = run(['--base', 'all', root]);
-  assert.match(result.stdout, /attachments\/huge\.bin {2}secrets\b/);
+  assert.equal(result.status, EXIT.FAILURE, result.stdout);
+  assert.match(result.stdout, /attachments\/export\.log {2}secrets\b/);
   assert.match(result.stdout, /was NOT scanned for secrets/);
-  // A warning, not an error: the tool is reporting a gap in its own
-  // coverage, not claiming to have found a credential. It is still enough
-  // to keep the run from calling itself simply clean.
-  assert.doesNotMatch(result.stdout, /Result: no findings\./);
+  // The remedy is named, and it is a configuration key a pull request shows.
+  assert.match(result.stdout, /lint\.secrets\.exclude_paths/);
+  assert.match(result.stdout, /^Result: this run fails because of the error\(s\) above, 1 of them a file too large to scan for secrets/m);
+
+  const parsed = JSON.parse(run(['--base', 'all', root, '--json']).stdout);
+  const tooLarge = parsed.findings.filter((f) => f.check === 'file-too-large');
+  assert.equal(tooLarge.length, 1);
+  assert.equal(tooLarge[0].severity, 'error');
+  assert.equal(tooLarge[0].defect, false);
+  assert.equal(parsed.counts.error, 1);
+  assert.equal(parsed.counts.defect, 0);
+});
+
+// A file under the ceiling is read to its last byte. The too-large test
+// only proves a file over it is refused, and the large CSV test only proves
+// an ordinary one finishes in time; neither holds a key, so a scan that
+// quietly stopped after its first megabyte kept both green. Just under the
+// ceiling, with the key on the very last line: found, at that line. Written
+// sparse, so it costs no disk; the zero bytes read as nothing.
+test('a file just under the per-file ceiling is read to its end: a key on its last line is found, at that line', () => {
+  const root = makeVault({ files: cleanFiles(), config: NO_DOUBLE_COUNT_CONFIG });
+  const log = join(root, 'attachments', 'export.log');
+  mkdirSync(dirname(log), { recursive: true });
+  const tail = `\naws_access_key_id = ${fakeAwsKey('ENDS1111ENDS2222')}\n`;
+  writeFileSync(log, '');
+  truncateSync(log, MAX_SCAN_BYTES - 64 - Buffer.byteLength(tail));
+  appendFileSync(log, tail);
+  const result = run(['--base', 'all', root]);
+  assert.equal(result.status, EXIT.FAILURE, result.stdout);
+  assert.deepEqual(secretLines(result.stdout), ['attachments/export.log:2']);
+});
+
+// A file holding NUL bytes is text with NUL bytes in it, never "binary"
+// to be skipped: a UTF-16 export and a binary file with a credential in
+// its bytes are both read.
+test('a file holding NUL bytes is still read: a key in a UTF-16 export and a key inside a binary file are both found', () => {
+  const utf16 = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(`id,key\r\n1,${fakeAwsKey('UTF16111UTF16111')}\r\n`, 'utf16le')]);
+  const binary = Buffer.concat([Buffer.from([0x00, 0x01, 0x02, 0xff, 0x00]), Buffer.from(fakeAwsKey('BINARY11BINARY11'), 'latin1'), Buffer.from([0x00, 0xfe, 0x00])]);
+  const root = makeVault({ files: cleanFiles(), config: NO_DOUBLE_COUNT_CONFIG });
+  mkdirSync(join(root, 'attachments'), { recursive: true });
+  writeFileSync(join(root, 'attachments', 'export.csv'), utf16);
+  writeFileSync(join(root, 'attachments', 'data.bin'), binary);
+  const result = run(['--base', 'all', root]);
+  assert.equal(result.status, EXIT.FAILURE, result.stdout);
+  assert.deepEqual(secretLines(result.stdout), ['attachments/data.bin:1', 'attachments/export.csv:2']);
+});
+
+test('the too-large file is excluded by lint.secrets.exclude_paths, and the report says it was excluded rather than scanned', () => {
+  const root = vaultWithOversizedLog();
+  const config = JSON.parse(readFileSync(join(root, 'brain-kit.config.json'), 'utf8'));
+  config.lint.secrets = { severity: 'error', exclude_paths: ['attachments/export.log'] };
+  writeFileSync(join(root, 'brain-kit.config.json'), JSON.stringify(config, null, 2));
+  const result = run(['--base', 'all', root]);
+  assert.equal(result.status, EXIT.OK, result.stdout);
+  assert.doesNotMatch(result.stdout, /attachments\/export\.log {2}secrets\b/);
+  assert.match(result.stdout, /lint\.secrets\.exclude_paths excludes attachments\/export\.log, 1 file\(s\) in all/);
+});
+
+// An entry that excludes nothing is named apart from the ones that did.
+// Listed among them, "./attachments/export.log" read as if that file had
+// been left out, while git lists it as "attachments/export.log" and the
+// rule read it: here it is too large, so the run still fails, and the
+// report says why the exclusion did not take.
+test('an exclusion that matches no published file is named as excluding nothing, never listed as if it had excluded the file', () => {
+  const root = vaultWithOversizedLog();
+  const config = JSON.parse(readFileSync(join(root, 'brain-kit.config.json'), 'utf8'));
+  config.lint.secrets = { severity: 'error', exclude_paths: ['./attachments/export.log', 'index.md'] };
+  writeFileSync(join(root, 'brain-kit.config.json'), JSON.stringify(config, null, 2));
+  const result = run(['--base', 'all', root]);
+  assert.equal(result.status, EXIT.FAILURE, result.stdout);
+  assert.match(result.stdout, /attachments\/export\.log {2}secrets\b/);
+  assert.match(result.stdout, /lint\.secrets\.exclude_paths excludes index\.md, 1 file\(s\) in all/);
+  assert.match(result.stdout, /lint\.secrets\.exclude_paths names \.\/attachments\/export\.log, which match no file this vault would publish, so they exclude nothing/);
+  const parsed = JSON.parse(run(['--base', 'all', root, '--json']).stdout);
+  assert.deepEqual(parsed.secrets.excludeUnmatched, ['./attachments/export.log']);
+  assert.deepEqual(parsed.secrets.excluded, ['index.md']);
 });
 
 // The vault's own configuration declares the very patterns this rule
@@ -974,13 +1110,366 @@ test('validate.ignore_paths still hides a path from every rule, and the report s
   const result = run(['--base', 'all', root]);
   assert.doesNotMatch(result.stdout, /build\/out\.env/, 'an ignored path is not read by any rule, which is the configured behaviour');
   assert.match(result.stdout, /validate\.ignore_paths excludes build\//);
-  // And the claim about the secrets rule's own reach is bounded by the
-  // walk, not stated as "every file in the vault".
-  assert.match(result.stdout, /every file this vault's walk includes/);
+  // And the claim about the secrets rule's own reach names the set it
+  // read: outside a git repository, the walk plus dot-files.
+  assert.match(result.stdout, /this is not a git repository, so it read \d+ file\(s\), every one the vault walk includes plus dot-files/);
 });
 
 test('a vault with no ignore_paths is not shown a caveat about an empty list', () => {
   const root = makeVault({ files: cleanFiles(), config: NO_DOUBLE_COUNT_CONFIG });
   const result = run(['--base', 'all', root]);
   assert.doesNotMatch(result.stdout, /ignore_paths/);
+});
+
+// --- final fix round 2: what the secrets rule reads is what a push publishes ---
+//
+// Every test below is a real run of the real binary. Inside a git
+// repository the secrets rule reads what git tracks plus what it would
+// add: dot-paths included, ignored files not, never .git. Each member the
+// old walk-based set did not hold, or held wrongly, is built here in its
+// adversarial shape, which is usually its most common one: the environment
+// file is `.env` itself, not a file that merely has "env" in its name.
+
+function commitAll(root, message) {
+  assert.equal(git(root, ['add', '-A']).status, 0);
+  const done = git(root, ['commit', '-q', '-m', message]);
+  assert.equal(done.status, 0, done.stderr);
+}
+
+function secretLines(stdout) {
+  return (stdout.match(/^\S+:\d+ {2}secrets\b/gm) ?? []).map((line) => line.split(/\s/)[0]).sort();
+}
+
+test('a committed .env, an .aws/credentials file and a workflow file are each read, where the walk skips every dot-path', () => {
+  const root = makeGitVault({
+    files: {
+      ...cleanFiles(),
+      '.env': `AWS_ACCESS_KEY_ID=${fakeAwsKey('DOTENV11DOTENV11')}\n`,
+      'attachments/.aws/credentials': `[default]\naws_access_key_id = ${fakeAwsKey('AWSCRED1AWSCRED1')}\n`,
+      '.github/workflows/deploy.yml': `env:\n  KEY: ${fakeAwsKey('WORKFLOW11111111')}\n`,
+    },
+    config: NO_DOUBLE_COUNT_CONFIG,
+  });
+  const result = run(['--base', 'all', root]);
+  assert.equal(result.status, EXIT.FAILURE, result.stdout);
+  assert.deepEqual(secretLines(result.stdout), ['.env:1', '.github/workflows/deploy.yml:2', 'attachments/.aws/credentials:2']);
+  // The reach line names git's set and counts it: the three notes, the
+  // configuration and the three dot-files.
+  assert.match(result.stdout, /it read 7 file\(s\), every one git tracks or would add here, dot-files included/);
+});
+
+// A dot-file is read against everything the vault configured, not only the
+// generic shapes. The three keys above are all generic, so reading dot-files
+// against the shapes alone kept that test green while a committed .env
+// holding a token shape only this vault's configuration names went through
+// a real push, and the remote held it.
+test('a committed .env is read against the patterns the vault configured, not the generic shapes alone', () => {
+  const token = `acmetok_${'0123456789abcdef'.repeat(2)}`;
+  const root = makeGitVault({
+    files: { ...cleanFiles(), '.env': `ACME_TOKEN=${token}\n`, 'deploy/.env': `ACME_TOKEN=${token}\n` },
+    config: { privacy: { secret_patterns: ['acmetok_[0-9a-f]{32}'] } },
+  });
+  const result = run(['--base', 'all', root]);
+  assert.equal(result.status, EXIT.FAILURE, result.stdout);
+  assert.deepEqual(secretLines(result.stdout), ['.env:1', 'deploy/.env:1']);
+});
+
+test('a file git ignores is never read, so a local credentials file cannot refuse a push, while an untracked file git would add is read', () => {
+  const root = makeGitVault({
+    files: { ...cleanFiles(), '.gitignore': 'local-only/\n' },
+    config: NO_DOUBLE_COUNT_CONFIG,
+  });
+  writeFileSync(join(root, 'local-only-placeholder.md'), '# not linked, not secret\n');
+  mkdirSync(join(root, 'local-only'));
+  writeFileSync(join(root, 'local-only', 'credentials'), `aws_access_key_id = ${fakeAwsKey('IGNORED1IGNORED1')}\n`);
+  const clean = run(['--base', 'all', root]);
+  assert.equal(clean.status, EXIT.OK, clean.stdout);
+  assert.doesNotMatch(clean.stdout, /local-only\/credentials/);
+
+  // The same credential in a file git WOULD add is what a `git add -A`
+  // publishes next, and it is read.
+  writeFileSync(join(root, 'scratch.env'), `aws_access_key_id = ${fakeAwsKey('UNTRACKED1111111')}\n`);
+  const found = run(['--base', 'all', root]);
+  assert.equal(found.status, EXIT.FAILURE, found.stdout);
+  assert.deepEqual(secretLines(found.stdout), ['scratch.env:1']);
+});
+
+test('the line about the secrets rule\'s reach is printed only when the rule ran, and never beside a run that skipped it', () => {
+  const root = makeGitVault({ files: cleanFiles(), config: NO_DOUBLE_COUNT_CONFIG });
+  const ran = run(['--base', 'all', root]);
+  assert.match(ran.stdout, /The secrets rule is never narrowed by the scope above/);
+
+  const onlyTables = run(['--base', 'all', '--rule', 'tables', root]);
+  assert.doesNotMatch(onlyTables.stdout, /secrets rule/);
+
+  const off = makeGitVault({ files: cleanFiles(), config: { ...NO_DOUBLE_COUNT_CONFIG, lint: { secrets: 'off' } } });
+  const offRun = run(['--base', 'all', off]);
+  assert.match(offRun.stdout, /Skipped \(severity off, did not run\): secrets\./);
+  assert.doesNotMatch(offRun.stdout, /The secrets rule/);
+  assert.deepEqual(JSON.parse(run(['--base', 'all', off, '--json']).stdout).secrets, { ran: false });
+});
+
+test('inside a repository validate.ignore_paths no longer hides a published file from the secrets rule, and the report says the note rules alone skip it', () => {
+  const root = makeGitVault({
+    files: { ...cleanFiles(), 'build/out.env': `AWS_ACCESS_KEY_ID=${fakeAwsKey('BUILDDIR1BUILD11')}\n` },
+    config: { ...NO_DOUBLE_COUNT_CONFIG, validate: { ignore_paths: ['build/'] } },
+  });
+  const result = run(['--base', 'all', root]);
+  assert.equal(result.status, EXIT.FAILURE, result.stdout);
+  assert.deepEqual(secretLines(result.stdout), ['build/out.env:1']);
+  assert.match(result.stdout, /validate\.ignore_paths excludes build\/ from every rule but secrets/);
+});
+
+test('the configuration is read raw against the credential shapes: its own literal prefixes no longer blank a real key out of another field', () => {
+  // The shipped example declares `sk-ant-` and `github_pat_` as literal
+  // patterns. The blanking this replaced erased every occurrence of those
+  // literals anywhere in the file, and with them the prefix of any real
+  // key of those two kinds pasted into another field.
+  const anthropicKey = `sk-ant-${'api03'}${'Q'.repeat(40)}`;
+  const githubToken = `github_pat_${'11'}${'R'.repeat(40)}`;
+  const root = makeVault({
+    files: cleanFiles(),
+    config: { curate: { signature: anthropicKey }, briefing: { signature: githubToken } },
+  });
+  const result = run(['--base', 'all', root]);
+  assert.equal(result.status, EXIT.FAILURE, result.stdout);
+  assert.equal(secretLines(result.stdout).filter((line) => line.startsWith('brain-kit.config.json:')).length, 2, result.stdout);
+});
+
+test('a pattern written for the owner\'s own domain or company flags a note, and never the owner\'s own identity in the configuration', () => {
+  const root = makeVault({
+    files: { ...cleanFiles(), 'people/ana.md': `${CLEAN_ANA}\nWrite to ana@example.com about the Example   Ltd contract.\n` },
+    config: { privacy: { secret_patterns: ['@example\\.com', 'Example\\s+Ltd'] } },
+  });
+  const result = run(['--base', 'all', root]);
+  assert.equal(result.status, EXIT.FAILURE, result.stdout);
+  const lines = secretLines(result.stdout);
+  assert.ok(lines.every((line) => !line.startsWith('brain-kit.config.json')), `the owner's own address and company were reported:\n${result.stdout}`);
+  assert.deepEqual(lines, ['people/ana.md:5', 'people/ana.md:5']);
+});
+
+test('a copy of the configuration anywhere but the vault root is an ordinary file, read against every pattern', () => {
+  const root = makeVault({
+    files: { ...cleanFiles(), 'examples/brain-kit.config.json': '{ "note": "an internal-token-482913 left in an example" }\n' },
+    config: { privacy: { secret_patterns: ['internal-token-[0-9]{6}'] } },
+  });
+  const result = run(['--base', 'all', root]);
+  assert.equal(result.status, EXIT.FAILURE, result.stdout);
+  assert.deepEqual(secretLines(result.stdout), ['examples/brain-kit.config.json:1']);
+});
+
+test('a configured pattern holding an accented letter matches the accented text it was written for', () => {
+  // A regression the previous round introduced: content was decoded one
+  // byte per character while patterns stayed UTF-8, so this matched at the
+  // commit before and matched nothing after. Escapes keep this file ASCII.
+  const root = makeVault({
+    files: { ...cleanFiles(), 'people/ana.md': `${CLEAN_ANA}\nC\u00F3digo de acesso: 482913\n` },
+    config: { privacy: { secret_patterns: ['C\u00F3digo de acesso: [0-9]{6}'] } },
+  });
+  const result = run(['--base', 'all', root]);
+  assert.equal(result.status, EXIT.FAILURE, result.stdout);
+  assert.deepEqual(secretLines(result.stdout), ['people/ana.md:5']);
+});
+
+test('a symbolic link is read as the link git publishes, never as whatever it points at', () => {
+  // A link out of the vault to a credentials file publishes the link's
+  // own text, not the file; reading the file would refuse a push over
+  // something the push does not carry. A link whose own TEXT is shaped
+  // like a credential publishes exactly that, and is reported.
+  const outside = makeTempDir('brain-kit-lint-outside-');
+  writeFileSync(join(outside, 'credentials'), `aws_access_key_id = ${fakeAwsKey('OUTSIDE1OUTSIDE1')}\n`);
+  const root = makeGitVault({ files: cleanFiles(), config: NO_DOUBLE_COUNT_CONFIG });
+  symlinkSync(join(outside, 'credentials'), join(root, 'people', 'creds-link'));
+  symlinkSync(fakeAwsKey('LINKTEXT1LINKTXT'), join(root, 'people', 'dangling-link'));
+  commitAll(root, 'links');
+  const result = run(['--base', 'all', root]);
+  assert.equal(result.status, EXIT.FAILURE, result.stdout);
+  assert.deepEqual(secretLines(result.stdout), ['people/dangling-link:1']);
+});
+
+test('a file git tracks that is missing from the working tree is not read, and the report says so rather than passing it in silence', () => {
+  const root = makeGitVault({
+    files: { ...cleanFiles(), 'people/old.md': `# Old\n\n${fakeAwsKey('DELETED1DELETED1')}\n` },
+    config: NO_DOUBLE_COUNT_CONFIG,
+  });
+  rmSync(join(root, 'people', 'old.md'));
+  const result = run(['--base', 'all', root]);
+  assert.equal(result.status, EXIT.OK, result.stdout);
+  assert.match(result.stdout, /Not scanned for secrets: 1 file\(s\) git tracks are missing from the working tree \(people\/old\.md\), so what a commit holds for them was not read\./);
+  assert.deepEqual(JSON.parse(run(['--base', 'all', root, '--json']).stdout).secrets.absent, ['people/old.md']);
+});
+
+test('a tracked directory replaced by a link out of the vault is missing from the working tree: the file behind the link is never read', () => {
+  const outside = makeTempDir('brain-kit-lint-outside-');
+  mkdirSync(join(outside, 'notes'));
+  writeFileSync(join(outside, 'notes', 'plan.md'), `${fakeAwsKey('BEHINDLINK111111')}\n`);
+  const root = makeGitVault({ files: { ...cleanFiles(), 'notes/plan.md': '# Plan\n' }, config: NO_DOUBLE_COUNT_CONFIG });
+  rmSync(join(root, 'notes'), { recursive: true });
+  symlinkSync(join(outside, 'notes'), join(root, 'notes'));
+  const result = run(['--base', 'all', root]);
+  assert.doesNotMatch(result.stdout, /notes\/plan\.md:\d+ {2}secrets/, 'a file outside the vault was read through a symbolic link');
+  assert.match(result.stdout, /missing from the working tree \(notes\/plan\.md\)/);
+});
+
+test('a directory holding a repository of its own is not read, and the report names it', () => {
+  const root = makeGitVault({ files: cleanFiles(), config: NO_DOUBLE_COUNT_CONFIG });
+  const nested = join(root, 'vendor-notes');
+  assert.equal(spawnSync('git', ['init', '-q', nested]).status, 0);
+  writeFileSync(join(nested, 'inside.txt'), `${fakeAwsKey('NESTEDREPO111111')}\n`);
+  const result = run(['--base', 'all', root]);
+  assert.doesNotMatch(result.stdout, /inside\.txt/);
+  assert.match(result.stdout, /Not scanned for secrets: vendor-notes, each a submodule or a repository of its own/);
+});
+
+test('a published file whose name is not valid UTF-8 cannot be read by name, so the run is degraded rather than passing it', { skip: process.platform !== 'linux' ? 'only Linux lets a file name hold arbitrary bytes' : false }, () => {
+  const root = makeGitVault({ files: cleanFiles(), config: NO_DOUBLE_COUNT_CONFIG });
+  const name = Buffer.concat([Buffer.from(join(root, 'people', 'bad'), 'utf8'), Buffer.from([0xff]), Buffer.from('.txt')]);
+  writeFileSync(name, `${fakeAwsKey('BADNAME1BADNAME1')}\n`);
+  commitAll(root, 'an undecodable name');
+  const result = run(['--base', 'all', root]);
+  assert.equal(result.status, EXIT.DEGRADED, result.stdout);
+  assert.match(result.stdout, /this file's name is not valid UTF-8/);
+  assert.match(result.stdout, /1 file\(s\) could not be read/);
+});
+
+test('an ordinary large CSV of short lines is scanned in full and passes, rather than timing out and being called a crash', () => {
+  // The review's own shape: about 3.9 MB of short lines and no secret,
+  // which ran out of the old flat per-file budget and was reported as a
+  // crashed rule.
+  const row = '2026-09-22,17.4,0.51\n';
+  const root = makeVault({ files: { ...cleanFiles(), 'attachments/sensor.csv': row.repeat(Math.ceil((3.9 * 1024 * 1024) / row.length)) }, config: NO_DOUBLE_COUNT_CONFIG });
+  const result = run(['--base', 'all', root]);
+  assert.equal(result.status, EXIT.OK, result.stdout);
+  assert.doesNotMatch(result.stdout, /Tool defects|degraded|crashed/);
+});
+
+test('a file that cannot be read is reported without the absolute path the operating system named it by, in the text report and in --json', { skip: typeof process.getuid === 'function' && process.getuid() === 0 ? 'root reads every file' : false }, () => {
+  const root = makeVault({ files: { ...cleanFiles(), 'attachments/locked.txt': 'nothing\n' }, config: NO_DOUBLE_COUNT_CONFIG });
+  chmodSync(join(root, 'attachments', 'locked.txt'), 0o000);
+  try {
+    const text = run(['--base', 'all', root]);
+    assert.equal(text.status, EXIT.DEGRADED, text.stdout);
+    assert.match(text.stdout, /attachments\/locked\.txt {2}secrets {2}this file could not be read at all \(error EACCES\)/);
+    assert.ok(!text.stdout.includes(root), 'the report printed the vault\'s absolute path');
+    const json = run(['--base', 'all', root, '--json']);
+    assert.ok(!json.stdout.includes(root), 'the --json envelope carried the vault\'s absolute path');
+  } finally {
+    chmodSync(join(root, 'attachments', 'locked.txt'), 0o644);
+  }
+});
+
+// --- final fix round 2: the verdict says what degraded or failed the run -----
+
+test('buildReport: a degraded run names what degraded it, and a file that ran out of time is never called a crash', () => {
+  const defect = (check) => ({ id: 'secrets', file: 'a.csv', line: null, severity: 'error', defect: true, check, messageKey: 'lint.tool_defect.file_scan_timed_out', params: { message: 'm' } });
+  const timedOut = buildReport([defect('file-scan-timed-out')], { t: T, base: baseAll(), fileCount: 1, skippedIds: [] });
+  assert.equal(timedOut.exitCode, EXIT.DEGRADED);
+  assert.match(timedOut.text, /^Result: this run is degraded \(1 file\(s\) took too long to scan for secrets and timed out\)/m);
+  assert.doesNotMatch(timedOut.text, /crash/);
+
+  const all = buildReport(
+    [defect('rule-crashed'), defect('file-scan-timed-out'), defect('file-scan-failed'), defect('file-read-failed'), defect('file-name-undecodable'), defect('publishable-list-failed'), defect('something-new')],
+    { t: T, base: baseAll(), fileCount: 1, skippedIds: [] },
+  );
+  assert.match(
+    all.text,
+    /^Result: this run is degraded \(1 rule\(s\) crashed, 1 file\(s\) took too long to scan for secrets and timed out, 1 file\(s\) could not be scanned for secrets, 2 file\(s\) could not be read, git could not list the files this vault would publish, 1 other defect\(s\)\)/m,
+  );
+});
+
+test('buildReport: the paths on a "not scanned" line are capped, and what the cap cut is counted', () => {
+  const absent = Array.from({ length: 12 }, (_, i) => `notes/n${String(i).padStart(2, '0')}.md`);
+  const secretScan = { source: 'git', files: [], excludePaths: [], excluded: [], excludeUnmatched: [], gitlinks: [], embedded: [], absent, undecodable: [], failure: null };
+  const { text, json } = buildReport([], { t: T, base: baseAll(), fileCount: 0, skippedIds: [], secretScan });
+  assert.match(text, /12 file\(s\) git tracks are missing from the working tree \(notes\/n00\.md, [^)]*notes\/n09\.md, and 2 more\)/);
+  assert.doesNotMatch(text, /notes\/n10\.md/);
+  assert.equal(json.secrets.absent.length, 12, 'the envelope keeps every path');
+});
+
+test('buildSecretScan: a listing git could not produce is a failure the rule reports, never a fallback to some other list', () => {
+  const scan = buildSecretScan('/nonexistent', {}, { listing: { failure: { status: 128 } }, walked: ['a.md', '.env'] });
+  assert.deepEqual(scan.files, []);
+  assert.deepEqual(scan.failure, { status: 128 });
+});
+
+test('buildSecretScan: outside a repository the set is the walk, less what lint.secrets.exclude_paths names', () => {
+  const config = { lint: { secrets: { exclude_paths: ['attachments/', 'big.csv'] } } };
+  const scan = buildSecretScan('/nonexistent', config, { listing: { listed: null }, walked: ['.env', 'attachments/a.pdf', 'big.csv', 'big.csv.bak', 'index.md'] });
+  assert.equal(scan.source, 'walk');
+  assert.deepEqual(scan.files, ['.env', 'big.csv.bak', 'index.md']);
+  assert.deepEqual(scan.excluded, ['attachments/a.pdf', 'big.csv']);
+  assert.deepEqual(scan.excludePaths, ['attachments/', 'big.csv']);
+  // A bare severity string carries no exclusions, and neither does an
+  // entry that is not a non-empty string.
+  assert.deepEqual(buildSecretScan('/nonexistent', { lint: { secrets: 'error' } }, { listing: { listed: null }, walked: ['big.csv'] }).files, ['big.csv']);
+  assert.deepEqual(buildSecretScan('/nonexistent', { lint: { secrets: { exclude_paths: ['', 7] } } }, { listing: { listed: null }, walked: ['big.csv'] }).files, ['big.csv']);
+});
+
+test('buildSecretScan: a tracked file inside a directory that cannot be read stays in the set, so the read fails loudly, and is never quietly counted as missing', { skip: typeof process.getuid === 'function' && process.getuid() === 0 ? 'root reads every directory' : false }, () => {
+  // Only "no such entry" means missing from the working tree. Any other
+  // failure to look (here, a directory with no permissions) keeps the file
+  // in the set, so the secrets rule's own read fails and reports it: the
+  // refusing direction. The vault walk itself stops at such a directory
+  // before this is reached in a real run, which is a limit of the walk.
+  const root = makeGitVault({ files: { ...cleanFiles(), 'vault-private/key.txt': 'x\n' }, config: NO_DOUBLE_COUNT_CONFIG });
+  chmodSync(join(root, 'vault-private'), 0o000);
+  try {
+    const listed = { files: ['index.md', 'vault-private/key.txt'], gitlinks: [], embedded: [], undecodable: [] };
+    const scan = buildSecretScan(root, {}, { listing: { listed }, walked: [] });
+    assert.deepEqual(scan.files, ['index.md', 'vault-private/key.txt']);
+    assert.deepEqual(scan.absent, []);
+  } finally {
+    chmodSync(join(root, 'vault-private'), 0o755);
+  }
+});
+
+test('when git cannot list what the vault would publish, the run is degraded and says so, and the other rules still report', () => {
+  const root = makeGitVault({ files: { ...cleanFiles(), 'people/ghost.md': GHOST }, config: { ...NO_DOUBLE_COUNT_CONFIG, lint: { secrets: { severity: 'error', exclude_paths: ['attachments/'] } } } });
+  writeFileSync(join(root, '.git', 'index'), 'not an index');
+  const result = run(['--base', 'all', root]);
+  assert.equal(result.status, EXIT.DEGRADED, `${result.stdout}${result.stderr}`);
+  assert.match(result.stdout, /git could not list the files this vault would publish \(git exited \d+\), so the secrets rule read nothing at all/);
+  assert.match(result.stdout, /people\/ghost\.md {2}orphans/);
+  // No line claims a set was read, or had something left out of it, that
+  // git never produced.
+  assert.doesNotMatch(result.stdout, /The secrets rule is never narrowed/);
+  assert.doesNotMatch(result.stdout, /exclude_paths/);
+  assert.equal(JSON.parse(run(['--base', 'all', root, '--json']).stdout).secrets.listingFailed, true);
+});
+
+test('buildSecretScan: a name that cannot be decoded is left out when the vault excluded the prefix it sits under', () => {
+  const root = makeGitVault({ files: cleanFiles(), config: NO_DOUBLE_COUNT_CONFIG });
+  const listed = { files: ['index.md'], gitlinks: [], embedded: [], undecodable: ['vendor/bad\u00ff.bin', 'notes/bad\u00ff.md'] };
+  const scan = buildSecretScan(root, { lint: { secrets: { exclude_paths: ['vendor/', './notes'] } } }, { listing: { listed }, walked: [] });
+  assert.deepEqual(scan.undecodable, ['notes/bad\u00ff.md']);
+  assert.deepEqual(scan.files, ['index.md']);
+  // Counted as excluded, so the report's count covers it and the entry
+  // that left it out is not named as excluding nothing.
+  assert.deepEqual(scan.excluded, ['vendor/bad\u00ff.bin']);
+  // And an entry written the way git never lists a path excludes nothing,
+  // and is named for it.
+  assert.deepEqual(scan.excludeUnmatched, ['./notes']);
+});
+
+test('outside a repository the dot-entries walked for the secrets rule never become notes for the other seven rules', () => {
+  const root = makeVault({ files: { ...cleanFiles(), '.brain-kit/prompts/curate.md': '# A prompt, not a note\n' }, config: NO_DOUBLE_COUNT_CONFIG });
+  const parsed = JSON.parse(run(['--base', 'all', root, '--json']).stdout);
+  assert.equal(parsed.scope.files, 3);
+  assert.ok(!parsed.findings.some((f) => f.file === '.brain-kit/prompts/curate.md'), JSON.stringify(parsed.findings));
+  assert.equal(parsed.secrets.scanned, 5, 'the secrets rule still read the prompt, and the configuration');
+});
+
+test('a configured pattern saved in another encoding still matches: the configuration is decoded the way content is', () => {
+  // The pattern's accented letter is written as the one latin1 byte it is
+  // in that encoding, which is not UTF-8. Read as UTF-8 it would become a
+  // replacement character, and the pattern would match nothing.
+  const root = makeVault({ files: { ...cleanFiles(), 'people/ana.md': `${CLEAN_ANA}\nCaf\u00e9 da manh\u00e3 com o cliente\n` } });
+  const configPath = join(root, 'brain-kit.config.json');
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  config.privacy.secret_patterns = ['CAFE-PLACEHOLDER da manh'];
+  const [before, after] = JSON.stringify(config, null, 2).split('CAFE-PLACEHOLDER');
+  writeFileSync(configPath, Buffer.concat([Buffer.from(before, 'utf8'), Buffer.from('Caf\u00e9', 'latin1'), Buffer.from(after, 'utf8')]));
+  const result = run(['--base', 'all', root]);
+  assert.equal(result.status, EXIT.FAILURE, `${result.stdout}${result.stderr}`);
+  assert.deepEqual(secretLines(result.stdout), ['people/ana.md:5']);
 });

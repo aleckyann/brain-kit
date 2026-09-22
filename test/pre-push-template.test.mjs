@@ -344,3 +344,101 @@ test('the template asks lint for a base nothing in the working tree can re-deriv
   const text = readFileSync(TEMPLATE_HOOK, 'utf8');
   assert.match(text, /"\$BRAIN_KIT" lint --base all/);
 });
+
+// --- final fix round 2: the whole-vault base as BEHAVIOUR, not as text ------
+//
+// The test above reads the base out of the file with a regular
+// expression, and a review proved that is not enough: dropping `--base
+// all` from the command while keeping the text in a comment kept the
+// whole suite green, because every behavioural test used the secrets
+// rule, which reads no base at all. This is the case that tells the two
+// apart. A vault escalated `style` to error AFTER an old violation was
+// already published; a push of an unrelated change from a feature branch
+// must still be refused, because the gate judges what will exist on the
+// remote. Under the interactive default the old line is not "added" by
+// the branch, the rule sees nothing, and the push goes through.
+test('a vault that escalated style to error refuses a feature-branch push over an old violation, because the gate lints the whole vault', () => {
+  const dash = String.fromCharCode(0x2014);
+  const files = { ...cleanFiles(), 'people/ana.md': `${CLEAN_PERSON}\nAn old line${dash}written before the rule was escalated.\n` };
+  const { work } = setup({ files });
+  commitEverything(work, 'init');
+  const seeded = git(work, ['push', '-q', 'origin', 'main']);
+  assert.equal(seeded.status, 0, `style is a warning here, so the first push is accepted: ${seeded.stderr}`);
+
+  assert.equal(git(work, ['checkout', '-q', '-b', 'feature']).status, 0);
+  const configPath = join(work, 'brain-kit.config.json');
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  config.lint.style = { severity: 'error', forbidden_chars: [dash] };
+  writeFileSync(configPath, JSON.stringify(config, null, 2));
+  writeFileSync(join(work, 'memory', 'log.md'), `${CLEAN_LOG}\nAn unrelated, clean entry.\n`);
+  commitEverything(work, 'escalate style, and an unrelated change');
+
+  const r = git(work, ['push', '-q', 'origin', 'feature']);
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /brain-kit lint found a problem/);
+  assert.match(`${r.stdout}${r.stderr}`, /people\/ana\.md:\d+ {2}style\b/);
+});
+
+// --- final fix round 2: what the gate reads is what the push could publish ---
+
+test('a committed .env refuses the push: the environment file itself, not a file merely named like one', () => {
+  const files = { ...cleanFiles(), '.env': `AWS_ACCESS_KEY_ID=${FAKE_AWS_KEY}\n` };
+  const { work } = setup({ files });
+  commitEverything(work, 'init');
+  const r = git(work, ['push', '-q', 'origin', 'main']);
+  assert.notEqual(r.status, 0, 'a key in a committed .env must refuse the push');
+  assert.match(`${r.stdout}${r.stderr}`, /\.env:1 {2}secrets\b/);
+});
+
+test('a credential in a file git ignores never refuses a push, because the push can never carry it', () => {
+  const { work } = setup({ files: { ...cleanFiles(), '.gitignore': 'local-only/\n' } });
+  mkdirSync(join(work, 'local-only'));
+  writeFileSync(join(work, 'local-only', 'credentials'), `aws_access_key_id = ${FAKE_AWS_KEY}\n`);
+  commitEverything(work, 'init');
+  const r = git(work, ['push', '-q', 'origin', 'main']);
+  assert.equal(r.status, 0, r.stderr);
+});
+
+test('the configuration\'s own literal patterns no longer blank a real key out of it: a key pasted into a signature refuses the push', () => {
+  const anthropicKey = `sk-ant-${'api03'}${'Q'.repeat(40)}`;
+  const { work } = setup({ config: { curate: { signature: anthropicKey } } });
+  commitEverything(work, 'init');
+  const r = git(work, ['push', '-q', 'origin', 'main']);
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(`${r.stdout}${r.stderr}`, /brain-kit\.config\.json:\d+ {2}secrets\b/);
+});
+
+// --- final fix round 2: the ladder reads the remote's HEAD in full --------
+
+test('a local branch named like the remote-tracking default does not switch the automation guard off', () => {
+  // `git symbolic-ref --short` shortens to whatever is unambiguous, and a
+  // local branch called "origin/main" makes that "remotes/origin/main",
+  // which no strip of "origin/" undoes. The guard then compared every push
+  // against a branch nothing can be pushed to, and this push went through
+  // with exit 0 and no line from the hook.
+  const { work } = setup();
+  commitEverything(work, 'init', AGENT);
+  const head = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  assert.equal(git(work, ['update-ref', 'refs/remotes/origin/main', head]).status, 0);
+  assert.equal(git(work, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main']).status, 0);
+  assert.equal(git(work, ['branch', 'origin/main']).status, 0);
+  assert.equal(git(work, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).stdout.trim(), 'remotes/origin/main', 'the ambiguity this test exists for');
+  const r = git(work, ['push', '-q', 'origin', 'main'], AGENT);
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /refusing a push to the default branch \('main'\)/);
+});
+
+test('a remote HEAD pointed at a local branch by hand still names that branch; one pointed anywhere else says the guard is not running', () => {
+  const { work } = setup();
+  commitEverything(work, 'init', AGENT);
+  assert.equal(git(work, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/heads/main']).status, 0);
+  const refused = git(work, ['push', '-q', 'origin', 'main'], AGENT);
+  assert.notEqual(refused.status, 0, refused.stderr);
+  assert.match(refused.stderr, /refusing a push to the default branch \('main'\)/);
+
+  assert.equal(git(work, ['tag', 'v-anchor']).status, 0);
+  assert.equal(git(work, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/tags/v-anchor']).status, 0);
+  const warned = git(work, ['push', '-q', 'origin', 'main'], AGENT);
+  assert.equal(warned.status, 0, warned.stderr);
+  assert.match(warned.stderr, /could not determine this vault's default branch/);
+});

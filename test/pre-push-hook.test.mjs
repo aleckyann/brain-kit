@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import { makeTempDir } from './helpers/tmp.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, copyFileSync, cpSync, chmodSync, writeFileSync, readFileSync, symlinkSync, unlinkSync, rmSync, existsSync } from 'node:fs';
+import { appendFileSync, mkdirSync, copyFileSync, cpSync, chmodSync, writeFileSync, readFileSync, symlinkSync, unlinkSync, rmSync, existsSync, truncateSync } from 'node:fs';
+import { MAX_SCAN_BYTES } from '../src/leak.mjs';
 import { join, dirname } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 
@@ -2757,21 +2758,21 @@ test('an ordinary deletion still passes, and says the skip is about objects and 
   assert.match(r.stderr, /destination name is still scanned/);
 });
 
-test('a reference name that is not ASCII is decoded the way every other channel decodes bytes', () => {
+test('a reference name that is not ASCII is decoded the way every other channel and every pattern is, so an ordinarily written pattern refuses it', () => {
   // A reference name can carry any byte above 0x7f. The hook writes those
-  // bytes through unchanged and the engine decodes its whole standard
-  // input as latin1, the same decoding a file name gets, so a pattern
-  // written against those bytes matches here exactly as it does there. If
-  // this channel ever grew a decoding of its own, this is the test that
-  // would go red.
+  // bytes through unchanged, and the engine decodes every channel, this
+  // one included, the one way src/io.mjs decodes bytes for every scanner
+  // AND for the patterns file: UTF-8 where the bytes are UTF-8.
+  //
+  // Final fix round 2. This test used to write its pattern as the latin1
+  // mojibake of the name on purpose, because channels were decoded one
+  // byte per character while the patterns file was read as UTF-8, so a
+  // pattern written the ORDINARY way matched nothing, anywhere, and only
+  // its mojibake spelling refused. SECURITY.md never told anyone to write
+  // that. The pattern below is the name as a person types it.
   const { root, work } = setup();
-  const patterns = join(root, 'byte-patterns.txt');
-  // The branch name's two non-ASCII bytes are 0xc3 0xa7 (the UTF-8 of
-  // U+00E7, which is what git will carry). Decoded as latin1 those are the
-  // two characters below, and the patterns file is read as UTF-8, so
-  // writing them here puts exactly those two bytes in front of the
-  // scanner.
-  writeFileSync(patterns, 'caf\u00c3\u00a7\n');
+  const patterns = join(root, 'accented-patterns.txt');
+  writeFileSync(patterns, 'caf\u00e7\n');
   commit(work, 'README.md', 'hello world\n', 'init');
   const branch = 'caf\u00e7-notes';
   assert.equal(git(work, ['checkout', '-q', '-b', branch]).status, 0);
@@ -2781,6 +2782,30 @@ test('a reference name that is not ASCII is decoded the way every other channel 
   assert.match(r.stderr, /possible leak in the destination name of reference #1 of this push/);
   const refs = spawnSync('git', ['--git-dir', join(root, 'origin.git'), 'for-each-ref', '--format=%(refname)'], { encoding: 'utf8' });
   assert.doesNotMatch(refs.stdout, /caf/);
+});
+
+// The content half of the same decision, and its adversarial shape: the
+// accented name sits in a file that ALSO holds a byte that is not UTF-8
+// at all. Decoding the whole file one way when any byte of it is invalid
+// would put the name back in its two-characters-per-letter form and the
+// pattern would miss it again; the decoding is per sequence, so it does
+// not. Written the ordinary way, the pattern refuses the push.
+test('an accented pattern written the ordinary way refuses a file holding that word, even beside a byte that is not UTF-8', () => {
+  const { root, work } = setup();
+  const patterns = join(root, 'accented-patterns.txt');
+  writeFileSync(patterns, 'reuni\u00e3o secreta\n');
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+
+  writeFileSync(join(work, 'minutes.md'), Buffer.concat([
+    Buffer.from('Notes from the reuni\u00e3o secreta on Monday\n', 'utf8'),
+    Buffer.from([0xff, 0x0a]),
+  ]));
+  git(work, ['add', 'minutes.md']);
+  assert.equal(git(work, ['commit', '-q', '-m', 'minutes']).status, 0);
+  const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in minutes\.md \(CONTENT/);
 });
 
 test('a push carrying several references scans every one of them, and one bad name refuses all of it', () => {
@@ -2925,4 +2950,115 @@ test('a push with no references at all still enforces the patterns file', () => 
   });
   assert.notEqual(r.status, 0, r.stderr);
   assert.match(r.stderr, /leak patterns file not found/);
+});
+
+// --- final fix round 2: the gate says what it forgave, what it could not
+// read, and prints a name as the name it is ---------------------------------
+
+test('after an exemption fired, the clean summary says an exemption applied, and never "nothing matched"', () => {
+  const { work, patterns } = setupSelfNamedMaintainer();
+  writeFileSync(join(work, 'README.md'), 'hello world\n');
+  assert.equal(gitAs(work, ['add', 'README.md']).status, 0);
+  assert.equal(gitAs(work, ['commit', '-q', '-m', 'a clean message']).status, 0);
+  const r = gitAs(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 0, r.stderr);
+  const summary = r.stderr.split('\n').find((line) => line.includes('brain-kit leak gate ran'));
+  assert.ok(summary, r.stderr);
+  assert.match(summary, /no match refuses it, and 1 identity match\(es\) were exempt because each is exactly the identity this push is made under \(withheld\)/);
+  assert.doesNotMatch(summary, /nothing matched/);
+  assert.doesNotMatch(r.stderr, /hunter2corp/i);
+});
+
+test('a file name with an accent is printed as that name, not as the two characters per letter its bytes read as one at a time', () => {
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  // A commit that does not exist, so the read fails and the gate prints
+  // the path in its refusal.
+  const r = scanBlobs(work, blobRecord('0'.repeat(40), 'reuni\u00e3o.md'), { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /could not read reuni\u00e3o\.md \(at 0000000\)/);
+  assert.doesNotMatch(r.stderr, /reuni\u00c3/);
+});
+
+test('a blob over the ceiling both gates share is refused as too large, in those words, on every path a blob is read by', () => {
+  const { work, patterns } = setup();
+  // Sparse: the size is past the ceiling without writing its bytes, and
+  // git stores a run of zeros as next to nothing.
+  const big = join(work, 'export.bin');
+  writeFileSync(big, '');
+  truncateSync(big, MAX_SCAN_BYTES + 1);
+  git(work, ['add', 'export.bin']);
+  assert.equal(git(work, ['commit', '-q', '-m', 'a large attachment']).status, 0);
+  const sha = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  const blob = git(work, ['rev-parse', 'HEAD:export.bin']).stdout.trim();
+  const tree = git(work, ['rev-parse', 'HEAD^{tree}']).stdout.trim();
+  const tooLarge = new RegExp(`it is larger than the ${MAX_SCAN_BYTES} byte limit this gate reads, so it was not scanned; refusing instead of calling it clean`);
+
+  const asFile = scanBlobs(work, blobRecord(sha, 'export.bin'), { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(asFile.status, 0);
+  assert.match(asFile.stderr, /could not read export\.bin \(at [0-9a-f]{7}\): /);
+  assert.match(asFile.stderr, tooLarge);
+  assert.doesNotMatch(asFile.stderr, /could not be run|nothing matched/);
+
+  const asTip = scanBlobs(work, tipRecord(blob), { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(asTip.status, 0);
+  assert.match(asTip.stderr, tooLarge);
+
+  const inTree = scanBlobs(work, tipRecord(tree), { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(inTree.status, 0);
+  assert.match(inTree.stderr, tooLarge);
+});
+
+// A blob under the ceiling is read to its end, on every path a blob is
+// read by. The test above proves a blob over it is refused; nothing proved
+// one under it is read whole, and a gate that scanned only the first
+// megabyte of every channel passed its whole suite while a real push of an
+// exported log naming a pattern on its last line went through. Sparse
+// again, the match on the very last line.
+test('a blob just under the ceiling is read to its end: a match on its last line refuses, on every path a blob is read by', () => {
+  const { work, patterns } = setup();
+  const big = join(work, 'export.log');
+  const tail = '\nhunter2corp\n';
+  writeFileSync(big, '');
+  truncateSync(big, MAX_SCAN_BYTES - Buffer.byteLength(tail));
+  appendFileSync(big, tail);
+  git(work, ['add', 'export.log']);
+  assert.equal(git(work, ['commit', '-q', '-m', 'a large export']).status, 0);
+  const sha = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  const blob = git(work, ['rev-parse', 'HEAD:export.log']).stdout.trim();
+  const tree = git(work, ['rev-parse', 'HEAD^{tree}']).stdout.trim();
+  for (const record of [blobRecord(sha, 'export.log'), tipRecord(blob), tipRecord(tree)]) {
+    const r = scanBlobs(work, record, { BRAIN_KIT_LEAK_PATTERNS: patterns });
+    assert.notEqual(r.status, 0, r.stderr);
+    assert.match(r.stderr, /possible leak in /);
+    assert.match(r.stderr, /line 2, column 1 \(a personal pattern\)/);
+  }
+});
+
+test('an accented name inside a pushed tree is printed as that name too', () => {
+  const { work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  const head = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  // A tree holding one gitlink, whose skip message prints the entry's name.
+  const made = spawnSync('git', ['mktree'], { cwd: work, input: `160000 commit ${head}\treuni\u00e3o\n`, encoding: 'utf8' });
+  assert.equal(made.status, 0, made.stderr);
+  const tree = made.stdout.trim();
+  const r = scanBlobs(work, tipRecord(tree), { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /skipping reuni\u00e3o \(in the tree [0-9a-f]{7}\): it is a gitlink/);
+});
+
+test('the gate\'s scan budget grows with the blob: a blob whose every line matches is refused for what it holds, never as having run out of time', () => {
+  // The override sets the budget's FLOOR to fifty milliseconds. Two
+  // thousand matching lines cost well over that to scan in full, and they
+  // earn more than a millisecond each, so the scan finishes and reports
+  // its matches. A flat budget of fifty milliseconds would abandon it and
+  // say the scan exceeded its deadline, which is true of nothing here.
+  const { work, patterns } = setup();
+  commit(work, 'contacts.md', Array.from({ length: 2000 }, (_, i) => `row ${i} Hunter2Corp`).join('\n'), 'dense');
+  const sha = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  const r = scanBlobs(work, blobRecord(sha, 'contacts.md'), { BRAIN_KIT_LEAK_PATTERNS: patterns, BRAIN_KIT_SCAN_BUDGET_MS: '50' });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /possible leak in contacts\.md \(CONTENT/);
+  assert.doesNotMatch(r.stderr, /exceeded its deadline/);
 });

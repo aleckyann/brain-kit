@@ -5,11 +5,11 @@
 import { test } from 'node:test';
 import { makeTempDir } from './helpers/tmp.mjs';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, statSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CONFIG_FILENAME, loadConfig } from '../src/config.mjs';
-import { ALWAYS_IGNORED, findVaultRoot, isVaultRoot, relativePosix, walkVault } from '../src/vault.mjs';
+import { ALWAYS_IGNORED, findVaultRoot, hasDotSegment, isVaultRoot, relativePosix, walkVault } from '../src/vault.mjs';
 import { makeVault, writeVaultFile } from './helpers/vault-fixture.mjs';
 
 // --- isVaultRoot -------------------------------------------------------------
@@ -379,4 +379,54 @@ test('walkVault still excludes a file whose extension is not markdown at all, wh
   // And the same walk, asked for everything, still returns every file,
   // the vault's own configuration among them.
   assert.equal(walkVault(root, config, { all: true }).length, 5);
+});
+
+// --- final fix round 2: dot-entries, for the one consumer that needs them ---
+
+function vaultWithDotEntries() {
+  const root = makeVault({
+    files: {
+      'index.md': '# Index\n',
+      '.env': 'KEY=1\n',
+      'notes/.hidden.md': '# hidden\n',
+      'notes/visible.md': '# visible\n',
+      'attachments/.aws/credentials': '[default]\n',
+      '.obsidian/plugins/sync/data.json': '{}\n',
+      'node_modules/pkg/index.js': 'x\n',
+      'build/.env': 'ignored by the vault\n',
+    },
+    config: { validate: { ignore_paths: ['build/'] } },
+  });
+  mkdirSync(join(root, '.git'));
+  writeFileSync(join(root, '.git', 'config'), 'not vault content\n');
+  writeFileSync(join(root, 'notes', '.git'), 'gitdir: somewhere\n');
+  return root;
+}
+
+test('walkVault with dotEntries includes dot-paths at every depth, and never .git, node_modules or an ignored path', () => {
+  const root = vaultWithDotEntries();
+  const config = loadConfig(root);
+  assert.deepEqual(walkVault(root, config, { all: true, dotEntries: true }), [
+    '.env',
+    '.obsidian/plugins/sync/data.json',
+    'attachments/.aws/credentials',
+    CONFIG_FILENAME,
+    'index.md',
+    'notes/.hidden.md',
+    'notes/visible.md',
+  ]);
+});
+
+test('the walk without dot-entries is exactly the walk with them, less every path holding a dot segment: one walk, two views', () => {
+  const root = vaultWithDotEntries();
+  const config = loadConfig(root);
+  const withDots = walkVault(root, config, { all: true, dotEntries: true });
+  const without = walkVault(root, config, { all: true });
+  assert.deepEqual(withDots.filter((path) => !hasDotSegment(path)), without);
+  assert.deepEqual(without, [CONFIG_FILENAME, 'index.md', 'notes/visible.md']);
+});
+
+test('hasDotSegment is true exactly when some segment of the path starts with a dot', () => {
+  for (const path of ['.env', 'a/.b/c.md', 'a/b/.c', '.git/config']) assert.equal(hasDotSegment(path), true, path);
+  for (const path of ['a/b.c', 'notes/a.md', 'a.b/c', 'x.env']) assert.equal(hasDotSegment(path), false, path);
 });

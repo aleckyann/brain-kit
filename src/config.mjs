@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { validateSchema } from './schema.mjs';
 import { KIT_ROOT } from './version.mjs';
+import { decodeBytes } from './io.mjs';
 
 export const CONFIG_FILENAME = 'brain-kit.config.json';
 export const MACHINE_FILENAME = 'machine.json';
@@ -57,9 +58,17 @@ export function validateMachine(machine) {
   return validateSchema(machine, loadSchema('machine.schema.json'));
 }
 
+// Decoded the one way every scanner in this project decodes bytes
+// (src/io.mjs, decodeBytes), because this file is where
+// `privacy.secret_patterns` comes from, and a pattern decoded differently
+// from the content it is matched against matches nothing (final fix round
+// 2). For a file that is valid UTF-8, which is every file an editor writes
+// by default, this reads exactly what it always read; for one holding a
+// byte from another encoding, that byte is itself rather than a
+// replacement character no pattern can match.
 function readJson(file) {
   try {
-    return JSON.parse(readFileSync(file, 'utf8'));
+    return JSON.parse(decodeBytes(readFileSync(file)));
   } catch (error) {
     throw new ConfigError(`Cannot parse ${file}: ${error.message}`);
   }

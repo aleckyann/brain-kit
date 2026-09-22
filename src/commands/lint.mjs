@@ -55,14 +55,14 @@
 // the fictional owner Ana and example.com, per this project's standing
 // rule against a real name or company leaking through a fixture built to
 // test the public engine.
-import { existsSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, lstatSync, statSync } from 'node:fs';
+import { join, posix, resolve } from 'node:path';
 import { EXIT } from '../exit-codes.mjs';
 import { CONFIG_FILENAME, loadConfig } from '../config.mjs';
-import { findVaultRoot } from '../vault.mjs';
+import { findVaultRoot, hasDotSegment, isUnderPath } from '../vault.mjs';
 import { createTranslator, REFERENCE_LANG } from '../lang.mjs';
 import { LINT_RULES, runLintRules, severityFor } from '../rules/lint.mjs';
-import { KNOWN_BASES, addedLines, changedPaths, resolveBase } from '../git.mjs';
+import { KNOWN_BASES, addedLines, changedPaths, publishablePaths, resolveBase } from '../git.mjs';
 import { isMarkdown, makeReadFile, makeScanFile } from './validate.mjs';
 
 const ROOT_INDEX = 'index.md';
@@ -139,6 +139,159 @@ function computeSkippedRuleIds(config, ruleIds) {
     const rule = LINT_RULES.find((r) => r.id === id);
     return severityFor(rule, config) === 'off';
   });
+}
+
+// --- the set the secrets rule reads (final fix round 2) -------------------
+//
+// WHAT THE SECRETS RULE READS IS EVERY FILE THIS PUSH COULD PUBLISH, and
+// this is the one place that set is drawn, once per run, handed to the rule
+// in its context exactly the way the walk's own result is.
+//
+// Inside a git repository it is git's answer (src/git.mjs,
+// publishablePaths): what git tracks, plus what it would add, which is
+// every untracked file it does not ignore; dot-paths included, ignored
+// files excluded, and never the git directory. Outside a repository there
+// is no git to ask, and it is the vault walk plus dot-paths, still never
+// .git.
+//
+// What the set leaves out, and why each one is SAID rather than dropped
+// (the report prints every non-empty one; see buildReport):
+//
+//   - `excluded`: under `lint.secrets.exclude_paths`, the vault's own,
+//     deliberate escape for a file it knows to be safe and too large to
+//     read. It is a configuration key, so a pull request shows it.
+//   - `gitlinks` and `embedded`: a submodule, or a directory holding a
+//     repository of its own. Their content is not in this repository.
+//   - `absent`: a file git tracks that is not in the working tree, or not
+//     reachable there without following a symbolic link out of it (a
+//     directory replaced by a link). What the working tree holds is what
+//     this rule reads; what only a commit holds for such a file is not
+//     read, and the report says so.
+//   - `undecodable`: a name that is not valid UTF-8, which cannot be
+//     opened by name. It is published, so the rule refuses over it rather
+//     than skipping it.
+//   - `failure`: git could not produce the listing at all. The rule
+//     refuses rather than falling back to some other list.
+//
+// `validate.ignore_paths` does NOT narrow this set inside a repository:
+// that setting says which files the validator and the note rules judge,
+// and a file git publishes is published whatever a validator was told to
+// skip. Outside a repository, the walk is the whole answer and applies it.
+function secretScanExcludes(config) {
+  const setting = config?.lint?.secrets;
+  const list = setting !== null && typeof setting === 'object' && !Array.isArray(setting) ? setting.exclude_paths : undefined;
+  return Array.isArray(list) ? list.filter((entry) => typeof entry === 'string' && entry !== '') : [];
+}
+
+// Whether a path git lists is really there in the working tree, as a
+// vault path: it exists, and every directory above it is a real directory
+// rather than a symbolic link (reading through one would read a file
+// outside the vault, which the push does not publish). Only "no such
+// entry" answers no; any other failure answers yes, so the read itself
+// fails and the rule reports it, which is the refusing direction.
+function makeWorkingTreeCheck(root) {
+  const realDirectory = new Map();
+  const missing = (error) => error.code === 'ENOENT' || error.code === 'ENOTDIR';
+  const isRealDirectory = (relDir) => {
+    if (relDir === '.') return true;
+    if (!realDirectory.has(relDir)) {
+      let answer;
+      try {
+        answer = lstatSync(join(root, ...relDir.split('/'))).isDirectory() && isRealDirectory(posix.dirname(relDir));
+      } catch (error) {
+        answer = !missing(error);
+      }
+      realDirectory.set(relDir, answer);
+    }
+    return realDirectory.get(relDir);
+  };
+  return (relPath) => {
+    if (!isRealDirectory(posix.dirname(relPath))) return false;
+    try {
+      lstatSync(join(root, ...relPath.split('/')));
+      return true;
+    } catch (error) {
+      return !missing(error);
+    }
+  };
+}
+
+// Asks git once, and turns a failure into a value rather than an escape:
+// a listing git could not produce is reported by the rule as a defect,
+// never allowed to abort the other seven rules. Neither git's own message
+// nor the command line is kept, only the exit status, so no absolute path
+// can ride out on it.
+function listPublishable(root) {
+  try {
+    return { listed: publishablePaths(root) };
+  } catch (error) {
+    return { failure: { status: error.status ?? null } };
+  }
+}
+
+// Builds the set from the listing (or its failure) and the one walk this
+// run made. Exported so the rule's own tests can build the context this
+// command builds, rather than a second approximation of it.
+export function buildSecretScan(root, config, { listing, walked }) {
+  const excludePaths = secretScanExcludes(config);
+  const isExcluded = (path) => excludePaths.some((prefix) => isUnderPath(path, prefix));
+  const scan = {
+    source: 'git',
+    files: [],
+    excludePaths,
+    excluded: [],
+    excludeUnmatched: [],
+    gitlinks: [],
+    embedded: [],
+    absent: [],
+    undecodable: [],
+    failure: null,
+  };
+  if (listing.failure) {
+    scan.failure = listing.failure;
+    return scan;
+  }
+  if (listing.listed === null) {
+    scan.source = 'walk';
+    for (const path of walked) {
+      if (isExcluded(path)) scan.excluded.push(path);
+      else scan.files.push(path);
+    }
+    scan.excludeUnmatched = unmatchedExcludes(excludePaths, scan.excluded);
+    return scan;
+  }
+  const inWorkingTree = makeWorkingTreeCheck(root);
+  for (const path of listing.listed.files) {
+    if (isExcluded(path)) scan.excluded.push(path);
+    else if (!inWorkingTree(path)) scan.absent.push(path);
+    else scan.files.push(path);
+  }
+  for (const name of listing.listed.undecodable) {
+    if (isExcluded(name)) scan.excluded.push(name);
+    else scan.undecodable.push(name);
+  }
+  scan.gitlinks = listing.listed.gitlinks;
+  scan.embedded = listing.listed.embedded;
+  scan.excludeUnmatched = unmatchedExcludes(excludePaths, scan.excluded);
+  return scan;
+}
+
+// The entries of lint.secrets.exclude_paths that excluded nothing: no path
+// the set was drawn from sits under them. The report names them apart, so
+// an entry written the wrong way ("./attachments/x.csv", where git lists
+// "attachments/x.csv") is never listed as if it had excluded the file it
+// names, while that file was read all along.
+function unmatchedExcludes(excludePaths, excluded) {
+  return excludePaths.filter((entry) => !excluded.some((path) => isUnderPath(path, entry)));
+}
+
+// At most this many paths are printed on one of the report's "not
+// scanned" lines; the rest are counted, never dropped in silence.
+const LISTED_PATHS = 10;
+
+function listedPaths(t, paths) {
+  if (paths.length <= LISTED_PATHS) return paths;
+  return [...paths.slice(0, LISTED_PATHS), t('lint.list_more', { count: paths.length - LISTED_PATHS })];
 }
 
 function sortFindings(findings) {
@@ -258,9 +411,41 @@ function renderDefectSection(t, defects) {
 // did not check every rule, or did not check every line, is not the
 // same claim as a clean vault, and this verdict says so instead of
 // staying silent about which one it is making.
+// The degraded verdict names WHAT degraded the run (final fix round 2). It
+// used to say "{count} rule(s) crashed" for every defect there was, so a
+// file that merely ran out of scan time was reported as a crash, which
+// sends whoever reads it to debug the wrong thing. Each kind of defect is
+// counted and named on its own; a kind nobody taught this function about
+// is still counted, as "other", never dropped.
+function degradedCauses(t, defects) {
+  const counted = (checks) => defects.filter((f) => checks.includes(f.check)).length;
+  const causes = [];
+  const crashed = counted(['rule-crashed']);
+  if (crashed > 0) causes.push(t('lint.degraded_part.rule_crashed', { count: crashed }));
+  const timedOut = counted(['file-scan-timed-out']);
+  if (timedOut > 0) causes.push(t('lint.degraded_part.timed_out', { count: timedOut }));
+  const scanFailed = counted(['file-scan-failed']);
+  if (scanFailed > 0) causes.push(t('lint.degraded_part.scan_failed', { count: scanFailed }));
+  const unreadable = counted(['file-read-failed', 'file-name-undecodable']);
+  if (unreadable > 0) causes.push(t('lint.degraded_part.unreadable', { count: unreadable }));
+  const listing = counted(['publishable-list-failed']);
+  if (listing > 0) causes.push(t('lint.degraded_part.listing_failed'));
+  const other = defects.length - crashed - timedOut - scanFailed - unreadable - listing;
+  if (other > 0) causes.push(t('lint.degraded_part.other', { count: other }));
+  return causes;
+}
+
 function renderVerdict(t, { errors, warnings, defects, skippedIds, linesRestricted }) {
-  if (defects.length > 0) return t('lint.verdict_degraded', { count: defects.length });
-  if (errors.length > 0) return t('lint.verdict_failing');
+  if (defects.length > 0) return t('lint.verdict_degraded', { causes: degradedCauses(t, defects) });
+  if (errors.length > 0) {
+    // A file too large to read fails the run as an error, and the verdict
+    // says that is what some of the errors are, because "fails because of
+    // the error(s) above" over a file nobody read reads as a credential
+    // found, and a person who goes looking for one finds nothing.
+    const tooLarge = errors.filter((f) => f.check === 'file-too-large').length;
+    if (tooLarge > 0) return t('lint.verdict_failing_too_large', { count: tooLarge });
+    return t('lint.verdict_failing');
+  }
   if (warnings.length > 0) return t('lint.verdict_warnings_only');
   if (skippedIds.length > 0 || linesRestricted) return t('lint.verdict_clean_but_partial');
   return t('lint.verdict_clean');
@@ -281,7 +466,7 @@ function renderVerdict(t, { errors, warnings, defects, skippedIds, linesRestrict
 // counting it as an ordinary "error" would fail the run for the WRONG
 // reason and let the true error count silently include a result this
 // tool itself does not vouch for.
-export function buildReport(findings, { t, base, fileCount, skippedIds, restrictedTo = [], ignoredPaths = [] }) {
+export function buildReport(findings, { t, base, fileCount, skippedIds, restrictedTo = [], ignoredPaths = [], secretScan = null }) {
   const defects = findings.filter((f) => f.defect === true);
   const errors = findings.filter((f) => f.defect !== true && f.severity === 'error');
   const warnings = findings.filter((f) => f.defect !== true && f.severity === 'warn');
@@ -309,27 +494,65 @@ export function buildReport(findings, { t, base, fileCount, skippedIds, restrict
     skipped: skippedIds,
     restrictedTo,
     ignoredPaths,
+    // What the secrets rule read, or that it did not run at all: the same
+    // facts the text report's own secrets lines state, for a consumer
+    // that reads this instead.
+    secrets: secretScan === null
+      ? { ran: false }
+      : {
+          ran: true,
+          source: secretScan.source,
+          scanned: secretScan.files.length,
+          excludePaths: secretScan.excludePaths,
+          excluded: secretScan.excluded,
+          excludeUnmatched: secretScan.excludeUnmatched,
+          gitlinks: secretScan.gitlinks,
+          embedded: secretScan.embedded,
+          absent: secretScan.absent,
+          listingFailed: secretScan.failure !== null,
+        },
   };
 
   const lines = [];
   lines.push(scopeMessage(t, base));
-  // Always printed, whatever the scope, because it is true whatever the
-  // scope (fix round 3): the `secrets` rule ignores the base entirely
-  // and reads every file in the vault on every run. Every OTHER line of
-  // this report is about a scope a person can narrow; this one exists so
-  // nobody reads a narrowed scope line and concludes the secret scan was
-  // narrowed with it.
-  lines.push(t('lint.scope_secrets_always'));
-  // And the one thing that CAN still keep a file away from the secrets
-  // rule, said out loud whenever it is in force (fix round 3's own
-  // sweep). `validate.ignore_paths` excludes a prefix from the single
-  // walk this command makes, so a credential under an ignored path is
-  // not scanned; that is the vault owner's own configured decision, not
-  // this tool's, but a run that does not name it would be making the
-  // same false claim about its own reach that this whole fix round is
-  // about. Printed only when the setting actually excludes something:
-  // an empty list is not a caveat anybody needs to read.
-  if (ignoredPaths.length > 0) lines.push(t('lint.scope_ignored_paths', { paths: ignoredPaths }));
+  // The secrets rule's own reach, printed whenever that rule RAN and never
+  // when it did not (final fix round 2: it used to be printed always, so
+  // a vault with `lint.secrets: "off"` was told every file is scanned
+  // for secrets on every run, right beside the line saying the rule was
+  // skipped, and `--rule tables` printed it and then "no findings").
+  // It says which set it read, git's or the walk's, and how many files,
+  // because "every file" was a claim the walk's dot-path exclusion made
+  // false for the one file most likely to hold a credential, `.env`.
+  // When git could not produce its listing the rule read nothing, and the
+  // defect section and the verdict say so; a reach line then would
+  // describe a set that was never drawn.
+  const secretsRead = secretScan !== null && secretScan.failure === null;
+  if (secretsRead) {
+    if (secretScan.source === 'git') lines.push(t('lint.secrets_reach_git', { count: secretScan.files.length }));
+    else lines.push(t('lint.secrets_reach_walk', { count: secretScan.files.length }));
+  }
+  // `validate.ignore_paths`, said out loud whenever it is in force, and
+  // truthfully about the secrets rule: inside a repository that rule reads
+  // what git publishes whatever the validator was told to skip, and
+  // outside one it reads the walk, which does apply the setting. Printed
+  // only when the setting actually excludes something.
+  if (ignoredPaths.length > 0) {
+    if (secretsRead && secretScan.source === 'git') lines.push(t('lint.scope_ignored_paths_secrets_still_read', { paths: ignoredPaths }));
+    else lines.push(t('lint.scope_ignored_paths', { paths: ignoredPaths }));
+  }
+  // Everything the secrets set left out, each kind on its own line and
+  // only when it is non-empty (see buildSecretScan for why none of them
+  // may pass in silence), and only when a set was drawn at all: with no
+  // listing, nothing was left out of anything. An exclusion that matched
+  // nothing is named on a line of its own, never among the ones that did.
+  if (secretsRead) {
+    const matched = secretScan.excludePaths.filter((entry) => !secretScan.excludeUnmatched.includes(entry));
+    if (matched.length > 0) lines.push(t('lint.secrets_excluded', { paths: matched, count: secretScan.excluded.length }));
+    if (secretScan.excludeUnmatched.length > 0) lines.push(t('lint.secrets_exclude_unmatched', { paths: secretScan.excludeUnmatched }));
+    const elsewhere = [...secretScan.gitlinks, ...secretScan.embedded];
+    if (elsewhere.length > 0) lines.push(t('lint.secrets_other_repositories', { paths: listedPaths(t, elsewhere) }));
+    if (secretScan.absent.length > 0) lines.push(t('lint.secrets_absent', { count: secretScan.absent.length, paths: listedPaths(t, secretScan.absent) }));
+  }
   if (restrictedTo.length > 0) lines.push(t('lint.restricted_to', { ids: restrictedTo }));
   lines.push('');
   lines.push(...renderDefectSection(t, defects));
@@ -428,25 +651,39 @@ export async function runLint(argv, io, t, walkVault) {
   });
 
   // The single walkVault call this whole command depends on, exactly one,
-  // with everything included: the markdown file list, the `context.all`
-  // set every rule's link resolution needs, and (fix round 3) the file
-  // list the `secrets` rule is actually scanned over all come from this
-  // ONE result, never a second walk (see this module's own header).
+  // with everything included: the markdown file list and the `context.all`
+  // set every rule's link resolution needs both come from this ONE
+  // result, never a second walk (see this module's own header), and so
+  // does the secrets rule's set outside a git repository.
   //
   // `{ all: true }` used to be UNDEFENDED here, and the whole-slice
   // review proved it: dropping the argument passed all 801 tests, while
   // silently changing what `classifyTargetPath` answered about every
   // attachment in the vault and making `lint` and `validate` disagree
-  // about what the vault contains. It is defended now, and not by a test
-  // written around it: the `secrets` rule reads `context.all` directly
-  // (src/rules/lint.mjs's own filesForRule), so without this argument a
-  // credential committed in a non-markdown file is invisible again,
-  // which is the same defect from the other end.
-  const all = walkVault(root, config, { all: true });
+  // about what the vault contains. It is defended by the secrets rule's
+  // set outside a repository, which is this walk, so without the
+  // argument a credential committed in a non-markdown file is invisible
+  // again.
+  //
+  // Final fix round 2: whether the secrets rule will run at all is known
+  // before anything is read, so a run that does not use it pays nothing
+  // for its set, and the one walk below asks for dot-entries only when
+  // that set is going to be the walk's (outside a git repository).
+  const restrictedConfig = buildRestrictedConfig(config, parsed.ruleIds);
+  const secretsRule = LINT_RULES.find((rule) => rule.scansEveryFile === true);
+  const secretsRuns = severityFor(secretsRule, restrictedConfig) !== 'off';
+  const listing = secretsRuns ? listPublishable(root) : null;
+  const walkDotEntries = listing !== null && listing.listed === null;
+  const walked = walkVault(root, config, { all: true, dotEntries: walkDotEntries });
+  // One walk, two views: the validator's own walk is exactly this one
+  // with every dot-path dropped (src/vault.mjs, hasDotSegment), so the
+  // seven rules that read notes see what they always saw.
+  const all = walked.filter((path) => !hasDotSegment(path));
   const files = all.filter(isMarkdown);
+  const secretScan = secretsRuns ? buildSecretScan(root, config, { listing, walked }) : null;
 
   // Disclosed rather than silently relied on: passing `config` here
-  // (instead of the `restrictedConfig` built two lines down) is currently
+  // (instead of the `restrictedConfig` built above) is currently
   // UNFALSIFIABLE by any test in test/lint.test.mjs. computeSkippedRuleIds'
   // own `considered` set is always either every rule id (no --rule at all,
   // in which case restrictedConfig equals config exactly, by
@@ -461,19 +698,20 @@ export async function runLint(argv, io, t, walkVault) {
   // one that stays correct if `considered` is ever widened later, which a
   // silently-equivalent `restrictedConfig` would not survive.
   const skippedIds = computeSkippedRuleIds(config, parsed.ruleIds);
-  const restrictedConfig = buildRestrictedConfig(config, parsed.ruleIds);
   // `scanFile` is the second reader this context carries, used by the
-  // `secrets` rule alone: unnormalised bytes, read latin1 exactly as
-  // src/commands/scan-blobs.mjs reads a blob, with this project's own
-  // per-file size ceiling. See makeScanFile (src/commands/validate.mjs)
-  // for why a scanner must not share the markdown reader's
-  // normalisation.
+  // `secrets` rule alone: unnormalised bytes, decoded exactly as
+  // src/commands/scan-blobs.mjs decodes a blob, with the per-file size
+  // ceiling both gates share. See makeScanFile
+  // (src/commands/validate.mjs) for why a scanner must not share the
+  // markdown reader's normalisation. `secretScan` is the set that rule
+  // reads (buildSecretScan, above), or null when it does not run.
   const context = {
     root,
     config: restrictedConfig,
     all: new Set(all),
     readFile: makeReadFile(root),
     scanFile: makeScanFile(root),
+    secretScan,
   };
 
   const base = resolveBase(root, parsed.base);
@@ -518,6 +756,7 @@ export async function runLint(argv, io, t, walkVault) {
     skippedIds,
     restrictedTo: parsed.ruleIds,
     ignoredPaths: Array.isArray(config?.validate?.ignore_paths) ? config.validate.ignore_paths : [],
+    secretScan,
   });
 
   if (parsed.json) {

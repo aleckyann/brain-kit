@@ -38,8 +38,29 @@ const ROOT_INDEX = 'index.md';
 // have), so this is a rule, not a default.
 export const ALWAYS_IGNORED = Object.freeze(['node_modules']);
 
-function isAlwaysIgnoredName(name) {
-  return name.startsWith('.') || ALWAYS_IGNORED.includes(name);
+// The one name never walked even when dot-entries are (see walkVault's
+// `dotEntries` option): git's own directory, or the file a linked worktree
+// or a submodule keeps in its place. It is git's record of the vault, not
+// the vault, and nothing in it is ever what a push publishes as a file.
+const GIT_DIR_NAME = '.git';
+
+function isDotName(name) {
+  return name.startsWith('.');
+}
+
+function isAlwaysIgnoredName(name, { dotEntries = false } = {}) {
+  if (ALWAYS_IGNORED.includes(name)) return true;
+  if (!isDotName(name)) return false;
+  return !dotEntries || name === GIT_DIR_NAME;
+}
+
+// True when any segment of a vault-relative path is a dot-entry. This is
+// the SAME rule the walk applies by name at every depth, restated for a
+// path rather than a name, so a caller holding one walk made WITH
+// dot-entries can derive exactly the walk made without them: one walk,
+// two views, rather than two walks that could disagree about the vault.
+export function hasDotSegment(relPosixPath) {
+  return relPosixPath.split('/').some(isDotName);
 }
 
 // True when `relPosixPath` (already root-relative, forward-slash) IS `dir`
@@ -171,7 +192,17 @@ function resolveSymlinkTarget(fullPath) {
 // working link gets reported broken, and reading it costs nothing the walk
 // was not already going to do when it reaches the real file by its own
 // path.
-export function walkVault(root, config = {}, { all = false } = {}) {
+//
+// `dotEntries: true` (final fix round 2) walks dot-entries too, at every
+// depth, except `.git` itself; everything else about the walk is
+// unchanged, validate.ignore_paths, node_modules and the symbolic-link
+// rules included. It exists for exactly one consumer: the `secrets` lint
+// rule outside a git repository, where there is no git to say what a push
+// could publish, and where a `.env` or an `.aws/credentials` file is the
+// most likely place in the whole vault for a credential to sit. The
+// validator never asks for it, and a caller that needs the ordinary walk
+// from this one filters with hasDotSegment, above.
+export function walkVault(root, config = {}, { all = false, dotEntries = false } = {}) {
   const ignorePaths = config?.validate?.ignore_paths ?? [];
   const rootReal = realpathSync(root);
   const results = [];
@@ -187,7 +218,7 @@ export function walkVault(root, config = {}, { all = false } = {}) {
 
   function visit(dir) {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (isAlwaysIgnoredName(entry.name)) continue;
+      if (isAlwaysIgnoredName(entry.name, { dotEntries })) continue;
       const fullPath = join(dir, entry.name);
       const relPosixPath = relativePosix(root, fullPath);
       if (ignorePaths.some((prefix) => isUnderPath(relPosixPath, prefix))) continue;

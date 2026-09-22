@@ -32,13 +32,16 @@ import { test } from 'node:test';
 import { makeTempDir } from './helpers/tmp.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import fs, { mkdirSync, mkdtempSync, readFileSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+import { pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { walkVault } from '../src/vault.mjs';
+import { MAX_SCAN_BYTES } from '../src/leak.mjs';
 import { runValidate, buildReport, partitionFindings, isMarkdown, makeReadFile, makeScanFile, computeStale } from '../src/commands/validate.mjs';
 import { makeVault } from './helpers/vault-fixture.mjs';
 
@@ -1115,10 +1118,12 @@ test('makeScanFile reads bytes rather than normalised text, so the scanner and t
   writeFileSync(join(root, 'raw.bin'), Buffer.from([0xef, 0xbb, 0xbf, 0x41, 0x0d, 0x0a, 0x42, 0xff, 0x43]));
   const read = makeScanFile(root)('raw.bin');
   assert.equal(read.tooLarge, false);
-  // The byte-order mark survives, the CR survives, and the byte no utf8
-  // decoder can represent survives as itself. makeReadFile would have
-  // removed the first two and replaced the third.
-  assert.equal(read.text, 'ï»¿A\r\nBÿC');
+  // The byte-order mark survives (decoded, as the UTF-8 it is), the CR
+  // survives, and the byte no UTF-8 decoder can represent survives as
+  // itself, one latin1 character, never a replacement character.
+  // makeReadFile would have removed the first two and replaced the third.
+  // Built with escapes so this file stays ASCII.
+  assert.equal(read.text, '\uFEFFA\r\nB\u00FFC');
 });
 
 test('makeScanFile refuses a file over its ceiling and says how big it was, rather than returning nothing', () => {
@@ -1135,4 +1140,106 @@ test('makeScanFile refuses a file over its ceiling and says how big it was, rath
   const exact = scanFile('exact.bin');
   assert.equal(exact.tooLarge, false);
   assert.equal(exact.text.length, 100);
+});
+
+// --- final fix round 2: what the scanner's reader reads ---------------------
+
+test('makeScanFile reads a symbolic link as the link git publishes, measured and read as the same object, never as the file behind it', () => {
+  // The target is over the ceiling; the link to it is a few bytes of path.
+  // Following the link to measure it and to read it would scan (or refuse)
+  // a file the push never carries; not following it to measure, and then
+  // following it to read, would read an unbounded file past the ceiling.
+  const root = makeVault({ files: { 'index.md': '# Index\n' } });
+  writeFileSync(join(root, 'big.bin'), '');
+  truncateSync(join(root, 'big.bin'), 200);
+  symlinkSync('big.bin', join(root, 'alias.bin'));
+  const scanFile = makeScanFile(root, { maxBytes: 100 });
+  const link = scanFile('alias.bin');
+  assert.equal(link.tooLarge, false);
+  assert.equal(link.text, 'big.bin');
+  assert.equal(link.bytes, 'big.bin'.length);
+  assert.equal(scanFile('big.bin').tooLarge, true, 'the file itself, under its own name, is still measured against the ceiling');
+  // A link whose own text is over the ceiling is too large as well.
+  symlinkSync('x'.repeat(150), join(root, 'long-link'));
+  assert.equal(scanFile('long-link').tooLarge, true);
+  // And the link's text is decoded like every other byte this scanner
+  // reads, so an accented target reads as itself.
+  symlinkSync('reuni\u00e3o.md', join(root, 'accented-link'));
+  assert.equal(scanFile('accented-link').text, 'reuni\u00e3o.md');
+});
+
+test('makeScanFile refuses anything that is not a regular file or a link, without ever opening it', { skip: process.platform === 'win32' ? 'no named pipes or unix sockets to make here' : false }, async () => {
+  const root = makeVault({ files: { 'index.md': '# Index\n' } });
+  mkdirSync(join(root, 'a-directory'));
+  assert.throws(() => makeScanFile(root)('a-directory'), (err) => err.code === 'BRAIN_KIT_NOT_REGULAR');
+  // A named pipe opened for reading blocks until something writes to it;
+  // this returning at all is half of what it pins.
+  assert.equal(spawnSync('mkfifo', [join(root, 'pipe')]).status, 0);
+  assert.throws(() => makeScanFile(root)('pipe'), (err) => err.code === 'BRAIN_KIT_NOT_REGULAR');
+  // A socket cannot be opened at all, and would be reported with the
+  // operating system's error rather than as what it is.
+  const { createServer } = await import('node:net');
+  const server = createServer();
+  await new Promise((resolve) => server.listen(join(root, 'sock'), resolve));
+  try {
+    assert.throws(() => makeScanFile(root)('sock'), (err) => err.code === 'BRAIN_KIT_NOT_REGULAR');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+// THE RACE BETWEEN LOOKING AND OPENING. makeScanFile looks at an entry
+// (lstat) and then opens it, and between the two the entry can be replaced.
+// So the open refuses on its own what the look did not see: it never
+// follows a link (O_NOFOLLOW), never waits on a pipe (O_NONBLOCK), and what
+// it opened is checked again (fstat). A swap cannot be timed from a test,
+// so the look is made to lie instead, reporting a regular file where the
+// entry really is a link, a directory or a named pipe.
+function withLookReportingAFile(body) {
+  const real = fs.lstatSync;
+  fs.lstatSync = (...args) => { real(...args); return { isSymbolicLink: () => false, isFile: () => true }; };
+  syncBuiltinESMExports();
+  try {
+    return body();
+  } finally {
+    fs.lstatSync = real;
+    syncBuiltinESMExports();
+  }
+}
+
+test('makeScanFile never reads the file behind a link that replaced a file after it looked, and never reads a directory as one', () => {
+  const root = makeVault({ files: { 'index.md': '# Index\n' } });
+  writeFileSync(join(root, 'outside.txt'), 'the file behind the link\n');
+  symlinkSync('outside.txt', join(root, 'swapped'));
+  mkdirSync(join(root, 'a-directory'));
+  withLookReportingAFile(() => {
+    assert.throws(() => makeScanFile(root)('swapped'), (err) => err.code === 'ELOOP');
+    assert.throws(() => makeScanFile(root)('a-directory'), (err) => err.code === 'BRAIN_KIT_NOT_REGULAR');
+  });
+});
+
+test('makeScanFile never waits on a named pipe that replaced a file after it looked', { skip: process.platform === 'win32' ? 'no named pipes to make here' : false }, () => {
+  // Opening a pipe for reading waits for a writer, forever, so this runs in
+  // a child the test can stop: a scanner that waited is killed, and fails.
+  const root = makeVault({ files: { 'index.md': '# Index\n' } });
+  assert.equal(spawnSync('mkfifo', [join(root, 'pipe')]).status, 0);
+  const script = [
+    "import fs from 'node:fs';",
+    "import { syncBuiltinESMExports } from 'node:module';",
+    'const real = fs.lstatSync;',
+    'fs.lstatSync = (...args) => { real(...args); return { isSymbolicLink: () => false, isFile: () => true }; };',
+    'syncBuiltinESMExports();',
+    'const { makeScanFile } = await import(process.argv[1]);',
+    "try { makeScanFile(process.argv[2])('pipe'); console.log('read'); } catch (err) { console.log(err.code); }",
+  ].join('\n');
+  const validateModule = pathToFileURL(join(KIT_ROOT, 'src', 'commands', 'validate.mjs')).href;
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', script, validateModule, root], { encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL' });
+  assert.equal(r.signal, null, 'the scanner waited on the pipe and had to be killed');
+  assert.equal(r.stdout.trim(), 'BRAIN_KIT_NOT_REGULAR', r.stderr);
+});
+
+test('makeScanFile\'s own ceiling is the one both gates share, and a file that cannot be read raises with the operating system\'s code', () => {
+  const root = makeVault({ files: { 'index.md': '# Index\n' } });
+  assert.equal(makeScanFile(root)('index.md').maxBytes, MAX_SCAN_BYTES);
+  assert.throws(() => makeScanFile(root)('missing.md'), (err) => err.code === 'ENOENT');
 });

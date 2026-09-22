@@ -201,7 +201,7 @@ test('every supported pack has the same keys as the reference pack', () => {
 
 test('pt-BR values contain no em dash and no emoji', () => {
   for (const [key, value] of Object.entries(loadMessages('pt-BR'))) {
-    assert.doesNotMatch(value, /—/, `${key} contains an em dash`);
+    assert.doesNotMatch(value, /\u2014/, `${key} contains an em dash`);
     assert.doesNotMatch(value, /\p{Extended_Pictographic}/u, `${key} contains an emoji`);
   }
 });
@@ -837,7 +837,7 @@ git commit -q -m "feat: dependency-free JSON schema subset validator" -m "Co-Aut
   "validate": { "stale_after_format": "datetime", "link_style": "file-relative", "wikilinks": "forbid", "require_root_okf_version": false, "placeholder_pattern": "<[^>]+>", "ignore_paths": [] },
   "lint": {
     "columns": "error", "tables": "error", "orphans": "warn", "index_completeness": "warn", "secrets": "error", "privacy": "error", "attribution": "warn",
-    "style": { "forbidden_chars": ["—"], "base": "auto" },
+    "style": { "forbidden_chars": ["\u2014"], "base": "auto" },
     "tables_limits": { "max_cell_chars": 600, "duplicate_rows": "error" }
   },
   "privacy": {

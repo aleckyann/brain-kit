@@ -79,16 +79,24 @@
 import { spawnSync } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { EXIT } from '../exit-codes.mjs';
-import { readStdin } from '../io.mjs';
-import { loadPatterns, scanText, OVERALL_SCAN_TIMEOUT_MS } from '../leak.mjs';
+import { decodeLatin1Text, readStdin } from '../io.mjs';
+import { MAX_SCAN_BYTES, OVERALL_SCAN_TIMEOUT_MS, loadPatterns, scanText } from '../leak.mjs';
 
-// A generous ceiling on the output of one git call. Node's own default
-// (spawnSync's implicit maxBuffer, 1 MB) is small enough that an ordinary
-// large asset (an exported log, a big generated document) would overflow
-// it and read back as a captured-error failure rather than real content;
-// raising it here still fails closed the same way on anything that
-// genuinely exceeds it; nothing above this is ever silently truncated and
-// called clean.
+// A generous ceiling on the output of one git call that LISTS or DESCRIBES
+// (a batch of commit objects, a tree listing, a tag object). Node's own
+// default (spawnSync's implicit maxBuffer, 1 MB) is small enough that an
+// ordinary large push would overflow it and read back as a
+// captured-error failure rather than real content; raising it here still
+// fails closed the same way on anything that genuinely exceeds it;
+// nothing above this is ever silently truncated and called clean.
+//
+// It is NOT the ceiling on a file's content any more (final fix round 2).
+// It used to be, by accident: a blob over it was refused as "git show
+// could not be run", which said nothing true, and it was sixty-four times
+// the ceiling the adopting vault's gate applied to the very same file.
+// Content is read against MAX_SCAN_BYTES (src/leak.mjs), the one number
+// both gates share, and a blob over it is refused as too large, in those
+// words.
 const GIT_MAX_BUFFER = 256 * 1024 * 1024;
 
 // The tree entry mode git gives a submodule reference. Its "content" is a
@@ -286,10 +294,30 @@ export function parseEntries(raw) {
 // two files, and a guarantee that holds only while both are current is not
 // a guarantee. It is a FLAG rather than a second read of the environment
 // because the environment is the thing being defended against here.
-function git(args, input = undefined) {
-  const options = { encoding: 'latin1', maxBuffer: GIT_MAX_BUFFER };
+function git(args, input = undefined, { maxBuffer = GIT_MAX_BUFFER } = {}) {
+  const options = { encoding: 'latin1', maxBuffer };
   if (input !== undefined) options.input = input;
   return spawnSync('git', ['--no-replace-objects', ...args], options);
+}
+
+// A git call that reads a FILE'S CONTENT, bounded by the ceiling both
+// gates share rather than by the listing buffer above. spawnSync ends a
+// child whose output passes the bound and reports ENOBUFS, and exactly
+// the bound is still read, so the edge is the adopting vault's own ("over
+// the limit", never "at it").
+function gitContent(args) {
+  return git(args, undefined, { maxBuffer: MAX_SCAN_BYTES });
+}
+
+// Why a content read failed, in words that say what happened. A blob over
+// the ceiling is TOO LARGE, and says so; it is not a git that "could not
+// be run", which is what the old shared buffer made it report.
+function contentReadFailure(result, command) {
+  if (result.error?.code === 'ENOBUFS') {
+    return `it is larger than the ${MAX_SCAN_BYTES} byte limit this gate reads, so it was not scanned`;
+  }
+  if (result.error) return `${command} could not be run (${result.error.message})`;
+  return `${command} exited ${result.status}`;
 }
 
 // Every way a per-invocation flag or an environment variable can inject
@@ -328,16 +356,13 @@ function pathAsGitArgument(bytePath) {
 }
 
 function readBlob(commit, path) {
-  const result = git(['show', `${commit}:${path}`]);
-  if (result.error) {
-    // git itself could not even be started (e.g. not found on PATH). The
-    // hook already checks for this before ever calling this command, so
-    // reaching it here is not expected, but it must still refuse rather
-    // than silently treat the blob as clean.
-    return { ok: false, status: null, detail: result.error.message };
-  }
-  if (result.status !== 0) {
-    return { ok: false, status: result.status, detail: null };
+  const result = gitContent(['show', `${commit}:${path}`]);
+  // git itself could not even be started (e.g. not found on PATH), the
+  // blob is over the ceiling, or git refused: every one refuses the push
+  // rather than treating the blob as clean. The hook already checks that
+  // git exists before ever calling this command.
+  if (result.error || result.status !== 0) {
+    return { ok: false, reason: contentReadFailure(result, 'git show') };
   }
   return { ok: true, content: result.stdout ?? '' };
 }
@@ -626,11 +651,27 @@ export async function runScanBlobs(argv, io, { metadataBatch = METADATA_BATCH } 
   // publishes a credential. One line on success is the whole fix; its
   // ABSENCE is now the signal a maintainer can look for.
   let channelsScanned = 0;
+  // Counted so the one clean summary line never says "nothing matched"
+  // about a push in which something did match and was forgiven (final fix
+  // round 2): an exemption applied is a fact the maintainer should see in
+  // the summary too, not only in the line above it.
+  let exemptionsApplied = 0;
   const scan = (text, channel, { exemptIfMatched = false } = {}) => {
     channelsScanned += 1;
     let result;
     try {
-      result = scanText(text, patterns, { deadlineAt: Date.now() + budgetMs });
+      // Every channel is held here as latin1, one character per byte, so
+      // offsets, framing and the exact identity comparison stay
+      // byte-exact; it is DECODED only now, the one way src/io.mjs
+      // decodes for every scanner and every pattern source (final fix
+      // round 2). Scanning the latin1 form made every pattern holding an
+      // accented letter, written the ordinary way, match nothing.
+      // The budget grows with the channel's size (src/leak.mjs, `accrue`),
+      // the same budget the adopting vault's gate gives each file, so a
+      // large ordinary blob is not refused as having run out of time. The
+      // override above sets the floor it grows from, so a negative one
+      // still refuses before a single line is read.
+      result = scanText(decodeLatin1Text(text), patterns, { deadlineAt: Date.now() + budgetMs, accrue: true });
     } catch (error) {
       failed = true;
       io.stderr.write(`pre-push: could not scan ${channel}: ${error.message}; refusing instead of calling it clean.\n`);
@@ -638,6 +679,7 @@ export async function runScanBlobs(argv, io, { metadataBatch = METADATA_BATCH } 
     }
     if (result.matches.length === 0) return true;
     if (exemptIfMatched) {
+      exemptionsApplied += 1;
       io.stderr.write(`pre-push: ${channel} matches a pattern, but it is exactly the identity this push is being made under, so it is exempt and does not refuse the push (the identity itself is withheld). No rewrite can change it, so refusing here would leave only editing the patterns file or --no-verify.\n`);
       return false;
     }
@@ -700,10 +742,10 @@ export async function runScanBlobs(argv, io, { metadataBatch = METADATA_BATCH } 
     if (type === 'commit') return;
 
     if (type === 'blob') {
-      const body = git(['cat-file', 'blob', sha]);
+      const body = gitContent(['cat-file', 'blob', sha]);
       if (body.error || body.status !== 0) {
         failed = true;
-        const reason = body.error ? `git cat-file could not be run (${body.error.message})` : `git cat-file exited ${body.status}`;
+        const reason = contentReadFailure(body, 'git cat-file');
         io.stderr.write(`pre-push: could not read the blob ${short} this push points a ref at: ${reason}; refusing instead of calling it clean.\n`);
         return;
       }
@@ -749,7 +791,7 @@ export async function runScanBlobs(argv, io, { metadataBatch = METADATA_BATCH } 
         const [entryMode, entryType, entrySha] = raw.slice(0, tab).split(' ');
         const entryPath = raw.slice(tab + 1);
         const pathIsClean = scan(entryPath, `a file name in the tree ${short} (PATH, the name itself is withheld)`);
-        const label = pathIsClean ? entryPath : REDACTED_PATH;
+        const label = pathIsClean ? decodeLatin1Text(entryPath) : REDACTED_PATH;
         if (entryMode === GITLINK_MODE) {
           io.stderr.write(`pre-push: skipping ${label} (in the tree ${short}): it is a gitlink (mode ${GITLINK_MODE}), whose content lives in another repository, so there is nothing here to read.\n`);
           continue;
@@ -759,10 +801,10 @@ export async function runScanBlobs(argv, io, { metadataBatch = METADATA_BATCH } 
           io.stderr.write(`pre-push: ${label} (in the tree ${short}) is a ${entryType}, which this gate does not know how to read here; refusing instead of calling it clean.\n`);
           continue;
         }
-        const content = git(['cat-file', 'blob', entrySha]);
+        const content = gitContent(['cat-file', 'blob', entrySha]);
         if (content.error || content.status !== 0) {
           failed = true;
-          const reason = content.error ? `git cat-file could not be run (${content.error.message})` : `git cat-file exited ${content.status}`;
+          const reason = contentReadFailure(content, 'git cat-file');
           io.stderr.write(`pre-push: could not read ${label} (in the tree ${short}): ${reason}; refusing instead of calling it clean.\n`);
           continue;
         }
@@ -905,7 +947,10 @@ export async function runScanBlobs(argv, io, { metadataBatch = METADATA_BATCH } 
     // the path is safe to print is decided by scanning it, and every later
     // message about this blob uses the answer.
     const pathIsClean = scan(path, `a file name at ${short} (PATH, the name itself is withheld)`);
-    const label = pathIsClean ? path : REDACTED_PATH;
+    // Printed in the one decoding every scanner shares, so an accented
+    // name reads as itself rather than as the two characters per letter
+    // its latin1 form would print as.
+    const label = pathIsClean ? decodeLatin1Text(path) : REDACTED_PATH;
 
     if (mode === GITLINK_MODE) {
       // Explicit, and said out loud: see the skip rule in the header.
@@ -923,10 +968,7 @@ export async function runScanBlobs(argv, io, { metadataBatch = METADATA_BATCH } 
     const blob = readBlob(commit, argPath);
     if (!blob.ok) {
       failed = true;
-      const reason = blob.status === null
-        ? `git show could not be run (${blob.detail})`
-        : `git show exited ${blob.status}`;
-      io.stderr.write(`pre-push: could not read ${label} (at ${short}): ${reason}; refusing instead of calling it clean.\n`);
+      io.stderr.write(`pre-push: could not read ${label} (at ${short}): ${blob.reason}; refusing instead of calling it clean.\n`);
       continue;
     }
 
@@ -982,6 +1024,10 @@ export async function runScanBlobs(argv, io, { metadataBatch = METADATA_BATCH } 
   // number of channels is not a fact any pattern could hide in, which is
   // the same reasoning the reference-number record above already states
   // for the one other number this module prints.
+  if (exemptionsApplied > 0) {
+    io.stderr.write(`pre-push: brain-kit leak gate ran: scanned ${channelsScanned} channel(s) across ${refsSeen} reference(s) of this push; no match refuses it, and ${exemptionsApplied} identity match(es) were exempt because each is exactly the identity this push is made under (withheld).\n`);
+    return EXIT.OK;
+  }
   io.stderr.write(`pre-push: brain-kit leak gate ran: scanned ${channelsScanned} channel(s) across ${refsSeen} reference(s) of this push; nothing matched.\n`);
   return EXIT.OK;
 }

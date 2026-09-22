@@ -154,6 +154,30 @@ test('an empty string inside privacy.secret_patterns is rejected by the schema i
   assert.ok(errors.some((e) => e.startsWith('$.privacy.secret_patterns[1]')), errors.join('\n'));
 });
 
+// Fix round 3 removed `lint.style.base`, a knob nothing read, and a
+// review then showed the removal was undefended: putting it back into the
+// schema kept the whole suite green. A vault that sets it is told the key
+// is unknown, so a knob that does nothing cannot quietly return.
+test('lint.style.base, removed because nothing read it, is refused by the schema rather than silently accepted', () => {
+  const config = fixture('config/valid.json');
+  config.lint.style = { forbidden_chars: ['x'], base: 'auto' };
+  const errors = validateConfig(config);
+  assert.ok(errors.some((e) => e.startsWith('$.lint.style.base') && /unknown key/.test(e)), errors.join('\n'));
+});
+
+// Final fix round 2: the secrets rule's own escape, a list of vault paths
+// its scan leaves out, is a real setting of that rule, and only a list of
+// non-empty paths is one.
+test('lint.secrets.exclude_paths is accepted as a list of paths and refuses an empty entry', () => {
+  const config = fixture('config/valid.json');
+  config.lint.secrets = { severity: 'error', exclude_paths: ['attachments/big-export.csv'] };
+  assert.deepEqual(validateConfig(config), []);
+  config.lint.secrets = { severity: 'error', exclude_paths: [''] };
+  assert.ok(validateConfig(config).some((e) => e.startsWith('$.lint.secrets.exclude_paths[0]')));
+  config.lint.secrets = { exclude_paths: 'attachments/' };
+  assert.ok(validateConfig(config).some((e) => e.startsWith('$.lint.secrets.exclude_paths')));
+});
+
 test('the example machine.json is valid and canonical_path is required', () => {
   const machine = fixture('machine/valid.json');
   assert.deepEqual(validateMachine(machine), []);

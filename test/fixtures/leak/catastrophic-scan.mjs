@@ -39,6 +39,6 @@ try {
   process.stdout.write('NO_THROW\n');
   process.exit(2);
 } catch (err) {
-  process.stdout.write(`THREW:${err.message}\n`);
+  process.stdout.write(`THREW:${err.message} code=${err.code}\n`);
   process.exit(0);
 }

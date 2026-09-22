@@ -161,7 +161,10 @@
         },
         "secrets": {
           "type": ["string", "object"], "pattern": "^(error|warn|off)$", "additionalProperties": false,
-          "properties": { "severity": { "type": "string", "enum": ["error", "warn", "off"] } }
+          "properties": {
+            "severity": { "type": "string", "enum": ["error", "warn", "off"] },
+            "exclude_paths": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+          }
         },
         "privacy": {
           "type": ["string", "object"], "pattern": "^(error|warn|off)$", "additionalProperties": false,
