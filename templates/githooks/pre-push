@@ -34,6 +34,19 @@
 #      personal pattern list is, by that hook's own design, never
 #      something a generic template could carry.
 #
+# WHAT THIS DOES NOT COVER, measured on 22/09/2026. The linter reads the
+# vault as it stands in the working tree; a push sends commits. So a secret
+# that was committed and then deleted is invisible to step 2 and still
+# travels in the history this push carries: a vault whose first commit held
+# a credential in a file, and whose second commit deleted that file, pushed
+# both to a fresh remote with this hook passing, and the credential was
+# readable there in plaintext. That is the most common way a secret leaks
+# through git, and this template does not stop it yet. Closing it means
+# scanning the objects the push carries, as the maintainer's own gate in a
+# brain-kit checkout already does; until then, a credential that ever
+# reached a commit must be treated as published and rotated, whatever this
+# hook says.
+#
 # Activate once per clone of the adopting vault:
 #   git config core.hooksPath .githooks
 set -u
