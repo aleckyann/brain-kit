@@ -1,6 +1,39 @@
 # Changelog
 
-## 0.0.1 (unreleased)
+## Unreleased
+
+Nothing below is on npm yet. It runs from a clone of the repository.
+
+### Phase 1, slice 1A: the validator
+
+- `brain-kit validate [path] [--json] [--only-problems]` checks a vault against OKF v0.2
+  and reports the format's own conformance apart from the vault's house rules, so a vault
+  that conforms to the format but departs from its own rules is told exactly that.
+- A zero-dependency reader for frontmatter and markdown, with its limits declared in the
+  output rather than hidden: it is a regular-expression reader, not a YAML parser.
+- Checked against the original vault this kit is extracted from: every divergence from the
+  validator that vault used before was traced to a known defect of the old one.
+
+### Phase 1, slice 1B: the linter, the leak scanner and the push gates
+
+- `brain-kit lint [path] [--rule ...] [--base auto|worktree|merge-base|all] [--json]` with
+  eight rules: `index-completeness`, `orphans`, `columns`, `tables`, `style`, `secrets`,
+  `privacy` and `attribution`.
+- The `secrets` rule reads every file a push could publish, dot-files such as `.env`
+  included and ignored files excluded, and is never narrowed by `--base`. Content and
+  patterns are decoded the same way, so a pattern with accented letters matches.
+- A leak scanner that fails closed when it cannot read its pattern list, never prints what
+  it matched, and announces every ceiling it hits.
+- The maintainer's push gate now lives outside the working tree, installed per clone by
+  `.githooks/install-gate`. It scans seven channels of every object a push carries: file
+  content, file names, commit messages, annotated tag messages, author and committer
+  identities, reference names, and object headers. It reads the objects git will send,
+  not a replaced stand-in, and says on every clean push that it ran.
+- A template pre-push hook for a vault, which runs `validate` and `lint` and refuses a push
+  to the default branch by the vault's automation identity. It checks the working tree and
+  not yet the commits a push carries, so nothing installs it into a vault until it does.
+
+## 0.0.1 (published on npm on 18/09/2026)
 
 Phase 0: package skeleton, CLI router with exit codes, language packs (pt-BR reference, en),
 config and machine schemas, maintainer anti-leak pre-push gate, Claude Code plugin manifest
