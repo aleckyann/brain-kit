@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import { makeTempDir } from './helpers/tmp.mjs';
 import assert from 'node:assert/strict';
-import { mkdtempSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, statSync, symlinkSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join, basename } from 'node:path';
 import { stateDirFor, ensureStateDir, STATE_FILES } from '../src/state.mjs';
@@ -73,7 +73,7 @@ test('calling ensureStateDir twice is harmless', () => {
 });
 
 test('STATE_FILES names every file the later slices will write, and nothing collides', () => {
-  const expectedKeys = ['LOCK', 'LOCK_RECLAIM', 'WATERMARK', 'LAST_RUN', 'SNAPSHOT', 'LOG_DIR', 'QUESTIONS_LOG'];
+  const expectedKeys = ['LOCK', 'WATERMARK', 'LAST_RUN', 'SNAPSHOT', 'LOG_DIR', 'QUESTIONS_LOG'];
   for (const key of expectedKeys) {
     assert.equal(typeof STATE_FILES[key], 'string', `STATE_FILES.${key} must be a string`);
     assert.ok(STATE_FILES[key].length > 0, `STATE_FILES.${key} must not be empty`);
@@ -91,4 +91,26 @@ test('a relative XDG_STATE_HOME is ignored, as the XDG specification says, and t
   const dir = stateDirFor(vault, { XDG_STATE_HOME: 'relative/state' });
   assert.ok(dir.startsWith(join(homedir(), '.local', 'state', 'brain-kit')), dir);
   assert.equal(dir.includes('relative'), false);
+});
+
+test('an existing vault reached through a symbolic link resolves to the state directory of its real path', () => {
+  const base = realpathSync(makeTempDir('brain-kit-state-link-'));
+  const real = join(base, 'vault');
+  mkdirSync(real);
+  const link = join(base, 'link to vault');
+  symlinkSync(real, link);
+  const env = { XDG_STATE_HOME: join(base, 'xdg') };
+  assert.equal(stateDirFor(link, env), stateDirFor(real, env));
+  assert.equal(basename(stateDirFor(link, env)).startsWith('vault-'), true);
+  // A path that does not exist yet (init, before it creates the vault) is
+  // only made absolute.
+  const future = join(base, 'not yet');
+  assert.equal(basename(stateDirFor(future, env)).startsWith('not yet-'), true);
+});
+
+test('a vault path that cannot be resolved for a reason other than not existing is an error, not a guess', () => {
+  const base = makeTempDir('brain-kit-state-loop-');
+  const loop = join(base, 'loop');
+  symlinkSync(loop, loop);
+  assert.throws(() => stateDirFor(join(loop, 'vault'), { XDG_STATE_HOME: join(base, 'xdg') }), (error) => error.code === 'ELOOP');
 });

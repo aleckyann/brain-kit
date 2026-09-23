@@ -295,7 +295,6 @@
   "doctor.machine_valid.invalid": "{file} é inválido: {errors}",
   "doctor.machine_valid.canonical_differs": "o machine.json registra o vault em \"{recorded}\", mas o caminho real dele é {actual}.",
   "doctor.state_dir_resolves.ok": "o diretório de estado {dir} guarda o machine.json",
-  "doctor.state_dir_resolves.use_canonical": "alcançado por este caminho, o diretório de estado do vault é {used}, que não guarda machine.json; o derivado do caminho real, {dir}, guarda. Rode o brain-kit a partir de {path}.",
   "doctor.state_dir_resolves.none": "não há machine.json no diretório de estado {dir}, o que todo comando rodado a partir deste caminho consulta.",
   "doctor.state_dir_mode.ok": "o diretório de estado {dir} está em 0700 e o machine.json em 0600",
   "doctor.state_dir_mode.dir_missing": "o diretório de estado {dir} não existe ou não é um diretório.",
@@ -429,5 +428,14 @@
   "update.accept_new_left": "{new} é um diretório, então ficou onde está.",
   "update.accept_nothing": "{file} não tem nada a aceitar: o manifesto já registra a versão deste kit dele, e não há nada ao lado.",
   "update.accept_last_entry": "brain-kit update: {file} é o último arquivo que o manifesto lista, e um manifesto não pode ficar vazio. Nada foi escrito.",
-  "init.gitignore_update": "Escritos pelo brain-kit update: versões oferecidas ao lado de um arquivo que você editou, e arquivos temporários que uma execução interrompida pode deixar."
+  "init.gitignore_update": "Escritos pelo brain-kit update: versões oferecidas ao lado de um arquivo que você editou, e arquivos temporários que uma execução interrompida pode deixar.",
+  "guard.not_a_repository": "{dir} não está dentro de uma árvore de trabalho do git. Este comando só muda um vault pelo git, então o vault precisa ser um repositório. Nada foi escrito.",
+  "guard.git_failed": "o git não conseguiu responder sobre {dir}: {detail}. Nada foi escrito.",
+  "lock.held": "Outra execução está mudando este vault: pid {pid} em {host} ({command}, desde {startedAt}). Adiado; rode de novo quando ela terminar.",
+  "lock.held_unreadable": "A trava do vault {lock} não pode ser lida, então não há como provar que quem a detém já terminou. Adiado. Se nenhuma execução do brain-kit estiver ativa neste vault, apague esse arquivo.",
+  "lock.reclaim_died": "Uma execução que substituía a trava de um detentor morto morreu no meio e deixou {marker} para trás. Nenhuma execução consegue pegar a trava até esse arquivo ser apagado; apague-o e rode de novo.",
+  "lock.no_hard_links": "O sistema de arquivos que guarda {dir} não aceita links físicos, que a trava do vault precisa para ser tomada com segurança. Mantenha o vault num sistema de arquivos que os aceite (ext4, APFS, NTFS e a maioria dos sistemas locais aceitam). Nada foi escrito.",
+  "snapshot.not_toplevel": "{dir} está dentro do repositório em {top}, não no topo dele. Rode a partir do topo do vault. Nada foi escrito.",
+  "snapshot.other_root": "O retrato da sessão foi tirado de {snapshotRoot}, não de {dir}. Ele não consegue dizer quais mudanças desta árvore vieram antes da sessão.",
+  "snapshot.unreadable": "{file} não é um retrato de sessão que esta versão saiba ler. Apague-o e comece a sessão de novo."
 }

@@ -11,37 +11,19 @@
 // does so without touching, stashing or staging anything.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { takeSnapshot, readSnapshot, splitDirty } from '../../src/guards/snapshot.mjs';
-import { withoutLocalGitVars } from '../../src/git-env.mjs';
-import { makeTempDir } from '../helpers/tmp.mjs';
+import { git, makeRepo, write } from '../helpers/git-repo.mjs';
 
-const ENV = withoutLocalGitVars(process.env);
-
-function git(cwd, args) {
-  const result = spawnSync('git', ['-c', 'user.name=Ana', '-c', 'user.email=ana@example.com', ...args], { cwd, encoding: 'utf8', env: ENV });
-  assert.equal(result.status, 0, `git ${args.join(' ')}: ${result.stderr}`);
-  return result.stdout;
-}
-
-function write(root, relPath, content) {
-  mkdirSync(dirname(join(root, relPath)), { recursive: true });
-  writeFileSync(join(root, relPath), content);
-}
+const text = (paths) => paths.map(String);
 
 const FOREIGN = ['scripts/curate.sh', 'systemd/brain-kit-curate.service', 'systemd/brain-kit-curate.timer', 'tests/curate.test.sh'];
 
 function vaultWithAnotherSessionLive() {
-  const root = join(makeTempDir('brain-kit-incident-0916-'), 'vault');
-  mkdirSync(root);
-  git(root, ['init', '-q', '-b', 'main']);
-  write(root, 'index.md', '# Ana\n');
-  write(root, 'notes/meeting.md', '# Meeting\n');
-  for (const path of FOREIGN.slice(0, 3)) write(root, path, 'committed\n');
-  git(root, ['add', '-A']);
-  git(root, ['commit', '-q', '-m', 'initial']);
+  const committed = { 'index.md': '# Ana\n', 'notes/meeting.md': '# Meeting\n' };
+  for (const path of FOREIGN.slice(0, 3)) committed[path] = 'committed\n';
+  const root = makeRepo(committed, 'brain-kit-incident-0916-');
   // The other session, mid task: three edits and one new test file.
   for (const path of FOREIGN.slice(0, 3)) write(root, path, 'half-finished edit\n');
   write(root, FOREIGN[3], 'new test, unfinished\n');
@@ -50,8 +32,7 @@ function vaultWithAnotherSessionLive() {
 
 test('the other session\'s files are before, the round\'s own work is since, even while the other session keeps editing', () => {
   const root = vaultWithAnotherSessionLive();
-  const stateDir = join(root, '..', 'state');
-  takeSnapshot(root, stateDir);
+  takeSnapshot(root);
 
   // The round works.
   write(root, 'notes/meeting.md', '# Meeting\n\nDecided: Ana reviews on Friday.\n');
@@ -60,17 +41,16 @@ test('the other session\'s files are before, the round\'s own work is since, eve
   // after the round began.
   write(root, 'scripts/curate.sh', 'second half-finished edit\n');
 
-  const split = splitDirty(root, readSnapshot(stateDir));
-  assert.deepEqual(split.since, ['notes/follow-up.md', 'notes/meeting.md']);
-  assert.deepEqual(split.before, [...FOREIGN].sort());
+  const split = splitDirty(root, readSnapshot(root));
+  assert.deepEqual(text(split.since), ['notes/follow-up.md', 'notes/meeting.md']);
+  assert.deepEqual(text(split.before), [...FOREIGN].sort());
 });
 
 test('the snapshot and the split never stash, stage or rewrite the other session\'s files', () => {
   const root = vaultWithAnotherSessionLive();
-  const stateDir = join(root, '..', 'state');
   const contents = Object.fromEntries(FOREIGN.map((path) => [path, readFileSync(join(root, path), 'utf8')]));
   const statusBefore = git(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all']);
-  const snapshot = takeSnapshot(root, stateDir);
+  const snapshot = takeSnapshot(root);
   splitDirty(root, snapshot);
   assert.equal(git(root, ['stash', 'list']), '');
   assert.equal(git(root, ['diff', '--cached', '--name-only']), '', 'nothing was staged');
@@ -84,9 +64,8 @@ test('the snapshot and the split never stash, stage or rewrite the other session
 // explicit paths, is the normal path.
 test('a file the other session creates after the snapshot is filed as since: the snapshot limits a sweep, it does not prove ownership', () => {
   const root = vaultWithAnotherSessionLive();
-  const stateDir = join(root, '..', 'state');
-  takeSnapshot(root, stateDir);
+  takeSnapshot(root);
   write(root, 'notes/meeting.md', '# Meeting\n\nRound edit.\n');
   write(root, 'systemd/brain-kit-curate-retry.timer', 'created by the other session after the snapshot\n');
-  assert.deepEqual(splitDirty(root, readSnapshot(stateDir)).since, ['notes/meeting.md', 'systemd/brain-kit-curate-retry.timer']);
+  assert.deepEqual(text(splitDirty(root, readSnapshot(root)).since), ['notes/meeting.md', 'systemd/brain-kit-curate-retry.timer']);
 });

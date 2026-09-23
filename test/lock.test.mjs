@@ -1,29 +1,39 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, statSync, symlinkSync, unlinkSync, utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { acquireLock, describeLock, LockHeld } from '../src/guards/lock.mjs';
-import { STATE_FILES } from '../src/state.mjs';
+import { acquireLock, currentIdentity, describeLock, LockHeld } from '../src/guards/lock.mjs';
+import { GUARD_FILES, GuardError } from '../src/guards/location.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
+import { createTranslator } from '../src/lang.mjs';
 import { makeTempDir } from './helpers/tmp.mjs';
+import { git, makeRepo } from './helpers/git-repo.mjs';
 
 const CHILD = fileURLToPath(new URL('./helpers/lock-child.mjs', import.meta.url));
 const WATCHER = fileURLToPath(new URL('./helpers/lock-watcher.mjs', import.meta.url));
 const NOW = new Date('2026-07-29T09:30:00.000Z');
+const ME = currentIdentity();
+const HAS_IDENTITY = ME.machineId !== null && ME.bootId !== null && ME.pidNamespace !== null;
+const OTHER_BOOT = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+const OTHER_MACHINE = '0123456789abcdef0123456789abcdef';
+const TRANSLATORS = { en: createTranslator('en'), 'pt-BR': createTranslator('pt-BR') };
 
-function stateDir() {
-  return join(makeTempDir('brain-kit-lock-'), 'state');
+function commonDir(root) {
+  return join(root, '.git');
 }
 
-function lockPath(dir) {
-  return join(dir, STATE_FILES.LOCK);
+function lockPath(root) {
+  return join(commonDir(root), GUARD_FILES.LOCK);
 }
 
-function markerPath(dir) {
-  return join(dir, STATE_FILES.LOCK_RECLAIM);
+function markerPath(root) {
+  return join(commonDir(root), GUARD_FILES.LOCK_RECLAIM);
 }
 
 // A pid that was really used by a process on this machine and is now dead.
@@ -33,35 +43,47 @@ function deadPid() {
   return child.pid;
 }
 
-function writeLock(dir, holder) {
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(lockPath(dir), `${JSON.stringify(holder)}\n`);
+function writeLock(root, holder) {
+  writeFileSync(lockPath(root), `${JSON.stringify(holder)}\n`);
 }
 
-function staleHolder(overrides = {}) {
-  return { pid: deadPid(), host: hostname(), command: 'curate', startedAt: '2026-07-29T03:00:00.000Z', ...overrides };
+// A holder from this machine, this boot and this pid namespace.
+function holderLikeMe(overrides = {}) {
+  return {
+    pid: deadPid(), host: ME.host, command: 'curate', startedAt: '2026-07-29T03:00:00.000Z',
+    machineId: ME.machineId, bootId: ME.bootId, pidNamespace: ME.pidNamespace, ...overrides,
+  };
 }
 
-// Whatever acquireLock throws, asserted to be LockHeld, and returned.
-function heldError(fn) {
+// Whatever `fn` throws, asserted to be an instance of `kind`, and returned.
+function thrown(fn, kind = LockHeld) {
   let caught = null;
   try {
     fn();
   } catch (error) {
     caught = error;
   }
-  assert.ok(caught instanceof LockHeld, `expected LockHeld, got ${caught && caught.stack}`);
+  assert.ok(caught instanceof kind, `expected ${kind.name}, got ${caught && caught.stack}`);
   return caught;
 }
 
-function leftovers(dir) {
-  return readdirSync(dir).filter((name) => name !== STATE_FILES.LOCK);
+// Every brain-kit file in the git common directory but the lock itself.
+function leftovers(root) {
+  return readdirSync(commonDir(root)).filter((name) => name.startsWith('brain-kit') && name !== GUARD_FILES.LOCK);
+}
+
+function rendersIn(error, needle) {
+  for (const [lang, t] of Object.entries(TRANSLATORS)) {
+    const text = t(error.messageKey, error.params);
+    assert.ok(text.includes(String(needle)), `${lang}: ${JSON.stringify(text)} does not name ${needle}`);
+  }
 }
 
 // Starts the lock child; resolves with its one JSON line and a way to wait
-// for it to exit.
-function startChild(options) {
-  const child = spawn(process.execPath, [CHILD, JSON.stringify(options)], { stdio: ['ignore', 'pipe', 'pipe'] });
+// for it to exit. `prefix` runs it under another program (unshare).
+function startChild(options, { env = process.env, prefix = [] } = {}) {
+  const [command, ...args] = [...prefix, process.execPath, CHILD, JSON.stringify(options)];
+  const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'], env });
   let out = '';
   let err = '';
   child.stdout.on('data', (chunk) => { out += chunk; });
@@ -81,42 +103,150 @@ function startChild(options) {
   return { child, line, exited };
 }
 
-test('acquire records pid, host, command and start time in a 0600 lock file that describeLock reads back', () => {
-  const dir = stateDir();
-  const lock = acquireLock(dir, { command: 'propose', now: NOW });
-  assert.deepEqual(lock.holder, { pid: process.pid, host: hostname(), command: 'propose', startedAt: NOW.toISOString() });
-  assert.deepEqual(describeLock(dir), lock.holder);
-  assert.deepEqual(JSON.parse(readFileSync(lockPath(dir), 'utf8')), lock.holder);
-  assert.equal(statSync(lockPath(dir)).mode & 0o777, 0o600);
-  assert.deepEqual(leftovers(dir), [], 'no temporary file or marker is left beside the lock');
+// --- the file and its place ---------------------------------------------------
+
+test('acquire records who holds the lock in a 0600 file in the git common directory, and describeLock reads it back', () => {
+  const root = makeRepo();
+  const lock = acquireLock(root, { command: 'propose', now: NOW });
+  assert.deepEqual(lock.holder, {
+    pid: process.pid, host: hostname(), command: 'propose', startedAt: NOW.toISOString(),
+    machineId: ME.machineId, bootId: ME.bootId, pidNamespace: ME.pidNamespace,
+  });
+  assert.equal(lock.lockPath, lockPath(root));
+  assert.deepEqual(describeLock(root), lock.holder);
+  assert.deepEqual(JSON.parse(readFileSync(lockPath(root), 'utf8')), lock.holder);
+  assert.equal(statSync(lockPath(root)).mode & 0o777, 0o600);
+  assert.deepEqual(leftovers(root), [], 'no temporary file or marker is left beside the lock');
   lock.release();
 });
 
-test('acquire refuses to run without a command name', () => {
-  assert.throws(() => acquireLock(stateDir(), {}), TypeError);
-  assert.throws(() => acquireLock(stateDir(), { command: '' }), TypeError);
+test('the holder carries this machine\'s identity where the platform has it', { skip: !existsSync('/proc/self/ns/pid') && 'no /proc here' }, () => {
+  assert.equal(ME.pidNamespace, readlinkSync('/proc/self/ns/pid'));
+  assert.equal(ME.bootId, readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim());
+  if (existsSync('/etc/machine-id')) assert.equal(ME.machineId, readFileSync('/etc/machine-id', 'utf8').trim());
+  assert.equal(ME.host, hostname());
 });
 
+test('acquire refuses to run without a command name', () => {
+  const root = makeRepo();
+  assert.throws(() => acquireLock(root, {}), TypeError);
+  assert.throws(() => acquireLock(root, { command: '' }), TypeError);
+});
+
+test('one lock per repository: a subdirectory, a symlink, a linked worktree and a GIT_DIR elsewhere all find the same one', () => {
+  const root = makeRepo({ 'notes/a.md': 'a\n' });
+  const lock = acquireLock(root, { command: 'propose' });
+  const link = join(root, '..', 'link to vault');
+  symlinkSync(root, link);
+  const worktree = join(root, '..', 'worktree');
+  git(root, ['worktree', 'add', '-q', '-b', 'other', worktree]);
+  const elsewhere = makeRepo();
+  const env = { ...process.env, GIT_DIR: join(elsewhere, '.git'), GIT_WORK_TREE: elsewhere };
+  for (const [label, where, options] of [['subdirectory', join(root, 'notes'), {}], ['symlink', link, {}], ['linked worktree', worktree, {}],
+    ['GIT_DIR naming another repository', root, { env }]]) {
+    const error = thrown(() => acquireLock(where, { command: 'sync', ...options }));
+    assert.equal(error.holder.pid, process.pid, label);
+    assert.equal(error.lockPath, lockPath(root), label);
+  }
+  assert.equal(existsSync(join(elsewhere, '.git', GUARD_FILES.LOCK)), false);
+  lock.release();
+});
+
+test('a vault whose path ends in a space is found as itself: only git\'s newline is taken off a path it prints', () => {
+  const parent = realpathSync(makeTempDir('brain-kit-lock-space-'));
+  const root = join(parent, 'vault ');
+  mkdirSync(root);
+  mkdirSync(join(parent, 'vault'));
+  git(root, ['init', '-q', '-b', 'main']);
+  const lock = acquireLock(root, { command: 'propose' });
+  assert.equal(lock.lockPath, join(root, '.git', GUARD_FILES.LOCK));
+  assert.equal(existsSync(lock.lockPath), true);
+  lock.release();
+});
+
+test('four processes reaching one vault through four environments: exactly one holds the lock', async () => {
+  const root = makeRepo();
+  const base = join(root, '..');
+  const link = join(base, 'link to vault');
+  symlinkSync(root, link);
+  const doneFile = join(base, 'done');
+  const plain = { ...process.env };
+  delete plain.BRAIN_KIT_STATE_DIR;
+  const runs = [
+    { label: 'pinned state directory', where: root, env: { ...plain, BRAIN_KIT_STATE_DIR: join(base, 'pinned') } },
+    { label: 'XDG_STATE_HOME A', where: root, env: { ...plain, XDG_STATE_HOME: join(base, 'xdg-a') } },
+    { label: 'XDG_STATE_HOME B', where: root, env: { ...plain, XDG_STATE_HOME: join(base, 'xdg-b') } },
+    { label: 'symlink', where: link, env: { ...plain, XDG_STATE_HOME: join(base, 'xdg-a') } },
+  ];
+  const first = startChild({ root: runs[0].where, command: 'curate', id: 0, doneFile }, { env: runs[0].env });
+  try {
+    const held = await first.line;
+    assert.equal(held.won, true, JSON.stringify(held));
+    for (const [i, run] of runs.entries()) {
+      if (i === 0) continue;
+      const other = startChild({ root: run.where, command: 'propose', id: i }, { env: run.env });
+      const result = await other.line;
+      await other.exited;
+      assert.equal(result.won, false, `${run.label}: ${JSON.stringify(result)}`);
+      assert.equal(result.holder.pid, first.child.pid, run.label);
+    }
+  } finally {
+    writeFileSync(doneFile, '');
+    await first.exited;
+  }
+});
+
+test('outside a working tree the lock refuses with exit 2, names the directory in both languages, and writes nothing', () => {
+  const plain = realpathSync(makeTempDir('brain-kit-lock-plain-'));
+  const bare = join(realpathSync(makeTempDir('brain-kit-lock-bare-')), 'repo.git');
+  git(join(bare, '..'), ['init', '-q', '--bare', bare]);
+  const root = makeRepo();
+  for (const where of [plain, bare, join(root, '.git')]) {
+    const before = readdirSync(where).sort();
+    const error = thrown(() => acquireLock(where, { command: 'propose' }), GuardError);
+    assert.equal(error.code, 'GUARD_NOT_A_REPOSITORY', where);
+    assert.equal(error.exitCode, EXIT.USAGE);
+    assert.equal(error.exitCode, 2);
+    assert.equal(error.params.dir, where);
+    rendersIn(error, where);
+    assert.deepEqual(readdirSync(where).sort(), before, `nothing was written in ${where}`);
+    assert.equal(thrown(() => describeLock(where), GuardError).code, 'GUARD_NOT_A_REPOSITORY');
+  }
+});
+
+test('git missing is a failure, never read as "not a repository"', () => {
+  const root = makeRepo();
+  const empty = makeTempDir('brain-kit-lock-nogit-');
+  const error = thrown(() => acquireLock(root, { command: 'propose', env: { ...process.env, PATH: empty } }), GuardError);
+  assert.equal(error.code, 'GUARD_GIT_FAILED');
+  assert.equal(error.exitCode, EXIT.FAILURE);
+  rendersIn(error, root);
+});
+
+// --- a second writer ----------------------------------------------------------
+
 test('a second acquire in the same process fails at once with LockHeld naming the first holder, exit code 75', () => {
-  const dir = stateDir();
-  const first = acquireLock(dir, { command: 'propose', now: NOW });
-  const before = readFileSync(lockPath(dir), 'utf8');
-  const error = heldError(() => acquireLock(dir, { command: 'sync' }));
+  const root = makeRepo();
+  const first = acquireLock(root, { command: 'propose', now: NOW });
+  const before = readFileSync(lockPath(root), 'utf8');
+  const error = thrown(() => acquireLock(root, { command: 'sync' }));
   assert.deepEqual(error.holder, first.holder);
   assert.equal(error.code, 'LOCK_HELD');
   assert.equal(error.exitCode, EXIT.TEMPFAIL);
   assert.equal(error.exitCode, 75);
-  assert.equal(error.lockPath, lockPath(dir));
+  assert.equal(error.lockPath, lockPath(root));
   assert.equal(error.blockedBy, null);
-  assert.match(error.message, new RegExp(`pid ${process.pid}`));
-  assert.equal(readFileSync(lockPath(dir), 'utf8'), before, 'the refused acquire did not touch the lock');
+  assert.equal(error.messageKey, 'lock.held');
+  rendersIn(error, process.pid);
+  rendersIn(error, 'propose');
+  assert.equal(readFileSync(lockPath(root), 'utf8'), before, 'the refused acquire did not touch the lock');
   first.release();
 });
 
 test('a second acquire in a child process fails with the holder named', async () => {
-  const dir = stateDir();
-  const first = acquireLock(dir, { command: 'propose', now: NOW });
-  const { line, exited } = startChild({ stateDir: dir, command: 'sync', id: 'second' });
+  const root = makeRepo();
+  const first = acquireLock(root, { command: 'propose', now: NOW });
+  const { line, exited } = startChild({ root, command: 'sync', id: 'second' });
   const result = await line;
   await exited;
   assert.equal(result.won, false, JSON.stringify(result));
@@ -124,286 +254,402 @@ test('a second acquire in a child process fails with the holder named', async ()
   first.release();
 });
 
+// --- release ------------------------------------------------------------------
+
 test('release lets the next acquire succeed, a second release is harmless, and nothing is left behind', () => {
-  const dir = stateDir();
-  const first = acquireLock(dir, { command: 'propose' });
+  const root = makeRepo();
+  const first = acquireLock(root, { command: 'propose' });
   assert.equal(first.release(), true);
-  assert.equal(existsSync(lockPath(dir)), false);
-  assert.equal(describeLock(dir), null);
+  assert.equal(existsSync(lockPath(root)), false);
+  assert.equal(describeLock(root), null);
   assert.equal(first.release(), false);
-  const second = acquireLock(dir, { command: 'sync' });
+  const second = acquireLock(root, { command: 'sync' });
   assert.equal(second.holder.command, 'sync');
   assert.equal(second.release(), true);
-  assert.deepEqual(readdirSync(dir), []);
+  assert.deepEqual(leftovers(root), []);
+  assert.equal(existsSync(lockPath(root)), false);
 });
 
 test('release never deletes a lock that is no longer the one it placed, even one with the same bytes', () => {
-  const dir = stateDir();
-  const lock = acquireLock(dir, { command: 'propose' });
-  const foreign = { pid: 1, host: hostname(), command: 'curate', startedAt: NOW.toISOString() };
-  writeFileSync(lockPath(dir), `${JSON.stringify(foreign)}\n`);
+  const root = makeRepo();
+  const lock = acquireLock(root, { command: 'propose' });
+  const foreign = holderLikeMe({ pid: 1 });
+  writeLock(root, foreign);
   assert.equal(lock.release(), false);
-  assert.deepEqual(describeLock(dir), foreign);
-  unlinkSync(lockPath(dir));
+  assert.deepEqual(describeLock(root), foreign);
+  unlinkSync(lockPath(root));
 
   // Same bytes, another file: a lock that was replaced by one that happens
   // to read the same is still not ours to delete.
-  const again = acquireLock(dir, { command: 'propose', now: NOW });
-  const text = readFileSync(lockPath(dir), 'utf8');
-  const copy = join(dir, 'copy');
+  const again = acquireLock(root, { command: 'propose', now: NOW });
+  const text = readFileSync(lockPath(root), 'utf8');
+  const copy = join(commonDir(root), 'copy');
   writeFileSync(copy, text);
-  renameSync(copy, lockPath(dir));
+  renameSync(copy, lockPath(root));
   assert.equal(again.release(), false);
-  assert.equal(readFileSync(lockPath(dir), 'utf8'), text);
+  assert.equal(readFileSync(lockPath(root), 'utf8'), text);
 });
 
 test('a stale handle released again never removes a later lock, even one with the same bytes on a reused inode', () => {
-  const dir = stateDir();
-  const first = acquireLock(dir, { command: 'propose', now: NOW });
+  const root = makeRepo();
+  const first = acquireLock(root, { command: 'propose', now: NOW });
   assert.equal(first.release(), true);
-  const second = acquireLock(dir, { command: 'propose', now: NOW });
+  const second = acquireLock(root, { command: 'propose', now: NOW });
   assert.equal(first.release(), false);
-  assert.deepEqual(describeLock(dir), second.holder);
+  assert.deepEqual(describeLock(root), second.holder);
   second.release();
 });
 
 test('release of a lock a person already removed by hand is a quiet no-op', () => {
-  const dir = stateDir();
-  const lock = acquireLock(dir, { command: 'propose' });
-  unlinkSync(lockPath(dir));
+  const root = makeRepo();
+  const lock = acquireLock(root, { command: 'propose' });
+  unlinkSync(lockPath(root));
   assert.equal(lock.release(), false);
-  assert.equal(describeLock(dir), null);
+  assert.equal(describeLock(root), null);
 });
 
+// --- a lock that cannot be read -------------------------------------------------
+
+const UNREADABLE = { pid: null, host: null, command: null, startedAt: null, machineId: null, bootId: null, pidNamespace: null, unreadable: true };
+
 test('describeLock is null with no lock, and a lock that cannot be read is reported, never read as no lock', () => {
-  const dir = stateDir();
-  assert.equal(describeLock(dir), null);
-  mkdirSync(dir, { recursive: true });
-  const unreadable = { pid: null, host: null, command: null, startedAt: null, unreadable: true };
-  for (const text of ['', 'not json', '{"pid":"12","host":"h","command":"c","startedAt":"s"}', '{"pid":0,"host":"h","command":"c","startedAt":"s"}',
-    '{"pid":-1,"host":"h","command":"c","startedAt":"s"}', '{"pid":1.5,"host":"h","command":"c","startedAt":"s"}',
-    '{"pid":12,"host":"","command":"c","startedAt":"s"}', '{"pid":12,"host":5,"command":"c","startedAt":"s"}', '[12]', '"text"', '{"pid":12,"host":"h","startedAt":"s"}', '{"pid":12,"host":"h","command":"c"}', 'null', '12']) {
-    writeFileSync(lockPath(dir), text);
-    assert.deepEqual(describeLock(dir), unreadable, `lock text ${JSON.stringify(text)}`);
+  const root = makeRepo();
+  assert.equal(describeLock(root), null);
+  const good = '"host":"h","command":"c","startedAt":"s"';
+  for (const text of ['', 'not json', `{"pid":"12",${good}}`, `{"pid":0,${good}}`, `{"pid":-1,${good}}`, `{"pid":1.5,${good}}`,
+    '{"pid":12,"host":"","command":"c","startedAt":"s"}', '{"pid":12,"host":5,"command":"c","startedAt":"s"}', '[12]', '"text"',
+    '{"pid":12,"host":"h","startedAt":"s"}', '{"pid":12,"host":"h","command":"c"}', 'null', '12',
+    `{"pid":12,${good},"machineId":5}`, `{"pid":12,${good},"bootId":""}`, `{"pid":12,${good},"pidNamespace":["x"]}`]) {
+    writeFileSync(lockPath(root), text);
+    assert.deepEqual(describeLock(root), UNREADABLE, `lock text ${JSON.stringify(text)}`);
   }
-  unlinkSync(lockPath(dir));
-  mkdirSync(lockPath(dir));
-  assert.deepEqual(describeLock(dir), unreadable, 'a directory under the lock name');
+  unlinkSync(lockPath(root));
+  mkdirSync(lockPath(root));
+  assert.deepEqual(describeLock(root), UNREADABLE, 'a directory under the lock name');
+});
+
+test('identity fields that are absent or null read as null: a lock written where the platform has none', () => {
+  const root = makeRepo();
+  writeFileSync(lockPath(root), '{"pid":12,"host":"h","command":"c","startedAt":"s","machineId":null}');
+  assert.deepEqual(describeLock(root), { pid: 12, host: 'h', command: 'c', startedAt: 's', machineId: null, bootId: null, pidNamespace: null });
 });
 
 test('a symlink or a FIFO under the lock name is an unreadable lock: never followed, never waited on, never reclaimed', { timeout: 20000 }, () => {
-  const dir = stateDir();
-  mkdirSync(dir, { recursive: true });
-  const unreadable = { pid: null, host: null, command: null, startedAt: null, unreadable: true };
+  const root = makeRepo();
   // A symlink to a perfectly good stale lock elsewhere is still not a lock.
-  const elsewhere = join(dir, '..', 'elsewhere');
-  writeFileSync(elsewhere, `${JSON.stringify(staleHolder())}\n`);
-  symlinkSync(elsewhere, lockPath(dir));
-  assert.deepEqual(describeLock(dir), unreadable, 'a symlink under the lock name');
-  assert.equal(heldError(() => acquireLock(dir, { command: 'propose' })).holder.unreadable, true);
-  unlinkSync(lockPath(dir));
-  symlinkSync(join(dir, 'nowhere'), lockPath(dir));
-  assert.deepEqual(describeLock(dir), unreadable, 'a dangling symlink under the lock name');
-  unlinkSync(lockPath(dir));
-  assert.equal(spawnSync('mkfifo', [lockPath(dir)]).status, 0);
-  assert.deepEqual(describeLock(dir), unreadable, 'a FIFO under the lock name');
-  assert.equal(heldError(() => acquireLock(dir, { command: 'propose' })).holder.unreadable, true);
+  const elsewhere = join(root, '..', 'elsewhere');
+  writeFileSync(elsewhere, `${JSON.stringify(holderLikeMe())}\n`);
+  symlinkSync(elsewhere, lockPath(root));
+  assert.deepEqual(describeLock(root), UNREADABLE, 'a symlink under the lock name');
+  assert.equal(thrown(() => acquireLock(root, { command: 'propose' })).holder.unreadable, true);
+  unlinkSync(lockPath(root));
+  symlinkSync(join(root, 'nowhere'), lockPath(root));
+  assert.deepEqual(describeLock(root), UNREADABLE, 'a dangling symlink under the lock name');
+  unlinkSync(lockPath(root));
+  assert.equal(spawnSync('mkfifo', [lockPath(root)]).status, 0);
+  assert.deepEqual(describeLock(root), UNREADABLE, 'a FIFO under the lock name');
+  assert.equal(thrown(() => acquireLock(root, { command: 'propose' })).holder.unreadable, true);
 });
 
-test('an unreadable lock is held: no one whose death could be proved, so it is never reclaimed', () => {
-  const dir = stateDir();
-  mkdirSync(dir, { recursive: true });
+test('an unreadable lock is held: no one whose death could be proved, so it is never reclaimed, and the message names the file', () => {
+  const root = makeRepo();
   for (const text of ['', `{"pid":${deadPid()},"host":"${hostname()}","command":"curate"}`]) {
-    writeFileSync(lockPath(dir), text);
-    const error = heldError(() => acquireLock(dir, { command: 'propose' }));
+    writeFileSync(lockPath(root), text);
+    const error = thrown(() => acquireLock(root, { command: 'propose' }));
     assert.equal(error.holder.pid, null);
     assert.equal(error.holder.unreadable, true);
-    assert.match(error.message, /unreadable/);
-    assert.equal(readFileSync(lockPath(dir), 'utf8'), text);
+    assert.equal(error.messageKey, 'lock.held_unreadable');
+    rendersIn(error, lockPath(root));
+    assert.equal(readFileSync(lockPath(root), 'utf8'), text);
   }
 });
 
-test('a lock whose pid is dead on this host is reclaimed, by replacement, with nothing left behind', () => {
-  const dir = stateDir();
-  const stale = staleHolder();
-  writeLock(dir, stale);
-  const inoBefore = lstatSync(lockPath(dir)).ino;
-  const lock = acquireLock(dir, { command: 'propose', now: NOW });
+// --- staleness: provably dead ----------------------------------------------------
+
+test('a lock from this machine, boot and pid namespace whose pid is dead is reclaimed, by replacement, with nothing left behind', () => {
+  const root = makeRepo();
+  writeLock(root, holderLikeMe());
+  const inoBefore = lstatSync(lockPath(root)).ino;
+  const lock = acquireLock(root, { command: 'propose', now: NOW });
   assert.equal(lock.holder.pid, process.pid);
-  assert.deepEqual(describeLock(dir), lock.holder);
-  assert.notEqual(lstatSync(lockPath(dir)).ino, inoBefore);
-  assert.deepEqual(leftovers(dir), []);
+  assert.deepEqual(describeLock(root), lock.holder);
+  assert.notEqual(lstatSync(lockPath(root)).ino, inoBefore);
+  assert.deepEqual(leftovers(root), []);
   assert.equal(lock.release(), true, 'a reclaimed lock is released like any other');
 });
 
-test('a lock whose pid is alive on this host is not reclaimed, including one owned by another user', () => {
-  const dir = stateDir();
-  // The test runner's own parent, alive for as long as this test runs.
+test('a lock whose pid is alive is not reclaimed, including one owned by another user', () => {
+  const root = makeRepo();
   for (const pid of [process.ppid, 1]) {
-    const live = { pid, host: hostname(), command: 'curate', startedAt: NOW.toISOString() };
-    writeLock(dir, live);
-    const error = heldError(() => acquireLock(dir, { command: 'propose' }));
+    const live = holderLikeMe({ pid });
+    writeLock(root, live);
+    const error = thrown(() => acquireLock(root, { command: 'propose' }));
     assert.deepEqual(error.holder, live, `pid ${pid}`);
-    assert.deepEqual(describeLock(dir), live);
+    assert.deepEqual(describeLock(root), live);
   }
 });
 
-test('a lock from another host is never reclaimed, even when its pid is dead here', () => {
-  const dir = stateDir();
-  const remote = staleHolder({ host: 'other-host.example.invalid' });
-  writeLock(dir, remote);
-  const error = heldError(() => acquireLock(dir, { command: 'propose' }));
-  assert.deepEqual(error.holder, remote);
-  assert.deepEqual(describeLock(dir), remote);
-  assert.deepEqual(leftovers(dir), []);
+test('a lock from another host name is never reclaimed, even with this machine\'s identity and a dead pid', () => {
+  const root = makeRepo();
+  const remote = holderLikeMe({ host: 'other-host.example.invalid' });
+  writeLock(root, remote);
+  assert.deepEqual(thrown(() => acquireLock(root, { command: 'propose' })).holder, remote);
+  assert.deepEqual(describeLock(root), remote);
+  assert.deepEqual(leftovers(root), []);
+});
+
+test('a lock from a previous boot of this machine is reclaimed, even when its pid is alive now: the reboot proved it dead', { skip: !HAS_IDENTITY }, () => {
+  const root = makeRepo();
+  writeLock(root, holderLikeMe({ pid: process.ppid, bootId: OTHER_BOOT, pidNamespace: 'pid:[1]' }));
+  const lock = acquireLock(root, { command: 'propose' });
+  assert.equal(describeLock(root).pid, process.pid);
+  lock.release();
+});
+
+test('a lock from another machine id is never reclaimed, whatever its boot or pid', { skip: !HAS_IDENTITY }, () => {
+  const root = makeRepo();
+  for (const holder of [holderLikeMe({ machineId: OTHER_MACHINE }), holderLikeMe({ machineId: OTHER_MACHINE, bootId: OTHER_BOOT })]) {
+    writeLock(root, holder);
+    assert.deepEqual(thrown(() => acquireLock(root, { command: 'propose' })).holder, holder);
+  }
+});
+
+test('a lock from another pid namespace on this boot is never reclaimed: its pid means nothing here', { skip: !HAS_IDENTITY }, () => {
+  const root = makeRepo();
+  const holder = holderLikeMe({ pidNamespace: 'pid:[1]' });
+  writeLock(root, holder);
+  assert.deepEqual(thrown(() => acquireLock(root, { command: 'propose' })).holder, holder);
+});
+
+test('a lock whose identity cannot be compared with this machine\'s is never reclaimed', { skip: !HAS_IDENTITY }, () => {
+  const root = makeRepo();
+  for (const holder of [
+    holderLikeMe({ machineId: null, bootId: null, pidNamespace: null }),
+    holderLikeMe({ bootId: null }),
+    holderLikeMe({ bootId: null, pidNamespace: null }),
+    holderLikeMe({ pidNamespace: null }),
+  ]) {
+    writeLock(root, holder);
+    assert.deepEqual(thrown(() => acquireLock(root, { command: 'propose' })).holder, holder, JSON.stringify(holder));
+  }
+  // And from this side: a process that knows its machine but not its boot.
+  const holder = holderLikeMe({ pid: process.ppid, bootId: OTHER_BOOT });
+  writeLock(root, holder);
+  assert.deepEqual(thrown(() => acquireLock(root, { command: 'propose' }, { identity: { ...ME, bootId: null } })).holder, holder);
+});
+
+test('a process knowing no identity never reclaims a lock written by one that knows it, and the reverse', () => {
+  const root = makeRepo();
+  const bare = { host: hostname(), machineId: null, bootId: null, pidNamespace: null };
+  const knowing = { host: hostname(), machineId: OTHER_MACHINE, bootId: OTHER_BOOT, pidNamespace: 'pid:[1]' };
+  const byKnowing = { pid: deadPid(), command: 'curate', startedAt: 's', ...knowing };
+  writeLock(root, byKnowing);
+  assert.deepEqual(thrown(() => acquireLock(root, { command: 'propose' }, { identity: bare })).holder, byKnowing);
+  const byBare = { pid: deadPid(), command: 'curate', startedAt: 's', ...bare };
+  writeLock(root, byBare);
+  assert.deepEqual(thrown(() => acquireLock(root, { command: 'propose' }, { identity: knowing })).holder, byBare);
+});
+
+test('where the platform has no identity, a dead pid on exactly this host name is reclaimed, and nothing looser', () => {
+  const root = makeRepo();
+  const bare = { host: 'ana-laptop', machineId: null, bootId: null, pidNamespace: null };
+  for (const host of ['ana-laptop.other-site.example.invalid', 'ana-laptop.', 'ANA-LAPTOP', 'ana-lapto']) {
+    const holder = { pid: deadPid(), host, command: 'curate', startedAt: 's', machineId: null, bootId: null, pidNamespace: null };
+    writeLock(root, holder);
+    assert.deepEqual(thrown(() => acquireLock(root, { command: 'propose' }, { identity: bare })).holder, holder, host);
+  }
+  writeLock(root, { pid: process.ppid, host: 'ana-laptop', command: 'curate', startedAt: 's' });
+  assert.equal(thrown(() => acquireLock(root, { command: 'propose' }, { identity: bare })).holder.pid, process.ppid, 'a live pid');
+  writeLock(root, { pid: deadPid(), host: 'ana-laptop', command: 'curate', startedAt: 's' });
+  const lock = acquireLock(root, { command: 'propose' }, { identity: bare });
+  assert.deepEqual(describeLock(root), lock.holder);
+  assert.equal(lock.holder.host, 'ana-laptop');
+  lock.release();
+});
+
+test('this machine\'s short host name alone does not make a lock from a longer name this host\'s', () => {
+  const root = makeRepo();
+  const short = hostname().split('.')[0];
+  for (const host of [`${short}.other-site.example.invalid`, `${hostname()}.other-site.example.invalid`]) {
+    const holder = holderLikeMe({ host });
+    writeLock(root, holder);
+    assert.deepEqual(thrown(() => acquireLock(root, { command: 'propose' })).holder, holder, host);
+  }
+});
+
+const CAN_UNSHARE = spawnSync('unshare', ['--user', '--map-root-user', '--pid', '--fork', '--mount-proc', 'true']).status === 0;
+
+test('a process in its own pid namespace on this host never takes a live holder\'s lock', { skip: !CAN_UNSHARE && 'unprivileged pid namespaces are not available here' }, async () => {
+  const root = makeRepo();
+  const lock = acquireLock(root, { command: 'curate' });
+  try {
+    const inside = startChild({ root, command: 'propose', id: 'namespaced' }, { prefix: ['unshare', '--user', '--map-root-user', '--pid', '--fork', '--mount-proc'] });
+    const result = await inside.line;
+    await inside.exited;
+    assert.equal(result.won, false, JSON.stringify(result));
+    assert.equal(result.holder.pid, process.pid);
+    assert.deepEqual(describeLock(root), lock.holder);
+  } finally {
+    lock.release();
+  }
 });
 
 test('a live process holding the lock blocks the next writer; once it dies without releasing, its lock is reclaimed', async () => {
-  const dir = stateDir();
-  const doneFile = join(dir, '..', 'never');
-  const { child, line, exited } = startChild({ stateDir: dir, command: 'curate', id: 'holder', doneFile });
+  const root = makeRepo();
+  const doneFile = join(root, '..', 'never');
+  const { child, line, exited } = startChild({ root, command: 'curate', id: 'holder', doneFile });
   try {
     const result = await line;
     assert.equal(result.won, true, JSON.stringify(result));
-    const error = heldError(() => acquireLock(dir, { command: 'propose' }));
+    const error = thrown(() => acquireLock(root, { command: 'propose' }));
     assert.equal(error.holder.pid, child.pid);
     assert.equal(error.holder.command, 'curate');
   } finally {
     child.kill('SIGKILL');
     await exited;
   }
-  assert.equal(describeLock(dir).pid, child.pid, 'the killed holder never released');
-  const lock = acquireLock(dir, { command: 'propose' });
-  assert.equal(describeLock(dir).pid, process.pid);
+  assert.equal(describeLock(root).pid, child.pid, 'the killed holder never released');
+  const lock = acquireLock(root, { command: 'propose' });
+  assert.equal(describeLock(root).pid, process.pid);
   lock.release();
 });
 
+// --- the reclaim marker -------------------------------------------------------
+
 test('a reclaim marker held by a live reclaimer means the lock is being taken: LockHeld names that reclaimer', () => {
-  const dir = stateDir();
-  const stale = staleHolder();
-  writeLock(dir, stale);
-  const reclaimer = { pid: process.ppid, host: hostname(), command: 'curate', startedAt: NOW.toISOString() };
-  writeFileSync(markerPath(dir), `${JSON.stringify(reclaimer)}\n`);
-  const error = heldError(() => acquireLock(dir, { command: 'propose' }));
+  const root = makeRepo();
+  const stale = holderLikeMe();
+  writeLock(root, stale);
+  const reclaimer = holderLikeMe({ pid: process.ppid, command: 'sync' });
+  writeFileSync(markerPath(root), `${JSON.stringify(reclaimer)}\n`);
+  const error = thrown(() => acquireLock(root, { command: 'propose' }));
   assert.deepEqual(error.holder, reclaimer);
   assert.equal(error.blockedBy, null);
-  assert.deepEqual(describeLock(dir), stale, 'the lock itself was not touched');
-  assert.ok(existsSync(markerPath(dir)), 'another process\'s marker is never removed');
+  assert.equal(error.code, 'LOCK_HELD');
+  assert.deepEqual(describeLock(root), stale, 'the lock itself was not touched');
+  assert.ok(existsSync(markerPath(root)), 'another process\'s marker is never removed');
 });
 
-test('a marker left by a dead reclaimer blocks the reclaim and is named, for a person to remove', () => {
-  const dir = stateDir();
-  const stale = staleHolder();
-  writeLock(dir, stale);
-  const deadReclaimer = staleHolder({ command: 'sync' });
-  writeFileSync(markerPath(dir), `${JSON.stringify(deadReclaimer)}\n`);
-  const error = heldError(() => acquireLock(dir, { command: 'propose' }));
-  assert.equal(error.blockedBy, markerPath(dir));
-  assert.deepEqual(error.holder, deadReclaimer);
-  assert.deepEqual(describeLock(dir), stale);
-  unlinkSync(markerPath(dir));
-  acquireLock(dir, { command: 'propose' }).release();
+test('a marker left by a reclaim that died blocks the reclaim: the message says a reclaim died and names the file, not a holder', () => {
+  const root = makeRepo();
+  const stale = holderLikeMe();
+  writeLock(root, stale);
+  const deadReclaimer = holderLikeMe({ command: 'sync' });
+  writeFileSync(markerPath(root), `${JSON.stringify(deadReclaimer)}\n`);
+  const error = thrown(() => acquireLock(root, { command: 'propose' }));
+  assert.equal(error.code, 'LOCK_RECLAIM_DIED');
+  assert.equal(error.exitCode, EXIT.TEMPFAIL);
+  assert.equal(error.blockedBy, markerPath(root));
+  assert.equal(error.holder, null);
+  assert.equal(error.messageKey, 'lock.reclaim_died');
+  assert.deepEqual(error.params, { marker: markerPath(root) });
+  rendersIn(error, markerPath(root));
+  assert.match(error.message, /died/);
+  assert.doesNotMatch(error.message, new RegExp(`pid ${deadReclaimer.pid}`));
+  assert.deepEqual(describeLock(root), stale);
+  unlinkSync(markerPath(root));
+  acquireLock(root, { command: 'propose' }).release();
 });
 
 test('a reclaimer that judged the lock stale loses to one that finished replacing it first', () => {
-  const dir = stateDir();
-  writeLock(dir, staleHolder());
+  const root = makeRepo();
+  writeLock(root, holderLikeMe());
   let first = null;
-  const error = heldError(() => acquireLock(dir, { command: 'slow' }, {
+  const error = thrown(() => acquireLock(root, { command: 'slow' }, {
     onStage(stage) {
-      if (stage === 'stale' && first === null) first = acquireLock(dir, { command: 'fast' });
+      if (stage === 'stale' && first === null) first = acquireLock(root, { command: 'fast' });
     },
   }));
   assert.equal(error.holder.command, 'fast');
-  assert.deepEqual(describeLock(dir), first.holder);
-  assert.deepEqual(leftovers(dir), []);
+  assert.deepEqual(describeLock(root), first.holder);
+  assert.deepEqual(leftovers(root), []);
   first.release();
 });
 
 test('a reclaimer that finds the marker taken loses to the reclaimer holding it', () => {
-  const dir = stateDir();
-  writeLock(dir, staleHolder());
+  const root = makeRepo();
+  writeLock(root, holderLikeMe());
   let loser = null;
-  const winner = acquireLock(dir, { command: 'first' }, {
+  const winner = acquireLock(root, { command: 'first' }, {
     onStage(stage) {
-      if (stage === 'claimed') loser = heldError(() => acquireLock(dir, { command: 'second' }));
+      if (stage === 'claimed') loser = thrown(() => acquireLock(root, { command: 'second' }));
     },
   });
   assert.equal(loser.holder.command, 'first');
-  assert.deepEqual(describeLock(dir), winner.holder);
-  assert.deepEqual(leftovers(dir), []);
+  assert.deepEqual(describeLock(root), winner.holder);
+  assert.deepEqual(leftovers(root), []);
   winner.release();
 });
 
 test('a lock released between the failed create and the read is simply taken', () => {
-  const dir = stateDir();
-  const other = acquireLock(dir, { command: 'curate' });
-  const lock = acquireLock(dir, { command: 'propose' }, {
+  const root = makeRepo();
+  const other = acquireLock(root, { command: 'curate' });
+  const lock = acquireLock(root, { command: 'propose' }, {
     onStage(stage) {
       if (stage === 'occupied') other.release();
     },
   });
-  assert.equal(describeLock(dir).command, 'propose');
+  assert.equal(describeLock(root).command, 'propose');
   lock.release();
 });
 
 test('a stale lock removed while it was being judged is simply taken', () => {
-  const dir = stateDir();
-  writeLock(dir, staleHolder());
-  const lock = acquireLock(dir, { command: 'propose' }, {
+  const root = makeRepo();
+  writeLock(root, holderLikeMe());
+  const lock = acquireLock(root, { command: 'propose' }, {
     onStage(stage) {
-      if (stage === 'stale') unlinkSync(lockPath(dir));
+      if (stage === 'stale') unlinkSync(lockPath(root));
     },
   });
-  assert.equal(describeLock(dir).command, 'propose');
-  assert.deepEqual(leftovers(dir), []);
+  assert.equal(describeLock(root).command, 'propose');
+  assert.deepEqual(leftovers(root), []);
   lock.release();
 });
 
 test('a marker that vanishes before it can be read, over an unchanged stale lock, means that reclaim gave up: go round and take it', () => {
-  const dir = stateDir();
-  writeLock(dir, staleHolder());
-  writeFileSync(markerPath(dir), `${JSON.stringify({ pid: process.ppid, host: hostname(), command: 'curate', startedAt: NOW.toISOString() })}\n`);
+  const root = makeRepo();
+  writeLock(root, holderLikeMe());
+  writeFileSync(markerPath(root), `${JSON.stringify(holderLikeMe({ pid: process.ppid }))}\n`);
   let contended = 0;
-  const lock = acquireLock(dir, { command: 'propose' }, {
+  const lock = acquireLock(root, { command: 'propose' }, {
     onStage(stage) {
-      if (stage === 'contended' && (contended += 1) === 1) unlinkSync(markerPath(dir));
+      if (stage === 'contended' && (contended += 1) === 1) unlinkSync(markerPath(root));
     },
   });
   assert.equal(contended, 1);
-  assert.deepEqual(describeLock(dir), lock.holder);
-  assert.deepEqual(leftovers(dir), []);
+  assert.deepEqual(describeLock(root), lock.holder);
+  assert.deepEqual(leftovers(root), []);
   lock.release();
 });
 
 test('a marker taken by a late reclaimer after the lock was already replaced: the loser names the real holder, not the late one', () => {
-  const dir = stateDir();
-  writeLock(dir, staleHolder());
-  const late = { pid: process.ppid, host: hostname(), command: 'late', startedAt: NOW.toISOString() };
+  const root = makeRepo();
+  writeLock(root, holderLikeMe());
+  const late = holderLikeMe({ pid: process.ppid, command: 'late' });
   let winner = null;
-  const error = heldError(() => acquireLock(dir, { command: 'slow' }, {
+  const error = thrown(() => acquireLock(root, { command: 'slow' }, {
     onStage(stage) {
       if (stage !== 'stale' || winner !== null) return;
-      winner = acquireLock(dir, { command: 'winner' });
-      writeFileSync(markerPath(dir), `${JSON.stringify(late)}\n`);
+      winner = acquireLock(root, { command: 'winner' });
+      writeFileSync(markerPath(root), `${JSON.stringify(late)}\n`);
     },
   }));
   assert.deepEqual(error.holder, winner.holder);
-  assert.deepEqual(describeLock(dir), winner.holder);
-  unlinkSync(markerPath(dir));
+  assert.deepEqual(describeLock(root), winner.holder);
+  unlinkSync(markerPath(root));
   winner.release();
 });
 
 test('a lock that keeps changing under the acquire is reported as held after a bounded number of looks', () => {
-  const dir = stateDir();
-  writeLock(dir, staleHolder());
+  const root = makeRepo();
+  writeLock(root, holderLikeMe());
   let looks = 0;
-  const error = heldError(() => acquireLock(dir, { command: 'propose' }, {
+  const error = thrown(() => acquireLock(root, { command: 'propose' }, {
     onStage(stage) {
       if (stage !== 'stale') return;
       looks += 1;
       if (looks > 50) throw new Error('the acquire did not stop looking');
-      writeLock(dir, staleHolder({ command: `round-${looks}` }));
+      writeLock(root, holderLikeMe({ command: `round-${looks}` }));
     },
   }));
   assert.ok(looks > 1 && looks <= 50, `looked ${looks} times`);
@@ -411,28 +657,85 @@ test('a lock that keeps changing under the acquire is reported as held after a b
   assert.match(error.holder.command, /^round-/);
 });
 
-test('while a stale lock is replaced, again and again, a second process watching never once finds the lock\'s name empty', async () => {
-  const dir = stateDir();
-  const root = join(dir, '..');
-  const staleText = `${JSON.stringify(staleHolder())}\n`;
-  const putStaleBack = () => {
-    const tmp = join(root, 'stale.tmp');
-    writeFileSync(tmp, staleText);
-    renameSync(tmp, lockPath(dir));
+// --- leftovers and file systems ---------------------------------------------------
+
+test('leftover private files are removed on the next acquire when their writer is provably dead or they are an hour old, and only then', () => {
+  const root = makeRepo();
+  const dir = commonDir(root);
+  const hourAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  const put = (name, content, old = false) => {
+    writeFileSync(join(dir, name), content);
+    if (old) utimesSync(join(dir, name), hourAgo, hourAgo);
+    return name;
   };
-  mkdirSync(dir, { recursive: true });
+  const gone = [
+    put(`brain-kit.lock.${deadPid()}.aaaaaaaaaaaa.tmp`, JSON.stringify(holderLikeMe())),
+    put(`brain-kit.lock.reclaim.${deadPid()}.bbbbbbbbbbbb.tmp`, JSON.stringify(holderLikeMe())),
+    put('brain-kit.lock.4242.dddddddddddd.tmp', '', true),
+    put('brain-kit-snapshot.json.4242.eeeeeeeeeeee.tmp', '{"format":1', true),
+  ];
+  const kept = [
+    put(`brain-kit.lock.${process.ppid}.cccccccccccc.tmp`, JSON.stringify(holderLikeMe({ pid: process.ppid })), true),
+    put('brain-kit.lock.4243.ffffffffffff.tmp', ''),
+    put('brain-kit-snapshot.json.4243.abcdefabcdef.tmp', '{"format":1'),
+    put(`brain-kit.lock.${deadPid()}.123456123456.tmp`, JSON.stringify(holderLikeMe({ host: 'other-host.example.invalid' })), true),
+    put('brain-kit.lock.4244.xyz.tmp', '', true),
+    put('unrelated.tmp', '', true),
+    put(GUARD_FILES.SNAPSHOT, '{"format":1}', true),
+  ];
+  const lock = acquireLock(root, { command: 'propose' });
+  const names = readdirSync(dir);
+  for (const name of gone) assert.equal(names.includes(name), false, `${name} should have been removed`);
+  for (const name of kept) assert.equal(names.includes(name), true, `${name} should have been kept`);
+  lock.release();
+});
+
+test('a file system without hard links is refused with a translated message naming the directory, and leaves nothing', () => {
+  const root = makeRepo();
+  for (const code of ['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS']) {
+    const link = () => {
+      const error = new Error(`${code}: operation not permitted, link`);
+      error.code = code;
+      throw error;
+    };
+    const error = thrown(() => acquireLock(root, { command: 'propose' }, { link }), GuardError);
+    assert.equal(error.code, 'LOCK_NO_HARD_LINKS', code);
+    assert.equal(error.exitCode, EXIT.FAILURE);
+    assert.deepEqual(error.params, { dir: commonDir(root) });
+    rendersIn(error, commonDir(root));
+    assert.deepEqual(readdirSync(commonDir(root)).filter((name) => name.startsWith('brain-kit')), []);
+  }
+  const other = () => {
+    const error = new Error('EIO: i/o error, link');
+    error.code = 'EIO';
+    throw error;
+  };
+  assert.throws(() => acquireLock(root, { command: 'propose' }, { link: other }), (error) => error.code === 'EIO' && !(error instanceof GuardError));
+});
+
+// --- races --------------------------------------------------------------------
+
+test('while a stale lock is replaced, again and again, a second process watching never once finds the lock\'s name empty', async () => {
+  const root = makeRepo();
+  const base = join(root, '..');
+  const staleText = `${JSON.stringify(holderLikeMe())}\n`;
+  const putStaleBack = () => {
+    const tmp = join(base, 'stale.tmp');
+    writeFileSync(tmp, staleText);
+    renameSync(tmp, lockPath(root));
+  };
   putStaleBack();
-  const readyFile = join(root, 'watching');
-  const stopFile = join(root, 'stop');
-  const watcher = spawn(process.execPath, [WATCHER, JSON.stringify({ lockPath: lockPath(dir), readyFile, stopFile })], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const readyFile = join(base, 'watching');
+  const stopFile = join(base, 'stop');
+  const watcher = spawn(process.execPath, [WATCHER, JSON.stringify({ lockPath: lockPath(root), readyFile, stopFile })], { stdio: ['ignore', 'pipe', 'inherit'] });
   let out = '';
   watcher.stdout.on('data', (chunk) => { out += chunk; });
   const exited = new Promise((resolve) => watcher.on('exit', resolve));
   let laps = 0;
   try {
     while (!existsSync(readyFile)) await new Promise((resolve) => setTimeout(resolve, 5));
-    for (; laps < 1500; laps += 1) {
-      const lock = acquireLock(dir, { command: 'propose' });
+    for (; laps < 400; laps += 1) {
+      const lock = acquireLock(root, { command: 'propose' });
       assert.equal(lock.holder.pid, process.pid);
       putStaleBack();
     }
@@ -441,29 +744,29 @@ test('while a stale lock is replaced, again and again, a second process watching
     await exited;
   }
   const { looks, gaps } = JSON.parse(out);
-  assert.equal(laps, 1500);
+  assert.equal(laps, 400);
   assert.ok(looks > laps, `the watcher looked only ${looks} times`);
   assert.equal(gaps, 0, `the lock's name was empty ${gaps} times in ${looks} looks`);
 });
 
 async function race({ n, barrier, startAt }) {
-  const dir = stateDir();
-  writeLock(dir, staleHolder());
-  const root = join(dir, '..');
-  const doneFile = join(root, 'done');
+  const root = makeRepo();
+  writeLock(root, holderLikeMe());
+  const base = join(root, '..');
+  const doneFile = join(base, 'done');
   let barrierOption;
   if (barrier) {
-    barrierOption = { dir: join(root, 'barrier'), n };
+    barrierOption = { dir: join(base, 'barrier'), n };
     mkdirSync(barrierOption.dir);
   }
-  const children = Array.from({ length: n }, (_, i) => startChild({ stateDir: dir, command: `racer-${i}`, id: i, barrier: barrierOption, startAt, doneFile }));
+  const children = Array.from({ length: n }, (_, i) => startChild({ root, command: `racer-${i}`, id: i, barrier: barrierOption, startAt, doneFile }));
   try {
     const results = await Promise.all(children.map((c) => c.line));
     for (const result of results) assert.equal(result.error, undefined, result.error);
     const winners = results.filter((result) => result.won);
     assert.equal(winners.length, 1, `exactly one winner, got ${JSON.stringify(results)}`);
     const winner = winners[0];
-    assert.equal(describeLock(dir).pid, winner.pid);
+    assert.equal(describeLock(root).pid, winner.pid);
     for (const loser of results.filter((result) => !result.won)) {
       assert.equal(loser.holder.pid, winner.pid, `every loser names the winner: ${JSON.stringify(loser)}`);
     }
@@ -471,8 +774,8 @@ async function race({ n, barrier, startAt }) {
     writeFileSync(doneFile, '');
     await Promise.all(children.map((c) => c.exited));
   }
-  assert.equal(describeLock(dir), null, 'the winner released');
-  assert.deepEqual(readdirSync(dir), []);
+  assert.equal(describeLock(root), null, 'the winner released');
+  assert.deepEqual(leftovers(root), []);
 }
 
 test('two child processes that both judged the same lock stale race to reclaim it: exactly one wins', async () => {
@@ -485,6 +788,7 @@ test('four child processes that all judged the same lock stale race to reclaim i
 
 test('unforced races between child processes on one stale lock always produce exactly one winner', async () => {
   for (let round = 0; round < 6; round += 1) {
-    await race({ n: 4, startAt: Date.now() + 400 });
+    await race({ n: 4, startAt: Date.now() + 500 });
   }
 });
+

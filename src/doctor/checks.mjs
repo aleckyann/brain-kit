@@ -446,22 +446,16 @@ function machineValid(ctx) {
   return { id, status: 'ok', messageKey: 'doctor.machine_valid.ok', params: { file } };
 }
 
-// Carried from the init review. The kit derives a vault's state directory
-// from the path it was reached by; reached through a symbolic link, that
-// is a different directory from the one init wrote machine.json into
-// (init records the real path). Every later command run through the link
-// would then find no machine file, while the file sits one derivation
-// away. This names the path that finds it.
+// Carried from the init review. The state directory used to be derived
+// from the path a vault was reached by, so through a symbolic link it was
+// not the directory init wrote machine.json into. stateDirFor now derives
+// it from the vault's real path, whatever path reached it; this check says
+// whether that directory holds the machine file.
 function stateDirResolves(ctx) {
   const id = 'state-dir-resolves';
   const used = ctx.stateDir;
   if (isRegularFile(join(used, MACHINE_FILENAME))) {
     return { id, status: 'ok', messageKey: 'doctor.state_dir_resolves.ok', params: { dir: used } };
-  }
-  const path = ctx.realRoot();
-  const canonical = stateDirFor(path, ctx.env);
-  if (isRegularFile(join(canonical, MACHINE_FILENAME))) {
-    return { id, status: 'fail', messageKey: 'doctor.state_dir_resolves.use_canonical', params: { path, dir: canonical, used } };
   }
   return { id, status: 'fail', messageKey: 'doctor.state_dir_resolves.none', params: { dir: used } };
 }

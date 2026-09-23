@@ -168,6 +168,9 @@ function allSites() {
     // rendered by init, exactly like a finding.
     ...extractRuleMessageSites(readSrc('src/init/adopt.mjs'), 'src/init/adopt.mjs'),
     ...extractRuleMessageSites(readSrc('src/init/gate.mjs'), 'src/init/gate.mjs'),
+    ...extractRuleMessageSites(readSrc('src/guards/location.mjs'), 'src/guards/location.mjs'),
+    ...extractRuleMessageSites(readSrc('src/guards/lock.mjs'), 'src/guards/lock.mjs'),
+    ...extractRuleMessageSites(readSrc('src/guards/snapshot.mjs'), 'src/guards/snapshot.mjs'),
   ];
   const direct = [
     ...extractTranslatorCallSites(readSrc('src/cli.mjs'), 'src/cli.mjs'),

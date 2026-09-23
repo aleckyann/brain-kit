@@ -1,4 +1,4 @@
-import { mkdirSync, chmodSync } from 'node:fs';
+import { chmodSync, mkdirSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { basename, isAbsolute, join, resolve } from 'node:path';
@@ -11,13 +11,6 @@ import { basename, isAbsolute, join, resolve } from 'node:path';
 //                 a run, so two runs against the same vault never overlap
 //                 (ports the original vault's flock-based lock, now scoped
 //                 per vault instead of one lock shared by every vault).
-//   LOCK_RECLAIM  the marker a process creates, exclusively, to earn the
-//                 right to replace a stale LOCK (src/guards/lock.mjs says
-//                 why a rename needs it). Present only for the few system
-//                 calls a reclaim takes; one left behind means a reclaimer
-//                 died mid reclaim. LOCK, LOCK_RECLAIM and SNAPSHOT are
-//                 each written through a transient sibling named
-//                 `<name>.<pid>.<random>.tmp`, never under their own name.
 //   WATERMARK     the high-water mark of the last day (or ref) the scheduled
 //                 curator has already read, carried over from the original
 //                 vault's own watermark file. Kept as JSON, not a bare date
@@ -26,9 +19,17 @@ import { basename, isAbsolute, join, resolve } from 'node:path';
 //   LAST_RUN      a small record of the most recent run's outcome (status,
 //                 timestamp), so a briefing or `doctor` can answer "did the
 //                 last run succeed" without re-parsing the log directory.
-//   SNAPSHOT      the session snapshot (src/guards/snapshot.mjs): which
-//                 paths were already dirty when a session began, so a later
-//                 `propose` can tell them from what the session changed.
+//   SNAPSHOT      a path machine.json records under `paths.snapshot`.
+//
+// The guards every writing command takes, the vault lock and the session
+// snapshot, do NOT live here: a state directory is chosen by the caller's
+// environment (BRAIN_KIT_STATE_DIR, XDG_STATE_HOME, the path the vault was
+// reached by), so one vault can have several, and a lock kept in one of
+// them lets a second writer in through another. They live in the vault's
+// git common directory instead (src/guards/location.mjs), the one place
+// every environment, symlink and linked worktree of a repository agrees on.
+// LOCK and SNAPSHOT above are what machine.json records, and the guards
+// read neither.
 //   LOG_DIR       directory holding one dated log file per run (the
 //                 individual file names are dynamic, so only the directory
 //                 itself is named here).
@@ -37,7 +38,6 @@ import { basename, isAbsolute, join, resolve } from 'node:path';
 //                 its own by the briefing, independent of any single run.
 export const STATE_FILES = Object.freeze({
   LOCK: 'lock',
-  LOCK_RECLAIM: 'lock.reclaim',
   WATERMARK: 'watermark.json',
   LAST_RUN: 'last-run.json',
   SNAPSHOT: 'snapshot.json',
@@ -61,6 +61,20 @@ function shortHash(absoluteVaultPath) {
   return createHash('sha256').update(absoluteVaultPath).digest('hex').slice(0, 8);
 }
 
+// The real path of a vault that exists, so a vault reached through a
+// symbolic link resolves to the same state directory (and machine.json) as
+// through its real path; a path that does not exist yet (init, before it
+// creates the vault) is only made absolute. Any other failure to resolve
+// is raised, never guessed around.
+function realPathOf(absolute) {
+  try {
+    return realpathSync(absolute);
+  } catch (error) {
+    if (error.code === 'ENOENT') return absolute;
+    throw error;
+  }
+}
+
 // Resolve the per-vault state directory. BRAIN_KIT_STATE_DIR, when set, is a
 // full override (used by tests and by anyone who wants to pin the exact
 // path) and the vault path is not consulted at all. Otherwise the directory
@@ -69,7 +83,7 @@ function shortHash(absoluteVaultPath) {
 // vaults never collide.
 export function stateDirFor(vaultRoot, env = process.env) {
   if (env.BRAIN_KIT_STATE_DIR) return env.BRAIN_KIT_STATE_DIR;
-  const absolute = resolve(vaultRoot);
+  const absolute = realPathOf(resolve(vaultRoot));
   const name = basename(absolute) || 'vault';
   return join(stateHome(env), 'brain-kit', `${name}-${shortHash(absolute)}`);
 }

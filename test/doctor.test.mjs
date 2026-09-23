@@ -25,6 +25,7 @@ import {
   chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { delimiter, join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { makeTempDir } from './helpers/tmp.mjs';
 import { KIT_ROOT, kitVersion } from '../src/version.mjs';
 import { createTranslator } from '../src/lang.mjs';
@@ -626,16 +627,19 @@ test('machine-valid: passes on a valid machine.json recording the real path', as
 
 // --- state-dir-resolves ------------------------------------------------------
 
-// The vault reached through a symbolic link: the state directory derived
-// from the linked path is not the one derived from the real path.
+// The vault reached through a symbolic link. `linkState` is where the
+// state directory used to be derived from the linked path (the vault
+// directory's name and a hash of the path as given); stateDirFor now
+// derives it from the real path, whatever path reached the vault.
 function setupThroughLink({ machineUnder }) {
   const fx = setup({ writeMachine: false });
   const link = join(fx.base, 'link to brain');
   symlinkSync(fx.root, link);
   const real = realpathSync(fx.root);
-  const linkState = stateDirFor(link, fx.env);
+  const linkState = join(fx.env.XDG_STATE_HOME, 'brain-kit', `link to brain-${createHash('sha256').update(link).digest('hex').slice(0, 8)}`);
   const realState = stateDirFor(real, fx.env);
-  assert.notEqual(linkState, realState, 'the two derivations must differ for this test to mean anything');
+  assert.equal(stateDirFor(link, fx.env), realState, 'through the link, the state directory is the real path\'s');
+  assert.notEqual(linkState, realState, 'the old derivation must differ for this test to mean anything');
   const target = machineUnder === 'real' ? realState : linkState;
   mkdirSync(target, { recursive: true });
   chmodSync(target, 0o700);
@@ -648,20 +652,20 @@ function setupThroughLink({ machineUnder }) {
   return { ...fx, root: link, real, linkState, realState };
 }
 
-test('state-dir-resolves: fails through a symlink when only the canonical path finds machine.json, naming the path to use', async () => {
+test('state-dir-resolves: passes through a symlink, because the state directory is derived from the real path', async () => {
   const fx = setupThroughLink({ machineUnder: 'real' });
-  const { report, code } = await doctor(fx, ['--only', 'state-dir-resolves']);
-  const c = assertCheck(report, 'state-dir-resolves', 'fail', 'doctor.state_dir_resolves.use_canonical');
-  assert.equal(c.params.path, fx.real);
-  assert.match(c.message, new RegExp(fx.real.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-  assert.equal(code, EXIT.FAILURE);
+  const { report } = await doctor(fx, ['--only', 'state-dir-resolves,machine-valid']);
+  const c = assertCheck(report, 'state-dir-resolves', 'ok', 'doctor.state_dir_resolves.ok');
+  assert.equal(c.params.dir, fx.realState);
+  assertCheck(report, 'machine-valid', 'ok');
 });
 
-test('state-dir-resolves: passes through a symlink when the linked path\'s own state directory holds machine.json', async () => {
+test('state-dir-resolves: a machine.json under the directory the linked path alone would name is not where anything looks', async () => {
   const fx = setupThroughLink({ machineUnder: 'link' });
-  const { report } = await doctor(fx, ['--only', 'state-dir-resolves,machine-valid']);
-  assertCheck(report, 'state-dir-resolves', 'ok', 'doctor.state_dir_resolves.ok');
-  assertCheck(report, 'machine-valid', 'ok');
+  const { report, code } = await doctor(fx, ['--only', 'state-dir-resolves']);
+  const c = assertCheck(report, 'state-dir-resolves', 'fail', 'doctor.state_dir_resolves.none');
+  assert.equal(c.params.dir, fx.realState);
+  assert.equal(code, EXIT.FAILURE);
 });
 
 test('hooks-path: a vault reached through a symlink still finds its gate, since git reports the real top level', async () => {

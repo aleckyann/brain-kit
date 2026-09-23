@@ -108,13 +108,19 @@ Nothing below is on npm yet. It runs from a clone of the repository.
 
 ### Phase 1, slice 1C: the git loop
 
-- Two guards for every command that writes to a vault. The lock is a file in the state
-  directory naming the holder's pid, host, command and start time; a second writer is
-  refused at once, naming the holder, and a lock is replaced only when its host is this
-  machine and its process no longer exists, by a rename that exactly one of several
-  racing writers can win. The session snapshot records which paths were already dirty when
-  a session began, and later splits what is dirty into what was there before and what
-  changed since, without stashing, staging or writing anything in the vault.
+- Two guards for every command that writes to a vault, both kept in the repository's git
+  common directory, so every environment, symbolic link and linked worktree of one vault
+  finds the same ones; outside a repository they refuse. The lock names the holder's pid,
+  host, command and start time, and its machine, boot and process namespace where the
+  platform has them; a second writer is refused at once, naming the holder. A lock is
+  replaced only when its holder is provably dead (same machine after a reboot, or same
+  boot and namespace with the process gone), by a rename that exactly one of several
+  racing writers can win. The session snapshot records every path git reports in any
+  state, ignored ones included, as raw bytes, and later splits what is dirty into what was
+  there before and what changed since, without stashing, staging or writing anything in
+  the vault.
+- The state directory of a vault reached through a symbolic link is now the one derived
+  from its real path, so `machine.json` is found whichever path a command starts from.
 
 ## 0.0.1 (published on npm on 18/09/2026)
 

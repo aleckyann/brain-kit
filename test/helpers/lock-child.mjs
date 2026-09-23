@@ -3,7 +3,7 @@
 // dead), not a second call inside the test's own process.
 //
 // Configured through one JSON argument:
-//   stateDir   the state directory whose lock to take
+//   root       a directory inside the vault whose lock to take
 //   command    the command name to record in the lock
 //   id         a label echoed back in the result
 //   barrier    optional { dir, n }: on judging the lock stale, wait until n
@@ -14,8 +14,8 @@
 //   doneFile   optional: a winner holds the lock until this file exists, so
 //              no loser can win merely by arriving after the winner let go
 //
-// Prints exactly one JSON line: { id, pid, won: true } or
-// { id, pid, won: false, holder, blockedBy } or { id, pid, error }.
+// Prints exactly one JSON line: { id, pid, won: true, holder } or
+// { id, pid, won: false, holder, blockedBy } or { id, pid, error, code }.
 import { existsSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { acquireLock, LockHeld } from '../../src/guards/lock.mjs';
@@ -50,11 +50,11 @@ function print(result) {
 
 try {
   if (options.startAt) waitFor(() => Date.now() >= options.startAt, 'the start time');
-  const lock = acquireLock(options.stateDir, { command: options.command }, { onStage });
-  print({ won: true });
+  const lock = acquireLock(options.root, { command: options.command }, { onStage });
+  print({ won: true, holder: lock.holder });
   if (options.doneFile) waitFor(() => existsSync(options.doneFile), 'the done file');
   lock.release();
 } catch (error) {
   if (error instanceof LockHeld) print({ won: false, holder: error.holder, blockedBy: error.blockedBy });
-  else print({ error: String(error && error.stack) });
+  else print({ error: String(error && error.stack), code: error && error.code });
 }
