@@ -4,80 +4,75 @@
 # This is a TEMPLATE: it is copied into an adopting vault's own .githooks/
 # directory (or wherever that vault points core.hooksPath at) and is meant
 # to be edited there. It names no path or identity specific to any one
-# machine or maintainer; everything it needs about THIS vault (whether an
-# automated identity is even allowed near the default branch) comes from
-# that vault's own brain-kit.config.json, which travels with the vault
-# itself, not from this file.
+# machine or maintainer; everything it needs about THIS vault (its secret
+# patterns, whether an automated identity is even allowed near the default
+# branch) comes from that vault's own brain-kit.config.json, which travels
+# with the vault itself, not from this file.
 #
-# What it does, in order:
+# What it does, in order, and each step's status is read: the first that
+# fails refuses the push.
 #   1. Runs `brain-kit validate`, refusing the push if the vault does not
 #      conform to the Open Knowledge Format or this vault's own house
 #      rules.
-#   2. Runs `brain-kit lint`, refusing the push if this vault's own health
-#      rules (orphans, tables, the `secrets` rule against
-#      privacy.secret_patterns and the shapes in src/leak.mjs, and the
-#      rest) find a problem. The `secrets` rule reads every file git
-#      tracks or would add, dot-files such as `.env` included and ignored
-#      files not; a file too large for it to read refuses the push, and
-#      the vault's deliberate escape for one known to be safe is
+#   2. Runs `brain-kit lint --base all`, refusing the push if this vault's
+#      own health rules (orphans, tables, the `secrets` rule against
+#      privacy.secret_patterns and the generic credential shapes, and the
+#      rest) find a problem in what the working tree holds. The vault's
+#      deliberate escape for a file known to be safe is
 #      lint.secrets.exclude_paths in brain-kit.config.json, which a pull
 #      request shows.
-#   3. Refuses a push made under the vault's own automation identity
+#   3. Runs `brain-kit push-gate`, the same object scan the brain-kit
+#      maintainer's own gate runs, over what the push CARRIES: every commit
+#      it sends, each commit's files, their names, its message, its author
+#      and committer and its raw headers, every annotated tag, and the
+#      destination name of every reference it writes or deletes. The
+#      patterns are the generic credential shapes plus privacy.secret_patterns
+#      from TWO configurations, the working tree's and the one on the
+#      remote's default branch as this repository knows it
+#      (refs/remotes/<remote>/HEAD), because a pushed branch can delete a
+#      pattern from its own configuration and then violate it. The vault's
+#      own brain-kit.config.json is read for credential shapes only, since it
+#      declares the patterns and would match every one of them.
+#   4. Refuses a push made under the vault's own automation identity
 #      (brain-kit.config.json's git.agent_identity) whose DESTINATION is
 #      the vault's default branch, whatever the ref being pushed from is
 #      called and whether it adds commits or deletes the branch outright.
-#      A vault that curates itself through an
-#      agent is designed around that agent proposing changes as a pull
-#      request (see brain-kit.config.json's git.branch_prefix and
-#      pr_command); an agent pushing directly to the default branch has
-#      skipped the review that design depends on, whether by a bug in the
-#      automation or by a compromised credential, and either way this is
-#      the point that push should stop. This step is not the maintainer's
-#      OWN leak scan against a personal, machine-local pattern list (see
-#      that hook's own header in a brain-kit checkout, .githooks/pre-push):
-#      this template runs generically on every adopting vault, and a
-#      personal pattern list is, by that hook's own design, never
-#      something a generic template could carry.
+#      A vault that curates itself through an agent is designed around that
+#      agent proposing changes as a pull request (see
+#      brain-kit.config.json's git.branch_prefix and pr_command); an agent
+#      pushing directly to the default branch has skipped the review that
+#      design depends on, whether by a bug in the automation or by a
+#      compromised credential, and either way this is the point that push
+#      should stop.
 #
-# WHAT THIS DOES NOT COVER, measured on 22/09/2026. This hook checks the
-# WORKING TREE, whatever is checked out right now, uncommitted edits and
-# untracked files included, and it NEVER examines the commits a push
-# carries. Those are two different things, and git sends the second:
+# WHAT THIS DOES NOT COVER, rewritten on 22/09/2026 when step 3 arrived.
+# Until then this hook read only the working tree, and a credential that
+# had ever reached a commit travelled in the history, in a tip hidden by an
+# uncommitted edit, or on a branch that was not checked out, all three
+# proven against a throwaway remote. Step 3 scans the objects git sends, so
+# all three are refused now, whatever the working tree shows. What remains:
 #
-#   - Not the history. A credential committed and then deleted in a later
-#     commit is gone from the working tree and still travels in the
-#     history this push sends: pushed to a fresh remote with this hook
-#     passing, it was readable there in plaintext.
-#   - Not even the tip. A credential in the very commit being pushed,
-#     hidden by an uncommitted edit that emptied the file, passes: the
-#     hook reads the edited file, git pushes the commit, and the remote
-#     holds the credential.
-#   - Not another branch. `git push origin <a branch that is not checked
-#     out>`, or `git push --all`, sends commits the working tree never
-#     showed this hook at all.
-#
-# All three were proven against a throwaway bare remote. That is the most
-# common way a secret leaks through git, and this template does not stop
-# it yet. Closing it means scanning the objects the push carries, as the
-# maintainer's own gate in a brain-kit checkout already does; until then,
-# a credential that ever reached a commit must be treated as published and
-# rotated, whatever this hook says.
-#
-# Two smaller gaps, proven the same way, remain even in the working tree.
-# The `secrets` rule reads what a file contains, never what it is called:
-# a note NAMED after a configured pattern passes where the same name in
-# its text refuses. And it reads bytes as they are stored: a credential
-# inside a compressed file (a zip archive, an office document, most PDFs)
-# passes, here and in the maintainer's gate alike.
+#   - It is a literal pattern scanner. Content inside a compressed file (a
+#     zip archive, an office document, most PDFs) passes, and so does a
+#     name split across a line break, or written in decomposed Unicode (a
+#     letter followed by a combining accent) where the pattern has the
+#     letter precomposed. The maintainer's gate has the same limits.
+#   - A remote whose default branch this repository does not know (a
+#     remote added by hand and never fetched, or a push by url rather than
+#     by remote name) is scanned with the working tree's patterns alone.
+#     The gate says so on one line and names the command that fixes it.
+#   - `git push --no-verify` skips every step of this hook. So does a clone
+#     that never ran `git config core.hooksPath .githooks`, and so does a
+#     checked-out branch whose own .githooks/pre-push says something else:
+#     this file lives in the working tree. Nothing client-side can prevent
+#     any of them.
 #
 # Activate once per clone of the adopting vault:
 #   git config core.hooksPath .githooks
-# and keep node_modules/ in the vault's .gitignore. brain-kit is installed
-# there, and the `secrets` rule reads whatever git would add: a
-# node_modules git does not ignore is read like any other file, and the
-# engine's own source spells out the literal key prefixes a configuration
-# commonly lists, so this file does not. Measured on 22/09/2026, a vault
-# set up that way had its first push refused over brain-kit's own files.
+# brain-kit is found on PATH and nowhere else. The vault carries no package
+# of its own, so there is no copy inside it for this hook to look for, and
+# whoever controls PATH for the shell git runs hooks in controls which
+# engine judges the push.
 set -u
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
@@ -86,29 +81,28 @@ if [ -z "$REPO_ROOT" ]; then
   exit 1
 fi
 
-# brain-kit is a dependency of the vault, not a global tool this template
-# can assume is on PATH: look for the copy npm installed for this vault
-# first, and fall back to PATH only for a setup that put it there some
-# other way (a global install, a wrapper script).
-resolve_brain_kit() {
-  if [ -x "$REPO_ROOT/node_modules/.bin/brain-kit" ]; then
-    printf '%s' "$REPO_ROOT/node_modules/.bin/brain-kit"
-    return 0
-  fi
-  if command -v brain-kit >/dev/null 2>&1; then
-    printf '%s' "brain-kit"
-    return 0
-  fi
-  return 1
-}
-
-BRAIN_KIT="$(resolve_brain_kit)"
-if [ -z "$BRAIN_KIT" ]; then
-  echo "pre-push: brain-kit was not found (checked node_modules/.bin and PATH). Install it as a dependency of this vault. Refusing to push." >&2
+if ! BRAIN_KIT="$(command -v brain-kit)" || [ -z "$BRAIN_KIT" ]; then
+  echo "pre-push: brain-kit was not found on PATH, and this gate runs the brain-kit on PATH and nothing else. Put it on the PATH of the shell git runs hooks in (a global install puts it there), then push again. Refusing to push." >&2
   exit 1
 fi
 
-if ! "$BRAIN_KIT" validate; then
+# The reference lines git hands this hook on standard input are read ONCE,
+# whole, into a scratch file, because two steps below need them: the object
+# scan and the automation guard. Read by the first, a pipe would be empty
+# for the second. A read that fails refuses: the lines that did arrive are
+# not the push.
+REF_LINES="$(mktemp "${TMPDIR:-/tmp}/brain-kit-refs.XXXXXX")" || REF_LINES=""
+if [ -z "$REF_LINES" ]; then
+  echo "pre-push: could not create a temporary file for the reference lines of this push; refusing to push." >&2
+  exit 1
+fi
+trap 'rm -f "$REF_LINES"' EXIT
+if ! cat > "$REF_LINES"; then
+  echo "pre-push: could not read the reference lines git sent for this push; refusing to push." >&2
+  exit 1
+fi
+
+if ! "$BRAIN_KIT" validate < /dev/null; then
   echo "pre-push: brain-kit validate found a problem with this vault; refusing to push." >&2
   exit 1
 fi
@@ -130,8 +124,16 @@ fi
 # added lines (style, tables) default to `warn`, and a warning does not
 # fail a lint run; only a rule this vault itself escalated to `error`,
 # and `secrets`, which defaults to `error`, can refuse a push here.
-if ! "$BRAIN_KIT" lint --base all; then
+if ! "$BRAIN_KIT" lint --base all < /dev/null; then
   echo "pre-push: brain-kit lint found a problem with this vault; refusing to push." >&2
+  exit 1
+fi
+
+# What the push carries, as opposed to what the working tree shows. git's
+# own two arguments are handed on unchanged: the remote's name (or the url
+# as typed, on a push by url) and the url the push really goes to.
+if ! "$BRAIN_KIT" push-gate "${1:-}" "${2:-}" --patterns config < "$REF_LINES"; then
+  echo "pre-push: brain-kit push-gate refused what this push carries (see above); refusing to push." >&2
   exit 1
 fi
 
@@ -182,6 +184,36 @@ AGENT_EMAIL="$(node -e "$READ_AGENT_GUARD_SCRIPT" "$CONFIG_FILE" 2>/dev/null)"
 # writes; it yields nothing here, and the warning below says the guard is
 # not running rather than guessing.
 remote_name="${1:-origin}"
+
+# On a push by url, git hands this hook the url as typed in place of a
+# remote name, and a url can carry a token (https://<user>:<token>@<host>).
+# The warning below prints the name, so it prints it without its userinfo:
+# the same rule as `without_userinfo` in brain-kit's src/push/records.sh.
+without_userinfo() {
+  local url="$1" scheme rest authority prefix
+  case "$url" in
+    *://*)
+      scheme="${url%%://*}://"
+      rest="${url#*://}"
+      authority="${rest%%/*}"
+      case "$authority" in
+        *@*) printf '%s' "$scheme${authority##*@}${rest#"$authority"}" ; return 0 ;;
+      esac
+      ;;
+    *)
+      prefix="${url%%/*}"
+      case "$prefix" in
+        *@*:*)
+          case "${prefix##*@}" in
+            *:*) printf '%s' "${url#"${prefix%@*}@"}" ; return 0 ;;
+          esac
+          ;;
+      esac
+      ;;
+  esac
+  printf '%s' "$url"
+}
+remote_shown="$(without_userinfo "$remote_name")"
 
 default_branch() {
   local symref candidate
@@ -235,12 +267,10 @@ fi
 # its own branches, is how a vault learns to pass --no-verify, which would
 # turn this guard off permanently instead of for one push.
 if [ "$guard_active" -eq 1 ] && [ -z "$DEFAULT_BRANCH" ]; then
-  echo "pre-push: WARNING: could not determine this vault's default branch (no $remote_name/HEAD, no local main or master, no remote-tracking main or master), so the guard against an automated push to it is NOT running for this push. Set it with: git remote set-head $remote_name --auto" >&2
+  echo "pre-push: WARNING: could not determine this vault's default branch (no $remote_shown/HEAD, no local main or master, no remote-tracking main or master), so the guard against an automated push to it is NOT running for this push. Set it with: git remote set-head $remote_shown --auto" >&2
 fi
 
-# The ref negotiation is read in full regardless of whether the guard
-# above is even active, so a push carrying many refs (e.g. `git push
-# --tags`) never leaves git blocked writing to a pipe nobody is draining.
+# The ref negotiation, from the scratch file it was read into above.
 #
 # WHICH FIELD DECIDES: remote_ref, the DESTINATION of this push, and never
 # local_ref, its source. They are equal for the ordinary `git push origin
@@ -272,7 +302,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     echo "pre-push: refusing a push to the default branch ('$DEFAULT_BRANCH') under this vault's automation identity ($AGENT_EMAIL). Automated changes go through a pull request, never a direct push to $DEFAULT_BRANCH." >&2
     guard_failed=1
   fi
-done
+done < "$REF_LINES"
 
 if [ "$guard_failed" -ne 0 ]; then
   exit 1

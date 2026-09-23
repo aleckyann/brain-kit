@@ -144,7 +144,7 @@
   "lint.secrets_other_repositories": "N\u00e3o varrido em busca de segredos: {paths}, cada um um subm\u00f3dulo ou um reposit\u00f3rio pr\u00f3prio, cujo conte\u00fado n\u00e3o est\u00e1 neste reposit\u00f3rio.",
   "lint.secrets_absent": "N\u00e3o varrido em busca de segredos: {count} arquivo(s) que o git rastreia est\u00e3o ausentes da \u00e1rvore de trabalho ({paths}), ent\u00e3o o que um commit guarda para eles n\u00e3o foi lido.",
   "lint.list_more": "e mais {count}",
-  "push_gate.usage": "Uso: brain-kit push-gate <nome-do-remoto> <url-do-remoto> --patterns personal (as linhas de referência do pre-push na entrada padrão)",
+  "push_gate.usage": "Uso: brain-kit push-gate <nome-do-remoto> <url-do-remoto> --patterns personal|config (as linhas de referência do pre-push na entrada padrão)",
   "push_gate.bad_argument": "brain-kit push-gate: argumento não reconhecido \"{arg}\".",
   "push_gate.missing_remote": "brain-kit push-gate: o nome e a URL do remoto são obrigatórios, nessa ordem, como o git os entrega a um hook de pre-push; recusando em vez de adivinhar para qual remoto vai este push.",
   "push_gate.missing_patterns": "brain-kit push-gate: --patterns é obrigatório e nomeia a lista de padrões que julga este push ({expected}); não há valor implícito, porque um valor implícito é uma lista que ninguém escolheu.",
@@ -160,5 +160,13 @@
   "push_gate.reference_count_mismatch": "brain-kit push-gate: o git enviou {sent} linha(s) de referência para este push e a enumeração do push listou {listed} referência(s), então parte do que este push carrega ficaria sem varredura; recusando em vez de chamá-lo de limpo.",
   "push_gate.reference_numbering": "brain-kit push-gate: a enumeração do push não numerou suas referências de 1 a {sent}, na ordem em que o git as enviou, então a lista dela não descreve este push; recusando em vez de chamá-lo de limpo.",
   "push_gate.reference_name_mismatch": "brain-kit push-gate: o nome de destino que a enumeração do push listou para a referência #{number} deste push não é o que o git enviou nessa linha, então a lista dela não descreve este push; recusando em vez de chamá-lo de limpo (nenhum dos dois nomes é impresso).",
-  "push_gate.stdin_unreadable": "brain-kit push-gate: as linhas de referência na entrada padrão não puderam ser lidas até o fim ({reason}), então o que chegou não é o push inteiro; recusando em vez de varrer só uma parte."
+  "push_gate.stdin_unreadable": "brain-kit push-gate: as linhas de referência na entrada padrão não puderam ser lidas até o fim ({reason}), então o que chegou não é o push inteiro; recusando em vez de varrer só uma parte.",
+  "push_gate.not_a_vault": "brain-kit push-gate: --patterns config lê o {file} deste vault, e nenhum vault foi encontrado a partir do diretório atual; recusando em vez de varrer sem os padrões do vault.",
+  "push_gate.config_unloadable": "brain-kit push-gate: o {file} da árvore de trabalho não pôde ser carregado ({reason}), então os padrões deste vault são desconhecidos; recusando o push.",
+  "push_gate.config_patterns_union": "brain-kit push-gate: este push é varrido com os formatos genéricos de credencial e o privacy.secret_patterns do {file} da árvore de trabalho e do que está em {branch}, o branch padrão do remoto '{remote}' como este repositório o conhece.",
+  "push_gate.default_branch_unresolved": "brain-kit push-gate: o branch padrão do remoto '{remote}' não é conhecido por este repositório (refs/remotes/{remote}/HEAD não aponta para um dos branches dele), então este push é varrido só com o privacy.secret_patterns do {file} da árvore de trabalho. Para somar os do branch padrão, rode: git remote set-head {remote} --auto",
+  "push_gate.default_branch_no_config": "brain-kit push-gate: {branch}, o branch padrão do remoto '{remote}', não tem {path}, então este push é varrido só com o privacy.secret_patterns do {file} da árvore de trabalho.",
+  "push_gate.default_branch_config_unreadable": "brain-kit push-gate: o {path} em {branch}, o branch padrão do remoto '{remote}', não pôde ser lido como configuração ({reason}), então este push é varrido só com o privacy.secret_patterns do {file} da árvore de trabalho.",
+  "push_gate.config_outside_repository": "brain-kit push-gate: o {file} deste vault está fora do repositório deste push, então nenhum branch padrão dele pode conter um; este push é varrido só com o privacy.secret_patterns do {file} da árvore de trabalho.",
+  "push_gate.default_branch_read_failed": "brain-kit push-gate: não foi possível ler o {path} em {branch}, o branch padrão do remoto '{remote}' ({reason}); recusando em vez de varrer sem os padrões que uma pessoa integrou ali."
 }

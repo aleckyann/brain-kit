@@ -92,10 +92,11 @@ A fase 1 é construída em cinco fatias:
 
 Existem dois gates de push, com alcances diferentes. O gate deste repositório varre todo
 objeto que um push carrega contra uma lista pessoal de padrões mantida fora do repositório.
-O hook de template feito para um vault, em `templates/githooks/`, roda `validate` e `lint`;
-ele confere a árvore de trabalho e ainda não os commits que um push carrega, e por isso nada
-o instala num vault até que confira. O [SECURITY.md](SECURITY.md) lista o que os gates não
-cobrem.
+O hook de template feito para um vault, em `templates/githooks/`, roda `validate` e `lint`
+sobre a árvore de trabalho e depois a mesma varredura de objetos sobre o que o push carrega,
+contra os padrões configurados do próprio vault, os da árvore de trabalho e os do branch
+padrão juntos. Nada o instala num vault ainda. O [SECURITY.md](SECURITY.md) lista o que os
+gates não cobrem.
 
 ## Contribuindo
 

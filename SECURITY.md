@@ -54,6 +54,18 @@ on the remote first, so pushing a deletion of a reference that was never there p
 the name and nothing else. A name that matched is never printed, by either half of the
 gate, and the reference is identified by its position in the push instead.
 
+The template hook an adopting vault installs (`templates/githooks/pre-push`) runs the same
+scan of the same seven channels through the same command, `brain-kit push-gate`, against a
+different list: the generic credential shapes plus the vault's own
+`privacy.secret_patterns`, from its working tree and from its default branch as the clone
+knows it (`refs/remotes/<remote>/HEAD`) together, because a pushed branch can delete a
+pattern from its own configuration. The vault's `brain-kit.config.json` is read for
+credential shapes only, since it declares the patterns. Where it differs from this gate: its
+engine is whatever `brain-kit` is on PATH, the hook itself lives in the vault's working
+tree, so a checked-out branch can change it, and a remote whose default branch the clone
+does not know is scanned with the working tree's patterns alone, which the gate says on one
+line.
+
 **Install it once per clone with `.githooks/install-gate`**, and re-run that script
 whenever the gate itself changes. Do NOT point `core.hooksPath` at `.githooks`: the file
 there is the source the installer copies from, and the gate refuses to run from inside the

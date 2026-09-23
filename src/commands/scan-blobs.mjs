@@ -606,7 +606,21 @@ export async function runScanBlobs(argv, io, { metadataBatch = METADATA_BATCH } 
 // when every channel was read and nothing matched (an exempt identity
 // aside), FAILURE otherwise. Everything a push is refused or accepted for,
 // once the stream exists, is decided here, for both callers.
-export function scanRecordStream(raw, { patterns, budgetMs, io, metadataBatch = METADATA_BATCH }) {
+//
+// `configContent`, when given, is { path, patterns }: the CONTENT of a
+// blob record whose path is exactly `path` (held as latin1, like every
+// path here) is read against `patterns` instead. It exists for one file,
+// the adopting vault's own brain-kit.config.json at the vault root, which
+// DECLARES the vault's patterns: read against them, every literal pattern
+// matches its own declaration and every push that touches the
+// configuration is refused. The linter reads that file against the
+// generic credential shapes alone for the same reason (src/rules/lint.mjs,
+// the `secrets` rule), and push-gate --patterns config hands those shapes
+// here. Only the content: the file's path, and the message, identities
+// and headers of the commit that carries it, are read against the whole
+// set like any other. The maintainer's gate passes nothing, and so does
+// every other caller.
+export function scanRecordStream(raw, { patterns, budgetMs, io, metadataBatch = METADATA_BATCH, configContent = null }) {
   let entries;
   try {
     entries = parseEntries(raw);
@@ -674,7 +688,7 @@ export function scanRecordStream(raw, { patterns, budgetMs, io, metadataBatch = 
   // round 2): an exemption applied is a fact the maintainer should see in
   // the summary too, not only in the line above it.
   let exemptionsApplied = 0;
-  const scan = (text, channel, { exemptIfMatched = false } = {}) => {
+  const scan = (text, channel, { exemptIfMatched = false, against = patterns } = {}) => {
     channelsScanned += 1;
     let result;
     try {
@@ -689,7 +703,7 @@ export function scanRecordStream(raw, { patterns, budgetMs, io, metadataBatch = 
       // large ordinary blob is not refused as having run out of time. The
       // override above sets the floor it grows from, so a negative one
       // still refuses before a single line is read.
-      result = scanText(decodeLatin1Text(text), patterns, { deadlineAt: Date.now() + budgetMs, accrue: true });
+      result = scanText(decodeLatin1Text(text), against, { deadlineAt: Date.now() + budgetMs, accrue: true });
     } catch (error) {
       failed = true;
       io.stderr.write(`pre-push: could not scan ${channel}: ${error.message}; refusing instead of calling it clean.\n`);
@@ -990,7 +1004,8 @@ export function scanRecordStream(raw, { patterns, budgetMs, io, metadataBatch = 
       continue;
     }
 
-    scan(blob.content, `${label} (CONTENT, at ${short})`);
+    const isConfig = configContent !== null && path === configContent.path;
+    scan(blob.content, `${label} (CONTENT, at ${short})`, isConfig ? { against: configContent.patterns } : {});
   }
 
   // Read once for the whole push, not once per commit: it is the same

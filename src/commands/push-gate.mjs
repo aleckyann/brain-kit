@@ -1,4 +1,4 @@
-// `brain-kit push-gate <remote-name> <remote-url> --patterns personal`:
+// `brain-kit push-gate <remote-name> <remote-url> --patterns personal|config`:
 // the whole push gate behind one command. It runs the push enumeration
 // (src/push/records.sh) on the pre-push reference lines it reads from
 // standard input, reads the enumeration's STATUS, and only when that says
@@ -13,7 +13,8 @@
 // the knowledge it holds. Written twice, one copy is the one somebody
 // forgets. So there is one copy, and both gates reach it through here: the
 // maintainer's hook (.githooks/pre-push) with `--patterns personal`, and
-// the shipped gate with the list its own configuration names.
+// the gate an adopting vault installs (templates/githooks/pre-push) with
+// `--patterns config`, the patterns the vault's configuration declares.
 //
 // WHERE THE ENUMERATION IS READ FROM. The copy beside this module, resolved
 // from this module's own location and from nothing else: not the current
@@ -39,14 +40,25 @@
 // gate it prints among is English (see the note there).
 import { spawnSync } from 'node:child_process';
 import { Buffer } from 'node:buffer';
+import { realpathSync } from 'node:fs';
+import { isAbsolute, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EXIT } from '../exit-codes.mjs';
-import { parseEntries, preparePersonalScan, scanRecordStream } from './scan-blobs.mjs';
+import { CONFIG_FILENAME, loadConfig } from '../config.mjs';
+import { decodeBytes } from '../io.mjs';
+import { loadPatterns } from '../leak.mjs';
+import { findVaultRoot } from '../vault.mjs';
+import { parseEntries, perScanBudgetMs, preparePersonalScan, scanRecordStream } from './scan-blobs.mjs';
 
 // The pattern lists this command knows how to load. `personal` is the
 // maintainer's own list outside any repository (src/leak.mjs,
-// loadPatterns). There is no default: a default is a list nobody chose.
-export const PATTERN_SOURCES = Object.freeze(['personal']);
+// loadPatterns). `config` is the adopting vault's own, from its
+// brain-kit.config.json (prepareConfigScan below), and it never reads the
+// personal list: each value has a branch of its own in runPushGate, and a
+// value without one is refused there rather than scanned with whichever
+// list happens to be the fallback. There is no default: a default is a
+// list nobody chose.
+export const PATTERN_SOURCES = Object.freeze(['personal', 'config']);
 
 // Resolved against this module, never against the current directory: see
 // the header on where the enumeration is read from.
@@ -214,9 +226,194 @@ export async function runPushGate(argv, io, t, { recordsScript = RECORDS_SCRIPT,
   // file), and still for every push that got this far, one with nothing in
   // it included: the fail-closed check is never scoped to "only once
   // something was found to scan".
-  const prepared = preparePersonalScan(io, process.env);
-  if (prepared === null) return EXIT.FAILURE;
+  let prepared;
+  if (args.patterns === 'personal') {
+    prepared = preparePersonalScan(io, process.env);
+    if (prepared === null) return EXIT.FAILURE;
+  } else if (args.patterns === 'config') {
+    const outcome = prepareConfigScan(io, t, args.remoteName, process.env);
+    if (outcome.exit !== undefined) return outcome.exit;
+    prepared = outcome.prepared;
+  } else {
+    // parsePushGateArgs admits only PATTERN_SOURCES, so this is reached
+    // only by a value added there without a branch here, and that must not
+    // scan with anything.
+    io.stderr.write(`${t('push_gate.unknown_patterns', { value: args.patterns, expected: PATTERN_SOURCES.join(', ') })}\n`);
+    return EXIT.USAGE;
+  }
   return scanRecordStream(stream, { ...prepared, io });
+}
+
+// --- --patterns config ------------------------------------------------------
+//
+// WHICH CONFIGURATION SUPPLIES THE PATTERNS (ruled 22/09/2026, because a
+// branch can change it). The configuration is data, and a pushed branch can
+// delete a pattern from it and then violate that pattern in the same push.
+// So the set is the generic credential shapes plus the UNION of
+// privacy.secret_patterns from two configurations: the working tree's,
+// which is what is about to be committed, and the one on the remote's
+// default branch as this repository knows it (refs/remotes/<remote>/HEAD,
+// resolved to a commit), which is what a person merged. A union can only
+// over-include. A branch's own configuration is never the only source,
+// with one stated exception: when the default branch cannot be resolved,
+// or holds no configuration this can read, the gate says so on one line
+// and scans with the working tree's patterns alone, because refusing every
+// push until then would leave a new vault only one way out, --no-verify.
+//
+// THE CONFIGURATION FILE'S OWN CONTENT is read against the generic shapes
+// alone, in every commit of the push (see scanRecordStream's configContent):
+// it is where the literal patterns are declared, so it matches every one of
+// them. Its path, and each commit's message, identities and headers, are
+// read against the whole set.
+//
+// Returns { prepared } for scanRecordStream, or { exit } after saying why.
+export function prepareConfigScan(io, t, remoteName, env = process.env, cwd = process.cwd()) {
+  const say = (key, params) => io.stderr.write(`${t(key, params)}\n`);
+  const file = CONFIG_FILENAME;
+  const remote = withoutUserinfo(remoteName);
+
+  const vaultRoot = findVaultRoot(cwd);
+  if (vaultRoot === null) {
+    say('push_gate.not_a_vault', { file });
+    return { exit: EXIT.USAGE };
+  }
+  let working;
+  try {
+    working = loadConfig(vaultRoot);
+  } catch (error) {
+    say('push_gate.config_unloadable', { file, reason: error.message });
+    return { exit: EXIT.FAILURE };
+  }
+
+  const configPath = configPathInRepository(vaultRoot);
+  const fromDefault = configPath === null ? { state: 'outside' } : readDefaultBranchConfig(remoteName, configPath);
+  let defaultPatterns = [];
+  switch (fromDefault.state) {
+    case 'read':
+      defaultPatterns = fromDefault.patterns;
+      say('push_gate.config_patterns_union', { file, branch: fromDefault.branch, remote });
+      break;
+    case 'unresolved':
+      say('push_gate.default_branch_unresolved', { file, remote });
+      break;
+    case 'absent':
+      say('push_gate.default_branch_no_config', { file, path: configPath, branch: fromDefault.branch, remote });
+      break;
+    case 'unreadable':
+      say('push_gate.default_branch_config_unreadable', { file, path: configPath, branch: fromDefault.branch, remote, reason: fromDefault.reason });
+      break;
+    case 'outside':
+      say('push_gate.config_outside_repository', { file });
+      break;
+    default:
+      // 'failed': git could not read an object it said was there. Nothing
+      // here says what the merged configuration declares, so nothing is
+      // scanned without it.
+      say('push_gate.default_branch_read_failed', { path: configPath, branch: fromDefault.branch ?? '?', remote, reason: fromDefault.reason });
+      return { exit: EXIT.FAILURE };
+  }
+
+  try {
+    const patterns = loadPatterns({ configPatterns: [...secretPatternsOf(working), ...defaultPatterns] });
+    const shapesOnly = loadPatterns({});
+    const budgetMs = perScanBudgetMs(env);
+    const configContent = configPath === null ? null : { path: Buffer.from(configPath, 'utf8').toString('latin1'), patterns: shapesOnly };
+    return { prepared: { patterns, budgetMs, configContent } };
+  } catch (error) {
+    io.stderr.write(`pre-push: ${error.message}; refusing to push.\n`);
+    return { exit: EXIT.FAILURE };
+  }
+}
+
+// privacy.secret_patterns of a parsed configuration, its strings only, the
+// way the linter's `secrets` rule reads it.
+function secretPatternsOf(config) {
+  const listed = config?.privacy?.secret_patterns;
+  return Array.isArray(listed) ? listed.filter((entry) => typeof entry === 'string') : [];
+}
+
+function gitRead(args, encoding = 'utf8') {
+  return spawnSync('git', ['--no-replace-objects', ...args], {
+    encoding,
+    env: { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' },
+    maxBuffer: 64 * 1024 * 1024,
+  });
+}
+
+// The vault's configuration file as a path inside the repository being
+// pushed (forward slashes, relative to its top level), which is the path
+// every blob record of the push names it by. null when the vault root is
+// not inside that repository, where no commit of it can hold the file.
+function configPathInRepository(vaultRoot) {
+  const top = gitRead(['rev-parse', '--show-toplevel']);
+  if (top.error || top.status !== 0) return null;
+  let rel;
+  try {
+    rel = relative(realpathSync(top.stdout.replace(/\n$/, '')), realpathSync(vaultRoot));
+  } catch {
+    return null;
+  }
+  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return null;
+  const parts = rel === '' ? [] : rel.split(sep);
+  return [...parts, CONFIG_FILENAME].join('/');
+}
+
+// The configuration on the remote's default branch as this repository knows
+// it. `refs/remotes/<remote>/HEAD` must be a symbolic reference to a branch
+// of that same remote and resolve to a commit; anything else is
+// 'unresolved'. The file is found by its path in that commit and read as
+// the blob it is (cat-file: no text conversion, no filter, no replacement
+// object stands in for it).
+function readDefaultBranchConfig(remoteName, configPath) {
+  const prefix = `refs/remotes/${remoteName}/`;
+  const symref = gitRead(['symbolic-ref', '-q', `${prefix}HEAD`]);
+  if (symref.error) return { state: 'failed', reason: symref.error.message };
+  if (symref.status !== 0) return { state: 'unresolved' };
+  const target = symref.stdout.trim();
+  if (!target.startsWith(prefix) || target.length === prefix.length) return { state: 'unresolved' };
+  const branch = target.slice('refs/remotes/'.length);
+  const commit = gitRead(['rev-parse', '-q', '--verify', `${target}^{commit}`]);
+  if (commit.error) return { state: 'failed', branch, reason: commit.error.message };
+  if (commit.status !== 0) return { state: 'unresolved' };
+  const sha = commit.stdout.trim();
+  const entry = gitRead(['rev-parse', '-q', '--verify', `${sha}:${configPath}`]);
+  if (entry.error) return { state: 'failed', branch, reason: entry.error.message };
+  if (entry.status !== 0) return { state: 'absent', branch };
+  const oid = entry.stdout.trim();
+  const type = gitRead(['cat-file', '-t', oid]);
+  if (type.error || type.status !== 0) return { state: 'failed', branch, reason: type.error ? type.error.message : `git cat-file exited ${type.status}` };
+  if (type.stdout.trim() !== 'blob') return { state: 'unreadable', branch, reason: `it is a ${type.stdout.trim()}, not a file` };
+  const blob = gitRead(['cat-file', 'blob', oid], 'buffer');
+  if (blob.error || blob.status !== 0) return { state: 'failed', branch, reason: blob.error ? blob.error.message : `git cat-file exited ${blob.status}` };
+  let parsed;
+  try {
+    parsed = JSON.parse(decodeBytes(blob.stdout));
+  } catch (error) {
+    return { state: 'unreadable', branch, reason: error.message };
+  }
+  return { state: 'read', branch, patterns: secretPatternsOf(parsed) };
+}
+
+// A url as it may be printed: without its userinfo, which can carry a
+// token. The same rule as without_userinfo in src/push/records.sh: in a url
+// with a scheme, everything in the authority up to its last `@`; in the scp
+// form, a prefix before the first slash whose last `@` is followed by a
+// colon. Anything else, a remote name or a local path, is itself.
+export function withoutUserinfo(url) {
+  const scheme = url.indexOf('://');
+  if (scheme !== -1) {
+    const rest = url.slice(scheme + 3);
+    const slash = rest.indexOf('/');
+    const authority = slash === -1 ? rest : rest.slice(0, slash);
+    const at = authority.lastIndexOf('@');
+    if (at === -1) return url;
+    return `${url.slice(0, scheme + 3)}${authority.slice(at + 1)}${rest.slice(authority.length)}`;
+  }
+  const slash = url.indexOf('/');
+  const prefix = slash === -1 ? url : url.slice(0, slash);
+  const at = prefix.lastIndexOf('@');
+  if (at === -1 || !prefix.slice(at + 1).includes(':')) return url;
+  return url.slice(at + 1);
 }
 
 // All of standard input as bytes. Unlike src/io.mjs's readStdin, which
