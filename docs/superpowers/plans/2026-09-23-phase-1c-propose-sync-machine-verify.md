@@ -164,6 +164,20 @@ The owner's command. It refuses when the configured git identity equals the agen
 
 ---
 
+### Task 6: The checks read what git publishes, and the reader reads the format's own example
+
+**Files:** Modify `src/frontmatter.mjs`, `src/commands/validate.mjs`, `src/commands/lint.mjs` (and whatever builds the file set the rules receive); tests in `test/frontmatter.test.mjs`, `test/validate.test.mjs`, `test/lint.test.mjs`.
+
+Two defects carried into this slice, both proved by real runs.
+
+**A. The checks the gate runs read notes git ignores.** Inside a repository, `validate` and every lint rule other than `secrets` walk the folder, so a note git ignores can fail them, and because the adopter's gate runs both on every push, one ignored note refuses every push. Inside a repository, both commands read git's list of publishable files (tracked plus untracked-not-ignored, through `src/git-env.mjs`), the same list `secrets` and `adopt` already use; outside one, they keep walking the folder, and say which they did. Test: an ignored note that would fail `validate` and the `privacy` rule no longer fails either, inside a repository, and still does outside one.
+
+**B. `readEntries` misreads a list of inline mappings.** The format's own section 5.2 example writes `verified` as a list of inline mappings (`- { by: ..., at: ... }`); the reader reads each entry as one key named `"{ by"`, so `validate` reports false findings on a conformant note, and `verify` must refuse such notes. Read that shape. Test with the specification's own example, verbatim, and with the block form beside it; neither yields a finding.
+
+Mutation is mandatory on the file-set decision and the entry parsing. Commit with prefix `fix:`.
+
+---
+
 ## After the last task
 
 The final whole-slice review runs over the whole range, with the design's phase 1 criterion for this slice in front of it: `propose` inside a round opens a pull request without `--only` only where a snapshot proves the files are the round's own, and an interactive `propose` requires `--only`; every run ends on the branch it started from; and `verify` stamps only what a merged pull request into the default branch changed.
