@@ -327,8 +327,11 @@ test('without the reconciled confidential directories, the adopted vault fails i
 });
 
 // A small vault built for one inference at a time.
+// A repository, not yet committed: inferConfig reads what git would
+// publish, and every file here is untracked and not ignored.
 function tinyVault(files) {
   const root = makeTempDir('brain-kit-adopt-tiny-');
+  assert.equal(spawnSync('git', ['init', '-q'], { cwd: root }).status, 0);
   const all = { 'index.md': '---\nokf_version: "0.2"\n---\n\n# Notes\n', ...files };
   for (const [path, text] of Object.entries(all)) {
     mkdirSync(join(root, ...path.split('/').slice(0, -1)), { recursive: true });
@@ -1138,7 +1141,8 @@ test('C1: a vault in a repository whose git cannot answer is refused with exit 2
   const copy = freshCopy('pt-BR');
   const shims = join(copy.base, 'broken git');
   mkdirSync(shims);
-  writeFileSync(join(shims, 'git'), '#!/usr/bin/env bash\necho "fatal: broken for this test" >&2\nexit 128\n');
+  // git runs (it answers --version), and cannot read this repository.
+  writeFileSync(join(shims, 'git'), '#!/usr/bin/env bash\nif [ "$1" = --version ]; then echo "git version 2.99.0"; exit 0; fi\necho "fatal: broken for this test" >&2\nexit 128\n');
   chmodSync(join(shims, 'git'), 0o755);
   const before = snapshot(copy.vault);
   const file = join(copy.base, 'answers.json');
@@ -1308,4 +1312,85 @@ test('ruling 1: a repository that disappears while the questions are answered is
   assert.match(stderr.text, /not in a git repository/);
   assert.deepEqual(snapshot(copy.vault), before);
   assert.equal(existsSync(copy.state), false);
+});
+
+test('with git not installed, adopt says git is missing, never "run git init", and writes nothing', () => {
+  for (const repository of [true, false]) {
+    const copy = freshCopy('pt-BR', { repository });
+    const noGit = join(copy.base, 'a PATH with no git');
+    mkdirSync(noGit);
+    const before = snapshot(copy.vault);
+    const file = join(copy.base, 'answers.json');
+    writeFileSync(file, `${JSON.stringify(ANSWERS['pt-BR'], null, 2)}\n`);
+    const r = brainKit(['init', '--adopt', copy.vault, '--from-answers', file], { env: testEnv(copy.state, { PATH: noGit }), cwd: copy.cwd });
+    assertRefused(r, copy, before, /git could not be run/);
+    assert.ok(r.stderr.startsWith('brain-kit init --adopt: git could not be run ('), 'said by the check on the target, before anything else');
+    assert.doesNotMatch(r.stderr, /git init/);
+  }
+  // A "git" that exits 0 and prints nothing is not a git either.
+  const copy = freshCopy('pt-BR', { repository: false });
+  const silent = join(copy.base, 'a silent git');
+  mkdirSync(silent);
+  writeFileSync(join(silent, 'git'), '#!/usr/bin/env bash\nexit 0\n');
+  chmodSync(join(silent, 'git'), 0o755);
+  const before = snapshot(copy.vault);
+  const file = join(copy.base, 'answers.json');
+  writeFileSync(file, `${JSON.stringify(ANSWERS['pt-BR'], null, 2)}\n`);
+  const r = brainKit(['init', '--adopt', copy.vault, '--from-answers', file], { env: testEnv(copy.state, { PATH: `${silent}${delimiter}${process.env.PATH}` }), cwd: copy.cwd });
+  assertRefused(r, copy, before, /git could not be run/);
+});
+
+test('what the vault walk never reads, a dot-folder or node_modules, contributes nothing to the inference either, even when git tracks it', () => {
+  const root = tinyVault({
+    'a/one.md': note('x'),
+    '.obsidian/notes.md': note('workspace'),
+    'node_modules/pkg/readme.md': note('package'),
+  });
+  const { config } = inferConfig(root, { lang: 'en' });
+  assert.deepEqual(config.taxonomy.domains, []);
+  assert.deepEqual(Object.keys(config.taxonomy.collections), ['a']);
+  assert.ok(!JSON.stringify(config).includes('workspace') && !JSON.stringify(config).includes('package"'));
+});
+
+test('the ruling on inferConfig: an ignored folder holding a note leaves no trace in the configuration or the manifest, and no ignored name reaches the remote', () => {
+  const copy = freshCopy('pt-BR');
+  appendFileSync(join(copy.vault, '.gitignore'), 'privado/\n');
+  commitAll(copy.vault, 'ignore a folder');
+  mkdirSync(join(copy.vault, 'privado'));
+  writeFileSync(join(copy.vault, 'privado', 'carla-dias-diagnostico.md'), note('diagnostico', 'confidencial: true\nsituacao: grave\n'));
+  writeFileSync(join(copy.vault, 'privado', 'index.md'), '# Privado\n\n- [Carla](carla-dias-diagnostico.md)\n');
+  const env = withBrainKitOnPath(copy.base);
+  const file = join(copy.base, 'answers.json');
+  writeFileSync(file, `${JSON.stringify(ANSWERS['pt-BR'], null, 2)}\n`);
+  const r = brainKit(['init', '--adopt', copy.vault, '--from-answers', file], { env, cwd: copy.cwd });
+  // The lint that follows adopt still walks the filesystem and finds the
+  // ignored note's marker outside every confidential directory: a verdict
+  // on the terminal, never written anywhere (see the sweep in the fix
+  // report). The adoption itself is written.
+  assert.equal(r.status, EXIT.FAILURE, r.stdout + r.stderr);
+  const configText = readFileSync(join(copy.vault, CONFIG_FILENAME), 'utf8');
+  const manifestText = readFileSync(join(copy.vault, MANIFEST_PATH), 'utf8');
+  const inferences = r.stdout.split('\n').filter((line) => line.startsWith('  - ')).join('\n');
+  assert.ok(inferences.length > 0);
+  for (const trace of ['privado', 'diagnostico', 'carla-dias-diagnostico', 'situacao', 'grave']) {
+    assert.ok(!configText.includes(trace), `${trace} is in the configuration`);
+    assert.ok(!manifestText.includes(trace), `${trace} is in the manifest`);
+    assert.ok(!inferences.includes(trace), `${trace} was printed as an inference`);
+  }
+  // Without the marker, the ignored note draws only warnings, which do not
+  // refuse a push.
+  writeFileSync(join(copy.vault, 'privado', 'carla-dias-diagnostico.md'), note('diagnostico', 'situacao: grave\n'));
+  commitAll(copy.vault, 'adopt brain-kit', ['brain-kit.config.json', '.brain-kit/manifest.json', '.githooks/pre-push'], { ...env });
+  const bare = join(copy.base, 'origin.git');
+  assert.equal(spawnSync('git', ['init', '-q', '--bare', bare]).status, 0);
+  assert.equal(git(copy.vault, ['remote', 'add', 'origin', bare]).status, 0);
+  const push = spawnSync('git', ['push', '-q', 'origin', 'HEAD:main'], { cwd: copy.vault, encoding: 'utf8', env });
+  assert.equal(push.status, 0, push.stderr);
+  assert.match(push.stderr, /brain-kit leak gate ran/);
+  const names = git(bare, ['ls-tree', '-r', '--name-only', 'main']).stdout.split('\n');
+  assert.ok(!names.some((n) => n.startsWith('privado/')));
+  const published = git(bare, ['log', '--all', '-p', '--format=%H %s']).stdout;
+  // The .gitignore names the pattern itself, the person's own published line.
+  const withoutIgnoreFile = published.replace(/^\+privado\/$/m, '');
+  for (const trace of ['privado', 'diagnostico', 'carla-dias-diagnostico', 'grave']) assert.ok(!withoutIgnoreFile.includes(trace), `${trace} reached the remote`);
 });

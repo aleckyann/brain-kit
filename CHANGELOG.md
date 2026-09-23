@@ -62,7 +62,9 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   notes, plain dates) and prints every inference; then it writes only the configuration and
   a manifest recording every existing file as the person's, by path, plus `machine.json` outside the
   vault. The vault must be a git repository: a folder that is not one is refused, with
-  nothing written, and told to write its `.gitignore` and run `git init` first. The manifest
+  nothing written, and told to write its `.gitignore` and run `git init` first; without git
+  installed it says git is missing. The configuration is inferred from the same list the
+  manifest records, so a folder or note git ignores contributes nothing to it. The manifest
   lists only what git would publish (tracked files, and untracked files that are not
   ignored), so a file the person ignored is never named in it. Then it installs the push gate, unless a
   hook of the person's own, a `core.hooksPath` pointing elsewhere or hooks in `.git/hooks`

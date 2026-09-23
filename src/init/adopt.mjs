@@ -5,7 +5,7 @@ import { localGitVarNames, withoutLocalGitVars } from '../git-env.mjs';
 import { KIT_ROOT } from '../version.mjs';
 import { SUPPORTED_LANGS } from '../lang.mjs';
 import { CONFIG_FILENAME, MACHINE_ONLY_KEYS } from '../config.mjs';
-import { findVaultRoot, isUnderPath, walkVault } from '../vault.mjs';
+import { ALWAYS_IGNORED, findVaultRoot, hasDotSegment, isUnderPath } from '../vault.mjs';
 import { readList, readMapping, readScalar, splitFrontmatter } from '../frontmatter.mjs';
 import { DAYS_IN_MONTH, isLeapYear, isValidCalendarDate, isValidIsoDate } from '../dates.mjs';
 import { stripCode } from '../markdown.mjs';
@@ -178,16 +178,26 @@ function sortedObject(map) {
 }
 
 // What the vault at `root` says its configuration is, for language
-// `lang`. Returns { config, notes }: `config` is the language's defaults
+// `lang`, read from what git would publish and from nothing else
+// (adoptionPaths below, the list the manifest records), never from a
+// filesystem walk: the configuration is committed, and a folder or a note
+// the person keeps out of git must contribute nothing to it, not a domain,
+// not a confidential directory, not a type, not an enum value, not a file
+// name in a note. Of that list, what the vault walk leaves out is left out
+// here too (a dot-entry, node_modules), so the notes read are the ones
+// validate reads, minus the ignored ones. `files`, when given, is that
+// list already made (the command makes it once for both uses). Throws
+// where the list cannot be made (not a repository, a git that cannot
+// answer), like buildAdoptionManifest. Returns { config, notes }: `config` is the language's defaults
 // with every inference applied, the person's own answers (name, handle,
 // title, time zone) still placeholders for completeDefaults
 // (src/init/config.mjs) to fill; `notes` lists every inference.
-export function inferConfig(root, { lang }) {
+export function inferConfig(root, { lang, env = process.env, files: listed = null }) {
   const defaults = readDefaults(lang);
   const config = structuredClone(defaults);
   const notes = [];
   const readFile = makeReadFile(root);
-  const all = walkVault(root, {}, { all: true });
+  const all = (listed ?? adoptionPaths(root, env)).filter((path) => !hasDotSegment(path) && !path.split('/').some((name) => ALWAYS_IGNORED.includes(name)));
   const markdown = all.filter(isMarkdown);
   const templatesDir = defaults.taxonomy.templates_dir;
   const attachmentsDir = defaults.taxonomy.attachments_dir;
@@ -499,8 +509,8 @@ export function inferConfig(root, { lang }) {
 // of git rather than reimplemented. The command refuses a directory that
 // is not in one before anything is written (adoptRepositoryState); this
 // function throws on one as a second line, never walks it.
-export function buildAdoptionManifest(root, { lang, env = process.env }) {
-  const files = adoptionPaths(root, env).filter((path) => path !== CONFIG_FILENAME && path !== MANIFEST_PATH);
+export function buildAdoptionManifest(root, { lang, env = process.env, files: listed = null }) {
+  const files = (listed ?? adoptionPaths(root, env)).filter((path) => path !== CONFIG_FILENAME && path !== MANIFEST_PATH);
   return { lang, files: files.map((path) => ({ path, class: 'seeded' })) };
 }
 
@@ -515,21 +525,29 @@ function adoptGitEnv(env) {
   return { ...withoutLocalGitVars(env, localGitVarNames(env)), GIT_OPTIONAL_LOCKS: '0' };
 }
 
-// 'repository' when git says `root` is inside a working tree; 'none' when
-// it is not and no `.git` sits in it or above it, the case adopt refuses
-// with the way to make it one; 'broken' when something looks like a
-// repository and git cannot answer, with git's own words in `detail`.
+// 'repository' when git says `root` is inside a working tree; 'no_git'
+// when git itself cannot run (not installed, not on PATH), which no
+// `git init` can fix; 'none' when git runs, says no, and no `.git` sits in
+// `root` or above it, the case adopt refuses with the way to make it one;
+// 'broken' when something looks like a repository and git cannot answer,
+// with git's own words in `detail`.
 export function adoptRepositoryState(root, env = process.env) {
-  const inside = run('git', ['rev-parse', '--is-inside-work-tree'], { cwd: root, env: adoptGitEnv(env) });
+  const gitEnv = adoptGitEnv(env);
+  const inside = run('git', ['rev-parse', '--is-inside-work-tree'], { cwd: root, env: gitEnv });
   if (inside.status === 0 && inside.stdout.trim() === 'true') return { state: 'repository' };
+  const version = run('git', ['--version'], { cwd: root, env: gitEnv });
+  if (version.status !== 0 || !/^git version /.test(version.stdout)) {
+    return { state: 'no_git', detail: version.stderr.trim() || version.stdout.trim() || `exit ${version.status}` };
+  }
   if (insideGitWorkTree(root)) return { state: 'broken', detail: inside.stderr.trim() || `exit ${inside.status}` };
   return { state: 'none' };
 }
 
-function adoptionPaths(root, env) {
+export function adoptionPaths(root, env = process.env) {
   const gitEnv = adoptGitEnv(env);
   const repository = adoptRepositoryState(root, env);
   if (repository.state === 'broken') throw new Error(`git could not read the repository this vault is in (${repository.detail})`);
+  if (repository.state === 'no_git') throw new Error(`git could not be run (${repository.detail})`);
   if (repository.state !== 'repository') throw new Error('this vault is not in a git repository');
   const listed = run('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { cwd: root, env: gitEnv, encoding: 'buffer', maxBuffer: 256 * 1024 * 1024 });
   if (listed.status !== 0) throw new Error(`git ls-files failed: ${String(listed.stderr).trim()}`);

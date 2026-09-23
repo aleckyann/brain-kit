@@ -11,7 +11,7 @@ import { localGitVarNames, withoutLocalGitVars } from '../git-env.mjs';
 import { INSTALL_HOOK_COMMAND, installGate } from '../init/gate.mjs';
 import { completeDefaults } from '../init/config.mjs';
 import {
-  adoptRepositoryState, buildAdoptionManifest, inferConfig, inspectAdoptTarget, readDefaults, writeAdoption,
+  adoptRepositoryState, adoptionPaths, buildAdoptionManifest, inferConfig, inspectAdoptTarget, readDefaults, writeAdoption,
 } from '../init/adopt.mjs';
 import {
   ANSWER_KEYS, QUESTIONS, askInteractively, defaultAnswers, defaultLang, describeAnswer, invalidAnswer, readAnswersFile, resolveClaudeBin,
@@ -248,7 +248,14 @@ function refuseLocations(io, t, target, stateDir, machinePath, adopt, env) {
   // .gitignore first, so nothing the person keeps out of git is ever
   // committed or named. A repository git cannot read is refused later, by
   // the listing, with git's own words.
-  if (adopt && adoptRepositoryState(target, env).state === 'none') {
+  // Without git at all, "run git init" would send the person to a command
+  // that cannot run: git missing is said as git missing.
+  const repository = adopt ? adoptRepositoryState(target, env) : null;
+  if (repository?.state === 'no_git') {
+    io.stderr.write(`${t('init.adopt_git_missing', { dir: target, detail: repository.detail })}\n`);
+    return EXIT.USAGE;
+  }
+  if (repository?.state === 'none') {
     io.stderr.write(`${t('init.adopt_not_repository', { dir: target })}\n`);
     return EXIT.USAGE;
   }
@@ -394,8 +401,12 @@ export async function runInit(argv, io, t, {
     // is a vault adopt cannot describe, nor record in the manifest: a
     // refusal, like a root it cannot list, and nothing is written.
     try {
-      inferred = infer(target, { lang: answers.lang });
-      adoption = buildAdoptionManifest(target, { lang: answers.lang, env });
+      // One list, what git would publish, for both: the configuration and
+      // the manifest are committed, and neither may learn from a file git
+      // ignores.
+      const files = adoptionPaths(target, env);
+      inferred = infer(target, { lang: answers.lang, env, files });
+      adoption = buildAdoptionManifest(target, { lang: answers.lang, env, files });
     } catch (error) {
       io.stderr.write(`${t('init.adopt_unreadable', { dir: target, detail: error.code ?? error.message })}\n`);
       return EXIT.USAGE;

@@ -56,7 +56,8 @@ a menos que isso seja pedido.
 
 O `init --adopt` traz um vault existente para o kit. O vault precisa já ser um repositório
 git (escreva o `.gitignore` dele e depois rode `git init`); uma pasta que não é um é
-recusada sem nada escrito. Ele deduz a configuração das notas e mostra cada dedução,
+recusada sem nada escrito. Ele deduz a configuração das notas que o git publicaria (uma
+pasta ou nota que o git ignora não contribui com nada) e mostra cada dedução,
 escreve a configuração e um manifesto que registra como seus, só pelo caminho, os arquivos
 que o git publicaria (um arquivo que o git ignora nunca é registrado, e nenhum hash do seu
 conteúdo é guardado), e instala o gate de push. Um hook seu, ou um `core.hooksPath` apontando para outro lugar, fica
