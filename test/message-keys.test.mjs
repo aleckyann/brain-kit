@@ -184,6 +184,7 @@ function allSites() {
     ...extractTranslatorCallSites(readSrc('src/commands/doctor.mjs'), 'src/commands/doctor.mjs'),
     ...extractTranslatorCallSites(readSrc('src/commands/sync.mjs'), 'src/commands/sync.mjs'),
     ...extractTranslatorCallSites(readSrc('src/commands/machine.mjs'), 'src/commands/machine.mjs'),
+    ...extractTranslatorCallSites(readSrc('src/commands/verify.mjs'), 'src/commands/verify.mjs'),
     ...extractTranslatorCallSites(readSrc('src/init/skeleton.mjs'), 'src/init/skeleton.mjs'),
   ];
   return [...rule, ...direct];
