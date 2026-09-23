@@ -50,8 +50,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, dirname, join, resolve } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 
 const VAULT = process.env.BRAIN_KIT_PARITY_VAULT;
@@ -441,6 +442,86 @@ test(
       );
     } finally {
       rmSync(shadowRoot, { recursive: true, force: true });
+    }
+  },
+);
+
+// --- slice D, task 5: the adopted verdict against the recorded one ---------------
+//
+// `brain-kit init --adopt` infers a configuration from a vault's own notes.
+// This test adopts a COPY of the vault BRAIN_KIT_PARITY_VAULT names and
+// compares what `validate` then reports with the verdict of the
+// configuration recorded above (PARITY_CONFIG, every setting of which was
+// read out of the vault's own conventions by hand), finding by finding.
+// A difference is either an inference adopt gets wrong or a house rule
+// PARITY_CONFIG states that no note shows; either way it is something to
+// read before trusting adopt on a real vault.
+//
+// It never writes to the vault it names: the copy is a real copy (not the
+// hard links the test above uses, because a hard link shares its bytes
+// with the vault and a defect that wrote into a content file would write
+// into the vault), made outside it, without .git; the state directory is
+// a temporary one; and the vault's own listing (path, size, modification
+// time) is compared before and after to prove nothing there moved. It is
+// gated by the same variable as the test above and skipped whenever that
+// is unset, which is every run of this suite in continuous integration.
+function vaultListing(root, rel = '') {
+  const out = [];
+  for (const entry of readdirSync(join(root, rel), { withFileTypes: true })) {
+    if (entry.name === '.git' || entry.name === 'node_modules') continue;
+    const path = rel === '' ? entry.name : `${rel}/${entry.name}`;
+    if (entry.isDirectory()) out.push(...vaultListing(root, path));
+    else {
+      const st = statSync(join(root, path));
+      out.push(`${path} ${st.size} ${st.mtimeMs}`);
+    }
+  }
+  return out.sort();
+}
+
+function findingKey(finding) {
+  return [finding.ruler, finding.id, finding.check, finding.file, finding.warning === true].join(' ');
+}
+
+test(
+  'the verdict on an adopted copy of the reference vault matches the verdict of its recorded configuration',
+  { skip: SKIP },
+  () => {
+    const vaultRoot = resolve(VAULT);
+    const listingBefore = vaultListing(vaultRoot);
+    const work = mkdtempSync(join(tmpdir(), 'brain-kit-adopt-parity-'));
+    try {
+      const copy = join(work, 'vault');
+      const skipGit = (source) => !['.git', 'node_modules'].includes(basename(source));
+      cpSync(vaultRoot, copy, { recursive: true, filter: skipGit });
+      // A second real copy for the recorded configuration, rather than the
+      // test above's hard links: this one lives in the temporary directory,
+      // which need not be on the vault's filesystem.
+      const shadow = join(work, 'recorded');
+      cpSync(vaultRoot, shadow, { recursive: true, filter: skipGit });
+      writeFileSync(join(shadow, 'brain-kit.config.json'), JSON.stringify(PARITY_CONFIG, null, 2));
+
+      const env = { ...process.env, BRAIN_KIT_STATE_DIR: join(work, 'state'), BRAIN_KIT_LANG: 'en' };
+      const adopted = spawnSync(process.execPath, [BIN, 'init', '--adopt', copy, '--yes', '--lang', 'pt-BR'], { encoding: 'utf8', env, cwd: work });
+      assert.ok([0, 1].includes(adopted.status), `adopt did not complete: ${adopted.stdout}\n${adopted.stderr}`);
+      console.log(`[adopt-parity] adopt exit ${adopted.status}`);
+
+      const adoptedRun = spawnSync(process.execPath, [BIN, 'validate', copy, '--json'], { encoding: 'utf8', env, cwd: work });
+      const recordedRun = spawnSync(process.execPath, [BIN, 'validate', shadow, '--json'], { encoding: 'utf8', env, cwd: work });
+      assert.ok([0, 1].includes(adoptedRun.status), `validate crashed on the adopted copy: ${adoptedRun.stderr}`);
+      assert.ok([0, 1].includes(recordedRun.status), `validate crashed on the recorded configuration: ${recordedRun.stderr}`);
+      const adoptedKeys = JSON.parse(adoptedRun.stdout).findings.map(findingKey).sort();
+      const recordedKeys = JSON.parse(recordedRun.stdout).findings.map(findingKey).sort();
+      console.log(`[adopt-parity] adopted: ${adoptedKeys.length} findings; recorded: ${recordedKeys.length} findings`);
+
+      const onlyAdopted = adoptedKeys.filter((key) => !recordedKeys.includes(key));
+      const onlyRecorded = recordedKeys.filter((key) => !adoptedKeys.includes(key));
+      assert.deepEqual(onlyAdopted, [], 'findings on the adopted copy that the recorded configuration does not produce');
+      assert.deepEqual(onlyRecorded, [], 'findings of the recorded configuration that the adopted copy does not produce');
+      assert.equal(adoptedRun.status, recordedRun.status, 'the two verdicts disagree on the exit code');
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+      assert.deepEqual(vaultListing(vaultRoot), listingBefore, 'the reference vault changed during this test');
     }
   },
 );

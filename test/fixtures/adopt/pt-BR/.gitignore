@@ -1,0 +1,3 @@
+# Arquivos locais que nunca entram no histórico do caderno.
+.DS_Store
+*.swp

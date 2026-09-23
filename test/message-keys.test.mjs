@@ -164,6 +164,9 @@ function allSites() {
     ...extractRuleMessageSites(readSrc('src/rules/house.mjs'), 'src/rules/house.mjs'),
     ...extractRuleMessageSites(readSrc('src/rules/lint.mjs'), 'src/rules/lint.mjs'),
     ...extractRuleMessageSites(readSrc('src/doctor/checks.mjs'), 'src/doctor/checks.mjs'),
+    // Slice D, task 5: adopt's notes are { messageKey, params } pairs
+    // rendered by init, exactly like a finding.
+    ...extractRuleMessageSites(readSrc('src/init/adopt.mjs'), 'src/init/adopt.mjs'),
   ];
   const direct = [
     ...extractTranslatorCallSites(readSrc('src/cli.mjs'), 'src/cli.mjs'),

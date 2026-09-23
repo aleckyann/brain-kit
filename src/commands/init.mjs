@@ -1,14 +1,15 @@
-import { chmodSync, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, realpathSync, statSync } from 'node:fs';
 import { constants as osConstants } from 'node:os';
 import { dirname, join, resolve, basename } from 'node:path';
 import { EXIT } from '../exit-codes.mjs';
-import { kitVersion, KIT_ROOT } from '../version.mjs';
+import { kitVersion } from '../version.mjs';
 import { createTranslator, SUPPORTED_LANGS } from '../lang.mjs';
 import { CONFIG_FILENAME, MACHINE_FILENAME, validateConfig, validateMachine } from '../config.mjs';
 import { STATE_FILES, ensureStateDir, stateDirFor, vaultIdFor } from '../state.mjs';
 import { run } from '../exec.mjs';
 import { LOCAL_GIT_VARS, withoutLocalGitVars } from '../git-env.mjs';
 import { completeDefaults } from '../init/config.mjs';
+import { buildAdoptionManifest, inferConfig, inspectAdoptTarget, readDefaults, writeAdoption } from '../init/adopt.mjs';
 import {
   ANSWER_KEYS, QUESTIONS, askInteractively, defaultAnswers, defaultLang, describeAnswer, invalidAnswer, readAnswersFile, resolveClaudeBin,
 } from '../init/answers.mjs';
@@ -19,7 +20,7 @@ import {
 import { runValidate } from './validate.mjs';
 import { runLint } from './lint.mjs';
 
-// brain-kit init [dir] [--lang en|pt-BR] [--yes] [--from-answers <file>]
+// brain-kit init [dir] [--adopt] [--lang en|pt-BR] [--yes] [--from-answers <file>]
 //
 // Makes `dir` (default: the current directory) a new vault: the language
 // skeleton, brain-kit.config.json completed from the answers, .gitignore,
@@ -47,6 +48,19 @@ import { runLint } from './lint.mjs';
 // empty or absent: a half vault would be refused by the next init as
 // "already a vault", with nothing able to finish it.
 //
+// `--adopt` brings an EXISTING vault under the kit instead (see
+// src/init/adopt.mjs): the same answers, the same state directory and
+// machine.json, the same two passes of checks before the first write and
+// the same ledger undone on failure, but the directory must already be a
+// vault shape (a root index.md, no configuration, no manifest), the
+// configuration is inferred from its notes, and the only files written
+// into it are brain-kit.config.json and .brain-kit/manifest.json. It never
+// writes the hook, never runs git init or git config, and never commits;
+// the validate and lint it runs afterwards only read the repository, with
+// GIT_OPTIONAL_LOCKS=0: the repository an adopted vault already has is
+// left exactly as it was.
+// Every inference is printed before the checks run.
+//
 // `deps` is not part of the CLI surface: src/cli.mjs supplies walkVault,
 // and tests may supply `env`, `now`, `cwd` (so no test ever resolves a
 // path against the directory the suite runs from) and `checks` (the
@@ -63,24 +77,30 @@ const USAGE_FLAGS_WITH_VALUE = Object.freeze(['--lang', '--from-answers']);
 // vault it is creating and on nothing else.
 
 // The same removal for code that runs in this process and reads
-// process.env itself (validate and lint), restored afterwards.
+// process.env itself (validate and lint), restored afterwards. While they
+// run, GIT_OPTIONAL_LOCKS=0 is set as well: a read-only git command may
+// otherwise refresh the index file as a side effect (git's own
+// documentation of the variable), and an adopted vault's repository must
+// come out of adopt byte for byte as it went in.
 async function withProcessEnvCleaned(names, fn) {
   const saved = {};
-  for (const name of names) {
+  for (const name of [...names, 'GIT_OPTIONAL_LOCKS']) {
     if (Object.hasOwn(process.env, name)) {
       saved[name] = process.env[name];
       delete process.env[name];
     }
   }
+  process.env.GIT_OPTIONAL_LOCKS = '0';
   try {
     return await fn();
   } finally {
+    delete process.env.GIT_OPTIONAL_LOCKS;
     Object.assign(process.env, saved);
   }
 }
 
 function parseArgs(argv) {
-  const result = { dir: undefined, lang: undefined, yes: false, answersFile: undefined, help: false };
+  const result = { dir: undefined, lang: undefined, yes: false, answersFile: undefined, help: false, adopt: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (USAGE_FLAGS_WITH_VALUE.includes(arg)) {
@@ -90,6 +110,8 @@ function parseArgs(argv) {
       else result.answersFile = value;
     } else if (arg === '--yes' || arg === '-y') {
       result.yes = true;
+    } else if (arg === '--adopt') {
+      result.adopt = true;
     } else if (arg === '--help' || arg === '-h') {
       result.help = true;
     } else if (arg.startsWith('-')) {
@@ -121,10 +143,6 @@ export function worseExit(a, b) {
   return rank(b) > rank(a) ? b : a;
 }
 
-function readDefaults(lang) {
-  return JSON.parse(readFileSync(join(KIT_ROOT, 'lang', lang, 'config.defaults.json'), 'utf8'));
-}
-
 // The path the vault will have once it exists, with every symbolic link
 // in the part that already exists resolved, so machine.json's
 // canonical_path, and the state directory derived from it, agree with
@@ -150,6 +168,7 @@ function refuseTarget(io, t, refusal) {
     case 'already_vault': line = t('init.already_vault', { dir }); break;
     case 'already_repository': line = t('init.already_repository', { dir }); break;
     case 'unreadable': line = t('init.unreadable', { dir, detail }); break;
+    case 'adopt_no_index': line = t('init.adopt_no_index', { dir }); break;
     default: line = t('init.not_empty', { dir, count }); break;
   }
   io.stderr.write(`${line}\n`);
@@ -220,9 +239,11 @@ function buildMachine(canonical, stateDir, env) {
 }
 
 // Every check on the two places init writes, in one function, so the
-// second pass just before writing is the same code as the first.
-function refuseLocations(io, t, target, stateDir, machinePath) {
-  const refusal = inspectTarget(target);
+// second pass just before writing is the same code as the first. `inspect`
+// is the check on the target: inspectTarget for a new vault,
+// inspectAdoptTarget for an existing one.
+function refuseLocations(io, t, target, stateDir, machinePath, inspect) {
+  const refusal = inspect(target);
   if (refusal !== null) return refuseTarget(io, t, refusal);
   if (isInside(stateDir, target)) {
     io.stderr.write(`${t('init.state_inside_vault', { state: stateDir, dir: target })}\n`);
@@ -282,6 +303,13 @@ export async function runInit(argv, io, t, {
       io.stderr.write(`${t('init.lang_conflict', { flag: parsed.lang, file: fileAnswers.lang })}\n`);
       return EXIT.USAGE;
     }
+    // adopt never commits: the history of a vault that already exists is
+    // its owner's. A "commit": true it would silently not honour is
+    // refused, like an unknown key, rather than ignored.
+    if (parsed.adopt && fileAnswers.commit === true) {
+      io.stderr.write(`${t('init.adopt_commit', { file: resolve(cwd, parsed.answersFile) })}\n`);
+      return EXIT.USAGE;
+    }
   }
 
   const target = canonicalOf(resolve(cwd, parsed.dir ?? '.'));
@@ -289,13 +317,17 @@ export async function runInit(argv, io, t, {
   // symbolic link into the vault is seen to be inside it.
   const stateDir = canonicalOf(resolve(cwd, stateDirFor(target, env)));
   const machinePath = join(stateDir, MACHINE_FILENAME);
-  const first = refuseLocations(io, t, target, stateDir, machinePath);
+  const inspect = parsed.adopt ? inspectAdoptTarget : inspectTarget;
+  const first = refuseLocations(io, t, target, stateDir, machinePath, inspect);
   if (first !== null) return first;
 
-  const gitCheck = run('git', ['--version']);
-  if (gitCheck.status !== 0) {
-    io.stderr.write(`${t('init.git_unavailable', { detail: gitCheck.stderr.trim() })}\n`);
-    return EXIT.FAILURE;
+  // adopt runs no git of its own, so it does not need one.
+  if (!parsed.adopt) {
+    const gitCheck = run('git', ['--version']);
+    if (gitCheck.status !== 0) {
+      io.stderr.write(`${t('init.git_unavailable', { detail: gitCheck.stderr.trim() })}\n`);
+      return EXIT.FAILURE;
+    }
   }
   const listed = run('git', ['rev-parse', '--local-env-vars']);
   const localVars = [...new Set([...LOCAL_GIT_VARS, ...(listed.status === 0 ? listed.stdout.split(/\s+/).filter(Boolean) : [])])];
@@ -345,7 +377,28 @@ export async function runInit(argv, io, t, {
 
   // From here on every sentence is in the vault's own language.
   t = translatorFor(io, answers.lang);
-  const config = completeDefaults(readDefaults(answers.lang), answers, { kitVersion: kitVersion() });
+  // For adopt, the configuration is what the vault's own notes say, and
+  // the manifest lists every file already there; both are built, and
+  // judged, before anything is written.
+  let inferred = null;
+  let adoption = null;
+  if (parsed.adopt) {
+    // A folder or a file somewhere inside the vault that cannot be read
+    // is a vault adopt cannot describe, nor record in the manifest: a
+    // refusal, like a root it cannot list, and nothing is written.
+    try {
+      inferred = inferConfig(target, { lang: answers.lang });
+      adoption = buildAdoptionManifest(target);
+    } catch (error) {
+      io.stderr.write(`${t('init.adopt_unreadable', { dir: target, detail: error.code ?? error.message })}\n`);
+      return EXIT.USAGE;
+    }
+    if (!adoption.files.some((entry) => entry.path === 'index.md')) {
+      io.stderr.write(`${t('init.adopt_no_index', { dir: target })}\n`);
+      return EXIT.USAGE;
+    }
+  }
+  const config = completeDefaults(inferred?.config ?? readDefaults(answers.lang), answers, { kitVersion: kitVersion() });
   const configErrors = validateConfig(config);
   if (configErrors.length > 0) {
     io.stderr.write(`${t('init.config_invalid', { errors: configErrors })}\n`);
@@ -359,14 +412,18 @@ export async function runInit(argv, io, t, {
   }
 
   // Second pass, just before writing: see the header.
-  const second = refuseLocations(io, t, target, stateDir, machinePath);
+  const second = refuseLocations(io, t, target, stateDir, machinePath, inspect);
   if (second !== null) return second;
 
   // Nested inside another repository is allowed (an empty directory in a
   // dotfiles home, say): `git add -A` in the outer one records the vault
-  // as one gitlink, never its files. It is said, not refused.
-  const outer = run('git', ['rev-parse', '--show-toplevel'], { cwd: nearestExisting(target), env: gitEnv });
-  const outerRoot = outer.status === 0 ? outer.stdout.trim() : '';
+  // as one gitlink, never its files. It is said, not refused. An adopted
+  // vault is usually its own repository, which says nothing worth saying.
+  let outerRoot = '';
+  if (!parsed.adopt) {
+    const outer = run('git', ['rev-parse', '--show-toplevel'], { cwd: nearestExisting(target), env: gitEnv });
+    outerRoot = outer.status === 0 ? outer.stdout.trim() : '';
+  }
 
   // A state directory that already exists keeps its mode if this run
   // fails, and is named on success if init tightened it.
@@ -411,7 +468,14 @@ export async function runInit(argv, io, t, {
     } catch (error) {
       failure = t('init.state_unwritable', { state: stateDir, detail: error.message });
     }
-    if (failure === null) {
+    if (failure === null && parsed.adopt) {
+      try {
+        writeAdoption(target, { ledger, configText: `${JSON.stringify(config, null, 2)}\n`, manifest: adoption });
+        manifest = adoption;
+      } catch (error) {
+        failure = error.message;
+      }
+    } else if (failure === null) {
       try {
         manifest = writeVault(target, {
           lang: answers.lang,
@@ -448,14 +512,21 @@ export async function runInit(argv, io, t, {
     io.stdout.write(`${t('init.using_defaults')}\n`);
     for (const key of defaulted) io.stdout.write(`  ${key}: ${describeAnswer(t, answers[key])}\n`);
   }
-  io.stdout.write(`${t('init.created', { dir: target, count: manifest.files.length })}\n`);
+  if (parsed.adopt) {
+    io.stdout.write(`${t('init.adopted', { dir: target, count: manifest.files.length })}\n`);
+    io.stdout.write(`${t('init.adopt_inferred')}\n`);
+    for (const note of inferred.notes) io.stdout.write(`  - ${t(note.messageKey, note.params)}\n`);
+  } else {
+    io.stdout.write(`${t('init.created', { dir: target, count: manifest.files.length })}\n`);
+  }
   if (outerRoot !== '') io.stdout.write(`${t('init.nested_repository', { root: outerRoot })}\n`);
   io.stdout.write(`${t('init.state_written', { file: machinePath })}\n`);
   if (priorMode !== null && priorMode !== 0o700) {
     io.stdout.write(`${t('init.state_tightened', { state: stateDir, mode: priorMode.toString(8) })}\n`);
   }
 
-  io.stdout.write(`${t('init.checking')}\n`);
+  if (parsed.adopt) io.stdout.write(`${t('init.adopt_checking')}\n`);
+  else io.stdout.write(`${t('init.checking')}\n`);
   const runChecks = checks ?? {
     validate: (args, cio, ct) => runValidate(args, cio, ct, walkVault),
     lint: (args, cio, ct) => runLint(args, cio, ct, walkVault),
@@ -465,6 +536,10 @@ export async function runInit(argv, io, t, {
     await runChecks.lint([target, '--base', 'all'], io, t),
   ]);
   const checked = worseExit(validated, linted);
+  if (parsed.adopt) {
+    io.stdout.write(`${t('init.adopt_no_commit')}\n`);
+    return checked;
+  }
 
   // The first commit, when asked for, only over a vault both checks
   // passed: a credential-shaped answer must never reach history, even a

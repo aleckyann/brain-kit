@@ -53,6 +53,14 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   is a repository or is a vault; it never waits on a stdin that is not a terminal; it undoes
   everything it created when it fails halfway; and it commits only when told to, after
   `validate` and `lint` pass.
+- `brain-kit init --adopt [dir]` brings an existing vault under the kit. It infers the
+  configuration from the notes (collections and domains, per-type enums, table headings,
+  the log, the stale policy, the confidentiality field and the directories that hold marked
+  notes, plain dates) and prints every inference; then it writes only the configuration and
+  a manifest recording every existing file as the person's, plus `machine.json` outside the
+  vault. It never changes a note, never writes the hook, never changes the repository and
+  never commits. `validate` now refuses a `privacy.confidential_field` that names no
+  declared boolean extension, since a misspelt one silently switched the privacy rule off.
 - The default output language of every command now follows the locale (`LC_ALL`, then
   `LC_MESSAGES`, then `LANG`; a value starting with `pt` is Portuguese) and falls back to
   English; it used to be Portuguese unless `BRAIN_KIT_LANG` said otherwise. `BRAIN_KIT_LANG`

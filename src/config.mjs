@@ -51,7 +51,27 @@ export function validateConfig(config) {
   for (const where of findMachineOnlyKeys(config)) {
     errors.push(`${where}: machine-only key is not allowed in the versioned config (it belongs in ${MACHINE_FILENAME})`);
   }
+  errors.push(...confidentialFieldErrors(config));
   return errors;
+}
+
+// privacy.confidential_field names the frontmatter field the privacy rule
+// reads to find a note marked confidential. The schema holds it to the
+// shape of a key and no more, so a misspelt name ("confidental") passes
+// it, the rule then watches a field no note carries, and a note marked
+// confidential outside every confidential directory is never reported.
+// That is the rule silently disabled by a typo, so the name must be one
+// the same configuration declares, as a boolean, under
+// frontmatter.extensions. (A name like "toString" or "constructor" finds
+// something on Object.prototype, but never anything whose `type` is
+// "boolean", so the type check refuses it too.)
+function confidentialFieldErrors(config) {
+  const field = config?.privacy?.confidential_field;
+  if (typeof field !== 'string') return [];
+  const extensions = config?.frontmatter?.extensions;
+  const declared = extensions !== null && typeof extensions === 'object' ? extensions[field] : null;
+  if (declared?.type === 'boolean') return [];
+  return [`$.privacy.confidential_field: "${field}" must name a boolean extension declared in frontmatter.extensions`];
 }
 
 export function validateMachine(machine) {

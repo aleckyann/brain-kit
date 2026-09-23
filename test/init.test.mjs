@@ -540,22 +540,22 @@ test('an argument that looks like an option is never taken for the directory', (
 test('an unknown option is refused with exit 2 and nothing is written where init runs', () => {
   const { state, cwd } = freshTarget();
   const before = snapshot(cwd);
-  const r = brainKit(['init', '--adopt', '--yes'], { env: testEnv(state), cwd });
+  const r = brainKit(['init', '--force', '--yes'], { env: testEnv(state), cwd });
   assert.equal(r.status, EXIT.USAGE, r.stdout + r.stderr);
-  assert.match(r.stderr, /unexpected argument "--adopt"/);
+  assert.match(r.stderr, /unexpected argument "--force"/);
   assert.deepEqual(snapshot(cwd), before);
   assert.equal(existsSync(state), false);
 });
 
 test('on a terminal, a flag missing its value and an unknown option are refused before any question, writing nothing', async () => {
   const lines = ['en', 'Ana Souza', 'asouza', 'Field Notes', '', 'y', 'UTC'];
-  for (const argv of [['--from-answers'], ['elsewhere', '--from-answers'], ['--lang'], ['--adopt'], ['elsewhere', '--adopt']]) {
+  for (const argv of [['--from-answers'], ['elsewhere', '--from-answers'], ['--lang'], ['--force'], ['elsewhere', '--force']]) {
     const { state, cwd } = freshTarget();
     const before = snapshot(cwd);
     const r = await initDirect(argv, { stdin: fakeTty(lines), env: testEnv(state), cwd });
     assert.equal(r.code, EXIT.USAGE, `${argv.join(' ')}: ${r.stdout}${r.stderr}`);
     assert.equal(r.stdout, '', `${argv.join(' ')}: no question may be asked`);
-    assert.match(r.stderr, argv.includes('--adopt') ? /unexpected argument "--adopt"/ : /needs a value/);
+    assert.match(r.stderr, argv.includes('--force') ? /unexpected argument "--force"/ : /needs a value/);
     assert.deepEqual(snapshot(cwd), before, `${argv.join(' ')} wrote where init runs`);
     assert.equal(existsSync(join(cwd, 'elsewhere')), false);
     assert.equal(existsSync(state), false);

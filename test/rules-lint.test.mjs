@@ -2170,7 +2170,7 @@ test('a vault that names its own confidential field has that field read: confide
     'people/index.md': '# People\n',
     'people/ana.md': '---\nconfidencial: true\n---\n# Ana\n',
   };
-  const config = { privacy: { confidential_field: 'confidencial' } };
+  const config = { privacy: { confidential_field: 'confidencial' }, frontmatter: { extensions: { confidencial: { type: 'boolean' } } } };
   const findings = findingsFor({ files, config }).filter(isLintCheck('privacy', 'confidential-field-outside'));
   assert.equal(findings.length, 1, 'only the note outside the boundary should be reported');
   assert.equal(findings[0].file, 'projects/leaky.md');
@@ -2188,7 +2188,7 @@ test('a vault that names its own confidential field still has the English one re
     'projects/index.md': '# Projects\n',
     'projects/leaky.md': '---\nconfidential: true\n---\n# Leaky\n',
   };
-  const config = { privacy: { confidential_field: 'confidencial' } };
+  const config = { privacy: { confidential_field: 'confidencial' }, frontmatter: { extensions: { confidencial: { type: 'boolean' } } } };
   const findings = findingsFor({ files, config }).filter(isLintCheck('privacy', 'confidential-field-outside'));
   assert.equal(findings.length, 1);
   assert.deepEqual(findings[0].params, { field: 'confidential' });
@@ -2200,7 +2200,7 @@ test('a note carrying both spellings of the confidential marking is one finding,
     'projects/index.md': '# Projects\n',
     'projects/leaky.md': '---\nconfidencial: true\nconfidential: true\n---\n# Leaky\n',
   };
-  const config = { privacy: { confidential_field: 'confidencial' } };
+  const config = { privacy: { confidential_field: 'confidencial' }, frontmatter: { extensions: { confidencial: { type: 'boolean' } } } };
   const findings = findingsFor({ files, config }).filter(isLintCheck('privacy', 'confidential-field-outside'));
   assert.equal(findings.length, 1);
   assert.deepEqual(findings[0].params, { field: 'confidencial' });

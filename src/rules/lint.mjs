@@ -585,7 +585,11 @@ function isDelimiterRow(line) {
 // after it (the `lines.length - 1` bound below stops the loop one line
 // early for exactly this shape, so `lines[i + 1]` is never read past the
 // end of the array) all take this path alike.
-function findFirstTableHeader(strippedBody) {
+// Exported for src/init/adopt.mjs, which reads an existing vault's own
+// column headings with this parser rather than a second one: a heading
+// adopt read differently from how this rule reads it would be a mismatch
+// on the adopted vault's first lint.
+export function findFirstTableHeader(strippedBody) {
   const lines = strippedBody.split('\n');
   for (let i = 0; i < lines.length - 1; i++) {
     if (!lines[i].includes('|')) continue;
@@ -1844,7 +1848,9 @@ function isConfidentialTrue(value) {
 // declare several boolean extensions, and guessing which one means
 // "confidential" is exactly the kind of silent reading this rule exists
 // to avoid.
-const DEFAULT_CONFIDENTIAL_FIELD = 'confidential';
+// Exported for src/init/adopt.mjs, which must know which spelling this
+// rule reads on its own when it chooses the one to configure.
+export const DEFAULT_CONFIDENTIAL_FIELD = 'confidential';
 
 function confidentialFields(config) {
   const configured = config?.privacy?.confidential_field;

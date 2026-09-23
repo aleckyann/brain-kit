@@ -174,12 +174,48 @@ test('privacy.confidential_field is accepted as a frontmatter key name and refus
   const config = fixture('config/valid.json');
   for (const good of ['confidential', 'confidencial', 'is_private', 'private-note']) {
     config.privacy.confidential_field = good;
+    config.frontmatter.extensions[good] = { type: 'boolean' };
     assert.deepEqual(validateConfig(config), [], good);
   }
   for (const bad of ['', 'two words', 'field:', '1st', true]) {
     config.privacy.confidential_field = bad;
     assert.ok(validateConfig(config).some((e) => e.startsWith('$.privacy.confidential_field')), String(bad));
   }
+});
+
+// Slice D, task 5: a misspelt confidential_field passes the schema's key
+// shape, and the privacy rule then watches a field no note carries, which
+// is the rule silently switched off. validateConfig refuses a name the
+// same configuration does not declare as a boolean extension.
+test('privacy.confidential_field must name a boolean extension the configuration declares', () => {
+  const misspelt = fixture('config/valid.json');
+  misspelt.privacy.confidential_field = 'confidental';
+  assert.deepEqual(validateConfig(misspelt), [
+    '$.privacy.confidential_field: "confidental" must name a boolean extension declared in frontmatter.extensions',
+  ]);
+
+  const notBoolean = fixture('config/valid.json');
+  notBoolean.privacy.confidential_field = 'relationship';
+  assert.equal(notBoolean.frontmatter.extensions.relationship.type, 'enum');
+  assert.equal(validateConfig(notBoolean).length, 1, 'an enum extension is declared, but not a boolean one');
+
+  const inherited = fixture('config/valid.json');
+  inherited.privacy.confidential_field = 'toString';
+  assert.equal(validateConfig(inherited).length, 1, 'a name found only on Object.prototype is not declared');
+
+  const noExtensions = fixture('config/valid.json');
+  delete noExtensions.frontmatter.extensions;
+  assert.equal(validateConfig(noExtensions).length, 1, 'with no extensions at all, nothing is declared');
+
+  const absent = fixture('config/valid.json');
+  delete absent.privacy.confidential_field;
+  delete absent.frontmatter.extensions.confidential;
+  assert.deepEqual(validateConfig(absent), [], 'no confidential_field is not a misspelt one: the rule reads its default');
+
+  const declared = fixture('config/valid.json');
+  declared.privacy.confidential_field = 'private_note';
+  declared.frontmatter.extensions.private_note = { type: 'boolean' };
+  assert.deepEqual(validateConfig(declared), []);
 });
 
 test('each example configuration names the confidential field of its own language', () => {
