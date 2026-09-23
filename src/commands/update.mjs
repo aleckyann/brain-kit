@@ -11,11 +11,13 @@ import { kitVersion } from '../version.mjs';
 import { splitFrontmatter, readMapping } from '../frontmatter.mjs';
 import { MANIFEST_PATH, readManifest, serializeManifest, sha256Of } from '../manifest.mjs';
 import {
-  HOOK_PATH, TEMPLATE_HOOK, isInside, isoStamp, listSkeleton, skeletonDir, stampGenerated, writeNew,
+  GITIGNORE_PATH, HOOK_PATH, TEMPLATE_HOOK, gitignoreText, isInside, isoStamp, listSkeleton, skeletonDir, stampGenerated, writeNew,
 } from '../init/skeleton.mjs';
+import { installGate } from '../init/gate.mjs';
 
 // brain-kit update [dir] [--check]
 // brain-kit update [dir] --accept <path>
+// brain-kit update [dir] --install-hook
 //
 // Refreshes the files the kit manages, by checksum, in the vault found
 // from `dir` (default: the current directory). For every entry of
@@ -39,7 +41,7 @@ import {
 // file that uses CRLF uses CRLF too.
 //
 // "This kit's version" of a managed file: the hook is the template's
-// bytes; a note is the language skeleton's text with generated.at
+// bytes; .gitignore is the text init writes, in the vault's language; a note is the language skeleton's text with generated.at
 // re-stamped, the same way init writes it. Which stamp: to decide whether
 // anything is new, the file's own generated.at, so a file init wrote and
 // this kit has not changed compares equal to what is on disk; to write a
@@ -87,7 +89,16 @@ import {
 // anything other than "current" or "kept" would be reported, a
 // kit_version to set included, 0 otherwise.
 //
-// update calls no git command.
+// --install-hook installs the push gate into the vault through
+// installGate (src/init/gate.mjs), the one function that does, after the
+// same refusals as every other mode, and does nothing else: 0 when the
+// gate was installed or already runs, 3 when something of the person's
+// (a hook of their own, a core.hooksPath pointing elsewhere) was left as
+// it is and the line that adds the gate to it was printed, 1 when no gate
+// can run here or a step failed. Combined with --check or --accept it is a
+// usage error.
+//
+// update calls no git command, except through --install-hook.
 //
 // `deps` is not part of the CLI surface: tests may supply `now`, `cwd`,
 // `running` (the kit version this engine reports), and `beforeWrite`,
@@ -105,10 +116,11 @@ const ATTENTION = Object.freeze(['offer', 'blocked', 'missing', 'not_regular', '
 const PENDING = Object.freeze(['refresh', 'offer', 'blocked', 'missing', 'not_regular', 'unreadable']);
 
 function parseArgs(argv) {
-  const result = { dir: undefined, check: false, help: false, accept: undefined };
+  const result = { dir: undefined, check: false, help: false, accept: undefined, installHook: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--check') result.check = true;
+    else if (arg === '--install-hook') result.installHook = true;
     else if (arg === '--help' || arg === '-h') result.help = true;
     else if (arg === '--accept') {
       const value = argv[++i];
@@ -119,7 +131,8 @@ function parseArgs(argv) {
     else if (result.dir === undefined) result.dir = arg;
     else return { error: arg };
   }
-  if (result.check && result.accept !== undefined) return { conflict: true };
+  if (result.installHook && (result.check || result.accept !== undefined)) return { conflict: 'install_hook' };
+  if (result.check && result.accept !== undefined) return { conflict: 'accept' };
   return result;
 }
 
@@ -186,8 +199,9 @@ function stampOf(bytes) {
 
 // Where this kit's version of a managed path comes from, or null when
 // this kit ships no such file.
-function kitSource(rel, skeleton, lang) {
+function kitSource(rel, skeleton, lang, gitignore) {
   if (rel === HOOK_PATH) return { bytes: readFileSync(TEMPLATE_HOOK), stampable: false };
+  if (rel === GITIGNORE_PATH) return { bytes: gitignore, stampable: false };
   if (!skeleton.includes(rel)) return null;
   return { bytes: readFileSync(join(skeletonDir(lang), rel)), stampable: rel.endsWith('.md') };
 }
@@ -232,13 +246,13 @@ function readManaged(abs, realRoot) {
 }
 
 // Reads only. Returns { kind, ... } for one manifest entry.
-function classify(root, realRoot, entry, { skeleton, lang, stamps, nowStamp }) {
+function classify(root, realRoot, entry, { skeleton, lang, stamps, nowStamp, gitignore }) {
   if (entry.class !== 'managed') return { kind: 'seeded' };
   const abs = join(root, entry.path);
   const read = readManaged(abs, realRoot);
   if (read.kind !== undefined) return read;
   const { st, bytes } = read;
-  const source = kitSource(entry.path, skeleton, lang);
+  const source = kitSource(entry.path, skeleton, lang, gitignore);
   if (source === null) return { kind: 'not_in_kit' };
   const text = lf(bytes);
   const crlf = usesCrlf(bytes);
@@ -327,12 +341,13 @@ function reportLine(t, rel, outcome, check) {
 }
 
 export async function runUpdate(argv, io, t, {
-  now = () => new Date(), cwd = process.cwd(), running = kitVersion(), beforeWrite = () => {},
+  now = () => new Date(), cwd = process.cwd(), running = kitVersion(), beforeWrite = () => {}, env = process.env,
 } = {}) {
   const parsed = parseArgs(argv);
   if (parsed.missingValue || parsed.error || parsed.conflict) {
     if (parsed.missingValue) io.stderr.write(`${t('update.missing_value', { flag: parsed.missingValue })}\n`);
     else if (parsed.error) io.stderr.write(`${t('update.bad_argument', { arg: parsed.error })}\n`);
+    else if (parsed.conflict === 'install_hook') io.stderr.write(`${t('update.install_hook_alone')}\n`);
     else io.stderr.write(`${t('update.accept_with_check')}\n`);
     io.stderr.write(`${t('update.usage')}\n`);
     return EXIT.USAGE;
@@ -386,10 +401,20 @@ export async function runUpdate(argv, io, t, {
     return EXIT.FAILURE;
   }
   const skeleton = listSkeleton(config.lang);
+  const gitignore = Buffer.from(gitignoreText(t), 'utf8');
+
+  if (parsed.installHook) {
+    const gate = installGate(root, { env });
+    const stream = gate.outcome === 'installed' || gate.outcome === 'already' ? io.stdout : io.stderr;
+    stream.write(`${t(gate.messageKey, gate.params)}\n`);
+    if (gate.outcome === 'installed' || gate.outcome === 'already') return EXIT.OK;
+    if (gate.outcome === 'left') return EXIT.DEGRADED;
+    return EXIT.FAILURE;
+  }
 
   if (parsed.accept !== undefined) {
     return accept(io, t, {
-      root, realRoot, manifest, manifestFile, manifestSha, skeleton, lang: config.lang, path: parsed.accept, beforeWrite,
+      root, realRoot, manifest, manifestFile, manifestSha, skeleton, lang: config.lang, path: parsed.accept, beforeWrite, gitignore,
     });
   }
 
@@ -415,7 +440,7 @@ export async function runUpdate(argv, io, t, {
     const read = readManaged(join(root, entry.path), realRoot);
     if (read.kind === undefined) stamps.push(stampOf(read.bytes));
   }
-  const context = { skeleton, lang: config.lang, stamps: stamps.filter((s) => s !== null), nowStamp: isoStamp(now()) };
+  const context = { skeleton, lang: config.lang, stamps: stamps.filter((s) => s !== null), nowStamp: isoStamp(now()), gitignore };
   const outcomes = manifest.files.map((entry) => ({ entry, outcome: classify(root, realRoot, entry, context) }));
 
   if (parsed.check) {
@@ -527,7 +552,7 @@ function writeSummary(io, t, outcomes, check) {
 
 // --- --accept ------------------------------------------------------------------
 
-function accept(io, t, { root, realRoot, manifest, manifestFile, manifestSha, skeleton, lang, path, beforeWrite }) {
+function accept(io, t, { root, realRoot, manifest, manifestFile, manifestSha, skeleton, lang, path, beforeWrite, gitignore }) {
   const abs = isAbsolute(path) ? resolve(path) : resolve(root, path);
   const target = abs.endsWith(NEW_SUFFIX) ? abs.slice(0, -NEW_SUFFIX.length) : abs;
   const relNative = relative(root, target);
@@ -557,7 +582,7 @@ function accept(io, t, { root, realRoot, manifest, manifestFile, manifestSha, sk
       io.stderr.write(`${t('update.accept_not_executable', { file: rel, command })}\n`);
       return EXIT.FAILURE;
     }
-    const source = kitSource(rel, skeleton, lang);
+    const source = kitSource(rel, skeleton, lang, gitignore);
     const text = lf(read.bytes);
     const baseline = source === null ? text : kitVersionAt(source, stampOf(text)) ?? source.bytes;
     files[index].sha256 = sha256Of(baseline);

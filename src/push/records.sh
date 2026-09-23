@@ -600,7 +600,7 @@ done
 # standing in for something. It is also the one line that would appear if
 # git ever handed this hook an empty list for a push that does something.
 if [ "$ref_number" -eq 0 ]; then
-  echo "pre-push: git listed no references for this push, so there is nothing here to scan; the patterns file is still checked below." >&2
+  echo "pre-push: git listed no references for this push, so there is nothing here to scan; the patterns are still loaded below, and patterns that cannot be loaded still refuse the push." >&2
 fi
 
 # The stream is handed over ONLY when it is the whole push. A caller reads

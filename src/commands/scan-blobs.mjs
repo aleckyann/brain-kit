@@ -591,6 +591,13 @@ export function preparePersonalScan(io, env = process.env) {
   }
 }
 
+// The last line of every refusal for a match, in both gates (the
+// maintainer's and the adopter's reach this module through push-gate).
+// Fixed English, like every other line this module writes. It points at
+// SECURITY.md at the root of the repository being pushed: a vault made by
+// init carries one, whose "If a secret gets in" section has the steps.
+export const MATCH_REMEDY = 'pre-push: what to do: what matched is in a commit, and a commit keeps it even after a later commit deletes the file. If it is a credential, rotate it first (revoke it where it was issued and make a new one): from now on treat it as leaked. Then remove it from history, rewriting every commit that carries it (git rebase for recent commits, git filter-repo for older ones), and push again. SECURITY.md at the root of this repository has the steps. Pushing with --no-verify would publish it.';
+
 export async function runScanBlobs(argv, io, { metadataBatch = METADATA_BATCH } = {}) {
   // Checked before a single byte of stdin is read, and before a single git
   // call runs: see this module's own header on why the fail-closed check
@@ -714,6 +721,11 @@ export function scanRecordStream(raw, { patterns, budgetMs, io, metadataBatch = 
   // round 2): an exemption applied is a fact the maintainer should see in
   // the summary too, not only in the line above it.
   let exemptionsApplied = 0;
+  // Counted so a refusal for a match ENDS with what to do about it (final
+  // review of slice 1D, I3): the finding names the commit, and a person
+  // looking at a credential that is no longer in their working tree has
+  // no next step but the one they already know, --no-verify.
+  let leaksFound = 0;
   const scan = (text, channel, { exemptIfMatched = false, against = patterns } = {}) => {
     channelsScanned += 1;
     let result;
@@ -738,10 +750,11 @@ export function scanRecordStream(raw, { patterns, budgetMs, io, metadataBatch = 
     if (result.matches.length === 0) return true;
     if (exemptIfMatched) {
       exemptionsApplied += 1;
-      io.stderr.write(`pre-push: ${channel} matches a pattern, but it is exactly the identity this push is being made under, so it is exempt and does not refuse the push (the identity itself is withheld). No rewrite can change it, so refusing here would leave only editing the patterns file or --no-verify.\n`);
+      io.stderr.write(`pre-push: ${channel} matches a pattern, but it is exactly the identity this push is being made under, so it is exempt and does not refuse the push (the identity itself is withheld). No rewrite can change it, so refusing here would leave only editing the pattern list or --no-verify.\n`);
       return false;
     }
     failed = true;
+    leaksFound += 1;
     io.stderr.write(`pre-push: possible leak in ${channel}:\n`);
     for (const match of result.matches) {
       io.stderr.write(`    line ${match.line}, column ${match.column} (${match.pattern}): ${match.excerpt}\n`);
@@ -1079,7 +1092,10 @@ export function scanRecordStream(raw, { patterns, budgetMs, io, metadataBatch = 
     }
   }
 
-  if (failed) return EXIT.FAILURE;
+  if (failed) {
+    if (leaksFound > 0) io.stderr.write(`${MATCH_REMEDY}\n`);
+    return EXIT.FAILURE;
+  }
   // stderr, like every other line this gate writes: git's own stdout for
   // a push is the push's own report, and this is the gate talking about
   // itself. It names counts only, never a path, a name or a ref: the

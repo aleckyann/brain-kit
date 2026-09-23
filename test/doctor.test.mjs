@@ -155,6 +155,7 @@ function setup({
   dirMode = 0o700,
   fileMode = 0o600,
   tools = {},
+  manifest = 'valid',
 } = {}) {
   const base = makeTempDir('brain-kit-doctor-');
   const home = join(base, 'home');
@@ -165,6 +166,16 @@ function setup({
   writeFileSync(join(root, 'brain-kit.config.json'), configText ?? JSON.stringify(config, null, 2));
   writeFileSync(join(root, 'index.md'), '# Index\n');
   if (gitignore !== null) writeFileSync(join(root, '.gitignore'), gitignore);
+  // The manifest init or adopt writes: 'valid' records index.md in the
+  // configuration's language, a string is written as the file's text, and
+  // null writes nothing.
+  if (manifest !== null) {
+    mkdirSync(join(root, '.brain-kit'));
+    const text = manifest === 'valid'
+      ? JSON.stringify({ lang: config.lang, files: [{ path: 'index.md', sha256: 'a'.repeat(64), class: 'seeded' }] }, null, 2)
+      : manifest;
+    writeFileSync(join(root, '.brain-kit', 'manifest.json'), text);
+  }
   if (hook !== 'absent') {
     mkdirSync(join(root, '.githooks'));
     const hookFile = join(root, '.githooks', 'pre-push');
@@ -263,7 +274,7 @@ test('a ready vault under a path with a space, an accented letter and both quote
 
 test('the check table is exactly the phase 1 set, each named by what it prevents', () => {
   assert.deepEqual(CHECK_IDS, [
-    'node-version', 'git-present', 'default-branch-known', 'hooks-path', 'brain-kit-on-path', 'config-valid', 'machine-valid',
+    'node-version', 'git-present', 'default-branch-known', 'hooks-path', 'brain-kit-on-path', 'config-valid', 'manifest-valid', 'machine-valid',
     'state-dir-resolves', 'state-dir-mode', 'kit-version', 'gh-present', 'claude-present', 'gitignore-node-modules',
   ]);
 });
@@ -443,10 +454,57 @@ test('hooks-path: an absolute core.hooksPath naming the vault\'s own hook direct
   assertCheck(report, 'hooks-path', 'ok', 'doctor.hooks_path.ok');
 });
 
-test('hooks-path: fails when the hook itself is absent', async () => {
+test('hooks-path: fails when the hook itself is absent, and names the command that installs it', async () => {
   const fx = setup({ hook: 'absent' });
   const { report } = await doctor(fx, ['--only', 'hooks-path']);
-  assertCheck(report, 'hooks-path', 'fail', 'doctor.hooks_path.hook_missing');
+  const c = assertCheck(report, 'hooks-path', 'fail', 'doctor.hooks_path.hook_missing');
+  assert.equal(c.params.command, 'brain-kit update --install-hook');
+  assert.ok(c.message.endsWith('Run: brain-kit update --install-hook'), c.message);
+});
+
+test('hooks-path: with neither core.hooksPath nor a hook, the remedy is the command that installs both, not a hooksPath that leads to the next failure', async () => {
+  const fx = setup({ hook: 'absent', hooksPath: null });
+  const { report } = await doctor(fx, ['--only', 'hooks-path']);
+  const c = assertCheck(report, 'hooks-path', 'fail', 'doctor.hooks_path.unset_no_hook');
+  assert.equal(c.params.command, 'brain-kit update --install-hook');
+});
+
+// --- manifest-valid -----------------------------------------------------------
+
+test('manifest-valid: fails when the manifest is missing, and when it cannot be read, the states update refuses', async () => {
+  let fx = setup({ manifest: null });
+  let r = await doctor(fx, ['--only', 'manifest-valid']);
+  assertCheck(r.report, 'manifest-valid', 'fail', 'doctor.manifest_valid.missing');
+  assert.equal(r.code, EXIT.FAILURE);
+  for (const text of ['', 'not json', '{"files": []}', '{"lang": "en", "files": [{"path": "../x", "sha256": "0", "class": "managed"}]}']) {
+    fx = setup({ manifest: text });
+    r = await doctor(fx, ['--only', 'manifest-valid']);
+    assertCheck(r.report, 'manifest-valid', 'fail', 'doctor.manifest_valid.unreadable');
+    assert.equal(r.code, EXIT.FAILURE, text);
+  }
+  fx = setup({ manifest: null });
+  mkdirSync(join(fx.root, '.brain-kit', 'manifest.json'), { recursive: true });
+  r = await doctor(fx, ['--only', 'manifest-valid']);
+  assertCheck(r.report, 'manifest-valid', 'fail', 'doctor.manifest_valid.unreadable');
+});
+
+test('manifest-valid: warns when the manifest language differs from the configuration\'s, or the engine is older than kit_version', async () => {
+  const other = JSON.stringify({ lang: 'pt-BR', files: [{ path: 'index.md', sha256: 'a'.repeat(64), class: 'seeded' }] });
+  let fx = setup({ manifest: other });
+  let r = await doctor(fx, ['--only', 'manifest-valid']);
+  const c = assertCheck(r.report, 'manifest-valid', 'warn', 'doctor.manifest_valid.lang_differs');
+  assert.deepEqual(c.params, { recorded: 'pt-BR', configured: 'en' });
+  assert.equal(r.code, EXIT.OK);
+  fx = setup({ config: { ...baseConfig(), kit_version: '999.0.0' } });
+  r = await doctor(fx, ['--only', 'manifest-valid']);
+  assertCheck(r.report, 'manifest-valid', 'warn', 'doctor.manifest_valid.kit_older');
+  fx = setup({ config: { ...baseConfig(), kit_version: 'not-a-version' } });
+  r = await doctor(fx, ['--only', 'manifest-valid']);
+  assertCheck(r.report, 'manifest-valid', 'warn', 'doctor.manifest_valid.kit_older');
+  // An engine NEWER than kit_version is what update fixes, not a refusal.
+  fx = setup({ config: { ...baseConfig(), kit_version: '0.0.0' } });
+  r = await doctor(fx, ['--only', 'manifest-valid']);
+  assertCheck(r.report, 'manifest-valid', 'ok', 'doctor.manifest_valid.ok');
 });
 
 test('hooks-path: fails when the hook is not executable, because git skips it', async () => {
@@ -717,10 +775,11 @@ test('kit-version: passes when the versions match', async () => {
 
 // --- gh-present --------------------------------------------------------------
 
-test('gh-present: warns when gh is absent, because propose will need it', async () => {
+test('gh-present: warns when gh is absent, saying plainly that it is not installed, because propose will need it', async () => {
   const fx = setup({ tools: { gh: 'absent' } });
   const { report, code } = await doctor(fx, ['--only', 'gh-present']);
-  assertCheck(report, 'gh-present', 'warn', 'doctor.gh_present.missing');
+  const c = assertCheck(report, 'gh-present', 'warn', 'doctor.gh_present.not_installed');
+  assert.match(c.message, /gh is not installed/);
   assert.equal(code, EXIT.OK);
 });
 
@@ -1371,7 +1430,7 @@ test('the human report names every check, its status and message, and a summary 
   assert.ok(out.includes(fx.root));
   for (const id of CHECK_IDS) assert.match(out, new RegExp(`\\b${id}\\b`));
   assert.match(out, /warn\s+gh-present/);
-  assert.match(out, /12 ok, 1 warn, 0 fail/);
+  assert.match(out, /13 ok, 1 warn, 0 fail/);
 });
 
 test('the Portuguese pack renders the report', async () => {

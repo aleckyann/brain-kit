@@ -221,12 +221,15 @@ for (const lang of ['en', 'pt-BR']) {
     assert.equal(stamped, seededWithGenerated.length);
     assert.ok(stamped >= 15, `expected at least 15 stamped notes, found ${stamped}`);
 
-    // The manifest: the hook and the root contract files managed, every
-    // other skeleton file seeded, each hash the bytes on disk NOW.
+    // The manifest: the hook, .gitignore and the root contract files
+    // managed, every other skeleton file seeded, each hash the bytes on
+    // disk NOW. The configuration is the person's, and not recorded.
     const manifest = readManifest(vault);
     const byPath = new Map(manifest.files.map((f) => [f.path, f]));
-    assert.equal(manifest.files.length, skeletonFiles(lang).length + 1);
+    assert.equal(manifest.files.length, skeletonFiles(lang).length + 2);
     assert.equal(byPath.get(HOOK_PATH).class, 'managed');
+    assert.equal(byPath.get('.gitignore').class, 'managed');
+    assert.equal(byPath.has(CONFIG_FILENAME), false);
     for (const file of ROOT_CONTRACT_FILES) assert.equal(byPath.get(file)?.class, 'managed', file);
     for (const file of skeletonFiles(lang)) {
       if (!ROOT_CONTRACT_FILES.includes(file)) assert.equal(byPath.get(file)?.class, 'seeded', file);
@@ -713,6 +716,47 @@ test('a target path with a space, an accented letter and a single quote works en
   // installed runs and refuses, which the exit status and the remote show.
   assert.notEqual(leak.status, 0, 'a committed credential must refuse the push');
   assert.equal(git(bare, ['rev-parse', 'HEAD'], env).stdout.trim(), pushedHead, 'the credential never reached the remote');
+});
+
+// --- the agent guard, final review of slice 1D (I2) -----------------------------
+
+test('I2: both shipped defaults switch the agent guard on', () => {
+  for (const lang of ['en', 'pt-BR']) {
+    const defaults = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', lang, 'config.defaults.json'), 'utf8'));
+    assert.equal(defaults.git.forbid_agent_push_to_default, true, lang);
+  }
+});
+
+test('I2: in a vault init made, a push to the default branch under the agent identity is refused, and one to its own branch is not', () => {
+  const base = makeTempDir('brain-kit-init-guard-');
+  const vault = join(base, 'vault');
+  const state = join(base, 'state');
+  const shims = join(base, 'shims');
+  mkdirSync(shims);
+  writeFileSync(join(shims, 'brain-kit'), `#!/usr/bin/env bash\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(BIN)} "$@"\n`);
+  chmodSync(join(shims, 'brain-kit'), 0o755);
+  const env = testEnv(state, { PATH: `${shims}${delimiter}${process.env.PATH}` });
+  const file = writeAnswers(base, { ...ANSWERS.en, commit: true });
+  const r = brainKit(['init', vault, '--from-answers', file], { env });
+  assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
+  const agent = readConfig(vault).git.agent_identity.email;
+  const branch = git(vault, ['branch', '--show-current'], env).stdout.trim();
+  const bare = join(base, 'origin.git');
+  assert.equal(spawnSync('git', ['init', '-q', '--bare', bare]).status, 0);
+  assert.equal(git(vault, ['remote', 'add', 'origin', bare], env).status, 0);
+  assert.equal(git(vault, ['config', 'user.email', 'ana@example.invalid'], env).status, 0);
+  const human = git(vault, ['push', '-q', 'origin', `HEAD:${branch}`], env);
+  assert.equal(human.status, 0, human.stderr);
+  const pushed = git(bare, ['rev-parse', branch], env).stdout.trim();
+
+  assert.equal(git(vault, ['config', 'user.email', agent], env).status, 0);
+  assert.equal(git(vault, ['commit', '-q', '--allow-empty', '-m', 'curate: an agent commit'], env).status, 0);
+  const direct = git(vault, ['push', '-q', 'origin', `HEAD:${branch}`], env);
+  assert.notEqual(direct.status, 0, 'an agent push to the default branch must be refused');
+  assert.match(direct.stderr, /refusing a push to the default branch/);
+  assert.equal(git(bare, ['rev-parse', branch], env).stdout.trim(), pushed, 'the default branch did not move');
+  const own = git(vault, ['push', '-q', 'origin', 'HEAD:refs/heads/bot/proposal'], env);
+  assert.equal(own.status, 0, own.stderr);
 });
 
 // --- the machine file ------------------------------------------------------

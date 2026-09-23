@@ -49,7 +49,8 @@ import { KIT_ROOT } from '../src/version.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { splitFrontmatter, readMapping } from '../src/frontmatter.mjs';
-import { HOOK_PATH, ROOT_CONTRACT_FILES, stampGenerated } from '../src/init/skeleton.mjs';
+import { HOOK_PATH, ROOT_CONTRACT_FILES, gitignoreText, stampGenerated } from '../src/init/skeleton.mjs';
+import { GATE_LINE, installGate } from '../src/init/gate.mjs';
 import { MANIFEST_PATH, readManifest } from '../src/manifest.mjs';
 import { runUpdate } from '../src/commands/update.mjs';
 import { makeTempDir } from './helpers/tmp.mjs';
@@ -89,8 +90,8 @@ function initVault(lang = 'en') {
   return { base, vault, state, cwd, lang };
 }
 
-function update(v, args = []) {
-  return spawnSync(process.execPath, [BIN, 'update', v.vault, ...args], { encoding: 'utf8', env: env(v.state), cwd: v.cwd });
+function update(v, args = [], extra = {}) {
+  return spawnSync(process.execPath, [BIN, 'update', v.vault, ...args], { encoding: 'utf8', env: env(v.state, extra), cwd: v.cwd });
 }
 
 // Everything under `root`, .git included: path, kind, mode and a file's
@@ -601,10 +602,10 @@ test('with no directory argument, update acts on the vault it is run from', () =
   assert.match(r.stdout, /AGENTS\.md/);
 });
 
-test('every root contract file and the hook are managed, so the tests above cover what update refreshes', () => {
+test('every root contract file, the hook and .gitignore are managed, so the tests above cover what update refreshes', () => {
   const v = initVault();
   const managed = readManifest(v.vault).files.filter((f) => f.class === 'managed').map((f) => f.path).sort();
-  assert.deepEqual(managed, [...ROOT_CONTRACT_FILES, HOOK_PATH].sort());
+  assert.deepEqual(managed, [...ROOT_CONTRACT_FILES, HOOK_PATH, '.gitignore'].sort());
 });
 
 test('a manifest that changes while update runs is not overwritten, and the run exits 1 saying so', async () => {
@@ -746,7 +747,7 @@ test('--accept after taking the offer wholesale records the file\'s own hash, an
   assert.equal(manifestEntry(v.vault, 'AGENTS.md').sha256, sha(readFileSync(abs)));
   const r = update(v);
   assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
-  assert.ok(r.stdout.includes(T('update.summary', { managed: 5, refreshed: 0, current: 5, kept: 0, seeded: 27, attention: 0 })), r.stdout);
+  assert.ok(r.stdout.includes(T('update.summary', { managed: 6, refreshed: 0, current: 6, kept: 0, seeded: 27, attention: 0 })), r.stdout);
 });
 
 test('--accept clears a blocked offer, so the loop of "run update again" ends', () => {
@@ -1065,8 +1066,8 @@ test('--check\'s summary says what would be updated, never that anything was', (
   const v = initVault();
   makeOlder(v.vault, 'AGENTS.md');
   const check = update(v, ['--check']);
-  says(check, 'update.check_summary', { managed: 5, refreshed: 1, current: 4, kept: 0, seeded: 27, attention: 0 });
-  assert.ok(!check.stdout.includes(T('update.summary', { managed: 5, refreshed: 1, current: 4, kept: 0, seeded: 27, attention: 0 })));
+  says(check, 'update.check_summary', { managed: 6, refreshed: 1, current: 5, kept: 0, seeded: 27, attention: 0 });
+  assert.ok(!check.stdout.includes(T('update.summary', { managed: 6, refreshed: 1, current: 5, kept: 0, seeded: 27, attention: 0 })));
 });
 
 // A directory swapped for a link between the read and the write.
@@ -1164,4 +1165,184 @@ test('--accept does not overwrite a manifest that changed while it ran', async (
   assert.equal(code, EXIT.FAILURE, stderr.text);
   assert.equal(readFileSync(file, 'utf8'), theirs);
   assert.ok(manifestEntry(v.vault, 'SECURITY.md'), 'the entry is still there');
+});
+
+// --- .gitignore, managed since the final review of slice 1D (M8) ----------------
+
+test('.gitignore from an older kit is refreshed when untouched, and offered beside when edited', () => {
+  for (const edited of [false, true]) {
+    const v = initVault('pt-BR');
+    const file = join(v.vault, '.gitignore');
+    const current = readFileSync(file, 'utf8');
+    assert.equal(current, gitignoreText(createTranslator('pt-BR')), 'init writes the text update compares with');
+    const older = current.replace(/\n# [^\n]*\n\*\.brain-kit-new\n\.\*\.brain-kit-tmp-\*\n$/, '\n');
+    assert.notEqual(older, current);
+    writeFileSync(file, edited ? `${older}minhas-coisas/\n` : older);
+    setManifestHash(v.vault, '.gitignore', sha(Buffer.from(older)));
+    const r = update(v);
+    if (edited) {
+      assert.equal(r.status, EXIT.DEGRADED, r.stdout + r.stderr);
+      assert.equal(readFileSync(file, 'utf8'), `${older}minhas-coisas/\n`, 'an edit is never overwritten');
+      assert.equal(readFileSync(`${file}${NEW_SUFFIX}`, 'utf8'), current);
+    } else {
+      assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
+      assert.equal(readFileSync(file, 'utf8'), current);
+      assert.equal(manifestEntry(v.vault, '.gitignore').sha256, sha(Buffer.from(current)));
+    }
+  }
+});
+
+// --- --install-hook (I1) -------------------------------------------------------
+
+function gitIn(cwd, args, extra = {}) {
+  return spawnSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...extra } });
+}
+
+function withoutHook(v, { unsetPath = false } = {}) {
+  unlinkSync(join(v.vault, HOOK_PATH));
+  if (unsetPath) assert.equal(gitIn(v.vault, ['config', '--unset', 'core.hooksPath']).status, 0);
+}
+
+test('--install-hook on a vault with no hook and no core.hooksPath installs both, records the hook as managed, and exits 0; again, it says so and changes nothing', () => {
+  const v = initVault();
+  withoutHook(v, { unsetPath: true });
+  const r = update(v, ['--install-hook']);
+  assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
+  const hook = join(v.vault, HOOK_PATH);
+  says(r, 'gate.installed', { hook });
+  assert.deepEqual(readFileSync(hook), readFileSync(TEMPLATE_HOOK));
+  assert.equal(statSync(hook).mode & 0o777, 0o755);
+  assert.equal(gitIn(v.vault, ['config', 'core.hooksPath']).stdout.trim(), '.githooks');
+  assert.deepEqual(manifestEntry(v.vault, HOOK_PATH), { path: HOOK_PATH, sha256: sha(readFileSync(TEMPLATE_HOOK)), class: 'managed' });
+  const before = snapshot(v.vault);
+  const again = update(v, ['--install-hook']);
+  assert.equal(again.status, EXIT.OK, again.stdout + again.stderr);
+  says(again, 'gate.already', { hook });
+  assert.deepEqual(snapshot(v.vault), before);
+});
+
+test('--install-hook with core.hooksPath already at .githooks writes only the hook, and says the path was kept', () => {
+  const v = initVault();
+  withoutHook(v);
+  const r = update(v, ['--install-hook']);
+  assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
+  says(r, 'gate.installed_path_kept', { hook: join(v.vault, HOOK_PATH) });
+});
+
+test('--install-hook leaves a hook of the person\'s own, and hooks git already runs, exactly as they are, and exits 3 printing the line to add', () => {
+  const cases = {
+    'own hook': (v) => {
+      writeFileSync(join(v.vault, HOOK_PATH), '#!/bin/sh\necho mine\n');
+      return {};
+    },
+    'hooks in .git/hooks': (v) => {
+      withoutHook(v, { unsetPath: true });
+      writeFileSync(join(v.vault, '.git', 'hooks', 'commit-msg'), '#!/bin/sh\nexit 0\n');
+      return {};
+    },
+    'a global core.hooksPath': (v) => {
+      withoutHook(v, { unsetPath: true });
+      const global = join(v.base, 'gitconfig');
+      writeFileSync(global, '[core]\n\thooksPath = /nowhere/hooks\n');
+      return { GIT_CONFIG_GLOBAL: global };
+    },
+  };
+  for (const [name, prepare] of Object.entries(cases)) {
+    const v = initVault();
+    const extra = prepare(v);
+    const before = snapshot(v.vault);
+    const r = update(v, ['--install-hook'], extra);
+    assert.equal(r.status, EXIT.DEGRADED, `${name}: ${r.stdout}${r.stderr}`);
+    assert.ok(r.stderr.includes(GATE_LINE), `${name}: ${r.stderr}`);
+    assert.deepEqual(snapshot(v.vault), before, `${name}: something changed`);
+  }
+});
+
+test('--install-hook where no gate can run, or with --check or --accept, writes nothing', () => {
+  const v = initVault();
+  rmSync(join(v.vault, '.git'), { recursive: true });
+  withoutHook(v);
+  const before = snapshot(v.vault);
+  const r = update(v, ['--install-hook']);
+  assert.equal(r.status, EXIT.FAILURE, r.stdout + r.stderr);
+  assert.ok(r.stderr.includes(T('gate.no_repo', { dir: v.vault, command: 'brain-kit update --install-hook' })), r.stderr);
+  assert.deepEqual(snapshot(v.vault), before);
+  for (const other of [['--check'], ['--accept', 'AGENTS.md']]) {
+    const u = update(v, ['--install-hook', ...other]);
+    assert.equal(u.status, EXIT.USAGE, u.stdout + u.stderr);
+    assert.ok(u.stderr.includes(T('update.install_hook_alone')), u.stderr);
+  }
+});
+
+test('a gate whose manifest entry cannot be written removes the hook and the core.hooksPath it set', { skip: typeof process.getuid === 'function' && process.getuid() === 0 && 'root ignores permissions' }, () => {
+  const v = initVault();
+  withoutHook(v, { unsetPath: true });
+  const before = snapshot(v.vault);
+  const dir = join(v.vault, '.brain-kit');
+  const mode = statSync(dir).mode & 0o7777;
+  chmodSync(dir, 0o555);
+  let result;
+  try {
+    // installGate itself: update refuses an unwritable manifest directory
+    // before it gets this far, and the rollback must hold on its own.
+    result = installGate(v.vault, { env: env(v.state) });
+  } finally {
+    chmodSync(dir, mode);
+  }
+  assert.equal(result.outcome, 'failed', JSON.stringify(result));
+  assert.equal(result.messageKey, 'gate.failed');
+  assert.deepEqual(snapshot(v.vault), before);
+  assert.notEqual(gitIn(v.vault, ['config', 'core.hooksPath']).status, 0, 'the core.hooksPath it set was removed');
+});
+
+test('--install-hook whose git config fails removes the hook it wrote, and exits 1', () => {
+  const v = initVault();
+  withoutHook(v, { unsetPath: true });
+  const before = snapshot(v.vault);
+  const shims = join(v.base, 'git shim');
+  mkdirSync(shims);
+  const realGit = spawnSync('bash', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
+  writeFileSync(join(shims, 'git'), `#!/usr/bin/env bash\nif [ "$1" = config ] && [ "$2" = core.hooksPath ]; then echo "fatal: refused for this test" >&2; exit 1; fi\nexec ${JSON.stringify(realGit)} "$@"\n`);
+  chmodSync(join(shims, 'git'), 0o755);
+  const r = update(v, ['--install-hook'], { PATH: `${shims}:${process.env.PATH}` });
+  assert.equal(r.status, EXIT.FAILURE, r.stdout + r.stderr);
+  assert.match(r.stderr, /could not install the push gate \(git config core\.hooksPath \.githooks: fatal: refused for this test\)/);
+  assert.deepEqual(snapshot(v.vault), before);
+});
+
+test('--install-hook in a vault below the top of its repository, or where core.hooksPath cannot be read, writes nothing and exits 1', () => {
+  const nested = initVault();
+  rmSync(join(nested.vault, '.git'), { recursive: true });
+  withoutHook(nested);
+  assert.equal(gitIn(nested.base, ['init', '-q']).status, 0);
+  const outerConfig = readFileSync(join(nested.base, '.git', 'config'));
+  const before = snapshot(nested.vault);
+  const r = update(nested, ['--install-hook']);
+  assert.equal(r.status, EXIT.FAILURE, r.stdout + r.stderr);
+  assert.ok(r.stderr.includes(T('gate.not_top_level', { dir: nested.vault, top: nested.base, line: GATE_LINE })), r.stderr);
+  assert.deepEqual(snapshot(nested.vault), before);
+  assert.deepEqual(readFileSync(join(nested.base, '.git', 'config')), outerConfig);
+
+  // A global core.hooksPath git cannot expand: the person set one, and
+  // this cannot tell where it points, so nothing overrides it.
+  const v = initVault();
+  withoutHook(v, { unsetPath: true });
+  const global = join(v.base, 'gitconfig');
+  writeFileSync(global, '[core]\n\thooksPath = ~nosuchuserzz/hooks\n');
+  const unreadableBefore = snapshot(v.vault);
+  const u = update(v, ['--install-hook'], { GIT_CONFIG_GLOBAL: global });
+  assert.equal(u.status, EXIT.FAILURE, u.stdout + u.stderr);
+  assert.match(u.stderr, /cannot tell whether this repository already runs a hook of its own/);
+  assert.deepEqual(snapshot(v.vault), unreadableBefore);
+});
+
+test('installGate refuses a vault whose manifest it cannot read, and writes nothing, the manifest included', () => {
+  const v = initVault();
+  withoutHook(v, { unsetPath: true });
+  writeFileSync(join(v.vault, MANIFEST_PATH), 'not a manifest\n');
+  const before = snapshot(v.vault);
+  const result = installGate(v.vault, { env: env(v.state) });
+  assert.equal(result.outcome, 'failed', JSON.stringify(result));
+  assert.deepEqual(snapshot(v.vault), before);
+  assert.notEqual(gitIn(v.vault, ['config', 'core.hooksPath']).status, 0);
 });

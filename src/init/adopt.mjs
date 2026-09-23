@@ -1,5 +1,7 @@
-import { lstatSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, posix, resolve } from 'node:path';
+import { lstatSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { dirname, join, posix, resolve, sep } from 'node:path';
+import { run } from '../exec.mjs';
+import { localGitVarNames, withoutLocalGitVars } from '../git-env.mjs';
 import { KIT_ROOT } from '../version.mjs';
 import { SUPPORTED_LANGS } from '../lang.mjs';
 import { CONFIG_FILENAME, MACHINE_ONLY_KEYS } from '../config.mjs';
@@ -22,18 +24,21 @@ import { writeNew } from './skeleton.mjs';
 //                       person sees it (an inference a person never sees
 //                       is a decision made for them);
 //   buildAdoptionManifest / writeAdoption
-//                       the manifest (every existing file `seeded`, so
-//                       `update` never touches one of them) and the two
-//                       files adopt writes into the vault.
+//                       the manifest (every existing file git would
+//                       publish, `seeded`, so `update` never touches one
+//                       of them) and the two files adopt writes into the
+//                       vault.
 //
 // The one rule this module is built around: adopt never creates, edits,
-// renames or deletes a content file. The only paths it writes inside the
-// vault are brain-kit.config.json and .brain-kit/manifest.json (and the
-// .brain-kit directory when it is absent), each created exclusively, so
-// a file already there is a failure, never an overwrite. It never writes
-// the hook and runs no git command of its own (the validate and lint that
-// follow only read, with GIT_OPTIONAL_LOCKS=0): an adopted vault's
-// repository, history and hooks are exactly what they were.
+// renames or deletes a content file. The only paths this module writes
+// inside the vault are brain-kit.config.json and .brain-kit/manifest.json
+// (and the .brain-kit directory when it is absent), each created
+// exclusively, so a file already there is a failure, never an overwrite.
+// Its only git commands read (listing what git would publish, with
+// GIT_OPTIONAL_LOCKS=0). The push gate is installed afterwards, by the
+// command, through installGate (src/init/gate.mjs), which leaves a hook
+// the person already has exactly as it is; `--no-hook` skips it, and then
+// the repository, history and hooks are exactly what they were.
 //
 // Every note is a { messageKey, params } pair rendered by the command
 // through the vault's own language pack, like a finding.
@@ -469,17 +474,89 @@ export function inferConfig(root, { lang }) {
   return { config, notes };
 }
 
-// Every file of the vault as it is now, each `seeded`: the person's, from
-// before the kit arrived, and never `update`'s to replace. Dot-entries are
-// listed too (a .gitignore, a CI workflow), `.git` itself never.
+// Every file of the vault that git would publish, each `seeded`: the
+// person's, from before the kit arrived, and never `update`'s to replace.
 // `lang` is the language adopt inferred the configuration in, recorded at
 // the manifest's top level as init records the language it installed.
-export function buildAdoptionManifest(root, { lang }) {
-  const files = walkVault(root, {}, { all: true, dotEntries: true }).filter((path) => path !== CONFIG_FILENAME && path !== MANIFEST_PATH);
+//
+// WHAT IS LISTED. Adopt tells the person to commit this manifest, so it
+// must never name a file they kept out of git: a path and a hash in it
+// are published with it, and an unsalted sha256 of a short secret (a
+// `.env` holding one password) is recovered by a dictionary. Inside a
+// repository the list is what git tracks plus what it would add, `git
+// ls-files --cached --others --exclude-standard` run from the vault root
+// (paths relative to it, and only below it), the same set the linter's
+// `secrets` rule reads (src/git.mjs, publishablePaths); an ignored file is
+// never read and never named. Of those, only a regular file, or a link to
+// a regular file inside the vault, is recorded, as the walk records them:
+// a tracked file deleted from the working tree, a submodule, a link out of
+// the vault are not files of this vault. Outside a repository nothing is
+// ignored, and the vault is walked: every file, dot-entries included,
+// `.git` never.
+//
+// A vault that looks like a repository (a `.git` in it or above it) whose
+// git cannot answer is a refusal, never a walk: the walk would read every
+// file the person ignored.
+export function buildAdoptionManifest(root, { lang, env = process.env }) {
+  const files = adoptionPaths(root, env).filter((path) => path !== CONFIG_FILENAME && path !== MANIFEST_PATH);
   return {
     lang,
     files: files.map((path) => ({ path, sha256: sha256Of(readFileSync(join(root, ...path.split('/')))), class: 'seeded' })),
   };
+}
+
+function insideGitWorkTree(dir) {
+  for (let current = resolve(dir); ; current = dirname(current)) {
+    if (present(join(current, '.git'))) return true;
+    if (dirname(current) === current) return false;
+  }
+}
+
+function adoptionPaths(root, env) {
+  const gitEnv = { ...withoutLocalGitVars(env, localGitVarNames(env)), GIT_OPTIONAL_LOCKS: '0' };
+  const inside = run('git', ['rev-parse', '--is-inside-work-tree'], { cwd: root, env: gitEnv });
+  if (inside.status !== 0 || inside.stdout.trim() !== 'true') {
+    if (insideGitWorkTree(root)) throw new Error(`git could not read the repository this vault is in (${inside.stderr.trim() || `exit ${inside.status}`})`);
+    return walkVault(root, {}, { all: true, dotEntries: true });
+  }
+  const listed = run('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { cwd: root, env: gitEnv, encoding: 'buffer', maxBuffer: 256 * 1024 * 1024 });
+  if (listed.status !== 0) throw new Error(`git ls-files failed: ${String(listed.stderr).trim()}`);
+  const rootReal = realpathSync(root);
+  const paths = new Set();
+  for (const bytes of splitNul(listed.stdout)) {
+    const path = bytes.toString('utf8');
+    if (!Buffer.from(path, 'utf8').equals(bytes)) throw new Error(`git lists a file name that is not UTF-8 (${JSON.stringify(path)})`);
+    const abs = join(root, ...path.split('/'));
+    const st = lstatSync(abs, { throwIfNoEntry: false });
+    if (st === undefined) continue; // tracked, but deleted from the working tree
+    if (st.isSymbolicLink()) {
+      let real;
+      try {
+        real = realpathSync(abs);
+      } catch {
+        continue; // dangling
+      }
+      if (!real.startsWith(`${rootReal}${sep}`)) continue; // a link out of the vault
+      if (!statSync(real).isFile()) continue;
+    } else if (!st.isFile()) {
+      continue; // a submodule's directory, or anything that is not a file
+    }
+    paths.add(path);
+  }
+  return [...paths].sort();
+}
+
+function splitNul(buffer) {
+  const out = [];
+  let start = 0;
+  for (let i = 0; i < buffer.length; i++) {
+    if (buffer[i] === 0) {
+      if (i > start) out.push(buffer.subarray(start, i));
+      start = i + 1;
+    }
+  }
+  if (start < buffer.length) out.push(buffer.subarray(start));
+  return out;
 }
 
 // The two files adopt writes into the vault, each created exclusively and

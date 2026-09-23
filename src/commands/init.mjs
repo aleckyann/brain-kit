@@ -7,14 +7,15 @@ import { createTranslator, SUPPORTED_LANGS } from '../lang.mjs';
 import { CONFIG_FILENAME, MACHINE_FILENAME, validateConfig, validateMachine } from '../config.mjs';
 import { STATE_FILES, ensureStateDir, stateDirFor, vaultIdFor } from '../state.mjs';
 import { run } from '../exec.mjs';
-import { LOCAL_GIT_VARS, withoutLocalGitVars } from '../git-env.mjs';
+import { localGitVarNames, withoutLocalGitVars } from '../git-env.mjs';
+import { INSTALL_HOOK_COMMAND, installGate } from '../init/gate.mjs';
 import { completeDefaults } from '../init/config.mjs';
 import { buildAdoptionManifest, inferConfig, inspectAdoptTarget, readDefaults, writeAdoption } from '../init/adopt.mjs';
 import {
   ANSWER_KEYS, QUESTIONS, askInteractively, defaultAnswers, defaultLang, describeAnswer, invalidAnswer, readAnswersFile, resolveClaudeBin,
 } from '../init/answers.mjs';
 import {
-  GITIGNORE_PATH, inspectTarget, isInside, isoStamp, makeDirs, makeOwnTree, nearestExisting, recordMode, rollback, writeNew,
+  GITIGNORE_PATH, gitignoreText, inspectTarget, isInside, isoStamp, makeDirs, makeOwnTree, nearestExisting, recordMode, rollback, writeNew,
   writeVault,
 } from '../init/skeleton.mjs';
 import { runValidate } from './validate.mjs';
@@ -54,11 +55,13 @@ import { runLint } from './lint.mjs';
 // the same ledger undone on failure, but the directory must already be a
 // vault shape (a root index.md, no configuration, no manifest), the
 // configuration is inferred from its notes, and the only files written
-// into it are brain-kit.config.json and .brain-kit/manifest.json. It never
-// writes the hook, never runs git init or git config, and never commits;
-// the validate and lint it runs afterwards only read the repository, with
-// GIT_OPTIONAL_LOCKS=0: the repository an adopted vault already has is
-// left exactly as it was.
+// into it are brain-kit.config.json and .brain-kit/manifest.json, plus the
+// push gate installGate (src/init/gate.mjs) writes and wires when nothing
+// of the person's is in the way (a hook of their own, or a core.hooksPath
+// pointing elsewhere, is left exactly as it is, and the line that adds the
+// gate to it is printed). `--no-hook` skips the gate and says so. It never
+// runs git init and never commits; the validate and lint it runs
+// afterwards only read the repository, with GIT_OPTIONAL_LOCKS=0.
 // Every inference is printed before the checks run.
 //
 // `deps` is not part of the CLI surface: src/cli.mjs supplies walkVault,
@@ -101,7 +104,7 @@ async function withProcessEnvCleaned(names, fn) {
 }
 
 function parseArgs(argv) {
-  const result = { dir: undefined, lang: undefined, yes: false, answersFile: undefined, help: false, adopt: false };
+  const result = { dir: undefined, lang: undefined, yes: false, answersFile: undefined, help: false, adopt: false, noHook: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (USAGE_FLAGS_WITH_VALUE.includes(arg)) {
@@ -113,6 +116,8 @@ function parseArgs(argv) {
       result.yes = true;
     } else if (arg === '--adopt') {
       result.adopt = true;
+    } else if (arg === '--no-hook') {
+      result.noHook = true;
     } else if (arg === '--help' || arg === '-h') {
       result.help = true;
     } else if (arg.startsWith('-')) {
@@ -123,6 +128,9 @@ function parseArgs(argv) {
       return { error: arg };
     }
   }
+  // --no-hook skips adopt's gate; init always installs one, into the
+  // repository it creates.
+  if (result.noHook && !result.adopt) return { error: '--no-hook' };
   return result;
 }
 
@@ -206,31 +214,6 @@ function refuseAnswer(io, t, key, value) {
   const expected = expectation(t, key);
   io.stderr.write(`${t('init.invalid_answer', { answer: key, value: JSON.stringify(value), expected })}\n`);
   return EXIT.USAGE;
-}
-
-function gitignoreText(t) {
-  return [
-    `# ${t('init.gitignore_header')}`,
-    '',
-    `# ${t('init.gitignore_dependencies')}`,
-    'node_modules/',
-    '',
-    `# ${t('init.gitignore_environment')}`,
-    '.env',
-    '.env.*',
-    '!.env.example',
-    '',
-    `# ${t('init.gitignore_system')}`,
-    '.DS_Store',
-    'Thumbs.db',
-    '*.swp',
-    '*~',
-    '',
-    `# ${t('init.gitignore_update')}`,
-    '*.brain-kit-new',
-    '.*.brain-kit-tmp-*',
-    '',
-  ].join('\n');
 }
 
 function buildMachine(canonical, stateDir, env) {
@@ -333,7 +316,8 @@ export async function runInit(argv, io, t, {
   const first = refuseLocations(io, t, target, stateDir, machinePath, parsed.adopt);
   if (first !== null) return first;
 
-  // adopt runs no git of its own, so it does not need one.
+  // adopt works without git: outside a repository it walks the vault, and
+  // the gate says it cannot be installed there.
   if (!parsed.adopt) {
     const gitCheck = run('git', ['--version']);
     if (gitCheck.status !== 0) {
@@ -341,8 +325,7 @@ export async function runInit(argv, io, t, {
       return EXIT.FAILURE;
     }
   }
-  const listed = run('git', ['rev-parse', '--local-env-vars']);
-  const localVars = [...new Set([...LOCAL_GIT_VARS, ...(listed.status === 0 ? listed.stdout.split(/\s+/).filter(Boolean) : [])])];
+  const localVars = localGitVarNames(env);
   const gitEnv = withoutLocalGitVars(env, localVars);
 
   // The answers: the file's, then --lang, then (with --yes) the defaults
@@ -400,7 +383,7 @@ export async function runInit(argv, io, t, {
     // refusal, like a root it cannot list, and nothing is written.
     try {
       inferred = infer(target, { lang: answers.lang });
-      adoption = buildAdoptionManifest(target, { lang: answers.lang });
+      adoption = buildAdoptionManifest(target, { lang: answers.lang, env });
     } catch (error) {
       io.stderr.write(`${t('init.adopt_unreadable', { dir: target, detail: error.code ?? error.message })}\n`);
       return EXIT.USAGE;
@@ -537,6 +520,19 @@ export async function runInit(argv, io, t, {
     io.stdout.write(`${t('init.state_tightened', { state: stateDir, mode: priorMode.toString(8) })}\n`);
   }
 
+  // The adopter's gate, once the adoption is written: installGate leaves a
+  // hook the person already has exactly as it is and says how to add the
+  // gate to it. Only a gate that failed to install changes the exit code
+  // (to at least 3): the adoption itself is done, and a person must look.
+  let gateFailed = false;
+  if (parsed.adopt && parsed.noHook) {
+    io.stdout.write(`${t('init.adopt_no_hook', { command: INSTALL_HOOK_COMMAND })}\n`);
+  } else if (parsed.adopt) {
+    const gate = installGate(target, { env });
+    gateFailed = gate.outcome === 'failed';
+    (gateFailed ? io.stderr : io.stdout).write(`${t(gate.messageKey, gate.params)}\n`);
+  }
+
   if (parsed.adopt) io.stdout.write(`${t('init.adopt_checking')}\n`);
   else io.stdout.write(`${t('init.checking')}\n`);
   const runChecks = checks ?? {
@@ -550,7 +546,7 @@ export async function runInit(argv, io, t, {
   const checked = worseExit(validated, linted);
   if (parsed.adopt) {
     io.stdout.write(`${t('init.adopt_no_commit')}\n`);
-    return checked;
+    return gateFailed ? worseExit(checked, EXIT.DEGRADED) : checked;
   }
 
   // The first commit, when asked for, only over a vault both checks

@@ -1,7 +1,7 @@
 # brain-kit
 
-> Em construção. A fase 1 está em andamento: o validador e o linter já funcionam hoje, a partir de
-> um clone deste repositório. Nada aqui cura um vault ainda, e o pacote no npm ainda é o esqueleto
+> Em construção. A fase 1 está em andamento: `init`, `init --adopt`, `update`, `doctor`, o
+> validador, o linter e os gates de push já funcionam hoje, a partir de um clone deste repositório. Nada aqui cura um vault ainda, e o pacote no npm ainda é o esqueleto
 > da fase 0. Acompanhe o repositório para a primeira versão usável.
 
 Um segundo cérebro em markdown puro, no Open Knowledge Format (OKF) v0.2, mantido por um
@@ -12,8 +12,10 @@ merge é a aprovação e a verificação.
 O brain-kit é um repositório que pretende ser, ao mesmo tempo:
 
 - um pacote npm, `second-brain-kit`, com um único executável, `brain-kit`. Hoje ele
-  valida e aplica lint a um vault; o loop de PR, o curador, o pré-voo do briefing, os
-  templates de agendamento e o doctor ainda estão por vir;
+  cria um vault ou adota um existente, instala o gate de push dele, mantém atualizados os
+  arquivos do próprio kit, confere a máquina com o `doctor`, e valida e aplica lint a um
+  vault; o loop de PR, o curador, o pré-voo do briefing e os templates de agendamento
+  ainda estão por vir;
 - um plugin do Claude Code (skills, um hook Stop, um subagente somente leitura) que chama o
   mesmo motor. Hoje o repositório traz só o manifesto do plugin e o encaixe do hook, e o
   hook ainda não faz nada;
@@ -31,15 +33,44 @@ nada mais.
 
 ## O que funciona hoje
 
-Os dois comandos rodam a partir de um clone, sobre um vault: um diretório com um
-`brain-kit.config.json` e um `index.md` na raiz. Eles recebem o caminho do vault, ou o
+Todo comando roda a partir de um clone. Um vault é um diretório com um
+`brain-kit.config.json` e um `index.md` na raiz; os comandos recebem o caminho dele, ou o
 encontram subindo a partir do diretório atual.
 
 ```bash
 git clone https://github.com/aleckyann/brain-kit.git
+node brain-kit/bin/brain-kit.mjs init caminho/do/vault-novo
+node brain-kit/bin/brain-kit.mjs init --adopt caminho/do/vault-existente
+node brain-kit/bin/brain-kit.mjs update caminho/do/vault
+node brain-kit/bin/brain-kit.mjs doctor caminho/do/vault
 node brain-kit/bin/brain-kit.mjs validate caminho/do/vault
 node brain-kit/bin/brain-kit.mjs lint caminho/do/vault
 ```
+
+O `init` cria um vault novo num diretório vazio ou novo, em inglês ou português: o
+esqueleto, a configuração, um `.gitignore`, o gate de push (`.githooks/pre-push`, com o
+`core.hooksPath` apontando para ele), um manifesto do que o kit escreveu, um repositório
+git, e o `machine.json` num diretório de estado fora do vault. Ele faz uma pergunta por
+vez, aceita `--yes` ou `--from-answers <arquivo>` no lugar, e nunca faz o primeiro commit
+a menos que isso seja pedido.
+
+O `init --adopt` traz um vault existente para o kit. Ele deduz a configuração das notas e
+mostra cada dedução, escreve a configuração e um manifesto que registra como seus os
+arquivos que o git publicaria (um arquivo que o git ignora nunca é registrado), e instala o
+gate de push. Um hook seu, ou um `core.hooksPath` apontando para outro lugar, fica
+exatamente como está, e o adopt mostra a linha que acrescenta o gate a ele. `--no-hook`
+pula o gate. Ele nunca muda uma nota e nunca faz commit.
+
+O `update` atualiza por checksum os arquivos que o kit gerencia (os arquivos de contrato
+da raiz, o `.gitignore` e o hook): um que você não editou é substituído, um que você
+editou nunca é sobrescrito, e uma versão mais nova é escrita ao lado como
+`<nome>.brain-kit-new`. O `update --install-hook` instala o gate de push num vault que não
+o tem, com o mesmo cuidado com um hook seu.
+
+O `doctor` informa, verificação por verificação, se esta máquina e este vault estão
+prontos: Node e git, o gate e o `core.hooksPath`, o `brain-kit` no PATH, a configuração, o
+manifesto, o `machine.json` e o diretório de estado dele, a versão do kit, o `gh`, o
+`claude`, e o `node_modules/` no `.gitignore`. Cada falha nomeia o comando que a corrige.
 
 O `validate` confere o vault contra o OKF v0.2 e reporta duas réguas separadas: a
 conformidade do próprio formato e as regras da casa do vault, que são mais estritas de
@@ -85,7 +116,7 @@ A fase 1 é construída em cinco fatias:
 | 1A | Leitor de vault, frontmatter, markdown, `validate` | concluída |
 | 1B | `lint` e suas oito regras, o scanner de vazamento, os dois gates de push | concluída |
 | 1C | `propose` (o loop de PR) e `sync` | planejada |
-| 1D | `init`, `init --adopt`, `update`, `doctor` | planejada |
+| 1D | `init`, `init --adopt`, `update`, `doctor` | concluída |
 | 1E | Superfície do plugin: skills, hooks Stop e SessionStart, subagente somente leitura, evals | planejada |
 
 ## Segurança
@@ -95,8 +126,11 @@ objeto que um push carrega contra uma lista pessoal de padrões mantida fora do 
 O hook de template feito para um vault, em `templates/githooks/`, roda `validate` e `lint`
 sobre a árvore de trabalho e depois a mesma varredura de objetos sobre o que o push carrega,
 contra os padrões configurados do próprio vault, os da árvore de trabalho, os de cada ponta
-enviada e os do branch padrão juntos. Nada o instala num vault ainda. O [SECURITY.md](SECURITY.md) lista o que os
-gates não cobrem.
+enviada e os do branch padrão juntos. O `init` o instala em todo vault novo, o
+`init --adopt` num vault existente a menos que já haja lá um hook da própria pessoa, e o
+`brain-kit update --install-hook` depois. Uma recusa por correspondência termina dizendo o
+que fazer: revogar a credencial, tirá-la do histórico e seguir o `SECURITY.md` do vault. O
+[SECURITY.md](SECURITY.md) lista o que os gates não cobrem.
 
 ## Contribuindo
 

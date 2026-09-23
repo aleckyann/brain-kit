@@ -25,6 +25,7 @@ import { Buffer } from 'node:buffer';
 import { join } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 import { makeTempDir } from './helpers/tmp.mjs';
+import { MATCH_REMEDY } from '../src/commands/scan-blobs.mjs';
 
 const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
 const ZERO = '0'.repeat(40);
@@ -1888,4 +1889,56 @@ test('a default branch configuration with a non-string pattern could not be used
   assert.equal(read.status, 0, read.stderr);
   assert.match(read.stderr, /from the default branch as this repository knows it \(origin\/main\)/);
   assert.doesNotMatch(read.stderr, /could not be used/);
+});
+
+// --- final review of slice 1D: what a refusal says, and in whose words ------
+
+test('I3: a refusal for a match ends with the remedy, in both gates: rotate, remove from history, SECURITY.md', () => {
+  const { work, bare, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  const sha = commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'a clean message');
+  commit(work, 'notes.md', 'nothing here now\n', 'deleted it');
+  const personal = pushGate(work, ['origin', bare, '--patterns', 'personal'], refLine(git(work, ['rev-parse', 'HEAD']).stdout.trim()), { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(personal.status, 1, personal.stderr);
+  assert.match(personal.stderr, /possible leak in notes\.md \(CONTENT/);
+  assert.equal(personal.stderr.trimEnd().split('\n').at(-1), MATCH_REMEDY);
+  assert.ok(sha);
+
+  const vault = setupVault();
+  const token = `ghp_${'a1B2c3D4e5F6g7H8i9J0k1L2'}`;
+  const leaky = commit(vault.work, 'notes.md', `token ${token}\n`, 'a note');
+  const config = configGate(vault.work, vault.bare, refLine(leaky));
+  assert.equal(config.status, 1, config.stderr);
+  assert.equal(config.stderr.trimEnd().split('\n').at(-1), MATCH_REMEDY);
+  for (const words of [/rotate it/, /remove it from history/, /SECURITY\.md/]) assert.match(MATCH_REMEDY, words);
+});
+
+test('I3: a refusal that is not a match does not tell the person to rotate anything', () => {
+  const { work, bare, root, patterns } = setup();
+  const sha = commit(work, 'README.md', 'hello world\n', 'init');
+  // Before the scan: a pattern list that cannot be loaded.
+  const unloaded = pushGate(work, ['origin', bare, '--patterns', 'personal'], refLine(sha), { BRAIN_KIT_LEAK_PATTERNS: join(root, 'no such list.txt') });
+  assert.equal(unloaded.status, 1, unloaded.stderr);
+  assert.ok(!unloaded.stderr.includes(MATCH_REMEDY), unloaded.stderr);
+  // During the scan: channels that could not be scanned, nothing matched.
+  const unscanned = pushGate(work, ['origin', bare, '--patterns', 'personal'], refLine(sha), { BRAIN_KIT_LEAK_PATTERNS: patterns, BRAIN_KIT_SCAN_BUDGET_MS: '-1' });
+  assert.equal(unscanned.status, 1, unscanned.stderr);
+  assert.match(unscanned.stderr, /could not scan/);
+  assert.ok(!unscanned.stderr.includes(MATCH_REMEDY), unscanned.stderr);
+});
+
+test('M4: the adopter\'s gate never speaks of the maintainer\'s patterns file, on an empty push or an exempt identity', () => {
+  const vault = setupVault({ patterns: ['ana@example\\.com'] });
+  const empty = configGate(vault.work, vault.bare, '');
+  assert.match(empty.stderr, /nothing here to scan/);
+  assert.equal(git(vault.work, ['config', 'user.name', 'Ana']).status, 0);
+  assert.equal(git(vault.work, ['config', 'user.email', 'ana@example.com']).status, 0);
+  const sha = commit(vault.work, 'notes.md', 'a plain note\n', 'a note');
+  const exempt = configGate(vault.work, vault.bare, refLine(sha));
+  assert.equal(exempt.status, 0, exempt.stderr);
+  assert.match(exempt.stderr, /it is exactly the identity this push is being made under/);
+  for (const r of [empty, exempt]) {
+    assert.doesNotMatch(r.stderr, /patterns file/);
+    assert.doesNotMatch(r.stderr, /personal/i);
+  }
 });

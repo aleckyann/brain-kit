@@ -114,6 +114,50 @@ export function inspectTarget(target) {
   return null;
 }
 
+// The hook: the template's bytes (`bytes`, read by the caller before its
+// first write when it prepares everything first), created exclusively
+// with the ordinary file mode and then made executable here, so whether
+// the hook runs never depends on the mode the template happened to have
+// in a checkout or a package (git skips a hook without the execute bit,
+// with only a hint). Recorded in `ledger` like every other file. Returns
+// the hook's manifest entry, `managed`. The one writer of the hook: init
+// calls it through writeVault, and installGate (src/init/gate.mjs) for a
+// vault that already exists.
+export function writeGateHook(ledger, root, bytes = readFileSync(TEMPLATE_HOOK)) {
+  const hook = join(root, HOOK_PATH);
+  writeNew(ledger, hook, bytes);
+  chmodSync(hook, 0o755);
+  return { path: HOOK_PATH, sha256: sha256Of(readFileSync(hook)), class: 'managed' };
+}
+
+// The .gitignore init writes, in the vault's language (`t`): the kit's
+// file, `managed` in the manifest, so update compares a vault's copy with
+// this text.
+export function gitignoreText(t) {
+  return [
+    `# ${t('init.gitignore_header')}`,
+    '',
+    `# ${t('init.gitignore_dependencies')}`,
+    'node_modules/',
+    '',
+    `# ${t('init.gitignore_environment')}`,
+    '.env',
+    '.env.*',
+    '!.env.example',
+    '',
+    `# ${t('init.gitignore_system')}`,
+    '.DS_Store',
+    'Thumbs.db',
+    '*.swp',
+    '*~',
+    '',
+    `# ${t('init.gitignore_update')}`,
+    '*.brain-kit-new',
+    '.*.brain-kit-tmp-*',
+    '',
+  ].join('\n');
+}
+
 // The ISO form every seeded note already uses, in UTC, to the second.
 export function isoStamp(date) {
   return `${date.toISOString().slice(0, 19)}+00:00`;
@@ -222,7 +266,8 @@ export function rollback(ledger) {
 // Writes the vault into `target`, which inspectTarget has already
 // accepted, recording everything it creates in `ledger`. `files` maps
 // each vault-relative path init writes beyond the skeleton (the
-// configuration and .gitignore) to its text. Every byte is prepared in
+// configuration and .gitignore) to its text; .gitignore is recorded
+// `managed`, the configuration not at all. Every byte is prepared in
 // memory first, stamping included, so a skeleton this function cannot
 // stamp throws before anything reaches the disk. Returns the manifest.
 export function writeVault(target, { lang, stamp, files, ledger = [] }) {
@@ -243,16 +288,15 @@ export function writeVault(target, { lang, stamp, files, ledger = [] }) {
     writeNew(ledger, join(target, rel), bytes);
     entries.push({ path: rel, sha256: sha256Of(bytes), class: cls });
   }
-  for (const [rel, text] of Object.entries(files)) writeNew(ledger, join(target, rel), text);
+  // .gitignore is the kit's (managed), so `update` can carry a rule this
+  // kit adds into a vault that has not edited it; the configuration is
+  // the person's from the first answer, and is not recorded.
+  for (const [rel, text] of Object.entries(files)) {
+    writeNew(ledger, join(target, rel), text);
+    if (rel === GITIGNORE_PATH) entries.push({ path: rel, sha256: sha256Of(Buffer.from(text, 'utf8')), class: 'managed' });
+  }
 
-  // The hook: the template's bytes, created with the ordinary file mode
-  // and then made executable here, so whether the hook runs never depends
-  // on the mode the template happened to have in a checkout or a package
-  // (git skips a hook without the execute bit, with only a hint).
-  const hook = join(target, HOOK_PATH);
-  writeNew(ledger, hook, hookBytes);
-  chmodSync(hook, 0o755);
-  entries.push({ path: HOOK_PATH, sha256: sha256Of(readFileSync(hook)), class: 'managed' });
+  entries.push(writeGateHook(ledger, target, hookBytes));
 
   const manifest = { lang, files: entries };
   writeNew(ledger, join(target, MANIFEST_PATH), serializeManifest(manifest));

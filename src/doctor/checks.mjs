@@ -26,7 +26,7 @@
 // repository removed (src/git-env.mjs): with GIT_DIR in the environment,
 // every git question below would otherwise be answered about THAT
 // repository, and a vault whose push runs no hook would read as gated.
-import { accessSync, constants as fsConstants, readFileSync, realpathSync, statSync } from 'node:fs';
+import { accessSync, constants as fsConstants, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, delimiter, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { run } from '../exec.mjs';
@@ -38,6 +38,9 @@ import { kitVersion } from '../version.mjs';
 import { localGitVarNames, withoutLocalGitVars } from '../git-env.mjs';
 import { loadPatterns } from '../leak.mjs';
 import { TEMPLATE_HOOK } from '../init/skeleton.mjs';
+import { INSTALL_HOOK_COMMAND } from '../init/gate.mjs';
+import { MANIFEST_PATH, readManifest } from '../manifest.mjs';
+import { compareVersions } from '../commands/update.mjs';
 
 export const MINIMUM_NODE_MAJOR = 24;
 export const HOOKS_DIR = '.githooks';
@@ -276,6 +279,12 @@ function hooksPath(ctx) {
   const cfg = git(ctx, ['config', '--type=path', '--get', 'core.hooksPath']);
   const value = cfg.status === 0 ? cfg.stdout.replace(/\r?\n$/, '') : '';
   if (cfg.status === 1 || (cfg.status === 0 && value === '')) {
+    // With no hook to point at, pointing core.hooksPath at the directory
+    // only leads to the next failure: the command that installs both is
+    // the one named.
+    if (!isRegularFile(hook)) {
+      return { id, status: 'fail', messageKey: 'doctor.hooks_path.unset_no_hook', params: { hook, command: INSTALL_HOOK_COMMAND } };
+    }
     return { id, status: 'fail', messageKey: 'doctor.hooks_path.unset', params: { expected, command: SET_HOOKS_PATH_COMMAND } };
   }
   if (cfg.status !== 0) {
@@ -302,7 +311,7 @@ function hooksPath(ctx) {
     stats = null;
   }
   if (!stats || !stats.isFile()) {
-    return { id, status: 'fail', messageKey: 'doctor.hooks_path.hook_missing', params: { hook } };
+    return { id, status: 'fail', messageKey: 'doctor.hooks_path.hook_missing', params: { hook, command: INSTALL_HOOK_COMMAND } };
   }
   if (stats.size === 0) {
     return { id, status: 'fail', messageKey: 'doctor.hooks_path.hook_empty', params: { hook } };
@@ -378,6 +387,41 @@ function configValid(ctx) {
     return { id, status: 'fail', messageKey: 'doctor.config_valid.pattern', params: { file, patterns } };
   }
   return { id, status: 'ok', messageKey: 'doctor.config_valid.ok', params: { file } };
+}
+
+// The states in which `brain-kit update` refuses the vault, said before a
+// person runs it: no manifest, or one it cannot read, fails (update has
+// nothing to go on, and a vault whose manifest is gone cannot be kept
+// current at all); a manifest language that differs from the
+// configuration's, or an engine older than the configuration's
+// kit_version, warns (update refuses, but every other command works).
+function manifestValid(ctx) {
+  const id = 'manifest-valid';
+  const file = join(ctx.root, MANIFEST_PATH);
+  try {
+    lstatSync(file);
+  } catch (error) {
+    if (error.code === 'ENOENT') return { id, status: 'fail', messageKey: 'doctor.manifest_valid.missing', params: { file } };
+  }
+  let manifest;
+  try {
+    manifest = readManifest(ctx.root);
+  } catch (error) {
+    return { id, status: 'fail', messageKey: 'doctor.manifest_valid.unreadable', params: { file, error: error.message } };
+  }
+  const read = ctx.config();
+  const config = read.ok && read.value !== null && typeof read.value === 'object' ? read.value : null;
+  if (config !== null && manifest.lang !== undefined && typeof config.lang === 'string' && manifest.lang !== config.lang) {
+    return { id, status: 'warn', messageKey: 'doctor.manifest_valid.lang_differs', params: { recorded: manifest.lang, configured: config.lang } };
+  }
+  const configured = config?.kit_version;
+  if (typeof configured === 'string') {
+    const order = compareVersions(ctx.engineVersion, configured);
+    if (order === null || order < 0) {
+      return { id, status: 'warn', messageKey: 'doctor.manifest_valid.kit_older', params: { configured, running: ctx.engineVersion } };
+    }
+  }
+  return { id, status: 'ok', messageKey: 'doctor.manifest_valid.ok', params: { file } };
 }
 
 function machineValid(ctx) {
@@ -469,7 +513,13 @@ function kitVersionCheck(ctx) {
 
 function ghPresent(ctx) {
   const id = 'gh-present';
-  const r = probe(ctx, 'gh', ['--version']);
+  // Absent from PATH is said as absent: "did not answer" reads like a
+  // broken gh. The one found is the one asked.
+  const bin = findExecutable('gh', pathDirs(ctx.env));
+  if (!bin) {
+    return { id, status: 'warn', messageKey: 'doctor.gh_present.not_installed', params: {} };
+  }
+  const r = probe(ctx, bin, ['--version']);
   if (r.status !== 0) {
     return { id, status: 'warn', messageKey: 'doctor.gh_present.missing', params: { status: r.status } };
   }
@@ -592,6 +642,7 @@ export const CHECKS = new Map([
   ['hooks-path', hooksPath],
   ['brain-kit-on-path', brainKitOnPath],
   ['config-valid', configValid],
+  ['manifest-valid', manifestValid],
   ['machine-valid', machineValid],
   ['state-dir-resolves', stateDirResolves],
   ['state-dir-mode', stateDirMode],

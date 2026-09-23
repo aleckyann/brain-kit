@@ -1,7 +1,7 @@
 # brain-kit
 
-> Under construction. Phase 1 is in progress: the validator and the linter work today, from a
-> clone of this repository. Nothing here curates a vault yet, and the package on npm is still the
+> Under construction. Phase 1 is in progress: `init`, `init --adopt`, `update`, `doctor`, the
+> validator, the linter and the push gates work today, from a clone of this repository. Nothing here curates a vault yet, and the package on npm is still the
 > Phase 0 skeleton. Follow the repository for the first usable release.
 
 A second brain in plain markdown, in the Open Knowledge Format (OKF) v0.2, kept by an
@@ -12,8 +12,9 @@ Your merge is the approval and the verification.
 brain-kit is one repository that is meant to be, at the same time:
 
 - an npm package, `second-brain-kit`, with a single executable, `brain-kit`. Today it
-  validates and lints a vault; the PR loop, curator, briefing pre-flight, scheduler
-  templates and doctor are still to come;
+  creates a vault or adopts an existing one, installs its push gate, keeps the kit's own
+  files current, checks the machine with `doctor`, and validates and lints a vault; the PR
+  loop, curator, briefing pre-flight and scheduler templates are still to come;
 - a Claude Code plugin (skills, a Stop hook, a read-only subagent) that calls the same
   engine. Today the repository carries only the plugin manifest and the hook wiring, and
   the hook does nothing yet;
@@ -30,15 +31,44 @@ generates is yours: markdown, YAML frontmatter and a declarative config file, no
 
 ## What works today
 
-Both commands run from a clone, against a vault: a directory holding a
-`brain-kit.config.json` and a root `index.md`. They take the vault's path, or find it by
-walking up from the current directory.
+Every command runs from a clone. A vault is a directory holding a `brain-kit.config.json`
+and a root `index.md`; the commands take its path, or find it by walking up from the
+current directory.
 
 ```bash
 git clone https://github.com/aleckyann/brain-kit.git
+node brain-kit/bin/brain-kit.mjs init path/to/new-vault
+node brain-kit/bin/brain-kit.mjs init --adopt path/to/existing-vault
+node brain-kit/bin/brain-kit.mjs update path/to/vault
+node brain-kit/bin/brain-kit.mjs doctor path/to/vault
 node brain-kit/bin/brain-kit.mjs validate path/to/vault
 node brain-kit/bin/brain-kit.mjs lint path/to/vault
 ```
+
+`init` makes a new vault in an empty or new directory, in English or Portuguese: the
+skeleton, the configuration, a `.gitignore`, the push gate (`.githooks/pre-push`, with
+`core.hooksPath` pointed at it), a manifest of what the kit wrote, a git repository, and
+`machine.json` in a state directory outside the vault. It asks one question at a time,
+takes `--yes` or `--from-answers <file>` instead, and never makes the first commit unless
+told to.
+
+`init --adopt` brings an existing vault under the kit. It infers the configuration from
+the notes and prints every inference, writes the configuration and a manifest that records
+the files git would publish as yours (a file git ignores is never recorded), and installs
+the push gate. A hook of your own, or a `core.hooksPath` pointing elsewhere, is left
+exactly as it is, and adopt prints the one line that adds the gate to it. `--no-hook` skips
+the gate. It never changes a note and never commits.
+
+`update` refreshes the files the kit manages (the root contract files, `.gitignore` and the
+hook) by checksum: one you have not edited is replaced, one you edited is never
+overwritten, and a newer version is written beside it as `<name>.brain-kit-new`.
+`update --install-hook` installs the push gate into a vault that does not have it, with
+the same care for a hook of your own.
+
+`doctor` reports, check by check, whether this machine and this vault are ready: Node and
+git, the gate and `core.hooksPath`, `brain-kit` on PATH, the configuration, the manifest,
+`machine.json` and its state directory, the kit version, `gh`, `claude`, and
+`node_modules/` in `.gitignore`. Each failure names the command that fixes it.
 
 `validate` checks the vault against OKF v0.2 and reports two rulers apart: the format's
 own conformance, and the vault's house rules, which are stricter on purpose. A vault can
@@ -84,7 +114,7 @@ Phase 1 is built in five slices:
 | 1A | Vault reader, frontmatter, markdown, `validate` | done |
 | 1B | `lint` and its eight rules, the leak scanner, the two push gates | done |
 | 1C | `propose` (the PR loop) and `sync` | planned |
-| 1D | `init`, `init --adopt`, `update`, `doctor` | planned |
+| 1D | `init`, `init --adopt`, `update`, `doctor` | done |
 | 1E | Plugin surface: skills, Stop and SessionStart hooks, read-only subagent, evals | planned |
 
 ## Security
@@ -94,8 +124,11 @@ object a push carries against a personal pattern list kept outside the repositor
 template hook meant for a vault, in `templates/githooks/`, runs `validate` and `lint` over
 the working tree, then the same object scan over what the push carries, against the
 vault's own configured patterns, those of its working tree, of every pushed tip and of its
-default branch together. Nothing installs it into a vault yet. [SECURITY.md](SECURITY.md) lists what the
-gates do not cover.
+default branch together. `init` installs it into every new vault, `init --adopt` into an
+existing one unless a hook of the person's own is already there, and `brain-kit update
+--install-hook` later. A refusal for a match ends with what to do: rotate the credential,
+remove it from history, and follow the vault's `SECURITY.md`. [SECURITY.md](SECURITY.md)
+lists what the gates do not cover.
 
 ## Contributing
 

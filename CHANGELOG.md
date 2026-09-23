@@ -45,7 +45,10 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   clone knows. A branch that deletes a pattern and then violates it is refused whenever one
   of those still declares it. The configuration file's own content is read for credential
   shapes only, so a literal inside it is not refused. `brain-kit` is found on PATH only;
-  the vault carries no package. `brain-kit init` installs it into a new vault.
+  the vault carries no package. `brain-kit init` installs it into a new vault, `brain-kit
+  init --adopt` into an existing one, and `brain-kit update --install-hook` later.
+- Every refusal the push gate makes for a match, in both gates, ends with what to do:
+  rotate the credential, remove it from history, and follow `SECURITY.md`.
 - `brain-kit init [dir] [--lang en|pt-BR] [--yes] [--from-answers <file>]` makes a new
   vault in an empty or new directory: the language skeleton, the configuration, the hook,
   a manifest of what the kit wrote, a git repository, and `machine.json` in the state
@@ -58,14 +61,21 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   the log, the stale policy, the confidentiality field and the directories that hold marked
   notes, plain dates) and prints every inference; then it writes only the configuration and
   a manifest recording every existing file as the person's, plus `machine.json` outside the
-  vault. It never changes a note, never writes the hook, never changes the repository and
-  never commits, and refuses a `.brain-kit` that is a link or a file before writing anything.
+  vault. Inside a repository the manifest lists only what git would publish (tracked files,
+  and untracked files that are not ignored), so a file the person ignored is never named or
+  hashed in it; outside one, every file is listed. Then it installs the push gate, unless a
+  hook of the person's own, a `core.hooksPath` pointing elsewhere or hooks in `.git/hooks`
+  are already there: those are left exactly as they are, and it prints the one line that
+  adds the gate to that hook. `--no-hook` skips the gate and says so. It never changes a
+  note and never commits, and refuses a `.brain-kit` that is a link or a file before writing
+  anything.
   `brain-kit --help` and init's refusal of a non-empty directory or a repository point to
   it. The manifest records the vault's language at its top level (optional, so an older
   manifest still reads). `validate` now refuses a `privacy.confidential_field` that names no
   declared boolean extension, since a misspelt one silently switched the privacy rule off.
-- `brain-kit update [dir] [--check | --accept <path>]` refreshes the files the kit manages
-  (the root contract files and the hook) by checksum: one you have not edited is replaced
+- `brain-kit update [dir] [--check | --accept <path> | --install-hook]` refreshes the files
+  the kit manages (the root contract files, the hook, and, in a vault `init` makes from now
+  on, `.gitignore`) by checksum: one you have not edited is replaced
   with this kit's version; one you edited is never overwritten, and a newer version is
   written beside it as `<name>.brain-kit-new`; your notes are never touched. `--accept`
   records that you have dealt with an offered version, or that you removed a managed file on
@@ -73,7 +83,18 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   writing nothing, a manifest it cannot read or write safely, a kit older than the
   configuration's `kit_version`, and a `lang` that is not the language the vault was made
   in (the language the manifest records); after a run it sets `kit_version` to the running
-  kit's. A new vault's `.gitignore` ignores offered and temporary files.
+  kit's. A new vault's `.gitignore` ignores offered and temporary files. `--install-hook`
+  installs the push gate into a vault that does not have it, with the same care for a hook
+  of the person's own; it exits 0 when installed or already there, 3 when it left something
+  as it was, 1 when no gate can run there.
+- `brain-kit doctor [dir] [--json] [--only <id,...>]` reports, check by check, whether this
+  machine and this vault are ready for the kit: `node-version`, `git-present`,
+  `default-branch-known`, `hooks-path`, `brain-kit-on-path`, `config-valid`,
+  `manifest-valid`, `machine-valid`, `state-dir-resolves`, `state-dir-mode`, `kit-version`,
+  `gh-present`, `claude-present` and `gitignore-node-modules`. It exits 1 when any check
+  fails, and names the command that fixes each failure it can: a missing gate names
+  `brain-kit update --install-hook`, and a manifest `update` would refuse is reported
+  before `update` is run.
 - The default output language of every command now follows the locale (`LC_ALL`, then
   `LC_MESSAGES`, then `LANG`; a value starting with `pt` is Portuguese) and falls back to
   English; it used to be Portuguese unless `BRAIN_KIT_LANG` said otherwise. `BRAIN_KIT_LANG`

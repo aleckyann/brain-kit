@@ -30,7 +30,7 @@ import { PassThrough } from 'node:stream';
 import {
   appendFileSync, chmodSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { KIT_ROOT, kitVersion } from '../src/version.mjs';
 import { CONFIG_FILENAME, MACHINE_FILENAME, findMachineOnlyKeys, loadConfig, validateConfig, validateMachine } from '../src/config.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
@@ -39,6 +39,8 @@ import { MANIFEST_PATH, readManifest } from '../src/manifest.mjs';
 import { completeDefaults } from '../src/init/config.mjs';
 import { inferConfig, monthOffset, readDefaults, writeAdoption } from '../src/init/adopt.mjs';
 import { runInit } from '../src/commands/init.mjs';
+import { MATCH_REMEDY } from '../src/commands/scan-blobs.mjs';
+import { GATE_LINE } from '../src/init/gate.mjs';
 import { walkVault } from '../src/vault.mjs';
 import { makeTempDir } from './helpers/tmp.mjs';
 
@@ -163,20 +165,24 @@ const CASES = [
 ];
 
 for (const c of CASES) {
-  test(`${c.fixture} fixture, adopted in ${c.lang}: only the configuration and the manifest are new, and every existing byte is kept`, () => {
+  test(`${c.fixture} fixture, adopted in ${c.lang}: only the configuration, the manifest and the gate are new, and every existing byte is kept`, () => {
     const copy = freshCopy(c.fixture);
     const before = snapshot(copy.vault);
     assert.ok(before.length > 40, 'the snapshot must see the repository too');
     assert.ok(before.some((line) => line.startsWith('.git/index ')), 'the snapshot must include the git index');
+    const localConfigBefore = git(copy.vault, ['config', '--local', '--list']).stdout;
 
     const r = adopt(copy, ANSWERS[c.lang]);
     assert.equal(r.status, c.exit, `${r.stdout}\n${r.stderr}`);
 
+    // The one pre-existing file that changes is the repository's own
+    // configuration, by exactly one setting: core.hooksPath.
     const after = snapshot(copy.vault);
     const kept = new Set(after);
-    assert.deepEqual(before.filter((line) => !kept.has(line)), [], 'a pre-existing path was changed or removed');
-    const added = after.filter((line) => !before.includes(line)).map((line) => line.split(' ').slice(0, 2).join(' '));
-    assert.deepEqual(added, ['.brain-kit dir', '.brain-kit/manifest.json file', 'brain-kit.config.json file']);
+    assert.deepEqual(before.filter((line) => !kept.has(line)).map((line) => line.split(' ')[0]), ['.git/config'], 'a pre-existing path was changed or removed');
+    assert.equal(git(copy.vault, ['config', '--local', '--list']).stdout, `${localConfigBefore}core.hookspath=.githooks\n`);
+    const added = after.filter((line) => !before.includes(line)).map((line) => line.split(' ').slice(0, 2).join(' ')).filter((line) => line !== '.git/config file');
+    assert.deepEqual(added, ['.brain-kit dir', '.brain-kit/manifest.json file', '.githooks dir', '.githooks/pre-push file', 'brain-kit.config.json file']);
 
     // The configuration: valid, in the vault's language, completed from
     // these answers, stamped with this kit, free of machine-only keys.
@@ -190,16 +196,16 @@ for (const c of CASES) {
     assert.equal(config.actors.human, `human:${ANSWERS[c.lang].handle}`);
     assert.deepEqual(config, completeDefaults(inferConfig(join(FIXTURES, c.fixture), { lang: c.lang }).config, ANSWERS[c.lang], { kitVersion: kitVersion() }));
 
-    // The manifest: every file that was there, each seeded, each hash the
-    // bytes on disk; nothing under .git.
+    // The manifest: every file that was there, each seeded, and the gate,
+    // managed; each hash the bytes on disk; nothing under .git.
     const manifest = readManifest(copy.vault);
     const existing = before.filter((line) => / file /.test(line)).map((line) => line.split(' ')[0]).filter((path) => !path.startsWith('.git/'));
-    assert.deepEqual(manifest.files.map((f) => f.path).sort(), existing.sort());
+    assert.deepEqual(manifest.files.map((f) => f.path).sort(), [...existing, '.githooks/pre-push'].sort());
     assert.ok(manifest.files.length >= 20);
     assert.ok(manifest.files.some((f) => f.path === '.gitignore'), 'a dot-file the vault already has is recorded as the person\'s');
     assert.equal(manifest.lang, c.lang, 'the manifest records the language adopt inferred in');
     for (const entry of manifest.files) {
-      assert.equal(entry.class, 'seeded', entry.path);
+      assert.equal(entry.class, entry.path === '.githooks/pre-push' ? 'managed' : 'seeded', entry.path);
       assert.equal(entry.sha256, createHash('sha256').update(readFileSync(join(copy.vault, entry.path))).digest('hex'), entry.path);
     }
 
@@ -211,10 +217,14 @@ for (const c of CASES) {
     assert.equal(statSync(machinePath).mode & 0o777, 0o600);
     assert.equal(statSync(copy.state).mode & 0o777, 0o700);
 
-    // No hook, no hooksPath, no commit: the repository is its own.
-    assert.equal(existsSync(join(copy.vault, '.githooks')), false);
-    assert.notEqual(git(copy.vault, ['config', 'core.hooksPath']).status, 0);
+    // The gate: the template, executable, wired; and no commit: the
+    // history is the person's.
+    const hook = join(copy.vault, '.githooks', 'pre-push');
+    assert.deepEqual(readFileSync(hook), readFileSync(join(KIT_ROOT, 'templates', 'githooks', 'pre-push')));
+    assert.equal(statSync(hook).mode & 0o777, 0o755);
+    assert.equal(git(copy.vault, ['config', 'core.hooksPath']).stdout.trim(), '.githooks');
     assert.equal(git(copy.vault, ['rev-list', '--count', 'HEAD']).stdout.trim(), '1');
+    assert.ok(r.stdout.includes(createTranslator(c.lang)('gate.installed', { hook: join(realpathSync(copy.vault), '.githooks', 'pre-push') })), r.stdout);
 
     // The verdict on the adopted vault: exactly what the fixture holds.
     const v = brainKit(['validate', copy.vault, '--json'], { env: testEnv(copy.state), cwd: copy.cwd });
@@ -966,4 +976,270 @@ test('after an adoption with findings, the way forward is to edit the configurat
   assert.equal(redo.status, EXIT.USAGE);
   assert.match(redo.stderr, /earlier adoption of this vault that you are redoing, remove it too/);
   assert.doesNotMatch(redo.stderr, /no longer exists/);
+});
+
+// --- final review of slice 1D: what adopt publishes, and the gate it installs ---
+
+// brain-kit on PATH the way a person has it, through a shim to this
+// checkout, in a directory with a space in its name; the only brain-kit a
+// hook can find.
+function withBrainKitOnPath(base, extra = {}) {
+  const shims = join(base, 'a bin dir');
+  mkdirSync(shims, { recursive: true });
+  writeFileSync(join(shims, 'brain-kit'), `#!/usr/bin/env bash\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(BIN)} "$@"\n`);
+  chmodSync(join(shims, 'brain-kit'), 0o755);
+  return testEnv(join(base, 'state'), { PATH: `${shims}${delimiter}${process.env.PATH}`, ...extra });
+}
+
+function commitAll(cwd, message, paths = ['-A'], env = undefined) {
+  for (const args of [['add', ...paths], ['-c', 'maintenance.auto=false', 'commit', '-q', '-m', message]]) {
+    const r = spawnSync('git', args, { cwd, encoding: 'utf8', env: env ?? { ...process.env, ...TEST_GIT_ENV } });
+    assert.equal(r.status, 0, r.stderr);
+  }
+}
+
+// A hand-made Portuguese vault, as the reviewer built it: .gitignore
+// holds .env and privado/, the .env a password, privado/ a third party's
+// file; a note left untracked on purpose, and a tracked file deleted
+// from the working tree.
+function vaultWithIgnoredFiles() {
+  const copy = freshCopy('pt-BR', { repository: false });
+  appendFileSync(join(copy.vault, '.gitignore'), '.env\nprivado/\n');
+  writeFileSync(join(copy.vault, 'anexo.txt'), 'a tracked attachment\n');
+  const quiet = ['-c', 'maintenance.auto=false', '-c', 'gc.auto=0'];
+  assert.equal(git(copy.vault, [...quiet, 'init', '-q', '-b', 'main']).status, 0);
+  commitAll(copy.vault, 'Notes as they were');
+  assert.equal(git(copy.vault, ['rm', '-q', '--cached', 'anexo.txt']).status, 0);
+  assert.equal(git(copy.vault, ['-c', 'maintenance.auto=false', 'commit', '-q', '-m', 'untrack the attachment']).status, 0);
+  writeFileSync(join(copy.vault, '.env'), 'DB_PASSWORD=hunter2\n');
+  mkdirSync(join(copy.vault, 'privado'));
+  writeFileSync(join(copy.vault, 'privado', 'diagnostico-da-carla.txt'), 'fictional\n');
+  return copy;
+}
+
+const ENV_HASH = createHash('sha256').update('DB_PASSWORD=hunter2\n').digest('hex');
+
+test('C1: adopt records only what git would publish, and neither an ignored file nor an ignored folder reaches a remote through the gate', () => {
+  const copy = vaultWithIgnoredFiles();
+  const env = withBrainKitOnPath(copy.base);
+  const file = join(copy.base, 'answers.json');
+  writeFileSync(file, `${JSON.stringify(ANSWERS['pt-BR'], null, 2)}\n`);
+  const r = brainKit(['init', '--adopt', copy.vault, '--from-answers', file], { env, cwd: copy.cwd });
+  assert.equal(r.status, EXIT.OK, `${r.stdout}\n${r.stderr}`);
+
+  const manifestText = readFileSync(join(copy.vault, MANIFEST_PATH), 'utf8');
+  const paths = readManifest(copy.vault).files.map((f) => f.path);
+  assert.ok(!paths.includes('.env') && !manifestText.includes('.env"'), 'an ignored file is never named');
+  assert.ok(!paths.some((p) => p.startsWith('privado/')) && !manifestText.includes('privado'), 'an ignored folder is never named');
+  assert.ok(!manifestText.includes(ENV_HASH), 'an ignored file is never hashed');
+  assert.ok(paths.includes('anexo.txt'), 'an untracked file git would add is recorded');
+  assert.ok(paths.includes('.gitignore') && paths.includes('index.md'), 'tracked files are recorded');
+
+  // Commit as adopt says, push through the gate it installed.
+  commitAll(copy.vault, 'adopt brain-kit', ['brain-kit.config.json', '.brain-kit/manifest.json', '.githooks/pre-push'], { ...env });
+  const bare = join(copy.base, 'origin.git');
+  assert.equal(spawnSync('git', ['init', '-q', '--bare', bare]).status, 0);
+  assert.equal(git(copy.vault, ['remote', 'add', 'origin', bare]).status, 0);
+  const push = spawnSync('git', ['push', '-q', 'origin', 'HEAD:main'], { cwd: copy.vault, encoding: 'utf8', env });
+  assert.equal(push.status, 0, push.stderr);
+  assert.match(push.stderr, /brain-kit leak gate ran/, 'the push went through the gate');
+  // The remote's files, the manifest it holds, and every byte of its
+  // history: no ignored name and no ignored content (the .gitignore itself
+  // names both patterns, which is the person's own published file).
+  const names = git(bare, ['ls-tree', '-r', '--name-only', 'main']).stdout.split('\n');
+  assert.ok(names.includes('.brain-kit/manifest.json'), 'the manifest reached the remote');
+  assert.ok(!names.includes('.env') && !names.some((n) => n.startsWith('privado/')));
+  const remoteManifest = git(bare, ['show', 'main:.brain-kit/manifest.json']).stdout;
+  assert.ok(!remoteManifest.includes('.env"') && !remoteManifest.includes('privado') && !remoteManifest.includes(ENV_HASH), remoteManifest);
+  const published = git(bare, ['log', '--all', '-p', '--format=%H %s']).stdout;
+  for (const secret of ['diagnostico', 'hunter2', ENV_HASH]) assert.ok(!published.includes(secret), `${secret} reached the remote`);
+});
+
+test('C1: outside a repository nothing is ignored, and the vault is walked, dot-files included', () => {
+  const copy = freshCopy('pt-BR', { repository: false });
+  appendFileSync(join(copy.vault, '.gitignore'), '.env\n');
+  writeFileSync(join(copy.vault, '.env'), 'DB_PASSWORD=hunter2\n');
+  assert.equal(adopt(copy, ANSWERS['pt-BR']).status, EXIT.OK);
+  assert.ok(readManifest(copy.vault).files.some((f) => f.path === '.env'));
+});
+
+test('C1: of what git lists, a tracked file deleted from the working tree and a link out of the vault are not recorded', () => {
+  const copy = freshCopy('pt-BR');
+  const outside = join(copy.base, 'outside.txt');
+  writeFileSync(outside, 'not the vault\n');
+  symlinkSync(outside, join(copy.vault, 'fora.txt'));
+  symlinkSync('nucleo', join(copy.vault, 'atalho'));
+  commitAll(copy.vault, 'a link out');
+  // A submodule: git lists its directory, which is not a file of this vault.
+  const sub = join(copy.vault, 'sub');
+  mkdirSync(sub);
+  assert.equal(git(sub, ['init', '-q']).status, 0);
+  writeFileSync(join(sub, 'x.txt'), 'x\n');
+  commitAll(sub, 'sub');
+  assert.equal(git(copy.vault, ['add', 'sub']).status, 0);
+  assert.equal(git(copy.vault, ['commit', '-q', '-m', 'a gitlink']).status, 0);
+  rmSync(join(copy.vault, 'nucleo', 'principios.md'));
+  const r = adopt(copy, ANSWERS['pt-BR']);
+  assert.notEqual(r.status, EXIT.USAGE, `${r.stdout}${r.stderr}`);
+  const paths = readManifest(copy.vault).files.map((f) => f.path);
+  assert.ok(!paths.includes('sub') && !paths.some((p) => p.startsWith('sub/')), paths.join(', '));
+  assert.ok(!paths.includes('atalho'), 'a link to a directory is not a file');
+  assert.ok(!paths.includes('fora.txt'), `${r.stdout}${r.stderr}`);
+  assert.ok(!paths.includes('nucleo/principios.md'));
+  assert.ok(paths.includes('nucleo/ritmo-semanal.md'));
+});
+
+test('C1: a vault in a repository whose git cannot answer is refused with exit 2, never walked', () => {
+  const copy = freshCopy('pt-BR');
+  const shims = join(copy.base, 'broken git');
+  mkdirSync(shims);
+  writeFileSync(join(shims, 'git'), '#!/usr/bin/env bash\necho "fatal: broken for this test" >&2\nexit 128\n');
+  chmodSync(join(shims, 'git'), 0o755);
+  const before = snapshot(copy.vault);
+  const file = join(copy.base, 'answers.json');
+  writeFileSync(file, `${JSON.stringify(ANSWERS['pt-BR'], null, 2)}\n`);
+  const r = brainKit(['init', '--adopt', copy.vault, '--from-answers', file], { env: testEnv(copy.state, { PATH: `${shims}${delimiter}${process.env.PATH}` }), cwd: copy.cwd });
+  assertRefused(r, copy, before, /git could not read the repository/);
+});
+
+test('I1: an adopted vault refuses a committed credential on push, and the refusal ends with what to do', () => {
+  const copy = freshCopy('pt-BR');
+  const env = withBrainKitOnPath(copy.base);
+  const file = join(copy.base, 'answers.json');
+  writeFileSync(file, `${JSON.stringify(ANSWERS['pt-BR'], null, 2)}\n`);
+  assert.equal(brainKit(['init', '--adopt', copy.vault, '--from-answers', file], { env, cwd: copy.cwd }).status, EXIT.OK);
+  commitAll(copy.vault, 'adopt brain-kit', ['brain-kit.config.json', '.brain-kit/manifest.json', '.githooks/pre-push']);
+  const bare = join(copy.base, 'origin.git');
+  assert.equal(spawnSync('git', ['init', '-q', '--bare', bare]).status, 0);
+  assert.equal(git(copy.vault, ['remote', 'add', 'origin', bare]).status, 0);
+  const clean = spawnSync('git', ['push', '-q', 'origin', 'HEAD:main'], { cwd: copy.vault, encoding: 'utf8', env });
+  assert.equal(clean.status, 0, clean.stderr);
+  const pushed = git(bare, ['rev-parse', 'main']).stdout.trim();
+
+  writeFileSync(join(copy.vault, 'chave.txt'), `AWS_ACCESS_KEY_ID=AKIA${'IOSFODNN7EXAMPL3'}\n`);
+  commitAll(copy.vault, 'uma chave');
+  rmSync(join(copy.vault, 'chave.txt'));
+  commitAll(copy.vault, 'sem a chave');
+  const leak = spawnSync('git', ['push', '-q', 'origin', 'HEAD:main'], { cwd: copy.vault, encoding: 'utf8', env });
+  assert.notEqual(leak.status, 0, 'a committed credential must refuse the push');
+  assert.equal(git(bare, ['rev-parse', 'main']).stdout.trim(), pushed, 'nothing reached the remote');
+  const lines = leak.stderr.split('\n');
+  const verdict = lines.findIndex((line) => /brain-kit push-gate refused/.test(line));
+  assert.ok(verdict > 0, leak.stderr);
+  assert.equal(lines[verdict - 1], MATCH_REMEDY, 'the last line push-gate prints is the remedy');
+});
+
+test('I1: a hook of the person\'s own, a core.hooksPath elsewhere, or hooks in .git/hooks are left exactly as they are, and the line that adds the gate is printed', () => {
+  const shapes = {
+    'own hook': (vault) => {
+      mkdirSync(join(vault, '.githooks'));
+      writeFileSync(join(vault, '.githooks', 'pre-push'), '#!/bin/sh\necho mine\n');
+      chmodSync(join(vault, '.githooks', 'pre-push'), 0o755);
+      assert.equal(git(vault, ['config', 'core.hooksPath', '.githooks']).status, 0);
+      return ['gate.hook_present', { hook: join(realpathSync(vault), '.githooks', 'pre-push'), line: GATE_LINE }];
+    },
+    'own hook, not wired': (vault) => {
+      mkdirSync(join(vault, '.githooks'));
+      writeFileSync(join(vault, '.githooks', 'pre-push'), '#!/bin/sh\necho mine\n');
+      return ['gate.hook_present', { hook: join(realpathSync(vault), '.githooks', 'pre-push'), line: GATE_LINE }];
+    },
+    'hooksPath elsewhere': (vault) => {
+      assert.equal(git(vault, ['config', 'core.hooksPath', '.husky']).status, 0);
+      return ['gate.hooks_path_elsewhere', { value: '.husky', hook: join(realpathSync(vault), '.husky', 'pre-push'), line: GATE_LINE }];
+    },
+    'hook in .git/hooks': (vault) => {
+      writeFileSync(join(vault, '.git', 'hooks', 'pre-commit'), '#!/bin/sh\nexit 0\n');
+      chmodSync(join(vault, '.git', 'hooks', 'pre-commit'), 0o755);
+      const dir = join(realpathSync(vault), '.git', 'hooks');
+      return ['gate.default_hooks', { dir, hooks: ['pre-commit'], hook: join(dir, 'pre-push'), line: GATE_LINE }];
+    },
+    'the template, not wired': (vault) => {
+      mkdirSync(join(vault, '.githooks'));
+      writeFileSync(join(vault, '.githooks', 'pre-push'), readFileSync(join(KIT_ROOT, 'templates', 'githooks', 'pre-push')));
+      return ['gate.unwired', { hook: join(realpathSync(vault), '.githooks', 'pre-push'), command: 'git config core.hooksPath .githooks' }];
+    },
+  };
+  for (const [name, prepare] of Object.entries(shapes)) {
+    const copy = freshCopy('pt-BR');
+    const [key, params] = prepare(copy.vault);
+    const hooksPathBefore = git(copy.vault, ['config', '--local', '--list']).stdout;
+    const before = snapshot(copy.vault).filter((line) => line.startsWith('.githooks') || line.startsWith('.git/hooks') || line.startsWith('.git/config '));
+    const r = adopt(copy, ANSWERS['pt-BR']);
+    assert.equal(r.status, EXIT.OK, `${name}: ${r.stdout}${r.stderr}`);
+    const after = snapshot(copy.vault).filter((line) => line.startsWith('.githooks') || line.startsWith('.git/hooks') || line.startsWith('.git/config '));
+    assert.deepEqual(after, before, `${name}: a hook or the repository configuration changed`);
+    assert.equal(git(copy.vault, ['config', '--local', '--list']).stdout, hooksPathBefore, name);
+    assert.ok(!readManifest(copy.vault).files.some((f) => f.path === '.githooks/pre-push' && f.class === 'managed'), `${name}: recorded as the kit's`);
+    const line = createTranslator('pt-BR')(key, params);
+    assert.ok(r.stdout.split('\n').includes(line), `${name}: expected "${line}" in:\n${r.stdout}`);
+  }
+});
+
+test('I1: a global core.hooksPath is the person\'s too, and is left as it is', () => {
+  const copy = freshCopy('pt-BR');
+  const globalConfig = join(copy.base, 'gitconfig');
+  writeFileSync(globalConfig, '[core]\n\thooksPath = ~/my-hooks\n');
+  const file = join(copy.base, 'answers.json');
+  writeFileSync(file, `${JSON.stringify(ANSWERS['pt-BR'], null, 2)}\n`);
+  const r = brainKit(['init', '--adopt', copy.vault, '--from-answers', file], { env: testEnv(copy.state, { GIT_CONFIG_GLOBAL: globalConfig }), cwd: copy.cwd });
+  assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
+  assert.equal(existsSync(join(copy.vault, '.githooks')), false);
+  assert.notEqual(git(copy.vault, ['config', '--local', 'core.hooksPath']).status, 0);
+  assert.match(r.stdout, /core\.hooksPath/);
+});
+
+test('I1: with --no-hook, adopt says no gate was installed and how to install it, and every existing byte is kept', () => {
+  const copy = freshCopy('pt-BR');
+  const before = snapshot(copy.vault);
+  const r = adopt(copy, ANSWERS['pt-BR'], ['--no-hook']);
+  assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
+  const after = snapshot(copy.vault);
+  assert.deepEqual(before.filter((line) => !after.includes(line)), []);
+  assert.deepEqual(after.filter((line) => !before.includes(line)).map((line) => line.split(' ')[0]), ['.brain-kit', '.brain-kit/manifest.json', 'brain-kit.config.json']);
+  assert.ok(r.stdout.includes(createTranslator('pt-BR')('init.adopt_no_hook', { command: 'brain-kit update --install-hook' })), r.stdout);
+  const fresh = join(copy.base, 'a new vault');
+  const init = brainKit(['init', fresh, '--no-hook', '--yes', '--lang', 'en'], { env: testEnv(join(copy.base, 'other state')), cwd: copy.cwd });
+  assert.equal(init.status, EXIT.USAGE, `--no-hook belongs to --adopt only:\n${init.stdout}${init.stderr}`);
+  assert.match(init.stderr, /--no-hook/);
+  assert.equal(existsSync(fresh), false, 'init wrote nothing');
+});
+
+test('I1: a gate that fails to install makes adopt exit at least 3, removes what the step wrote, and says so', () => {
+  const copy = freshCopy('pt-BR');
+  // A FILE where the hook's directory goes: the hook cannot be written.
+  writeFileSync(join(copy.vault, '.githooks'), 'not a directory\n');
+  commitAll(copy.vault, 'a file named .githooks');
+  const r = adopt(copy, ANSWERS['pt-BR']);
+  assert.equal(r.status, EXIT.DEGRADED, r.stdout + r.stderr);
+  assert.ok(r.stderr.includes('brain-kit update --install-hook'), r.stderr);
+  assert.equal(readFileSync(join(copy.vault, '.githooks'), 'utf8'), 'not a directory\n');
+  assert.notEqual(git(copy.vault, ['config', '--local', 'core.hooksPath']).status, 0);
+});
+
+test('C1 and I1: with GIT_DIR exported for another repository, adopt lists the vault\'s own files and wires the vault\'s own gate, leaving that repository byte-identical', () => {
+  const copy = freshCopy('pt-BR');
+  const foreign = join(copy.base, 'foreign');
+  mkdirSync(foreign);
+  assert.equal(git(foreign, ['init', '-q']).status, 0);
+  writeFileSync(join(foreign, 'segredo-alheio.txt'), 'not the vault\n');
+  // The other repository tracks a .env; the vault ignores its own. Asked
+  // of the wrong repository, git would call the vault's .env tracked.
+  writeFileSync(join(foreign, '.env'), 'OTHER=1\n');
+  commitAll(foreign, 'foreign');
+  appendFileSync(join(copy.vault, '.gitignore'), '.env\n');
+  commitAll(copy.vault, 'ignore .env');
+  writeFileSync(join(copy.vault, '.env'), 'DB_PASSWORD=hunter2\n');
+  const foreignGit = join(foreign, '.git');
+  const foreignBefore = snapshot(foreignGit);
+  const file = join(copy.base, 'answers.json');
+  writeFileSync(file, `${JSON.stringify(ANSWERS['pt-BR'], null, 2)}\n`);
+  const r = brainKit(['init', '--adopt', copy.vault, '--from-answers', file], {
+    env: testEnv(copy.state, { GIT_DIR: foreignGit, GIT_INDEX_FILE: join(foreignGit, 'index') }), cwd: copy.cwd,
+  });
+  assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
+  assert.deepEqual(snapshot(foreignGit), foreignBefore, 'the other repository changed');
+  const paths = readManifest(copy.vault).files.map((f) => f.path);
+  assert.ok(!paths.includes('segredo-alheio.txt') && paths.includes('index.md'), paths.join(', '));
+  assert.ok(!paths.includes('.env'), 'the vault ignores its .env, whatever another repository tracks');
+  assert.equal(git(copy.vault, ['config', '--local', 'core.hooksPath']).stdout.trim(), '.githooks');
 });
