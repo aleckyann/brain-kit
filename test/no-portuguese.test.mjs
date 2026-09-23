@@ -47,6 +47,22 @@
 // top-level README. Scanning any of those three for "no Portuguese"
 // would be scanning them for failing to do their one job.
 //
+// Slice D, task 3: each language now ships a vault skeleton and a
+// default configuration that `init` copies into a new vault
+// (lang/<code>/vault/ and lang/<code>/config.defaults.json). The English
+// pair ships in the tarball exactly like lang/en/messages.json does, and
+// is read by an English speaker's agent as its own contract, so it joins
+// the scanned set below. The Portuguese pair joins the exclusions by name,
+// for the same reason as the Portuguese message pack: lang/pt-BR/vault/
+// IS the Portuguese vault (its folder names, notes, table headings and
+// templates are Portuguese on purpose), and
+// lang/pt-BR/config.defaults.json IS the Portuguese configuration (its
+// log markers, column headings, extension field names and folder paths
+// are the Portuguese taxonomy that vault is built on). Their parity with
+// the English pair is test/lang.test.mjs's to guard, and their em dash is
+// guarded by the whole-repository scan at the bottom of this file, which
+// excludes neither.
+//
 // Two independent checks, since either alone misses a real leak: a
 // non-ASCII byte catches every accented word ("não", "situação",
 // "vazio" has none but "criação" does) and the em dash itself; the
@@ -85,7 +101,19 @@ import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 
-const SCANNED = ['src', 'bin', 'lang/en/messages.json'];
+const SCANNED = ['src', 'bin', 'lang/en/messages.json', 'lang/en/vault', 'lang/en/config.defaults.json'];
+
+// Deliberately NOT scanned, each for the reason in this file's header. Named
+// here, and checked below to exist and to sit outside SCANNED, so that a
+// rename of one of them is noticed rather than leaving this list pointing
+// at nothing while the header still claims the exclusion.
+const DELIBERATELY_UNSCANNED = [
+  'lang/pt-BR/messages.json',
+  'lang/pt-BR/vault',
+  'lang/pt-BR/config.defaults.json',
+  'test/fixtures/config/valid-pt-BR.json',
+  'README.pt-BR.md',
+];
 
 const PORTUGUESE_WORDS = [
   'vazio',
@@ -183,9 +211,20 @@ test('the scan itself covers a real, non-trivial set of files, not zero and not 
   assert.ok(relFiles.includes(join('src', 'commands', 'validate.mjs')), 'expected the walk to reach src/commands/');
   assert.ok(relFiles.includes(join('bin', 'brain-kit.mjs')), 'expected the walk to reach bin/');
   assert.ok(relFiles.includes(join('lang', 'en', 'messages.json')), 'expected the single scanned file itself');
+  assert.ok(relFiles.includes(join('lang', 'en', 'vault', 'core', 'weekly-rhythm.md')), 'expected the walk to reach the English vault skeleton');
+  assert.ok(relFiles.includes(join('lang', 'en', 'config.defaults.json')), 'expected the English default configuration');
 });
 
-test('no file under src/, bin/, or the English language pack contains a non-ASCII byte', () => {
+test('every deliberate exclusion names a real path, outside the scanned set', () => {
+  const scanned = new Set(collectFiles(SCANNED).map((f) => relative(KIT_ROOT, f)));
+  for (const excluded of DELIBERATELY_UNSCANNED) {
+    const files = collectFiles([excluded]).map((f) => relative(KIT_ROOT, f));
+    assert.ok(files.length > 0, `${excluded} is named as an exclusion but holds no file`);
+    for (const file of files) assert.ok(!scanned.has(file), `${file} is named as an exclusion but is scanned`);
+  }
+});
+
+test('no file under src/, bin/, or the English language pack, vault skeleton and defaults contains a non-ASCII byte', () => {
   const files = collectFiles(SCANNED);
   assert.ok(files.length >= MINIMUM_EXPECTED_FILES, 'the scan must not be empty for this assertion to mean anything');
   const violations = findNonAsciiViolations(files);
@@ -196,7 +235,7 @@ test('no file under src/, bin/, or the English language pack contains a non-ASCI
   );
 });
 
-test('no file under src/, bin/, or the English language pack contains a word from the fixed Portuguese list', () => {
+test('no file under src/, bin/, or the English language pack, vault skeleton and defaults contains a word from the fixed Portuguese list', () => {
   const files = collectFiles(SCANNED);
   assert.ok(files.length >= MINIMUM_EXPECTED_FILES, 'the scan must not be empty for this assertion to mean anything');
   const violations = findWordListViolations(files, wordPattern());

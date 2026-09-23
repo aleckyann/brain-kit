@@ -1,0 +1,382 @@
+{
+  "$schema": "https://raw.githubusercontent.com/aleckyann/brain-kit/main/schema/config.schema.json",
+  "kit_version": "0.0.1",
+  "lang": "en",
+  "okf_version": "0.2",
+  "owner": {
+    "name": "<owner-name>",
+    "handle": "<owner-handle>",
+    "email": "<owner-email>",
+    "role": null,
+    "company": null,
+    "agent_role": "advisor and chief of staff"
+  },
+  "vault": {
+    "title": "<vault-title>",
+    "repo": "<vault-repo>",
+    "private": true,
+    "default_branch": null,
+    "timezone": "<vault-timezone>",
+    "locale": "en_US.UTF-8"
+  },
+  "actors": {
+    "human": "human:<owner-handle>",
+    "agent_prefix": "brain-kit-curator",
+    "scheduled": "process:brain-kit-curate"
+  },
+  "taxonomy": {
+    "collections": {
+      "people": {
+        "type": "person",
+        "template": "templates/template-person.md"
+      },
+      "organizations": {
+        "type": "organization",
+        "template": "templates/template-organization.md"
+      },
+      "projects": {
+        "type": "project",
+        "template": "templates/template-project.md"
+      },
+      "decisions": {
+        "type": "decision",
+        "template": "templates/template-decision.md",
+        "filename_pattern": "YYYY-MM-<slug>"
+      },
+      "reflections": {
+        "type": "reflection",
+        "template": "templates/template-reflection.md"
+      },
+      "references/books": {
+        "type": "book",
+        "template": "templates/template-book.md"
+      }
+    },
+    "domains": [
+      "core",
+      "memory",
+      "pending"
+    ],
+    "no_index": [],
+    "log": "memory/log.md",
+    "log_markers": {
+      "capture": "Capture",
+      "promoted": "Promoted",
+      "correction": "Correction",
+      "creation": "Creation"
+    },
+    "templates_dir": "templates",
+    "attachments_dir": "attachments",
+    "files": {
+      "followups": "pending/follow-ups.md",
+      "promises": "pending/promises.md",
+      "rituals": "core/weekly-rhythm.md",
+      "execution_system": null,
+      "style_guide": "core/response-guidelines.md",
+      "bootstrap": null,
+      "strategy_index": "decisions/index.md",
+      "metrics": null,
+      "glossary": null
+    },
+    "columns": {
+      "followups": {
+        "columns": [
+          "Logged",
+          "What",
+          "With whom / where",
+          "Deadline",
+          "Next step"
+        ],
+        "labels": {
+          "open_heading": "## Open",
+          "resolved_heading": "## Resolved"
+        }
+      },
+      "promises": {
+        "columns": [
+          "Made on",
+          "To whom",
+          "What I promised",
+          "Condition / deadline",
+          "Status"
+        ],
+        "labels": {
+          "active_heading": "## Active",
+          "done_heading": "## Done / renegotiated"
+        }
+      },
+      "rituals": {
+        "columns": [
+          "Calendar title",
+          "Cadence",
+          "Time",
+          "Owner",
+          "Fixed attendees",
+          "Feeds"
+        ],
+        "labels": {
+          "feeds_none": "none yet"
+        }
+      }
+    }
+  },
+  "frontmatter": {
+    "required": [
+      "description",
+      "generated"
+    ],
+    "forbidden": [
+      "timestamp"
+    ],
+    "type_enum": null,
+    "extensions": {
+      "confidential": {
+        "type": "boolean",
+        "default": false
+      },
+      "stage": {
+        "type": "enum",
+        "values_by_type": {
+          "decision": [
+            "open",
+            "in-progress",
+            "done",
+            "reverted"
+          ],
+          "project": [
+            "active",
+            "idea",
+            "postponed",
+            "done",
+            "archived"
+          ]
+        }
+      },
+      "relationship": {
+        "type": "enum",
+        "values": [
+          "team",
+          "family",
+          "mentor",
+          "external"
+        ],
+        "default": "team"
+      },
+      "author": {
+        "type": "string"
+      },
+      "reviewed": {
+        "type": "string"
+      },
+      "review_date": {
+        "type": "date"
+      },
+      "language": {
+        "type": "string"
+      }
+    }
+  },
+  "stale_policy": {
+    "key": "path",
+    "months": {
+      "people/": 6,
+      "organizations/": 12,
+      "pending/": 3
+    }
+  },
+  "validate": {
+    "link_style": "file-relative",
+    "wikilinks": "forbid",
+    "require_root_okf_version": true,
+    "placeholder_pattern": "<[^>]+>",
+    "ignore_paths": [],
+    "timestamp_deviation": "forbid"
+  },
+  "lint": {
+    "columns": "error",
+    "tables": {
+      "severity": "error",
+      "max_cell_chars": 600,
+      "duplicate_rows": "error"
+    },
+    "orphans": "warn",
+    "index_completeness": "warn",
+    "secrets": "error",
+    "privacy": "error",
+    "attribution": "warn",
+    "style": {
+      "severity": "warn",
+      "forbidden_chars": [
+        "\u2014"
+      ]
+    }
+  },
+  "privacy": {
+    "confidential_dirs": [
+      "people/"
+    ],
+    "require_private_repo": true,
+    "secret_patterns": [
+      "-----BEGIN (RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY-----",
+      "ghp_[A-Za-z0-9]{20,}",
+      "github_pat_[A-Za-z0-9_]{20,}",
+      "sk-ant-[A-Za-z0-9_-]{10,}",
+      "AKIA[0-9A-Z]{16}",
+      "xox[baprs]-[A-Za-z0-9-]{10,}"
+    ],
+    "third_party_data_acknowledged": false,
+    "retention_note": "people/ holds personal data about third parties; removal on request: see SECURITY.md",
+    "audiences": {}
+  },
+  "git": {
+    "agent_identity": {
+      "name": "<vault-title> (curator)",
+      "email": "curator@example.invalid"
+    },
+    "branch_prefix": "bot/",
+    "commit_prefix": "curate:",
+    "pr_command": "gh",
+    "pr_title": "{{commit_prefix}} {{summary}}",
+    "pr_body": ".brain-kit/pr-body.md",
+    "ci": "github-actions",
+    "ci_engine_ref": null,
+    "forbid_agent_push_to_default": true
+  },
+  "hooks": {
+    "stop": true,
+    "session_start": true,
+    "session_start_fetch": false,
+    "block_on_inherited_dirt": false,
+    "timeout_seconds": 15
+  },
+  "curate": {
+    "enabled": true,
+    "schedule": [
+      "06:00",
+      "12:00",
+      "18:00"
+    ],
+    "prompt": ".brain-kit/prompts/curate.md",
+    "signature": "Second brain curator",
+    "max_turns": 100,
+    "budget_usd": 5,
+    "network_min_wait_ms": 100,
+    "caps": {
+      "transcripts": 20,
+      "search_docs_opened": 3,
+      "attached_notes_opened": 6,
+      "new_pending_items": 5
+    },
+    "promotion_map": {
+      "owner_action": "pending/follow-ups.md",
+      "owner_promise": "pending/promises.md",
+      "third_party_strategic": "pending/follow-ups.md",
+      "third_party_operational": "log-only",
+      "strategic_decision": "decisions/",
+      "decision_needs_talk": "pending/follow-ups.md",
+      "person_fact": "people/",
+      "ritual_change": "core/weekly-rhythm.md"
+    },
+    "sources": {
+      "required": [
+        "transcripts"
+      ],
+      "best_effort": [
+        "calendar",
+        "meeting_notes"
+      ]
+    },
+    "extra_signatures": [],
+    "allowed_tools_extra": [],
+    "disallowed_tools_extra": []
+  },
+  "sources": {
+    "transcripts": {
+      "adapter": "claude-code",
+      "include_projects": [],
+      "exclude_path_patterns": [
+        "/-tmp-",
+        "/-scratch-"
+      ],
+      "sample_strategy": "tail-first"
+    },
+    "calendar": {
+      "provider": "claude-connector-google-calendar",
+      "server_display_name": "claude.ai Google Calendar",
+      "tool_prefix": "mcp__claude_ai_Google_Calendar__",
+      "tool_suffixes": [
+        "list_events",
+        "list_calendars"
+      ],
+      "calendars": [
+        "<owner-email>"
+      ],
+      "team_calendars": [],
+      "team_calendars_consent_noted": false,
+      "skip_events_with_owner": true,
+      "dedup_by": "eventId",
+      "privacy": {
+        "exclude_event_types": [
+          "OUT_OF_OFFICE",
+          "FOCUS_TIME"
+        ],
+        "exclude_keywords": [
+          "personal"
+        ],
+        "team_personal_events": "drop"
+      },
+      "focus_blocks_as_ruler": true
+    },
+    "meeting_notes": {
+      "provider": "claude-connector-google-drive",
+      "server_display_name": "claude.ai Google Drive",
+      "tool_prefix": "mcp__claude_ai_Google_Drive__",
+      "tool_suffixes": [
+        "search_files",
+        "read_file_content"
+      ],
+      "search_title_contains": "Meeting notes",
+      "attached_title_prefix": "Notes - ",
+      "window_hours_before_day": 12,
+      "dedup_by": "literal-title-in-log",
+      "never_download": [
+        "recording",
+        "full_transcript"
+      ]
+    }
+  },
+  "briefing": {
+    "enabled": true,
+    "schedule": "0 9 * * 1-5",
+    "prompt": ".brain-kit/prompts/briefing.md",
+    "signature": "Second brain morning briefing",
+    "max_words": 500,
+    "max_questions": 3,
+    "questions_dedup_days": 15,
+    "question_escalate_after": 3,
+    "question_max_age_days": 45,
+    "write_caps": {
+      "captures": 5,
+      "pending_changes": 3
+    },
+    "strategy_doc": {
+      "index": "decisions/index.md",
+      "title_contains": "charter"
+    },
+    "calendar_id": "<owner-email>",
+    "read": [
+      "index.md",
+      "AGENTS.md",
+      "decisions/index.md",
+      "pending/promises.md",
+      "projects/index.md",
+      "core/weekly-rhythm.md"
+    ],
+    "never_read": [
+      "people/",
+      "attachments/",
+      ".brain-kit/",
+      "memory/log.md#full"
+    ]
+  }
+}

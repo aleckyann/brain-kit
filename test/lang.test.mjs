@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { KIT_ROOT, kitVersion } from '../src/version.mjs';
 import { createTranslator, loadMessages, interpolate, REFERENCE_LANG, SUPPORTED_LANGS } from '../src/lang.mjs';
@@ -78,4 +78,111 @@ test('unsupported language falls back to the reference pack with a warning', () 
   const t = createTranslator('xx', { warn: (m) => warnings.push(m) });
   assert.match(t('cli.unknown_command', { command: 'q' }), /q/);
   assert.equal(warnings.length, 1);
+});
+
+// --- the vault skeletons: parity across languages ----------------------------
+//
+// Each language ships a vault skeleton (lang/<code>/vault/) that `init`
+// copies, with folder names from that language's own taxonomy. The two
+// must be the same vault in two languages: the same roles, the same
+// number of files in each role, and tables of the same width, or a person
+// who picks Portuguese gets a different product from one who picks
+// English. test/skeleton.test.mjs proves each skeleton valid on its own;
+// this proves the two agree with each other.
+//
+// Every directory of a skeleton must be a role named here, so a directory
+// added to one language and not mapped here fails this test instead of
+// being silently left out of the comparison.
+const SKELETON_ROLES = Object.freeze({
+  root: { en: '', 'pt-BR': '' },
+  core: { en: 'core', 'pt-BR': 'nucleo' },
+  people: { en: 'people', 'pt-BR': 'pessoas' },
+  organizations: { en: 'organizations', 'pt-BR': 'organizacoes' },
+  projects: { en: 'projects', 'pt-BR': 'projetos' },
+  decisions: { en: 'decisions', 'pt-BR': 'decisoes' },
+  reflections: { en: 'reflections', 'pt-BR': 'reflexoes' },
+  references: { en: 'references', 'pt-BR': 'referencias' },
+  books: { en: 'references/books', 'pt-BR': 'referencias/livros' },
+  pending: { en: 'pending', 'pt-BR': 'pendencias' },
+  memory: { en: 'memory', 'pt-BR': 'memoria' },
+  attachments: { en: 'attachments', 'pt-BR': 'anexos' },
+  templates: { en: 'templates', 'pt-BR': 'templates' },
+});
+
+function skeletonFiles(lang, rel = '') {
+  const root = join(KIT_ROOT, 'lang', lang, 'vault');
+  const out = [];
+  for (const entry of readdirSync(join(root, rel), { withFileTypes: true })) {
+    const path = rel === '' ? entry.name : `${rel}/${entry.name}`;
+    if (entry.isDirectory()) out.push(...skeletonFiles(lang, path));
+    else out.push(path);
+  }
+  return out;
+}
+
+function roleOf(lang, file) {
+  const dir = file.includes('/') ? file.slice(0, file.lastIndexOf('/')) : '';
+  return Object.keys(SKELETON_ROLES).find((role) => SKELETON_ROLES[role][lang] === dir);
+}
+
+// The width of every markdown table in `text`: a header row followed by a
+// delimiter row. Cells are counted on an unescaped "|".
+function tableWidths(text) {
+  const lines = text.split('\n');
+  const widths = [];
+  const cells = (line) => line.trim().replace(/^\|/, '').replace(/\|$/, '').split(/(?<!\\)\|/);
+  for (let i = 0; i + 1 < lines.length; i++) {
+    if (/^\s*\|/.test(lines[i]) && /^\s*\|(\s*:?-+:?\s*\|)+\s*$/.test(lines[i + 1])) widths.push(cells(lines[i]).length);
+  }
+  return widths;
+}
+
+function skeletonProfile(lang) {
+  const profile = Object.fromEntries(Object.keys(SKELETON_ROLES).map((role) => [role, { files: 0, tables: [] }]));
+  for (const file of skeletonFiles(lang)) {
+    const role = roleOf(lang, file);
+    assert.ok(role, `${lang} skeleton: ${file} is in a directory no role maps`);
+    profile[role].files += 1;
+    profile[role].tables.push(...tableWidths(readFileSync(join(KIT_ROOT, 'lang', lang, 'vault', file), 'utf8')));
+  }
+  for (const entry of Object.values(profile)) entry.tables.sort((a, b) => a - b);
+  return profile;
+}
+
+test('every supported language ships a vault skeleton with the same roles, file counts and table widths as the reference', () => {
+  const reference = skeletonProfile(REFERENCE_LANG);
+  // Not an empty comparison: every role holds at least its index, and the
+  // pending and core roles hold the three configured tables.
+  for (const [role, entry] of Object.entries(reference)) assert.ok(entry.files > 0, `${REFERENCE_LANG} skeleton: role ${role} holds no file`);
+  assert.ok(reference.pending.tables.length >= 2 && reference.core.tables.length >= 1, 'the reference skeleton must carry its configured tables');
+  for (const lang of SUPPORTED_LANGS) {
+    assert.deepEqual(skeletonProfile(lang), reference, `${lang} skeleton differs from ${REFERENCE_LANG}`);
+  }
+});
+
+test('each skeleton table is as wide as the column contract its language configures', () => {
+  for (const lang of SUPPORTED_LANGS) {
+    const defaults = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', lang, 'config.defaults.json'), 'utf8'));
+    for (const [key, contract] of Object.entries(defaults.taxonomy.columns)) {
+      const file = defaults.taxonomy.files[key];
+      const widths = tableWidths(readFileSync(join(KIT_ROOT, 'lang', lang, 'vault', file), 'utf8'));
+      assert.ok(widths.length > 0, `${lang}: ${file} holds no table`);
+      for (const width of widths) assert.equal(width, contract.columns.length, `${lang}: a table in ${file} is not ${contract.columns.length} columns wide`);
+    }
+  }
+});
+
+test('the two default configurations have the same shape, differing only in names a language owns', () => {
+  // Paths whose KEYS are language vocabulary (a collection's folder, an
+  // extension field's name, a stale policy's folder) are compared by
+  // count; everything else by its full key path.
+  const byCount = new Set(['$.taxonomy.collections', '$.frontmatter.extensions', '$.stale_policy.months']);
+  function shape(value, path = '$') {
+    if (Array.isArray(value) || value === null || typeof value !== 'object') return [path];
+    if (byCount.has(path)) return [`${path}#${Object.keys(value).length}`];
+    return Object.entries(value).flatMap(([key, sub]) => shape(sub, `${path}.${key}`));
+  }
+  const load = (lang) => JSON.parse(readFileSync(join(KIT_ROOT, 'lang', lang, 'config.defaults.json'), 'utf8'));
+  const reference = shape(load(REFERENCE_LANG)).sort();
+  for (const lang of SUPPORTED_LANGS) assert.deepEqual(shape(load(lang)).sort(), reference, `${lang} defaults differ in shape`);
 });
