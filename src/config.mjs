@@ -93,6 +93,12 @@ export function withoutRetiredPaths(machine) {
   return { ...machine, paths: kept };
 }
 
+// The machine file's schema, for a caller that needs to know which keys it
+// declares and their types (`machine set`), not only whether a value passes.
+export function machineSchema() {
+  return loadSchema('machine.schema.json');
+}
+
 export function validateMachine(machine) {
   return validateSchema(withoutRetiredPaths(machine), loadSchema('machine.schema.json'));
 }

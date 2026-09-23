@@ -73,10 +73,26 @@ function realPathOf(absolute) {
 // the same vault always resolves to the same directory and two different
 // vaults never collide.
 export function stateDirFor(vaultRoot, env = process.env) {
+  return stateDirForPath(realPathOf(resolve(vaultRoot)), env);
+}
+
+// The same derivation from a path taken as it is spelt, with no symbolic
+// link resolved. `machine register --from` needs it: a vault moved with a
+// link left at its old path has its old state under the old path's own
+// name, and resolving the link would derive the new path's directory
+// instead.
+export function stateDirForPath(absolute, env = process.env) {
   if (env.BRAIN_KIT_STATE_DIR) return env.BRAIN_KIT_STATE_DIR;
-  const absolute = realPathOf(resolve(vaultRoot));
   const name = basename(absolute) || 'vault';
-  return join(stateHome(env), 'brain-kit', `${name}-${shortHash(absolute)}`);
+  return join(stateRootFor(env), `${name}-${shortHash(absolute)}`);
+}
+
+// The directory every derived state directory sits in, one per vault. Read
+// by `machine register` to list the state directories whose vault is no
+// longer where their machine.json says; BRAIN_KIT_STATE_DIR does not move
+// it, because that override names one vault's directory, not this one.
+export function stateRootFor(env = process.env) {
+  return join(stateHome(env), 'brain-kit');
 }
 
 // machine.json's vault_id: the vault directory's name, folded to the
