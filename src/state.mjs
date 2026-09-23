@@ -60,6 +60,22 @@ export function stateDirFor(vaultRoot, env = process.env) {
   return join(stateHome(env), 'brain-kit', `${name}-${shortHash(absolute)}`);
 }
 
+// machine.json's vault_id: the vault directory's name, folded to the
+// schema's lowercase-and-dashes alphabet (accents dropped, anything else
+// a dash), followed by the same short path hash stateDirFor uses, so two
+// vaults both called "vault" never share an id, and the id of a vault
+// reads as that vault to a person looking at it.
+export function vaultIdFor(vaultRoot) {
+  const absolute = resolve(vaultRoot);
+  const name = basename(absolute)
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return `${name === '' ? 'vault' : name}-${shortHash(absolute)}`;
+}
+
 // Create the state directory (and any missing parents) with mode 0700. The
 // directory holds run logs that quote a private vault, so its permissions
 // are part of the product, not housekeeping. mkdirSync's `mode` option only

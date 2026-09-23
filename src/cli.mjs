@@ -6,6 +6,7 @@ import { runValidate } from './commands/validate.mjs';
 import { runLint } from './commands/lint.mjs';
 import { runScanBlobs } from './commands/scan-blobs.mjs';
 import { runPushGate } from './commands/push-gate.mjs';
+import { runInit } from './commands/init.mjs';
 import { walkVault } from './vault.mjs';
 import { ConfigError } from './config.mjs';
 
@@ -40,6 +41,7 @@ import { ConfigError } from './config.mjs';
 const GATE_LANG = 'en';
 const BUILTIN_COMMANDS = new Map([
   ['hook', runHook],
+  ['init', (argv, io, t) => runInit(argv, io, t, { walkVault })],
   ['validate', (argv, io, t) => runValidate(argv, io, t, walkVault)],
   ['lint', (argv, io, t) => runLint(argv, io, t, walkVault)],
   ['scan-blobs', (argv, io) => runScanBlobs(argv, io)],

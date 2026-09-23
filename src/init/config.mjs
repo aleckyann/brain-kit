@@ -64,7 +64,14 @@ function findPlaceholders(value, path, found) {
   return found;
 }
 
-export function completeDefaults(defaults, answers) {
+// `options.kitVersion`, when given, replaces the defaults' own fixed
+// kit_version. `init` passes kitVersion() (src/version.mjs) so a new
+// vault records the kit that actually made it; it is a parameter rather
+// than a read of package.json here so this function stays pure.
+export function completeDefaults(defaults, answers, { kitVersion } = {}) {
+  if (kitVersion !== undefined && typeof kitVersion !== 'string') {
+    throw new TypeError('completeDefaults: kitVersion must be a string');
+  }
   for (const key of REQUIRED_ANSWERS) {
     if (typeof answers?.[key] !== 'string') {
       throw new TypeError(`completeDefaults: answer "${key}" must be a string`);
@@ -76,6 +83,7 @@ export function completeDefaults(defaults, answers) {
 
   const email = optional(answers.email);
   const config = structuredClone(defaults);
+  if (kitVersion !== undefined) config.kit_version = kitVersion;
 
   config.owner.name = answers.name;
   config.owner.handle = answers.handle;
