@@ -345,6 +345,14 @@ for that shape, and refuse a record that does not have it. The line is now read
 from the right, both object ids must be 40 or 64 lowercase hex characters, and
 push-gate compares each line's destination with the name the enumeration
 listed for it, so a shifted line is refused even if the parse regresses.
+**Addendum, 22/09/2026: the zero id has two lengths.** A repository using
+SHA-256 writes the all-zeros id of a new ref or a deletion with 64 characters,
+and the enumeration compared against the 40-character form only. Every new
+ref there was read as an update from a commit "unknown to this clone" and
+scanned in full, which is this entry's own first failure again, and every
+deletion was refused as an unreadable object. It failed closed, so nothing
+leaked. The rule: a sentinel value is recognised in one place, in every form
+the producer writes it.
 **Where it lives in brain-kit.** `src/push/records.sh`, the push enumeration
 `brain-kit push-gate` runs out of the installed snapshot (moved there from
 `.githooks/pre-push` on 22/09/2026): `remote_sha..local_sha` for a ref the
@@ -382,7 +390,11 @@ expression with a space (:/wip main) is scanned as the commit it names, and
 refused", "behind a spaced source expression, a destination name that matches
 is refused and never printed", "a reference line whose object ids are not
 object ids is refused without being printed", "push-gate refuses a stream
-whose reference name is not the destination git sent on that line").
+whose reference name is not the destination git sent on that line", "in a
+SHA-256 repository a new ref is asked of the remote, not scanned as an update
+from an unknown commit", "in a SHA-256 repository a deletion is a deletion:
+its name is scanned and nothing is read behind it", "the mirror idiom pushed
+BY URL is scanned in full and refused, like the same push by remote name").
 
 ## Headless runs, network and scheduling
 

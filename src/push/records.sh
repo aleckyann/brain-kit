@@ -52,7 +52,22 @@ if [ "$#" -ne 2 ] || [ -z "$1" ]; then
   exit 2
 fi
 
-ZERO='0000000000000000000000000000000000000000'
+# 22/09/2026: THE ZERO ID HAS TWO LENGTHS. git writes the all-zeros id for
+# the side of a reference line that does not exist (the remote side of a
+# new ref, the local side of a deletion), and in a repository using SHA-256
+# that id is 64 zeros, not 40. Compared against the 40-character form only,
+# a deletion there was read as a push of an object named by 64 zeros and
+# refused as unreadable, and every new ref was read as an update from a
+# commit "unknown to this clone" and scanned in full, which is how a routine
+# tag push gets refused over matches that are already public (the first
+# lesson of 18/09/2026). Measured by real push in a SHA-256 repository.
+# Asked here, in one place, for both lengths.
+is_zero_id() {
+  case "$1" in
+    0000000000000000000000000000000000000000 | 0000000000000000000000000000000000000000000000000000000000000000) return 0 ;;
+  esac
+  return 1
+}
 TAB="$(printf '\t')"
 failed=0
 
@@ -172,6 +187,41 @@ emit_tree_entries() {
 # remote cannot be reached to ask, fail closed: scan the whole history rather
 # than assume it is safe to skip anything.
 remote_name="$1"
+# 22/09/2026: A URL CAN CARRY A TOKEN. On a push by url, git hands this
+# file the url as it was typed, in place of a remote name, and the
+# sentences below that name the remote print it. A url of the form
+# https://<user>:<token>@<host>/... printed there puts the token in a
+# terminal, a CI log, or a message a person pastes into an issue. So the
+# name is printed without its userinfo, in both url shapes git reads: the
+# authority of a url with a scheme (everything up to its last `@`), and
+# the scp form `<user>:<token>@<host>:<path>` (a prefix before the first
+# slash whose last `@` is followed by a colon). A local path is untouched.
+# Only what is PRINTED changes; git is always asked with the name as given.
+without_userinfo() {
+  local url="$1" scheme rest authority prefix
+  case "$url" in
+    *://*)
+      scheme="${url%%://*}://"
+      rest="${url#*://}"
+      authority="${rest%%/*}"
+      case "$authority" in
+        *@*) printf '%s' "$scheme${authority##*@}${rest#"$authority"}" ; return 0 ;;
+      esac
+      ;;
+    *)
+      prefix="${url%%/*}"
+      case "$prefix" in
+        *@*:*)
+          case "${prefix##*@}" in
+            *:*) printf '%s' "${url#"${prefix%@*}@"}" ; return 0 ;;
+          esac
+          ;;
+      esac
+      ;;
+  esac
+  printf '%s' "$url"
+}
+remote_shown="$(without_userinfo "$remote_name")"
 # 22/09/2026: ASK THE DESTINATION, NOT THE NAME. `git ls-remote <name>`
 # asks the remote's FETCH url, and git does not always push there: a
 # `pushurl`, a second `url` (git then runs this hook once per url) and a
@@ -375,7 +425,7 @@ while IFS= read -r ref_line || has_field "${ref_line:-}"; do
   # that found nothing, and this gate has shipped that confusion before.
   # The destination NAME of this same deletion was recorded just above and
   # is scanned like any other, so this skip is about objects only.
-  if [ "$local_sha" = "$ZERO" ]; then
+  if is_zero_id "$local_sha"; then
     echo "pre-push: skipping the objects of $ref_label: this push deletes that reference, and a deletion carries no objects, so there is nothing here to read. Its destination name is still scanned." >&2
     continue
   fi
@@ -412,7 +462,7 @@ while IFS= read -r ref_line || has_field "${ref_line:-}"; do
     continue
   fi
 
-  if [ "$remote_sha" != "$ZERO" ]; then
+  if ! is_zero_id "$remote_sha"; then
     # The remote already has this ref, and git just told us so, live, as part
     # of this very push negotiation. Scan exactly what is new since then.
     #
@@ -441,16 +491,16 @@ while IFS= read -r ref_line || has_field "${ref_line:-}"; do
       # The ${arr[@]+"${arr[@]}"} form, not "${arr[@]}": an empty array under
       # `set -u` aborts the script in bash 3.2 (fifth lesson, (f)).
       if ! commits="$(git rev-list "$local_sha" ${remote_exclusions[@]+"${remote_exclusions[@]}"})"; then
-        echo "pre-push: could not list what $ref_label adds to remote '$remote_name' (git rev-list failed); refusing rather than scanning nothing." >&2
+        echo "pre-push: could not list what $ref_label adds to remote '$remote_shown' (git rev-list failed); refusing rather than scanning nothing." >&2
         exit 1
       fi
     elif [ "$remote_rewritten" -eq 1 ]; then
-      echo "pre-push: the url this push goes to for remote '$remote_name' is rewritten by a url.<base>.insteadOf rule when it is asked what it holds, so the answer would describe another repository; scanning the entire history of $ref_label instead." >&2
+      echo "pre-push: the url this push goes to for remote '$remote_shown' is rewritten by a url.<base>.insteadOf rule when it is asked what it holds, so the answer would describe another repository; scanning the entire history of $ref_label instead." >&2
       if ! commits="$(full_history "$local_sha")"; then
         exit 1
       fi
     else
-      echo "pre-push: could not query remote '$remote_name' (git ls-remote failed); scanning the entire history of $ref_label instead of trusting the local tracking refs." >&2
+      echo "pre-push: could not query remote '$remote_shown' (git ls-remote failed); scanning the entire history of $ref_label instead of trusting the local tracking refs." >&2
       if ! commits="$(full_history "$local_sha")"; then
         exit 1
       fi

@@ -222,6 +222,22 @@ export async function runPushGate(argv, io, t, { recordsScript = RECORDS_SCRIPT,
 // All of standard input as bytes. Unlike src/io.mjs's readStdin, which
 // resolves with what it has on a stream error, this rejects: see above.
 // A terminal has no reference lines to give, and reads as none.
+//
+// EVERY CHUNK, not the first. A pipe hands over at most 64 KiB per read,
+// and git writes each reference line in one write, so the first chunk of a
+// long push ends on a line boundary: keeping only it is a push that parses,
+// counts and scans perfectly, as its own first few hundred references.
+// push-gate's count and the enumeration read the same bytes, so the
+// cross-check above agrees with itself. Measured on 22/09/2026 with this
+// listener registered once: 701 tags, the pattern in the last, landed with
+// "nothing matched".
+//
+// A stream that CLOSES without ending or failing is refused too. Nothing
+// says it delivered everything, and a promise left pending here settles
+// nothing at all: the maintainer's gate happened to exit 13 on it (the
+// top-level await in bin/brain-kit.mjs), and a caller without that await
+// would have exited 0. A close after the end is the ordinary order and
+// changes nothing, since the promise has already resolved.
 export function readAllBytes(stream) {
   return new Promise((resolve, reject) => {
     if (!stream || stream.isTTY) return resolve(Buffer.alloc(0));
@@ -229,6 +245,7 @@ export function readAllBytes(stream) {
     stream.on('data', (chunk) => chunks.push(Buffer.from(chunk, 'latin1')));
     stream.on('end', () => resolve(Buffer.concat(chunks)));
     stream.on('error', reject);
+    stream.on('close', () => reject(new Error('the stream closed before it ended')));
   });
 }
 

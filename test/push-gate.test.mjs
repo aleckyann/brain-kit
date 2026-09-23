@@ -1121,3 +1121,179 @@ test('the installer refuses a checkout without the enumeration or push-gate, and
     assert.equal(existsSync(gateDir), false);
   }
 });
+
+// --- before a second caller: standard input, the zero id, a url's token ---
+//
+// The gate an adopting vault installs calls this command too
+// (templates/githooks/pre-push). These are the clauses a second caller
+// starts to lean on, each pinned by the case that lands a leak without it.
+
+test('a standard input that arrives in more than one chunk is read whole: the matching reference last is refused', () => {
+  // In process, with a stream of exactly two chunks: a clean deletion line,
+  // then a deletion line whose destination name matches. Keeping only the
+  // first chunk is a push of one clean reference, which parses, counts and
+  // scans perfectly.
+  const { root, work, patterns } = setup();
+  const sha = commit(work, 'README.md', 'hello world\n', 'init');
+  const driver = join(root, 'two-chunk-driver.mjs');
+  writeFileSync(driver, [
+    "import { Readable } from 'node:stream';",
+    "import { Buffer } from 'node:buffer';",
+    `import { runPushGate } from ${JSON.stringify(join(KIT_ROOT, 'src', 'commands', 'push-gate.mjs'))};`,
+    `import { createTranslator } from ${JSON.stringify(join(KIT_ROOT, 'src', 'lang.mjs'))};`,
+    `const chunks = [Buffer.from(${JSON.stringify(`(delete) ${ZERO} refs/heads/tidy ${sha}\n`)}), Buffer.from(${JSON.stringify(`(delete) ${ZERO} refs/heads/hunter2corp ${sha}\n`)})];`,
+    'const stdin = Readable.from(chunks, { objectMode: false });',
+    'let seen = 0;',
+    "stdin.on('data', () => { seen += 1; });",
+    'const io = { stdin, stdout: process.stdout, stderr: process.stderr };',
+    "const status = await runPushGate(['origin', 'origin', '--patterns', 'personal'], io, createTranslator('en'));",
+    'process.stdout.write(`CHUNKS:${seen}\\nSTATUS:${status}\\n`);',
+    '',
+  ].join('\n'));
+  const r = spawnSync(process.execPath, [driver], { cwd: work, encoding: 'utf8', timeout: 20000, env: { ...process.env, BRAIN_KIT_LEAK_PATTERNS: patterns } });
+  // The precondition: the stream really did deliver two chunks.
+  assert.match(r.stdout, /CHUNKS:2/, r.stderr);
+  assert.match(r.stdout, /STATUS:1/, r.stderr);
+  assert.match(r.stderr, /possible leak in the destination name of reference #2 of this push \(REFERENCE NAME/);
+});
+
+test('a standard input larger than one pipe read is read whole: the 1500th reference is still scanned', () => {
+  // The same, through the real process and a real pipe, where node reads
+  // at most 64 KiB at a time. Deletion lines keep it cheap: each is a
+  // destination name and nothing else.
+  const { work, bare, patterns } = setup();
+  const sha = commit(work, 'README.md', 'hello world\n', 'init');
+  const lines = [];
+  for (let i = 1; i < 1500; i += 1) lines.push(`(delete) ${ZERO} refs/heads/tidy-${String(i).padStart(4, '0')} ${sha}\n`);
+  lines.push(`(delete) ${ZERO} refs/heads/late-hunter2corp ${sha}\n`);
+  const input = lines.join('');
+  assert.ok(Buffer.byteLength(input) > 2 * 64 * 1024, 'the input must span more than one pipe read');
+  const r = pushGate(work, ['origin', bare, '--patterns', 'personal'], input, { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 1, r.stderr.slice(-2000));
+  assert.match(r.stderr, /possible leak in the destination name of reference #1500 of this push \(REFERENCE NAME/);
+});
+
+test('a standard input that closes without ending or failing is refused, even by a caller that does not wait at top level', () => {
+  // The promise is awaited inside a function here, not at the top level of
+  // a module: left pending, node would simply exit 0 with no STATUS line.
+  const { root, work, patterns } = setup();
+  const sha = commit(work, 'README.md', 'hello world\n', 'init');
+  const driver = join(root, 'closed-stdin-driver.mjs');
+  writeFileSync(driver, [
+    "import { PassThrough } from 'node:stream';",
+    `import { runPushGate } from ${JSON.stringify(join(KIT_ROOT, 'src', 'commands', 'push-gate.mjs'))};`,
+    `import { createTranslator } from ${JSON.stringify(join(KIT_ROOT, 'src', 'lang.mjs'))};`,
+    'const stdin = new PassThrough();',
+    'const io = { stdin, stdout: process.stdout, stderr: process.stderr };',
+    `setImmediate(() => { stdin.write(${JSON.stringify(refLine(sha))}); setImmediate(() => stdin.destroy()); });`,
+    "runPushGate(['origin', 'origin', '--patterns', 'personal'], io, createTranslator('en'))",
+    '  .then((status) => { process.stdout.write(`STATUS:${status}\\n`); });',
+    '',
+  ].join('\n'));
+  const r = spawnSync(process.execPath, [driver], { cwd: work, encoding: 'utf8', timeout: 20000, env: { ...process.env, BRAIN_KIT_LEAK_PATTERNS: patterns } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /STATUS:1/, r.stderr);
+  assert.match(r.stderr, /could not be read to the end \(the stream closed before it ended\)/);
+  assert.doesNotMatch(r.stderr, /leak gate ran/);
+});
+
+test('the mirror idiom pushed BY URL is scanned in full and refused, like the same push by remote name', () => {
+  // git hands the hook the url as typed for its name, and the same url as
+  // the destination: the two arguments are equal, which no push by name
+  // produces.
+  const { work, patterns, fetchUrl: mirror, destination: upstream } = setupDivergentRemote();
+  assert.equal(git(work, ['config', `url.${mirror}.insteadOf`, upstream]).status, 0);
+  assert.equal(git(work, ['config', `url.${upstream}.pushInsteadOf`, upstream]).status, 0);
+  assert.equal(git(work, ['ls-remote', '--get-url', upstream]).stdout.trim(), mirror);
+  const r = git(work, ['push', '-q', upstream, 'leaky'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /is rewritten by a url\.<base>\.insteadOf rule when it is asked what it holds/);
+  assert.match(r.stderr, /possible leak in notes\.md \(CONTENT/);
+  assert.equal(landed(upstream, 'refs/heads/leaky'), false);
+});
+
+// A repository using SHA-256 writes its all-zeros id with 64 characters.
+function setupSha256() {
+  const root = join(makeTempDir('brain-kit-push-gate-sha256-'), AWKWARD_DIR);
+  mkdirSync(root, { recursive: true });
+  const bare = join(root, 'origin.git');
+  const work = join(root, 'work');
+  assert.equal(spawnSync('git', ['init', '-q', '--bare', '--object-format=sha256', bare]).status, 0);
+  assert.equal(spawnSync('git', ['init', '-q', '-b', 'main', '--object-format=sha256', work]).status, 0);
+  assert.equal(git(work, ['remote', 'add', 'origin', bare]).status, 0);
+  const patterns = join(root, 'patterns.txt');
+  writeFileSync(patterns, 'hunter2corp\n');
+  const { installed } = installGate(root, work);
+  assert.equal(installed.status, 0, `${installed.stdout}${installed.stderr}`);
+  return { root, work, bare, patterns };
+}
+
+test('in a SHA-256 repository a new ref is asked of the remote, not scanned as an update from an unknown commit', () => {
+  const { work, bare, patterns } = setupSha256();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['rev-parse', 'HEAD']).stdout.trim().length, 64, 'the precondition: a SHA-256 repository');
+  const first = git(work, ['push', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(first.status, 0, first.stderr);
+  assert.doesNotMatch(first.stderr, /unknown to this clone/);
+  assert.equal(landed(bare, 'refs/heads/main'), true);
+  // And a leak on a new branch is still refused.
+  assert.equal(git(work, ['checkout', '-q', '-b', 'leaky']).status, 0);
+  commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'a clean message');
+  const leak = git(work, ['push', 'origin', 'leaky'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(leak.status, 0, leak.stderr);
+  assert.doesNotMatch(leak.stderr, /unknown to this clone/);
+  assert.match(leak.stderr, /possible leak in notes\.md \(CONTENT/);
+  assert.equal(landed(bare, 'refs/heads/leaky'), false);
+});
+
+test('in a SHA-256 repository a deletion is a deletion: its name is scanned and nothing is read behind it', () => {
+  const { work, bare, patterns } = setupSha256();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main', 'main:refs/heads/old'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  assert.equal(landed(bare, 'refs/heads/old'), true);
+  const r = git(work, ['push', 'origin', ':refs/heads/old'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /this push deletes that reference/);
+  assert.match(r.stderr, /leak gate ran/);
+  assert.equal(landed(bare, 'refs/heads/old'), false);
+});
+
+// A url typed with a token in it reaches the enumeration as the remote's
+// name, and the fallback sentences print that name. Each is reached here
+// without the network: GIT_ALLOW_PROTOCOL makes every non-file transport
+// refuse at once, which reads as a remote that cannot be asked.
+const TOKEN = 'tok3nzz91';
+
+test('a url carrying a token is printed without it when the remote cannot be asked', () => {
+  const { work, patterns } = setup();
+  const sha = commit(work, 'README.md', 'hello world\n', 'init');
+  for (const [typed, shown] of [
+    [`https://ana:${TOKEN}@example.invalid/vault.git`, 'https://example.invalid/vault.git'],
+    [`https://ana:${TOKEN}@with@example.invalid/vault.git`, 'https://example.invalid/vault.git'],
+    [`ssh://ana:${TOKEN}@example.invalid:22/vault.git`, 'ssh://example.invalid:22/vault.git'],
+    [`ana:${TOKEN}@example.invalid:vault.git`, 'example.invalid:vault.git'],
+  ]) {
+    const r = pushGate(work, [typed, typed, '--patterns', 'personal'], refLine(sha), { BRAIN_KIT_LEAK_PATTERNS: patterns, GIT_ALLOW_PROTOCOL: 'file' });
+    assert.equal(r.status, 0, `${typed}: ${r.stderr}`);
+    assert.ok(r.stderr.includes(`could not query remote '${shown}' (git ls-remote failed)`), `${typed}: ${r.stderr}`);
+    assert.doesNotMatch(r.stderr, new RegExp(TOKEN), typed);
+  }
+  // A local path, and a url with no userinfo, are printed as they are.
+  for (const typed of ['https://example.invalid/vaults/ana@example.invalid', join(work, 'no such remote@example.invalid')]) {
+    const r = pushGate(work, [typed, typed, '--patterns', 'personal'], refLine(sha), { BRAIN_KIT_LEAK_PATTERNS: patterns, GIT_ALLOW_PROTOCOL: 'file' });
+    assert.equal(r.status, 0, `${typed}: ${r.stderr}`);
+    assert.ok(r.stderr.includes(`could not query remote '${typed}' (git ls-remote failed)`), `${typed}: ${r.stderr}`);
+  }
+});
+
+test('a url carrying a token is printed without it when the url is rewritten', () => {
+  const { root, work, patterns } = setup();
+  const sha = commit(work, 'README.md', 'hello world\n', 'init');
+  const typed = `https://ana:${TOKEN}@example.invalid/vault.git`;
+  const elsewhere = join(root, 'elsewhere.git');
+  assert.equal(git(work, ['config', `url.${elsewhere}.insteadOf`, typed]).status, 0);
+  const r = pushGate(work, [typed, typed, '--patterns', 'personal'], refLine(sha), { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(r.stderr.includes("for remote 'https://example.invalid/vault.git' is rewritten"), r.stderr);
+  assert.doesNotMatch(r.stderr, new RegExp(TOKEN));
+});
