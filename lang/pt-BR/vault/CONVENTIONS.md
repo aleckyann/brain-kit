@@ -25,7 +25,7 @@ Toda nota começa com o frontmatter do OKF v0.2:
 
 Atores em `generated.by`: o dono é `human:` seguido do seu identificador; um agente é `brain-kit-curator/` seguido do seu modelo; uma execução agendada é `process:brain-kit-curate`; as notas que o `brain-kit init` criou levam `process:brain-kit-init`.
 
-O estado de uma nota (aberta, concluída, arquivada) vai em `situacao`, nunca em `status`, que o formato reserva para o ciclo de vida da nota: `draft`, `stable` ou `deprecated`.
+O estado de uma nota vai em `situacao` (uma decisão `aberta` ou `concluida`, um projeto `ativo` ou `arquivado`), nunca em `status`, que o formato reserva para o ciclo de vida da nota: `draft`, `stable` ou `deprecated`.
 
 ## Links
 
