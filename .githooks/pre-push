@@ -474,7 +474,9 @@ trap 'gate_exit $?' EXIT
 # fails closed the same way, even for a push with nothing to scan), and
 # exits non-zero when anything matched or could not be read. That status is
 # read here and is the verdict. "${1:-origin}" is the default the
-# enumeration always had; git passes both arguments.
+# enumeration always had; git passes both arguments. The second, the url
+# git is actually pushing to, is what the enumeration asks about what the
+# remote already holds (see the note at remote_url in records.sh).
 if ! node "$BRAIN_KIT_BIN" push-gate "${1:-origin}" "${2:-}" --patterns personal; then
   failed=1
 fi

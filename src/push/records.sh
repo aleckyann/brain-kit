@@ -172,6 +172,21 @@ emit_tree_entries() {
 # remote cannot be reached to ask, fail closed: scan the whole history rather
 # than assume it is safe to skip anything.
 remote_name="$1"
+# 22/09/2026: ASK THE DESTINATION, NOT THE NAME. `git ls-remote <name>`
+# asks the remote's FETCH url, and git does not always push there: a
+# `pushurl`, a second `url` (git then runs this hook once per url) and a
+# `url.<base>.pushInsteadOf` rewrite all send the push somewhere else, and
+# git hands that real destination to the hook as its second argument. The
+# exclusions below were computed from the fetch url, so a new branch whose
+# commits the fetch url already held was excluded commit by commit and
+# reached the destination unscanned, with "nothing matched", on this gate
+# and on every version of it before. Measured with a pushurl pointing at an
+# empty repository. The destination is what receives the objects, so it is
+# the only answer to "what does the remote already have". The name is used
+# only when git gave no url at all, which a hook never sees; a caller that
+# passes an empty url gets the name's fetch url, the old behaviour, rather
+# than an ls-remote of nothing that would fall back to a full scan.
+remote_url="${2:-$remote_name}"
 remote_queried=0
 remote_reachable=0
 remote_exclusions=()
@@ -180,7 +195,7 @@ query_remote() {
   [ "$remote_queried" -eq 1 ] && return 0
   remote_queried=1
   local raw sha ref resolved
-  if ! raw="$(git ls-remote --heads --tags "$remote_name" 2>/dev/null)"; then
+  if ! raw="$(git ls-remote --heads --tags "$remote_url" 2>/dev/null)"; then
     remote_reachable=0
     return 0
   fi

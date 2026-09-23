@@ -427,6 +427,83 @@ test('a stream larger than the bound is refused as too large, never scanned as t
   assert.match(r.stdout, /STATUS:1/);
 });
 
+// --- the destination the push goes to, not the fetch url ------------------
+
+// A remote whose FETCH url already holds a branch carrying a match (a
+// private mirror, typically) and whose push goes somewhere that does not.
+// The branch is new at the destination, so everything on it is new there,
+// and every commit of it must be scanned. The gate is the real installed
+// one, pushed through for real.
+function setupDivergentRemote() {
+  const { root, work, patterns } = setup();
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['checkout', '-q', '-b', 'leaky']).status, 0);
+  commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'a clean message');
+  assert.equal(git(work, ['checkout', '-q', 'main']).status, 0);
+  // The fetch url is seeded by cloning, not by pushing: a push would go
+  // through the gate, which is the thing under test.
+  const fetchUrl = join(root, 'fetch.git');
+  assert.equal(spawnSync('git', ['clone', '-q', '--bare', work, fetchUrl]).status, 0);
+  const destination = join(root, 'destination.git');
+  assert.equal(spawnSync('git', ['init', '-q', '--bare', destination]).status, 0);
+  assert.equal(git(work, ['remote', 'set-url', 'origin', fetchUrl]).status, 0);
+  const { installed } = installGate(root, work);
+  assert.equal(installed.status, 0, `${installed.stdout}${installed.stderr}`);
+  return { root, work, patterns, fetchUrl, destination };
+}
+
+function landed(bare, ref) {
+  return spawnSync('git', ['--git-dir', bare, 'rev-parse', '-q', '--verify', ref], { encoding: 'utf8' }).status === 0;
+}
+
+test('a pushurl that differs from the fetch url: the branch is scanned against the destination and refused', () => {
+  const { work, patterns, destination } = setupDivergentRemote();
+  assert.equal(git(work, ['config', 'remote.origin.pushurl', destination]).status, 0);
+  const r = git(work, ['push', '-q', 'origin', 'leaky'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in notes\.md \(CONTENT/);
+  assert.equal(landed(destination, 'refs/heads/leaky'), false);
+});
+
+test('a second url: the push to it is scanned against it, not against the first, and refused', () => {
+  // git runs the hook once per url. The first already has the branch, so
+  // git reports nothing to update there; the second does not.
+  const { work, patterns, fetchUrl, destination } = setupDivergentRemote();
+  assert.equal(git(work, ['remote', 'set-url', '--add', 'origin', destination]).status, 0);
+  const r = git(work, ['push', '-q', 'origin', 'leaky'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in notes\.md \(CONTENT/);
+  assert.equal(landed(destination, 'refs/heads/leaky'), false);
+  assert.equal(landed(fetchUrl, 'refs/heads/leaky'), true);
+});
+
+test('a pushInsteadOf rewrite: the push is scanned against the rewritten destination and refused', () => {
+  const { work, patterns, fetchUrl, destination } = setupDivergentRemote();
+  assert.equal(git(work, ['config', `url.${destination}.pushInsteadOf`, fetchUrl]).status, 0);
+  const r = git(work, ['push', '-q', 'origin', 'leaky'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in notes\.md \(CONTENT/);
+  assert.equal(landed(destination, 'refs/heads/leaky'), false);
+});
+
+test('with no url given, the remote is asked by its name, as it always was', () => {
+  // A hook always receives a url; this is the fallback for a caller that
+  // passes none. origin already holds a matching commit on main, and a new
+  // branch adds one clean commit on top: asked by name, origin's main is
+  // excluded and only the new commit is scanned.
+  const { root, work, patterns } = setup();
+  commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'a clean message');
+  const seeded = join(root, 'seeded.git');
+  assert.equal(spawnSync('git', ['clone', '-q', '--bare', work, seeded]).status, 0);
+  assert.equal(git(work, ['remote', 'set-url', 'origin', seeded]).status, 0);
+  assert.equal(git(work, ['checkout', '-q', '-b', 'feature']).status, 0);
+  const sha = commit(work, 'README.md', 'hello world\n', 'later');
+  const line = `refs/heads/feature ${sha} refs/heads/feature ${ZERO}\n`;
+  const r = pushGate(work, ['origin', '', '--patterns', 'personal'], line, { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 0, r.stderr);
+  assert.doesNotMatch(r.stderr, /could not query remote/);
+});
+
 // --- the installed gate, and where the enumeration is read from ----------
 
 // Builds a brain-kit checkout from this one and runs its real installer in
