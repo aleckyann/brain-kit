@@ -30,14 +30,22 @@ import { ConfigError } from './config.mjs';
 // `push-gate` is the gate behind one command (src/commands/push-gate.mjs):
 // it runs the push enumeration and hands its stream to the same scanner.
 // It is called by a pre-push hook, not by a person, so it is not listed in
-// cli.usage either; unlike scan-blobs, its own refusals are translated,
-// because it is the entry point the gate shipped to other people calls.
+// cli.usage either. Its own sentences come from the language packs like
+// every command's, but through a translator FIXED to English: they print
+// in between the lines of the enumeration and the scanner, which are
+// English literals, and a report that switches language halfway through
+// is broken whichever language it switches to. Translating the whole gate
+// as one unit is a later, named item; until then BRAIN_KIT_LANG does not
+// reach this command.
+const GATE_LANG = 'en';
 const BUILTIN_COMMANDS = new Map([
   ['hook', runHook],
   ['validate', (argv, io, t) => runValidate(argv, io, t, walkVault)],
   ['lint', (argv, io, t) => runLint(argv, io, t, walkVault)],
   ['scan-blobs', (argv, io) => runScanBlobs(argv, io)],
-  ['push-gate', (argv, io, t) => runPushGate(argv, io, t)],
+  ['push-gate', (argv, io) => runPushGate(argv, io, createTranslator(GATE_LANG, {
+    warn: (message) => io.stderr.write(`${message}\n`),
+  }))],
 ]);
 
 export async function main(argv, io, { commands = BUILTIN_COMMANDS } = {}) {

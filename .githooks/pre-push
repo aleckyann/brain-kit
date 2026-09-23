@@ -409,12 +409,12 @@ print_gate_lines() {
 # other two apply only when the repository being pushed IS the brain-kit
 # checkout the gate is maintained in, which is the only case where this
 # hook can tell what the gate ought to be: a HEAD that is not the commit
-# the stamp names, and a .githooks/pre-push that no longer matches the
-# installed hook byte for byte. That second one catches the case the first
-# cannot, an edit made and not yet committed, which is the ordinary way a
-# gate change is tested.
+# the stamp names, and a .githooks/pre-push or src/push/records.sh that no
+# longer matches its installed copy byte for byte. That second one catches
+# the case the first cannot, an edit made and not yet committed, which is
+# the ordinary way a gate change is tested.
 #
-# Reading .githooks/pre-push here does not hand (i) back. It is COMPARED,
+# Reading those two files here does not hand (i) back. They are COMPARED,
 # never executed and never sourced; the hook that runs is still only the
 # installed copy, and the comparison can make this gate noisier, never
 # quieter or weaker.
@@ -432,6 +432,13 @@ if [ -f "$REPO_ROOT/.githooks/pre-push" ] && [ -f "$REPO_ROOT/.githooks/install-
     snapshot_stale=1
   fi
   if ! cmp -s "$REPO_ROOT/.githooks/pre-push" "$GATE_DIR/pre-push"; then
+    snapshot_stale=1
+  fi
+  # The enumeration used to be part of this file, so the comparison above
+  # covered it. Since 22/09/2026 it lives in src/push/records.sh and is
+  # installed into the engine snapshot, so it is compared on its own, the
+  # same way: compared, never run.
+  if ! cmp -s "$REPO_ROOT/src/push/records.sh" "$ENGINE_DIR/src/push/records.sh"; then
     snapshot_stale=1
   fi
 fi

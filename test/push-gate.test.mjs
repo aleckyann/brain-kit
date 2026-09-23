@@ -20,7 +20,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
+import { Buffer } from 'node:buffer';
 import { join } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 import { makeTempDir } from './helpers/tmp.mjs';
@@ -63,12 +64,15 @@ function refLine(sha, remoteSha = ZERO) {
   return `refs/heads/main ${sha} refs/heads/main ${remoteSha}\n`;
 }
 
+// A null in `env` removes that variable from the child's environment.
 function pushGate(cwd, args, input, env = {}) {
+  const merged = { ...process.env, BRAIN_KIT_LANG: 'en', ...env };
+  for (const [name, value] of Object.entries(merged)) if (value === null) delete merged[name];
   return spawnSync(process.execPath, [BIN, 'push-gate', ...args], {
     cwd,
     input,
     encoding: 'utf8',
-    env: { ...process.env, BRAIN_KIT_LANG: 'en', ...env },
+    env: merged,
   });
 }
 
@@ -257,13 +261,91 @@ test('the enumeration reads the real objects, not a git replace stand-in, even w
   assert.doesNotMatch(r.stderr, /other\.md/);
 });
 
-test('the Portuguese pack carries its own sentence for a refusal', () => {
+test('push-gate speaks English, the language of the gate lines it prints among, whatever BRAIN_KIT_LANG says', () => {
+  // A refusal after a partial enumeration: the enumeration's English lines,
+  // then push-gate's own. With the default language (pt-BR) or pt-BR asked
+  // for, push-gate's line must still be English.
   const { work, bare, patterns } = setup();
+  commit(work, 'first.md', 'nothing secret here\n', 'a root commit');
+  const rootTree = git(work, ['rev-parse', 'HEAD^{tree}']).stdout.trim();
   const sha = commit(work, 'README.md', 'hello world\n', 'init');
-  const r = pushGate(work, ['origin', bare, '--patterns', 'everything'], refLine(sha), { BRAIN_KIT_LEAK_PATTERNS: patterns, BRAIN_KIT_LANG: 'pt-BR' });
-  assert.equal(r.status, 2, r.stderr);
-  assert.match(r.stderr, /"everything"/);
-  assert.doesNotMatch(r.stderr, /is not a pattern list/);
+  rmSync(join(work, '.git', 'objects', rootTree.slice(0, 2), rootTree.slice(2)));
+  for (const lang of [null, 'pt-BR']) {
+    const r = pushGate(work, ['origin', bare, '--patterns', 'personal'], refLine(sha), { BRAIN_KIT_LEAK_PATTERNS: patterns, BRAIN_KIT_LANG: lang });
+    assert.equal(r.status, 1, r.stderr);
+    assert.match(r.stderr, /could not list the files of/);
+    assert.match(r.stderr, /brain-kit push-gate: the push enumeration exited 1/, String(lang));
+    assert.doesNotMatch(r.stderr, /enumera\S*o do push/, String(lang));
+    const usage = pushGate(work, ['origin', bare, '--patterns', 'everything'], refLine(sha), { BRAIN_KIT_LEAK_PATTERNS: patterns, BRAIN_KIT_LANG: lang });
+    assert.equal(usage.status, 2, usage.stderr);
+    assert.match(usage.stderr, /--patterns "everything" is not a pattern list/, String(lang));
+    assert.match(usage.stderr, /^Usage: brain-kit push-gate/m, String(lang));
+  }
+});
+
+test('the Portuguese pack still carries every push-gate sentence, ready for the gate to be translated as one unit', () => {
+  const en = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', 'en', 'messages.json'), 'utf8'));
+  const pt = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', 'pt-BR', 'messages.json'), 'utf8'));
+  const keys = Object.keys(en).filter((key) => key.startsWith('push_gate.'));
+  assert.ok(keys.length >= 10, `expected the push_gate keys, found ${keys.length}`);
+  for (const key of keys) {
+    assert.equal(typeof pt[key], 'string', key);
+    assert.notEqual(pt[key], en[key], key);
+  }
+});
+
+// --- bytes: a reference name that is not UTF-8 ----------------------------
+
+// The ordinary case in a Portuguese vault: a pattern with an accented
+// letter, written the ordinary way (UTF-8), and a reference name carrying
+// that letter as the single byte Latin-1 gives it. git accepts the name;
+// only a gate that keeps every byte as it came, end to end, decodes it to
+// the letter the pattern names. Built at runtime; no escape is typed.
+const E_ACUTE = String.fromCharCode(0xe9);
+const LATIN1_NAME = Buffer.concat([Buffer.from('refs/heads/jos'), Buffer.from([0xe9])]);
+
+function accentedPatterns(root) {
+  const file = join(root, 'accented-patterns.txt');
+  writeFileSync(file, `jos${E_ACUTE}\n`, 'utf8');
+  return file;
+}
+
+test('a reference name carrying a Latin-1 byte that matches an accented pattern is refused', () => {
+  // A deletion line: the destination name is scanned whatever else the
+  // line carries, and a deletion carries nothing else.
+  const { root, work, bare } = setup();
+  const sha = commit(work, 'README.md', 'hello world\n', 'init');
+  const line = Buffer.concat([Buffer.from(`(delete) ${ZERO} `), LATIN1_NAME, Buffer.from(` ${sha}\n`)]);
+  const r = pushGate(work, ['origin', bare, '--patterns', 'personal'], line, { BRAIN_KIT_LEAK_PATTERNS: accentedPatterns(root) });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /possible leak in the destination name of reference #1 of this push \(REFERENCE NAME/);
+  // The control: the same line with a name that does not match passes, so
+  // the refusal above is the name and nothing else.
+  const clean = Buffer.concat([Buffer.from(`(delete) ${ZERO} refs/heads/other ${sha}\n`)]);
+  const ok = pushGate(work, ['origin', bare, '--patterns', 'personal'], clean, { BRAIN_KIT_LEAK_PATTERNS: accentedPatterns(root) });
+  assert.equal(ok.status, 0, ok.stderr);
+});
+
+test('the same name, pushed for real through the installed gate, is refused and never reaches the remote', () => {
+  const { root, work, bare } = setup();
+  const { installed } = installGate(root, work);
+  assert.equal(installed.status, 0, `${installed.stdout}${installed.stderr}`);
+  commit(work, 'README.md', 'hello world\n', 'init');
+  const patterns = accentedPatterns(root);
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  // The name goes through bash, which is the one way to put the raw byte in
+  // an argument: an argument from here is encoded as UTF-8.
+  const make = spawnSync('bash', ['-c', "git update-ref refs/heads/jos$'\\xe9' HEAD"], { cwd: work, encoding: 'utf8' });
+  assert.equal(make.status, 0, make.stderr);
+  const r = spawnSync('bash', ['-c', "git push -q origin refs/heads/jos$'\\xe9'"], {
+    cwd: work,
+    encoding: 'utf8',
+    env: { ...process.env, BRAIN_KIT_LEAK_PATTERNS: patterns },
+  });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /REFERENCE NAME/);
+  const listed = spawnSync('git', ['--git-dir', bare, 'for-each-ref', '--format=%(refname)'], { encoding: 'utf8' });
+  assert.equal(listed.stdout.trim(), 'refs/heads/main');
 });
 
 // --- the enumeration's status, read before its stream ---------------------
@@ -378,30 +460,36 @@ function driveWith(root, work, patterns, options, input) {
   });
 }
 
-// A clean reference record, 22 bytes, as many times as asked: a stream that
-// parses perfectly and matches nothing, so only the status can refuse it.
+// Clean reference records numbered 1..count (22 bytes each while the
+// number is one digit): a stream that parses perfectly and matches
+// nothing. `lines` reference lines go on standard input to match, so the
+// reference count check is satisfied and only what a test aims at refuses.
 function cleanStreamScript(root, name, count, tail) {
   const script = join(root, name);
   writeFileSync(script, [
     '#!/usr/bin/env bash',
     'cat > /dev/null',
-    `for i in $(seq 1 ${count}); do printf 'ref\\0001\\000refs/heads/main\\000'; done`,
+    `for i in $(seq 1 ${count}); do printf 'ref\\000%s\\000refs/heads/main\\000' "$i"; done`,
     tail,
     '',
   ].join('\n'));
   return script;
 }
 
+function lines(count) {
+  return 'x\n'.repeat(count);
+}
+
 test('an enumeration that writes a clean stream and exits non-zero is refused on its status alone', () => {
   const { root, work, patterns } = setup();
   const script = cleanStreamScript(root, 'clean-then-fail.sh', 3, 'exit 3');
-  const r = driveWith(root, work, patterns, { recordsScript: script }, '');
+  const r = driveWith(root, work, patterns, { recordsScript: script }, lines(3));
   assert.match(r.stderr, /the push enumeration exited 3/);
   assert.doesNotMatch(r.stderr, /leak gate ran/);
   assert.match(r.stdout, /STATUS:1/);
   // The same stream with exit 0 is accepted, so the refusal above is the
   // status and nothing else.
-  const ok = driveWith(root, work, patterns, { recordsScript: cleanStreamScript(root, 'clean.sh', 3, 'exit 0') }, '');
+  const ok = driveWith(root, work, patterns, { recordsScript: cleanStreamScript(root, 'clean.sh', 3, 'exit 0') }, lines(3));
   assert.match(ok.stdout, /STATUS:0/, ok.stderr);
   assert.match(ok.stderr, /leak gate ran: scanned 3 channel\(s\) across 3 reference\(s\)/);
 });
@@ -409,22 +497,216 @@ test('an enumeration that writes a clean stream and exits non-zero is refused on
 test('an enumeration stopped by a signal is refused and the signal is named', () => {
   const { root, work, patterns } = setup();
   const script = cleanStreamScript(root, 'killed.sh', 3, 'kill -KILL $$');
-  const r = driveWith(root, work, patterns, { recordsScript: script }, '');
+  const r = driveWith(root, work, patterns, { recordsScript: script }, lines(3));
   assert.match(r.stderr, /stopped by signal SIGKILL/);
   assert.doesNotMatch(r.stderr, /leak gate ran/);
   assert.match(r.stdout, /STATUS:1/);
 });
 
 test('a stream larger than the bound is refused as too large, never scanned as the prefix that fit', () => {
-  // The bound is two whole records, so what fits is itself a stream that
-  // parses and scans clean: only the overflow check stands between it and
-  // exit 0.
+  // The bound is two whole records and two lines go in, so what fits is
+  // itself a stream that parses, counts right and scans clean: only the
+  // overflow check stands between it and exit 0.
   const { root, work, patterns } = setup();
   const script = cleanStreamScript(root, 'large.sh', 50, 'exit 0');
-  const r = driveWith(root, work, patterns, { recordsScript: script, maxStreamBytes: 44 }, '');
+  const r = driveWith(root, work, patterns, { recordsScript: script, maxStreamBytes: 44 }, lines(2));
   assert.match(r.stderr, /listed more than 44 bytes of records/);
   assert.doesNotMatch(r.stderr, /leak gate ran/);
   assert.match(r.stdout, /STATUS:1/);
+});
+
+test('messages larger than the bound are refused as messages, not reported as records', () => {
+  const { root, work, patterns } = setup();
+  const script = join(root, 'noisy.sh');
+  writeFileSync(script, [
+    '#!/usr/bin/env bash',
+    'cat > /dev/null',
+    "for i in $(seq 1 50); do echo 'a message about this push' >&2; done",
+    "printf 'ref\\0001\\000refs/heads/main\\000'",
+    'exit 0',
+    '',
+  ].join('\n'));
+  const r = driveWith(root, work, patterns, { recordsScript: script, maxStreamBytes: 200 }, lines(1));
+  assert.match(r.stderr, /wrote more than 200 bytes of messages/);
+  assert.doesNotMatch(r.stderr, /bytes of records/);
+  assert.doesNotMatch(r.stderr, /leak gate ran/);
+  assert.match(r.stdout, /STATUS:1/);
+});
+
+// --- the stream must answer for every reference git sent ------------------
+
+test('an enumeration that lists fewer references than git sent is refused, naming both counts', () => {
+  const { root, work, patterns } = setup();
+  const script = cleanStreamScript(root, 'short.sh', 1, 'exit 0');
+  const r = driveWith(root, work, patterns, { recordsScript: script }, lines(2));
+  assert.match(r.stderr, /git sent 2 reference line\(s\) for this push and the push enumeration listed 1 reference\(s\)/);
+  assert.doesNotMatch(r.stderr, /leak gate ran/);
+  assert.match(r.stdout, /STATUS:1/);
+  // And more than git sent is refused the same way.
+  const long = driveWith(root, work, patterns, { recordsScript: cleanStreamScript(root, 'long.sh', 3, 'exit 0') }, lines(2));
+  assert.match(long.stderr, /git sent 2 reference line\(s\) .* listed 3 reference\(s\)/);
+  assert.match(long.stdout, /STATUS:1/);
+});
+
+test('references that are not numbered 1..n in order are refused', () => {
+  const { root, work, patterns } = setup();
+  const script = join(root, 'misnumbered.sh');
+  writeFileSync(script, [
+    '#!/usr/bin/env bash',
+    'cat > /dev/null',
+    "printf 'ref\\0001\\000refs/heads/main\\000ref\\0001\\000refs/heads/main\\000'",
+    'exit 0',
+    '',
+  ].join('\n'));
+  const r = driveWith(root, work, patterns, { recordsScript: script }, lines(2));
+  assert.match(r.stderr, /did not number its references 1 to 2, in the order git sent them/);
+  assert.doesNotMatch(r.stderr, /leak gate ran/);
+  assert.match(r.stdout, /STATUS:1/);
+});
+
+test('a stream that does not parse is refused by the scanner, with its own reason, not counted as a mismatch', () => {
+  const { root, work, patterns } = setup();
+  const script = join(root, 'malformed.sh');
+  writeFileSync(script, ['#!/usr/bin/env bash', 'cat > /dev/null', "printf 'bogus\\000'", 'exit 0', ''].join('\n'));
+  const r = driveWith(root, work, patterns, { recordsScript: script }, lines(1));
+  assert.match(r.stderr, /record of an unknown kind/);
+  assert.doesNotMatch(r.stderr, /reference line\(s\)/);
+  assert.match(r.stdout, /STATUS:1/);
+});
+
+test('reference lines are counted the way the enumeration reads them', async () => {
+  const { countReferenceLines } = await import('../src/commands/push-gate.mjs');
+  assert.equal(countReferenceLines(Buffer.from('')), 0);
+  assert.equal(countReferenceLines(Buffer.from('a b c d\n')), 1);
+  assert.equal(countReferenceLines(Buffer.from('a b c d\ne f g h\n')), 2);
+  // An unterminated last line is read, and counted.
+  assert.equal(countReferenceLines(Buffer.from('a b c d\ne f g h')), 2);
+  // A blank line is a line the loop runs for (and the scanner refuses).
+  assert.equal(countReferenceLines(Buffer.from('\n')), 1);
+  // An unterminated tail of blanks leaves the first field empty: not read.
+  assert.equal(countReferenceLines(Buffer.from('a b c d\n \t ')), 1);
+});
+
+test('an installed enumeration emptied to zero bytes can no longer let a leak land', () => {
+  // The reviewer's case: bash runs an empty file and exits 0, the hook's
+  // presence check passes, and the stream lists nothing at all.
+  const { root, work, bare, patterns } = setup();
+  const { installed, gateDir } = installGate(root, work);
+  assert.equal(installed.status, 0, `${installed.stdout}${installed.stderr}`);
+  commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'a clean message');
+  truncateSync(join(gateDir, 'engine', 'src', 'push', 'records.sh'), 0);
+  const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /git sent 1 reference line\(s\) for this push and the push enumeration listed 0 reference\(s\)/);
+  assert.equal(spawnSync('git', ['--git-dir', bare, 'rev-parse', '-q', '--verify', 'refs/heads/main']).status, 1);
+});
+
+// --- git itself -------------------------------------------------------------
+
+test('a git stopped by a signal is not reported as "not a repository"', () => {
+  const { root, work, bare, patterns } = setup();
+  const sha = commit(work, 'README.md', 'hello world\n', 'init');
+  const real = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
+  const dir = join(root, 'shims-killed-git');
+  mkdirSync(dir);
+  writeFileSync(join(dir, 'git'), [
+    '#!/usr/bin/env bash',
+    'if [ "$1" = rev-parse ] && [ "$2" = --git-dir ]; then kill -KILL $$; fi',
+    `exec ${JSON.stringify(real)} "$@"`,
+    '',
+  ].join('\n'));
+  chmodSync(join(dir, 'git'), 0o755);
+  const r = pushGate(work, ['origin', bare, '--patterns', 'personal'], refLine(sha), {
+    BRAIN_KIT_LEAK_PATTERNS: patterns,
+    PATH: `${dir}:${process.env.PATH}`,
+  });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /git was stopped by signal SIGKILL/);
+  assert.doesNotMatch(r.stderr, /not inside a git repository/);
+});
+
+// --- the scanner, factored: the batch option still reaches it -------------
+
+test('the metadata batch reaches the scanner: one git call per commit at a batch of one, and at zero', () => {
+  // The companion to the zero-batch test in test/pre-push-hook.test.mjs,
+  // which proves the loop terminates but would pass just as well if the
+  // option were dropped on the way in and the default batch used. Here the
+  // batch is OBSERVED: a git on PATH counts the metadata reads.
+  const { root, work, patterns } = setup();
+  const shas = [
+    commit(work, 'a.md', 'nothing secret here\n', 'a'),
+    commit(work, 'b.md', 'nothing secret here\n', 'b'),
+    commit(work, 'c.md', 'nothing secret here\n', 'c'),
+  ];
+  const real = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
+  const dir = join(root, 'shims-counting-git');
+  mkdirSync(dir);
+  const log = join(root, 'batches.log');
+  writeFileSync(join(dir, 'git'), [
+    '#!/usr/bin/env bash',
+    'if [ "$2" = cat-file ] && [ "$3" = --batch ]; then echo batch >> "$BATCH_LOG"; fi',
+    `exec ${JSON.stringify(real)} "$@"`,
+    '',
+  ].join('\n'));
+  chmodSync(join(dir, 'git'), 0o755);
+  const driver = join(root, 'batch-driver.mjs');
+  writeFileSync(driver, [
+    `import { runScanBlobs } from ${JSON.stringify(join(KIT_ROOT, 'src', 'commands', 'scan-blobs.mjs'))};`,
+    'const io = { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr };',
+    'const batch = JSON.parse(process.env.BATCH);',
+    'const status = await runScanBlobs([], io, batch === null ? {} : { metadataBatch: batch });',
+    'process.stdout.write(`STATUS:${status}\\n`);',
+    '',
+  ].join('\n'));
+  const NUL = String.fromCharCode(0);
+  const input = shas.map((sha) => `commit${NUL}${sha}${NUL}`).join('');
+  for (const [batch, calls] of [[1, 3], [0, 3], [null, 1]]) {
+    rmSync(log, { force: true });
+    const r = spawnSync(process.execPath, [driver], {
+      cwd: work,
+      input,
+      encoding: 'utf8',
+      timeout: 20000,
+      env: { ...process.env, BRAIN_KIT_LEAK_PATTERNS: patterns, BATCH: JSON.stringify(batch), BATCH_LOG: log, PATH: `${dir}:${process.env.PATH}` },
+    });
+    assert.match(r.stdout, /STATUS:0/, r.stderr);
+    const seen = existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).length : 0;
+    assert.equal(seen, calls, `batch ${batch}: ${seen} metadata read(s)`);
+  }
+});
+
+// --- staleness: the enumeration is compared too ---------------------------
+
+test('in the checkout the gate is maintained in, an uncommitted edit to src/push/records.sh makes the snapshot stale', () => {
+  // The enumeration used to live inside .githooks/pre-push, whose byte
+  // comparison therefore covered it. It is compared on its own now.
+  const { root, patterns } = setup();
+  const bare = join(root, 'self.git');
+  const work = join(root, 'self');
+  assert.equal(spawnSync('git', ['init', '-q', '--bare', bare]).status, 0);
+  mkdirSync(join(work, '.githooks'), { recursive: true });
+  copyFileSync(join(KIT_ROOT, '.githooks', 'pre-push'), join(work, '.githooks', 'pre-push'));
+  copyFileSync(join(KIT_ROOT, '.githooks', 'install-gate'), join(work, '.githooks', 'install-gate'));
+  chmodSync(join(work, '.githooks', 'install-gate'), 0o755);
+  for (const dir of ['bin', 'src', 'lang', 'schema']) cpSync(join(KIT_ROOT, dir), join(work, dir), { recursive: true });
+  copyFileSync(join(KIT_ROOT, 'package.json'), join(work, 'package.json'));
+  assert.equal(spawnSync('git', ['init', '-q', '-b', 'main', work]).status, 0);
+  assert.equal(git(work, ['remote', 'add', 'origin', bare]).status, 0);
+  assert.equal(git(work, ['add', '-A']).status, 0);
+  assert.equal(git(work, ['commit', '-q', '-m', 'a brain-kit checkout']).status, 0);
+  const installed = spawnSync(join(work, '.githooks', 'install-gate'), [], { cwd: work, encoding: 'utf8' });
+  assert.equal(installed.status, 0, `${installed.stdout}${installed.stderr}`);
+  // The control: nothing changed, nothing announced.
+  const quiet = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(quiet.status, 0, quiet.stderr);
+  assert.doesNotMatch(quiet.stderr, /gate engine snapshot/);
+  // HEAD is still the commit the stamp names and the hook file is
+  // untouched, so the edit below is the only signal left.
+  appendFileSync(join(work, 'src', 'push', 'records.sh'), '# an uncommitted edit\n');
+  const noisy = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(noisy.status, 0, noisy.stderr);
+  assert.match(noisy.stderr, /gate engine snapshot: installed /);
+  assert.match(noisy.stderr, /refresh it with: /);
 });
 
 // --- the destination the push goes to, not the fetch url ------------------
@@ -491,17 +773,39 @@ test('with no url given, the remote is asked by its name, as it always was', () 
   // passes none. origin already holds a matching commit on main, and a new
   // branch adds one clean commit on top: asked by name, origin's main is
   // excluded and only the new commit is scanned.
+  // The remote is NOT called origin, and origin is an empty repository, so
+  // asking the wrong name would find nothing to exclude.
   const { root, work, patterns } = setup();
   commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'a clean message');
   const seeded = join(root, 'seeded.git');
   assert.equal(spawnSync('git', ['clone', '-q', '--bare', work, seeded]).status, 0);
-  assert.equal(git(work, ['remote', 'set-url', 'origin', seeded]).status, 0);
+  assert.equal(git(work, ['remote', 'add', 'mirror', seeded]).status, 0);
   assert.equal(git(work, ['checkout', '-q', '-b', 'feature']).status, 0);
   const sha = commit(work, 'README.md', 'hello world\n', 'later');
   const line = `refs/heads/feature ${sha} refs/heads/feature ${ZERO}\n`;
-  const r = pushGate(work, ['origin', '', '--patterns', 'personal'], line, { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  const r = pushGate(work, ['mirror', '', '--patterns', 'personal'], line, { BRAIN_KIT_LEAK_PATTERNS: patterns });
   assert.equal(r.status, 0, r.stderr);
   assert.doesNotMatch(r.stderr, /could not query remote/);
+});
+
+test('the hook hands the enumeration the remote NAME git gave it, which is the one its messages use', () => {
+  // Invoked directly, as git would, with a url the enumeration cannot ask:
+  // git itself only runs the hook once it has reached the destination. The
+  // enumeration says so naming the remote it was given, and scans
+  // everything.
+  const { root, work, patterns } = setup();
+  const { installed, gateDir } = installGate(root, work);
+  assert.equal(installed.status, 0, `${installed.stdout}${installed.stderr}`);
+  const sha = commit(work, 'README.md', 'hello world\n', 'init');
+  const r = spawnSync(join(gateDir, 'pre-push'), ['mirror', join(root, 'no such remote.git')], {
+    cwd: work,
+    input: refLine(sha),
+    encoding: 'utf8',
+    env: { ...process.env, BRAIN_KIT_LEAK_PATTERNS: patterns },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /could not query remote 'mirror' \(git ls-remote failed\)/);
+  assert.match(r.stderr, /leak gate ran/);
 });
 
 // --- the installed gate, and where the enumeration is read from ----------

@@ -29,13 +29,20 @@
 // perfectly and scans clean. So a failure to run it, a non-zero status and
 // a stop by signal all refuse before one byte of its output is parsed, and
 // the enumeration itself writes no stream when it fails, so the two halves
-// each hold the rule without trusting the other to.
+// each hold the rule without trusting the other to. A stream that exits 0
+// must still answer for every reference line git sent: the lines are
+// counted here, independently, and the stream's references must be
+// exactly 1..n, or it refuses naming both counts.
+//
+// ITS OWN SENTENCES ARE ENGLISH, whatever BRAIN_KIT_LANG says: src/cli.mjs
+// hands it a translator fixed to English, because every other line of the
+// gate it prints among is English (see the note there).
 import { spawnSync } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { fileURLToPath } from 'node:url';
 import { EXIT } from '../exit-codes.mjs';
 import { readStdin } from '../io.mjs';
-import { preparePersonalScan, scanRecordStream } from './scan-blobs.mjs';
+import { parseEntries, preparePersonalScan, scanRecordStream } from './scan-blobs.mjs';
 
 // The pattern lists this command knows how to load. `personal` is the
 // maintainer's own list outside any repository (src/leak.mjs,
@@ -110,6 +117,13 @@ export async function runPushGate(argv, io, t, { recordsScript = RECORDS_SCRIPT,
     io.stderr.write(`${t('push_gate.git_unrunnable', { reason: repository.error.message })}\n`);
     return EXIT.FAILURE;
   }
+  // A git stopped by a signal said nothing about the directory, so it must
+  // not be reported as the wrong directory: that would send the person to
+  // look for a problem that is not there.
+  if (repository.status === null) {
+    io.stderr.write(`${t('push_gate.git_killed', { signal: String(repository.signal) })}\n`);
+    return EXIT.FAILURE;
+  }
   if (repository.status !== 0) {
     io.stderr.write(`${t('push_gate.not_a_repository')}\n`);
     return EXIT.USAGE;
@@ -126,8 +140,13 @@ export async function runPushGate(argv, io, t, { recordsScript = RECORDS_SCRIPT,
   // command says about them.
   if (records.stderr && records.stderr.length > 0) io.stderr.write(records.stderr);
   if (records.error) {
-    if (records.error.code === 'ENOBUFS') {
+    // The bound applies to both of the enumeration's streams, and the
+    // sentence has to name the one that passed it: the records, or its
+    // messages. Either way nothing is scanned.
+    if (records.error.code === 'ENOBUFS' && (records.stdout?.length ?? 0) >= maxStreamBytes) {
       io.stderr.write(`${t('push_gate.stream_too_large', { limit: maxStreamBytes })}\n`);
+    } else if (records.error.code === 'ENOBUFS') {
+      io.stderr.write(`${t('push_gate.messages_too_large', { limit: maxStreamBytes })}\n`);
     } else {
       io.stderr.write(`${t('push_gate.enumeration_unrunnable', { reason: records.error.message })}\n`);
     }
@@ -142,6 +161,36 @@ export async function runPushGate(argv, io, t, { recordsScript = RECORDS_SCRIPT,
     return EXIT.FAILURE;
   }
 
+  // THE STREAM MUST ANSWER FOR EVERY REFERENCE GIT SENT. An enumeration
+  // that exits 0 having listed fewer references than git gave it is a push
+  // whose missing references are never scanned, and it reads as "nothing
+  // matched": an installed records.sh truncated to zero bytes did exactly
+  // that and let a leak land. So the reference lines on standard input are
+  // counted here, independently of the enumeration, and the stream's
+  // `ref` records must be exactly 1..n, in order. The count follows the
+  // enumeration's own loop: every newline ends a line, and an unterminated
+  // last line counts when it carries a field.
+  const stream = records.stdout.toString('latin1');
+  const sent = countReferenceLines(input);
+  let listed;
+  try {
+    listed = parseEntries(stream).filter((entry) => entry.kind === 'ref').map((entry) => entry.number);
+  } catch {
+    // A stream that does not parse is refused by the scanner, with its own
+    // reason; there is nothing to count here.
+    listed = null;
+  }
+  if (listed !== null) {
+    if (listed.length !== sent) {
+      io.stderr.write(`${t('push_gate.reference_count_mismatch', { sent, listed: listed.length })}\n`);
+      return EXIT.FAILURE;
+    }
+    if (listed.some((number, index) => number !== String(index + 1))) {
+      io.stderr.write(`${t('push_gate.reference_numbering', { sent })}\n`);
+      return EXIT.FAILURE;
+    }
+  }
+
   // Loaded AFTER the enumeration, which is the order the maintainer's gate
   // always had (the hook enumerated, then scan-blobs checked the patterns
   // file), and still for every push that got this far, one with nothing in
@@ -149,5 +198,17 @@ export async function runPushGate(argv, io, t, { recordsScript = RECORDS_SCRIPT,
   // something was found to scan".
   const prepared = preparePersonalScan(io, process.env);
   if (prepared === null) return EXIT.FAILURE;
-  return scanRecordStream(records.stdout.toString('latin1'), { ...prepared, io });
+  return scanRecordStream(stream, { ...prepared, io });
+}
+
+// How many reference lines the enumeration's loop will read out of these
+// bytes: `while read ... || [ -n "$local_ref" ]` runs once per newline, and
+// once more for a final unterminated line whose first field is not empty
+// (the default IFS splits on space and tab, and a newline cannot be left in
+// an unterminated line).
+export function countReferenceLines(bytes) {
+  const text = Buffer.from(bytes).toString('latin1');
+  const pieces = text.split('\n');
+  const tail = pieces.pop();
+  return pieces.length + (/[^ \t]/.test(tail) ? 1 : 0);
 }
