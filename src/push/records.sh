@@ -216,14 +216,23 @@ query_remote() {
   # work: it ties with a rule whose value is the whole url, and the user's
   # rule wins. Only when git gave a url; the name fallback is a fetch url
   # by definition.
+  #
+  # HARDENING: `--` before the url, in both calls. git 2.55 refuses a url
+  # beginning with a dash before it runs any hook, so this changes no
+  # verdict today; but without it such a url is read as an OPTION: `-q` or
+  # `--quiet` makes ls-remote answer for the DEFAULT remote (the fetch-url
+  # hole above, again) and `--upload-pack=<command>` runs a command. Other
+  # callers, and other versions of git, are not obliged to have refused it
+  # first. With `--`, ls-remote refuses the url, which reads as a remote
+  # that cannot be asked, and the whole history is scanned.
   if [ "$remote_url_given" -eq 1 ]; then
-    asked="$(git ls-remote --get-url "$remote_url" 2>/dev/null)"
+    asked="$(git ls-remote --get-url -- "$remote_url" 2>/dev/null)"
     if [ "$asked" != "$remote_url" ]; then
       remote_rewritten=1
       return 0
     fi
   fi
-  if ! raw="$(git ls-remote --heads --tags "$remote_url" 2>/dev/null)"; then
+  if ! raw="$(git ls-remote --heads --tags -- "$remote_url" 2>/dev/null)"; then
     remote_reachable=0
     return 0
   fi

@@ -41,7 +41,6 @@ import { spawnSync } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { fileURLToPath } from 'node:url';
 import { EXIT } from '../exit-codes.mjs';
-import { readStdin } from '../io.mjs';
 import { parseEntries, preparePersonalScan, scanRecordStream } from './scan-blobs.mjs';
 
 // The pattern lists this command knows how to load. `personal` is the
@@ -130,8 +129,16 @@ export async function runPushGate(argv, io, t, { recordsScript = RECORDS_SCRIPT,
   }
 
   // Bytes, not text: the reference lines carry names git allows to be any
-  // bytes, and the enumeration must see the ones git wrote.
-  const input = Buffer.from(await readStdin(io.stdin, { encoding: 'latin1' }), 'latin1');
+  // bytes, and the enumeration must see the ones git wrote. A read that
+  // fails part way is refused rather than kept: the lines that did arrive
+  // would be counted, enumerated and scanned as if they were the push.
+  let input;
+  try {
+    input = await readAllBytes(io.stdin);
+  } catch (error) {
+    io.stderr.write(`${t('push_gate.stdin_unreadable', { reason: error.message })}\n`);
+    return EXIT.FAILURE;
+  }
   const records = spawnSync('bash', [recordsScript, args.remoteName, args.remoteUrl], {
     input,
     maxBuffer: maxStreamBytes,
@@ -210,6 +217,19 @@ export async function runPushGate(argv, io, t, { recordsScript = RECORDS_SCRIPT,
   const prepared = preparePersonalScan(io, process.env);
   if (prepared === null) return EXIT.FAILURE;
   return scanRecordStream(stream, { ...prepared, io });
+}
+
+// All of standard input as bytes. Unlike src/io.mjs's readStdin, which
+// resolves with what it has on a stream error, this rejects: see above.
+// A terminal has no reference lines to give, and reads as none.
+export function readAllBytes(stream) {
+  return new Promise((resolve, reject) => {
+    if (!stream || stream.isTTY) return resolve(Buffer.alloc(0));
+    const chunks = [];
+    stream.on('data', (chunk) => chunks.push(Buffer.from(chunk, 'latin1')));
+    stream.on('end', () => resolve(Buffer.concat(chunks)));
+    stream.on('error', reject);
+  });
 }
 
 // The destination name of every reference line the enumeration's loop will

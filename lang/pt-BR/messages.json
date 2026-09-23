@@ -159,5 +159,6 @@
   "push_gate.messages_too_large": "brain-kit push-gate: a enumeração do push escreveu mais de {limit} bytes de mensagens, mais do que esta barreira lê para um push; recusando sem varrer.",
   "push_gate.reference_count_mismatch": "brain-kit push-gate: o git enviou {sent} linha(s) de referência para este push e a enumeração do push listou {listed} referência(s), então parte do que este push carrega ficaria sem varredura; recusando em vez de chamá-lo de limpo.",
   "push_gate.reference_numbering": "brain-kit push-gate: a enumeração do push não numerou suas referências de 1 a {sent}, na ordem em que o git as enviou, então a lista dela não descreve este push; recusando em vez de chamá-lo de limpo.",
-  "push_gate.reference_name_mismatch": "brain-kit push-gate: o nome de destino que a enumeração do push listou para a referência #{number} deste push não é o que o git enviou nessa linha, então a lista dela não descreve este push; recusando em vez de chamá-lo de limpo (nenhum dos dois nomes é impresso)."
+  "push_gate.reference_name_mismatch": "brain-kit push-gate: o nome de destino que a enumeração do push listou para a referência #{number} deste push não é o que o git enviou nessa linha, então a lista dela não descreve este push; recusando em vez de chamá-lo de limpo (nenhum dos dois nomes é impresso).",
+  "push_gate.stdin_unreadable": "brain-kit push-gate: as linhas de referência na entrada padrão não puderam ser lidas até o fim ({reason}), então o que chegou não é o push inteiro; recusando em vez de varrer só uma parte."
 }

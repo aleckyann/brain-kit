@@ -575,6 +575,45 @@ test('a stream that does not parse is refused by the scanner, with its own reaso
   assert.match(r.stdout, /STATUS:1/);
 });
 
+test('a gap in the numbering balanced by an extra reference (1 and 3 for two lines) is refused', () => {
+  const { root, work, patterns } = setup();
+  const script = join(root, 'gapped.sh');
+  writeFileSync(script, [
+    '#!/usr/bin/env bash',
+    'cat > /dev/null',
+    "printf 'ref\\0001\\000refs/heads/main\\000ref\\0003\\000refs/heads/main\\000'",
+    'exit 0',
+    '',
+  ].join('\n'));
+  const r = driveWith(root, work, patterns, { recordsScript: script }, lines(2));
+  assert.match(r.stderr, /did not number its references 1 to 2/);
+  assert.doesNotMatch(r.stderr, /leak gate ran/);
+  assert.match(r.stdout, /STATUS:1/);
+});
+
+test('a standard input that fails part way is refused, not read as the push', () => {
+  // Driven in process, with a stream that delivers one clean reference line
+  // and then fails: what arrived is a prefix, and a prefix scans clean.
+  const { root, work, patterns } = setup();
+  const sha = commit(work, 'README.md', 'hello world\n', 'init');
+  const driver = join(root, 'broken-stdin-driver.mjs');
+  writeFileSync(driver, [
+    "import { PassThrough } from 'node:stream';",
+    `import { runPushGate } from ${JSON.stringify(join(KIT_ROOT, 'src', 'commands', 'push-gate.mjs'))};`,
+    `import { createTranslator } from ${JSON.stringify(join(KIT_ROOT, 'src', 'lang.mjs'))};`,
+    'const stdin = new PassThrough();',
+    'const io = { stdin, stdout: process.stdout, stderr: process.stderr };',
+    `setImmediate(() => { stdin.write(${JSON.stringify(refLine(sha))}); setImmediate(() => stdin.destroy(new Error('the pipe broke'))); });`,
+    "const status = await runPushGate(['origin', 'origin', '--patterns', 'personal'], io, createTranslator('en'));",
+    'process.stdout.write(`STATUS:${status}\\n`);',
+    '',
+  ].join('\n'));
+  const r = spawnSync(process.execPath, [driver], { cwd: work, encoding: 'utf8', timeout: 20000, env: { ...process.env, BRAIN_KIT_LEAK_PATTERNS: patterns } });
+  assert.match(r.stderr, /could not be read to the end \(the pipe broke\)/);
+  assert.doesNotMatch(r.stderr, /leak gate ran/);
+  assert.match(r.stdout, /STATUS:1/);
+});
+
 test('reference lines are counted the way the enumeration reads them', async () => {
   const { countReferenceLines } = await import('../src/commands/push-gate.mjs');
   assert.equal(countReferenceLines(Buffer.from('')), 0);
@@ -801,6 +840,46 @@ test('a chained rewrite (a pushurl mapped to a url that a second insteadOf maps 
   assert.notEqual(r.status, 0, r.stderr);
   assert.match(r.stderr, /possible leak in notes\.md \(CONTENT/);
   assert.equal(landed(destination, 'refs/heads/leaky'), false);
+});
+
+// A url beginning with a dash cannot reach a hook through git 2.55, which
+// refuses it first, and push-gate refuses an argument beginning with `--`
+// as an unknown flag. The enumeration is run directly here, the way
+// another caller could run it. Without `--` before the url, ls-remote
+// reads it as an option.
+test('the enumeration never runs a url that looks like --upload-pack=<command>', () => {
+  const { work, patterns } = setup();
+  const sha = commit(work, 'README.md', 'hello world\n', 'init');
+  const marker = join(makeTempDir('brain-kit-dash-'), 'ran');
+  const url = `--upload-pack=touch ${marker}`;
+  const r = spawnSync('bash', [join(KIT_ROOT, 'src', 'push', 'records.sh'), 'origin', url], {
+    cwd: work,
+    input: refLine(sha),
+    encoding: 'utf8',
+    env: { ...process.env, BRAIN_KIT_LEAK_PATTERNS: patterns },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(existsSync(marker), false, 'ls-remote ran the url as a command');
+  assert.match(r.stderr, /could not query remote 'origin' \(git ls-remote failed\)/);
+});
+
+test('a url that looks like -q is not answered for the default remote', () => {
+  // origin already holds a matching commit on main; a new branch adds one
+  // clean commit on top. Asked about `-q` without `--`, ls-remote answers
+  // for origin, main is excluded, and the matching commit is never read.
+  // The push is not going to origin, so everything must be scanned.
+  const { root, work, patterns } = setup();
+  commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'a clean message');
+  const seeded = join(root, 'seeded.git');
+  assert.equal(spawnSync('git', ['clone', '-q', '--bare', work, seeded]).status, 0);
+  assert.equal(git(work, ['remote', 'set-url', 'origin', seeded]).status, 0);
+  assert.equal(git(work, ['checkout', '-q', '-b', 'feature']).status, 0);
+  const sha = commit(work, 'README.md', 'hello world\n', 'later');
+  const line = `refs/heads/feature ${sha} refs/heads/feature ${ZERO}\n`;
+  const r = pushGate(work, ['origin', '-q', '--patterns', 'personal'], line, { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /could not query remote 'origin' \(git ls-remote failed\)/);
+  assert.match(r.stderr, /possible leak in notes\.md \(CONTENT/);
 });
 
 test('with no url given, the remote is asked by its name, as it always was', () => {
