@@ -12,7 +12,7 @@ generated:
 
 ## Objetivo
 
-<Como é o pronto, e até quando.>
+<Como fica o projeto pronto, e para quando.>
 
 ## Estado atual
 

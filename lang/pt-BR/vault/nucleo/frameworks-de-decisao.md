@@ -9,7 +9,7 @@ generated:
 
 # Frameworks de decisão
 
-Descreva os frameworks que você de fato usa. O agente os aplica antes de recomendar qualquer coisa.
+Descreva os frameworks que você de fato usa. O agente os aplica antes de recomendar qualquer coisa. Os dois abaixo são um ponto de partida, ainda não são os seus: edite, troque ou apague.
 
 ## Tomar uma decisão
 

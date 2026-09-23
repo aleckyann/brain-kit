@@ -9,7 +9,7 @@ generated:
 
 # Decision frameworks
 
-Describe the frameworks you actually use. The agent applies them before recommending anything.
+Describe the frameworks you actually use. The agent applies them before recommending anything. The two below are a starting point, not your frameworks yet: edit, replace or delete them.
 
 ## Making a decision
 

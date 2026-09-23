@@ -137,15 +137,35 @@ function tableWidths(text) {
   return widths;
 }
 
+// One line per file, with nothing a translation changes: its frontmatter
+// `type`, how many headings of each level it has, how many links, and the
+// width of each table. The profile of a role is the sorted list of its
+// files' lines, so two languages agree only when each role holds files of
+// the same kinds with the same sections (review I3: dropping one section
+// from one language, or retyping one note, used to pass).
+function fileShape(text) {
+  const frontmatter = /^---\n([\s\S]*?)\n---\n/.exec(text);
+  const type = frontmatter ? (/^type:[ \t]*(.+)$/m.exec(frontmatter[1])?.[1].trim() ?? '(no type)') : '(no frontmatter)';
+  const body = frontmatter ? text.slice(frontmatter[0].length) : text;
+  const headings = [1, 2, 3, 4].map((level) => body.split('\n').filter((line) => line.startsWith(`${'#'.repeat(level)} `)).length);
+  const links = (body.match(/\]\(/g) ?? []).length;
+  return JSON.stringify({ type, headings, links, tables: tableWidths(text) });
+}
+
 function skeletonProfile(lang) {
-  const profile = Object.fromEntries(Object.keys(SKELETON_ROLES).map((role) => [role, { files: 0, tables: [] }]));
+  const profile = Object.fromEntries(Object.keys(SKELETON_ROLES).map((role) => [role, { files: 0, tables: [], shapes: [] }]));
   for (const file of skeletonFiles(lang)) {
     const role = roleOf(lang, file);
     assert.ok(role, `${lang} skeleton: ${file} is in a directory no role maps`);
+    const text = readFileSync(join(KIT_ROOT, 'lang', lang, 'vault', file), 'utf8');
     profile[role].files += 1;
-    profile[role].tables.push(...tableWidths(readFileSync(join(KIT_ROOT, 'lang', lang, 'vault', file), 'utf8')));
+    profile[role].tables.push(...tableWidths(text));
+    profile[role].shapes.push(fileShape(text));
   }
-  for (const entry of Object.values(profile)) entry.tables.sort((a, b) => a - b);
+  for (const entry of Object.values(profile)) {
+    entry.tables.sort((a, b) => a - b);
+    entry.shapes.sort();
+  }
   return profile;
 }
 
@@ -185,4 +205,49 @@ test('the two default configurations have the same shape, differing only in name
   const load = (lang) => JSON.parse(readFileSync(join(KIT_ROOT, 'lang', lang, 'config.defaults.json'), 'utf8'));
   const reference = shape(load(REFERENCE_LANG)).sort();
   for (const lang of SUPPORTED_LANGS) assert.deepEqual(shape(load(lang)).sort(), reference, `${lang} defaults differ in shape`);
+});
+
+// The same note in each language, file by file. A note's path is its
+// role's folder plus its own name, and the names below are the ones a
+// translation changes; every other name (index.md, log.md, the root
+// files) is the same in every language. Comparing per pair rather than
+// per role catches what a per-role profile cannot: one note replaced by a
+// different one of the same shape (review I3: values replaced by a goals
+// note, with its index updated).
+const SKELETON_NOTE_NAMES = Object.freeze([
+  { en: 'identity.md', 'pt-BR': 'identidade.md' },
+  { en: 'values.md', 'pt-BR': 'valores.md' },
+  { en: 'response-guidelines.md', 'pt-BR': 'diretrizes-de-resposta.md' },
+  { en: 'decision-frameworks.md', 'pt-BR': 'frameworks-de-decisao.md' },
+  { en: 'weekly-rhythm.md', 'pt-BR': 'ritmo-semanal.md' },
+  { en: 'follow-ups.md', 'pt-BR': 'acompanhamentos.md' },
+  { en: 'promises.md', 'pt-BR': 'promessas.md' },
+  { en: 'template-person.md', 'pt-BR': 'modelo-pessoa.md' },
+  { en: 'template-organization.md', 'pt-BR': 'modelo-organizacao.md' },
+  { en: 'template-project.md', 'pt-BR': 'modelo-projeto.md' },
+  { en: 'template-decision.md', 'pt-BR': 'modelo-decisao.md' },
+  { en: 'template-reflection.md', 'pt-BR': 'modelo-reflexao.md' },
+  { en: 'template-book.md', 'pt-BR': 'modelo-livro.md' },
+]);
+
+function translatePath(file, from, to) {
+  const role = roleOf(from, file);
+  const base = file.slice(file.lastIndexOf('/') + 1);
+  const name = SKELETON_NOTE_NAMES.find((entry) => entry[from] === base)?.[to] ?? base;
+  const dir = SKELETON_ROLES[role][to];
+  return dir === '' ? name : `${dir}/${name}`;
+}
+
+test('every note of the reference skeleton has its counterpart in each language, with the same shape', () => {
+  const referenceFiles = skeletonFiles(REFERENCE_LANG);
+  assert.ok(referenceFiles.length >= 30, `the reference skeleton holds only ${referenceFiles.length} files`);
+  for (const lang of SUPPORTED_LANGS) {
+    const files = skeletonFiles(lang).sort();
+    const translated = referenceFiles.map((file) => translatePath(file, REFERENCE_LANG, lang));
+    assert.deepEqual([...translated].sort(), files, `${lang} skeleton does not hold the same notes as ${REFERENCE_LANG}`);
+    referenceFiles.forEach((file, index) => {
+      const read = (l, f) => readFileSync(join(KIT_ROOT, 'lang', l, 'vault', f), 'utf8');
+      assert.equal(fileShape(read(lang, translated[index])), fileShape(read(REFERENCE_LANG, file)), `${lang} ${translated[index]} differs in shape from ${REFERENCE_LANG} ${file}`);
+    });
+  }
 });

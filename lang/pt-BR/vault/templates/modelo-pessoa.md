@@ -2,7 +2,6 @@
 type: person
 title: <Nome completo>
 description: <Uma frase: quem é esta pessoa e por que ela importa para o dono.>
-vinculo: equipe
 generated:
   by: <ator>
   at: 2026-09-22T00:00:00+00:00

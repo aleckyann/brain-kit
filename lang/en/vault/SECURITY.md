@@ -27,4 +27,4 @@ A password, token or private key committed here is compromised the moment it is 
 
 1. Revoke or rotate the secret first, at its source. Removing it from the file does not undo the exposure.
 2. Remove it from the file and from the history.
-3. `brain-kit lint` scans every file a push could publish for credential shapes, and the pre-push gate refuses a push that carries one. Add your own shapes to `privacy.secret_patterns` in the configuration.
+3. Two checks look for credential shapes, and they read different things. `brain-kit lint` reads the working tree: every file git tracks or would add, as it stands now. The pre-push gate reads what a push carries, every commit it would send, and refuses the push if one holds a credential shape. Add your own shapes to `privacy.secret_patterns` in the configuration.

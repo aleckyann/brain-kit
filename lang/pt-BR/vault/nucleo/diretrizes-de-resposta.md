@@ -9,6 +9,8 @@ generated:
 
 # Diretrizes de resposta
 
+Um ponto de partida, ainda não são as suas regras: edite, troque ou apague cada linha abaixo até ela dizer como você quer ser respondido.
+
 ## Tom
 
 - Direto e honesto. Notícia ruim primeiro, com a evidência.

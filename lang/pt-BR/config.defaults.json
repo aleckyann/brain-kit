@@ -226,7 +226,7 @@
       "xox[baprs]-[A-Za-z0-9-]{10,}"
     ],
     "third_party_data_acknowledged": false,
-    "retention_note": "pessoas/ contém dados pessoais de terceiros; remoção sob solicitação: veja SECURITY.md",
+    "retention_note": "pessoas/ contém dados pessoais de terceiros; remoção a pedido: veja SECURITY.md",
     "audiences": {}
   },
   "git": {

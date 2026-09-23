@@ -9,4 +9,4 @@ generated:
 
 # <Tema>
 
-<Pensamento em andamento. Quando virar decisão, escreva uma nota de decisão e ligue-a a partir daqui.>
+<Pensamento em andamento. Quando virar decisão, escreva uma nota de decisão e ponha aqui um link para ela.>

@@ -2,7 +2,6 @@
 type: person
 title: <Full name>
 description: <One sentence: who this person is and why they matter to the owner.>
-relationship: team
 generated:
   by: <actor>
   at: 2026-09-22T00:00:00+00:00

@@ -13,13 +13,13 @@ Você está trabalhando num segundo cérebro: um cofre em markdown no Open Knowl
 
 ## Ler
 
-1. Abra [index.md](index.md) primeiro. Ele liga todas as áreas do cofre.
+1. Abra [index.md](index.md) primeiro. Ele aponta para todas as áreas do cofre.
 2. Siga os links até as notas de que a pergunta precisa, e só essas. Nunca carregue o cofre inteiro.
 3. Antes de uma decisão, leia [nucleo/frameworks-de-decisao.md](nucleo/frameworks-de-decisao.md).
 
 ## Capturar
 
-1. Tudo o que for novo, mudou ou conflita vai primeiro para [memoria/log.md](memoria/log.md), sob um heading com a data de hoje (mais recente primeiro), cada entrada começando com o marcador em negrito **Captura**.
+1. Tudo o que for novo, tiver mudado ou entrar em conflito vai primeiro para [memoria/log.md](memoria/log.md), sob um título com a data de hoje (mais recente primeiro), cada entrada começando com o marcador em negrito **Captura**.
 2. Um acompanhamento com prazo vai para [pendencias/acompanhamentos.md](pendencias/acompanhamentos.md); uma promessa feita a alguém vai para [pendencias/promessas.md](pendencias/promessas.md).
 3. Depois, compile o log em edições concretas: uma nota nova ou a alteração de uma existente.
 
@@ -34,5 +34,5 @@ Você está trabalhando num segundo cérebro: um cofre em markdown no Open Knowl
 - **Fonte única da verdade:** este repositório. Nada importante existe só num chat.
 - **Nunca escreva `verified`** sobre o próprio trabalho. A confirmação humana entra quando o dono faz o merge.
 - **Registre a data de tudo:** toda nota leva `generated: { by, at }`, com o ator certo e uma data e hora ISO 8601 com o deslocamento de UTC. Veja [CONVENTIONS.md](CONVENTIONS.md).
-- **Confidencial:** notas sobre pessoas são sensíveis. Mantenha o repositório privado e nunca ligue uma nota de dentro de pessoas/ a partir de fora dela, exceto o seu índice. Veja [SECURITY.md](SECURITY.md).
+- **Confidencial:** notas sobre pessoas são sensíveis. Mantenha o repositório privado e nunca crie, fora de pessoas/, um link para uma nota de dentro dela, exceto o seu índice. Veja [SECURITY.md](SECURITY.md).
 - **Não invente:** se não está no cofre e ninguém disse, você não sabe. Verifique antes de afirmar.

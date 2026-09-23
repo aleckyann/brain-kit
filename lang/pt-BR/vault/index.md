@@ -25,4 +25,4 @@ A porta de entrada deste cofre. Um agente lê esta página primeiro e segue os l
 - [AGENTS.md](AGENTS.md): o contrato que todo agente que trabalha aqui segue.
 - [CLAUDE.md](CLAUDE.md): o ponteiro que o Claude Code lê primeiro.
 - [CONVENTIONS.md](CONVENTIONS.md): nomes de arquivo, frontmatter, links e tabelas.
-- [SECURITY.md](SECURITY.md): dados de terceiros, remoção sob solicitação e o que fazer se um segredo entrar.
+- [SECURITY.md](SECURITY.md): dados de terceiros, remoção a pedido e o que fazer se um segredo entrar.

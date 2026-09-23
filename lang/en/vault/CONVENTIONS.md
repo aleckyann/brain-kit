@@ -23,7 +23,7 @@ Every note starts with OKF v0.2 frontmatter:
 - `title` and `description`: a name and one sentence saying what the note holds.
 - `generated`: `by` (who wrote it) and `at` (when), an ISO 8601 datetime with its UTC offset, such as `2026-01-31T09:00:00+00:00`.
 
-Actors in `generated.by`: the owner is `human:` followed by their handle; an agent is `brain-kit-curator/` followed by its model; a scheduled run is `process:brain-kit-curate`.
+Actors in `generated.by`: the owner is `human:` followed by their handle; an agent is `brain-kit-curator/` followed by its model; a scheduled run is `process:brain-kit-curate`; the notes `brain-kit init` created carry `process:brain-kit-init`.
 
 A note's own state (open, done, archived) goes in `stage`, never in `status`, which the format reserves for a note's life cycle: `draft`, `stable` or `deprecated`.
 

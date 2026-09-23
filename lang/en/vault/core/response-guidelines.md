@@ -9,6 +9,8 @@ generated:
 
 # Response guidelines
 
+A starting point, not your rules yet: edit, replace or delete every line below until it says how you want to be answered.
+
 ## Tone
 
 - Direct and honest. Bad news first, with the evidence.

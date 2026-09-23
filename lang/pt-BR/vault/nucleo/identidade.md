@@ -17,7 +17,7 @@ O que você faz, onde e há quanto tempo.
 
 ## O que estou construindo
 
-As uma ou duas coisas que mais importam agora, e por quê.
+Uma ou duas coisas que mais importam agora, e por quê.
 
 ## O que preciso de um conselheiro
 
