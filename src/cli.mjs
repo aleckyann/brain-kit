@@ -8,6 +8,7 @@ import { runScanBlobs } from './commands/scan-blobs.mjs';
 import { runPushGate } from './commands/push-gate.mjs';
 import { runInit } from './commands/init.mjs';
 import { runDoctor } from './commands/doctor.mjs';
+import { runUpdate } from './commands/update.mjs';
 import { walkVault } from './vault.mjs';
 import { ConfigError } from './config.mjs';
 
@@ -43,6 +44,7 @@ const GATE_LANG = 'en';
 const BUILTIN_COMMANDS = new Map([
   ['hook', runHook],
   ['init', (argv, io, t) => runInit(argv, io, t, { walkVault })],
+  ['update', (argv, io, t) => runUpdate(argv, io, t)],
   ['validate', (argv, io, t) => runValidate(argv, io, t, walkVault)],
   ['lint', (argv, io, t) => runLint(argv, io, t, walkVault)],
   ['doctor', (argv, io, t) => runDoctor(argv, io, t)],

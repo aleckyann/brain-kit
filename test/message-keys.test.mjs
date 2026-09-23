@@ -175,6 +175,7 @@ function allSites() {
     ...extractTranslatorCallSites(readSrc('src/commands/lint.mjs'), 'src/commands/lint.mjs'),
     ...extractTranslatorCallSites(readSrc('src/commands/push-gate.mjs'), 'src/commands/push-gate.mjs'),
     ...extractTranslatorCallSites(readSrc('src/commands/init.mjs'), 'src/commands/init.mjs'),
+    ...extractTranslatorCallSites(readSrc('src/commands/update.mjs'), 'src/commands/update.mjs'),
     ...extractTranslatorCallSites(readSrc('src/init/answers.mjs'), 'src/init/answers.mjs'),
     ...extractTranslatorCallSites(readSrc('src/commands/doctor.mjs'), 'src/commands/doctor.mjs'),
   ];
