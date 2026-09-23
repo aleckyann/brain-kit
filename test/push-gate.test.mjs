@@ -768,6 +768,40 @@ test('a pushInsteadOf rewrite: the push is scanned against the rewritten destina
   assert.equal(landed(destination, 'refs/heads/leaky'), false);
 });
 
+test('the mirror idiom (insteadOf to a mirror, identity pushInsteadOf upstream) is scanned in full and refused', () => {
+  // git pushes upstream and hands the hook upstream's url; ls-remote would
+  // rewrite that url to the mirror again, and the mirror holds the branch.
+  const { work, patterns, fetchUrl: mirror, destination: upstream } = setupDivergentRemote();
+  assert.equal(git(work, ['remote', 'set-url', 'origin', upstream]).status, 0);
+  assert.equal(git(work, ['config', `url.${mirror}.insteadOf`, upstream]).status, 0);
+  assert.equal(git(work, ['config', `url.${upstream}.pushInsteadOf`, upstream]).status, 0);
+  // The precondition, measured: asked, ls-remote would go to the mirror.
+  assert.equal(git(work, ['ls-remote', '--get-url', upstream]).stdout.trim(), mirror);
+  const r = git(work, ['push', '-q', 'origin', 'leaky'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /is rewritten by a url\.<base>\.insteadOf rule when it is asked what it holds/);
+  assert.match(r.stderr, /possible leak in notes\.md \(CONTENT/);
+  assert.equal(landed(upstream, 'refs/heads/leaky'), false);
+  // A clean branch through the same idiom still goes, after a full scan.
+  assert.equal(git(work, ['checkout', '-q', '-b', 'tidy', 'main']).status, 0);
+  commit(work, 'tidy.md', 'nothing secret here\n', 'tidy');
+  const ok = git(work, ['push', '-q', 'origin', 'tidy'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(landed(upstream, 'refs/heads/tidy'), true);
+});
+
+test('a chained rewrite (a pushurl mapped to a url that a second insteadOf maps elsewhere) is scanned in full and refused', () => {
+  const { root, work, patterns, fetchUrl, destination } = setupDivergentRemote();
+  const alias = join(root, 'alias.git');
+  assert.equal(git(work, ['config', 'remote.origin.pushurl', alias]).status, 0);
+  assert.equal(git(work, ['config', `url.${destination}.insteadOf`, alias]).status, 0);
+  assert.equal(git(work, ['config', `url.${fetchUrl}.insteadOf`, destination]).status, 0);
+  const r = git(work, ['push', '-q', 'origin', 'leaky'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in notes\.md \(CONTENT/);
+  assert.equal(landed(destination, 'refs/heads/leaky'), false);
+});
+
 test('with no url given, the remote is asked by its name, as it always was', () => {
   // A hook always receives a url; this is the fallback for a caller that
   // passes none. origin already holds a matching commit on main, and a new

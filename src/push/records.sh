@@ -187,14 +187,42 @@ remote_name="$1"
 # passes an empty url gets the name's fetch url, the old behaviour, rather
 # than an ls-remote of nothing that would fall back to a full scan.
 remote_url="${2:-$remote_name}"
+remote_url_given=0
+if [ -n "$2" ]; then
+  remote_url_given=1
+fi
 remote_queried=0
 remote_reachable=0
+remote_rewritten=0
 remote_exclusions=()
 
 query_remote() {
   [ "$remote_queried" -eq 1 ] && return 0
   remote_queried=1
-  local raw sha ref resolved
+  local raw sha ref resolved asked
+  # 22/09/2026, the same day: THE URL GIT GAVE IS REWRITTEN AGAIN. git hands
+  # this hook the destination after its own rewriting, and ls-remote treats
+  # that url as a FETCH url and applies `url.<base>.insteadOf` to it once
+  # more. The documented way to read from a mirror and push upstream
+  # (`url.<mirror>.insteadOf = <upstream>` with an identity
+  # `url.<upstream>.pushInsteadOf = <upstream>`) therefore had ls-remote ask
+  # the mirror, and a branch only the mirror held reached upstream unscanned
+  # with "nothing matched". A chain (a pushurl that one insteadOf maps to a
+  # url a second insteadOf maps elsewhere) does the same. So ls-remote is
+  # first asked where it WOULD go, and when that is not the url git is
+  # pushing to, nothing it could say is about the destination: the remote
+  # is treated as unknown and the whole history is scanned. Overriding the
+  # rule with `-c url.<dest>.insteadOf=<dest>` was measured and does not
+  # work: it ties with a rule whose value is the whole url, and the user's
+  # rule wins. Only when git gave a url; the name fallback is a fetch url
+  # by definition.
+  if [ "$remote_url_given" -eq 1 ]; then
+    asked="$(git ls-remote --get-url "$remote_url" 2>/dev/null)"
+    if [ "$asked" != "$remote_url" ]; then
+      remote_rewritten=1
+      return 0
+    fi
+  fi
   if ! raw="$(git ls-remote --heads --tags "$remote_url" 2>/dev/null)"; then
     remote_reachable=0
     return 0
@@ -350,6 +378,11 @@ while read -r local_ref local_sha remote_ref remote_sha || [ -n "${local_ref:-}"
       # `set -u` aborts the script in bash 3.2 (fifth lesson, (f)).
       if ! commits="$(git rev-list "$local_sha" ${remote_exclusions[@]+"${remote_exclusions[@]}"})"; then
         echo "pre-push: could not list what $ref_label adds to remote '$remote_name' (git rev-list failed); refusing rather than scanning nothing." >&2
+        exit 1
+      fi
+    elif [ "$remote_rewritten" -eq 1 ]; then
+      echo "pre-push: the url this push goes to for remote '$remote_name' is rewritten by a url.<base>.insteadOf rule when it is asked what it holds, so the answer would describe another repository; scanning the entire history of $ref_label instead." >&2
+      if ! commits="$(full_history "$local_sha")"; then
         exit 1
       fi
     else

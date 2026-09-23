@@ -315,29 +315,55 @@ require a shell or a userland newer than the one the people and the runners
 actually have: pin the scan to bytes with a byte locale, check the versions
 your continuous integration runs on, and where a convenience tool may be
 missing, degrade to more scanning, never to less.
+**Addendum, 22/09/2026: the remote that was asked was not the one pushed to.**
+"Ask the remote directly" was obeyed while asking the wrong remote. The
+enumeration ran `git ls-remote <remote name>`, which asks the remote's fetch
+url, and git does not always push there: a `pushurl`, a second `url` and a
+`url.<base>.pushInsteadOf` rewrite all send the push elsewhere. Commits the
+fetch url already held were excluded and reached the destination unscanned,
+with the gate saying nothing matched. The fix asked the url git hands the
+hook, and a review then showed that was still not enough: `ls-remote` treats
+that url as a fetch url and applies `url.<base>.insteadOf` to it again, so the
+documented idiom of reading from a mirror and pushing upstream (an `insteadOf`
+to the mirror, an identity `pushInsteadOf` upstream) had it ask the mirror,
+and a branch only the mirror held landed upstream unscanned. The rule,
+sharpened: the scope comes from the destination git is pushing to, asked in a
+way that rewrites nothing further. Ask where the question would go
+(`ls-remote --get-url`), and when that is not the destination, treat the
+remote as unknown and scan everything. Both holes predate the gate's move to
+Node and were live on every earlier version of it.
 **Where it lives in brain-kit.** `src/push/records.sh`, the push enumeration
-`brain-kit push-gate` runs, moved there unchanged from `.githooks/pre-push` on
-22/09/2026 (`remote_sha..local_sha`
-for a ref the remote already has; `query_remote`'s live `git ls-remote`,
-cached per hook run, for one it does not; full-history fallback if the remote
-cannot be reached or the range fails to compute; `diff-tree -m` with a
-per-commit dedupe so merges are diffed against every parent; `--diff-filter=d`,
-which drops only deletions, so typechanges are scanned; `grep -a` with a
-printed-hit cap so a binary blob is scanned instead of skipped; the regular,
-readable, non-empty check on the patterns file; `scan_blob` reading every
-stage's status through `PIPESTATUS` and refusing on any search status above
-"nothing matched"; `LC_ALL=C` on the whole scanning pipeline; a `sort -zu`
-dedupe and `${arr[@]+"${arr[@]}"}` expansions, so the hook needs nothing newer
-than bash 3.2, the version the macOS job in `.github/workflows/ci.yml` runs),
-`test/pre-push-hook.test.mjs` ("a tag pointing at already-pushed commits is
-allowed", "a new branch is still scanned for its own commits", "a stale-ahead
-tracking ref does not hide an unpublished commit", "the remote being
-unreachable makes the hook scan everything", "an existing ref whose remote_sha
-is unknown to this clone still gets scanned", "a merge commit whose resolution
-introduces a leak is refused", "a blob with a NUL byte is scanned instead of
-skipped as binary", "a patterns file that cannot do its job refuses the push",
-"a typechange from symlink to regular file is scanned", "a blob that cannot be
-read refuses the push instead of passing").
+`brain-kit push-gate` runs out of the installed snapshot (moved there from
+`.githooks/pre-push` on 22/09/2026): `remote_sha..local_sha` for a ref the
+remote already has; `query_remote`'s live `git ls-remote` of the url git is
+pushing to, once per run, for one it does not, with the `--get-url` check that
+falls back to a full scan when that url would be rewritten; full-history
+fallback when the remote cannot be asked or the range fails to compute; `git
+diff-tree -m` with a per-commit `sort -zu` dedupe, so merges are diffed against
+every parent; `--diff-filter=d`, which drops only deletions, so typechanges
+are scanned; every command's status read on its own statement, with no
+pipeline; and `${arr[@]+"${arr[@]}"}` expansions, so it needs nothing newer
+than bash 3.2, the version the macOS job in `.github/workflows/ci.yml` runs.
+Reading blobs and deciding what matches moved to Node (`src/commands/scan-blobs.mjs`,
+`src/leak.mjs`), which reads bytes directly, so there is no binary skip and
+no locale to depend on, and whose pattern loading refuses a patterns file that
+is missing, empty, a directory or unreadable. Tests: `test/pre-push-hook.test.mjs`
+("a tag pointing at already-pushed commits is allowed", "a new branch is still
+scanned for its own commits", "a stale-ahead tracking ref does not hide an
+unpublished commit", "the remote being unreachable makes the hook scan
+everything", "an existing ref whose remote_sha is unknown to this clone still
+gets scanned", "a merge commit whose resolution introduces a leak is refused",
+"a blob with a NUL byte is scanned instead of skipped as binary", "a patterns
+file that cannot do its job refuses the push", "a typechange from symlink to
+regular file is scanned", "a blob whose object is missing refuses the push
+instead of passing") and `test/push-gate.test.mjs` ("a pushurl that differs
+from the fetch url: the branch is scanned against the destination and
+refused", "a second url: the push to it is scanned against it, not against
+the first, and refused", "a pushInsteadOf rewrite: the push is scanned
+against the rewritten destination and refused", "the mirror idiom (insteadOf
+to a mirror, identity pushInsteadOf upstream) is scanned in full and
+refused", "a chained rewrite (a pushurl mapped to a url that a second
+insteadOf maps elsewhere) is scanned in full and refused").
 
 ## Headless runs, network and scheduling
 
