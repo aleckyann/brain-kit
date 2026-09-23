@@ -106,6 +106,16 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   English; it used to be Portuguese unless `BRAIN_KIT_LANG` said otherwise. `BRAIN_KIT_LANG`
   still wins, and an unsupported value is reported once.
 
+### Phase 1, slice 1C: the git loop
+
+- Two guards for every command that writes to a vault. The lock is a file in the state
+  directory naming the holder's pid, host, command and start time; a second writer is
+  refused at once, naming the holder, and a lock is replaced only when its host is this
+  machine and its process no longer exists, by a rename that exactly one of several
+  racing writers can win. The session snapshot records which paths were already dirty when
+  a session began, and later splits what is dirty into what was there before and what
+  changed since, without stashing, staging or writing anything in the vault.
+
 ## 0.0.1 (published on npm on 18/09/2026)
 
 Phase 0: package skeleton, CLI router with exit codes, language packs (pt-BR reference, en),

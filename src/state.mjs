@@ -11,6 +11,13 @@ import { basename, isAbsolute, join, resolve } from 'node:path';
 //                 a run, so two runs against the same vault never overlap
 //                 (ports the original vault's flock-based lock, now scoped
 //                 per vault instead of one lock shared by every vault).
+//   LOCK_RECLAIM  the marker a process creates, exclusively, to earn the
+//                 right to replace a stale LOCK (src/guards/lock.mjs says
+//                 why a rename needs it). Present only for the few system
+//                 calls a reclaim takes; one left behind means a reclaimer
+//                 died mid reclaim. LOCK, LOCK_RECLAIM and SNAPSHOT are
+//                 each written through a transient sibling named
+//                 `<name>.<pid>.<random>.tmp`, never under their own name.
 //   WATERMARK     the high-water mark of the last day (or ref) the scheduled
 //                 curator has already read, carried over from the original
 //                 vault's own watermark file. Kept as JSON, not a bare date
@@ -19,8 +26,9 @@ import { basename, isAbsolute, join, resolve } from 'node:path';
 //   LAST_RUN      a small record of the most recent run's outcome (status,
 //                 timestamp), so a briefing or `doctor` can answer "did the
 //                 last run succeed" without re-parsing the log directory.
-//   SNAPSHOT      the git loop's `snapshot` command result: the recorded
-//                 vault state a later `propose` diffs against.
+//   SNAPSHOT      the session snapshot (src/guards/snapshot.mjs): which
+//                 paths were already dirty when a session began, so a later
+//                 `propose` can tell them from what the session changed.
 //   LOG_DIR       directory holding one dated log file per run (the
 //                 individual file names are dynamic, so only the directory
 //                 itself is named here).
@@ -29,6 +37,7 @@ import { basename, isAbsolute, join, resolve } from 'node:path';
 //                 its own by the briefing, independent of any single run.
 export const STATE_FILES = Object.freeze({
   LOCK: 'lock',
+  LOCK_RECLAIM: 'lock.reclaim',
   WATERMARK: 'watermark.json',
   LAST_RUN: 'last-run.json',
   SNAPSHOT: 'snapshot.json',
