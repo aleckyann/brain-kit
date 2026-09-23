@@ -1,4 +1,5 @@
-import { chmodSync, existsSync, readFileSync, realpathSync } from 'node:fs';
+import { chmodSync, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { constants as osConstants } from 'node:os';
 import { dirname, join, resolve, basename } from 'node:path';
 import { EXIT } from '../exit-codes.mjs';
 import { kitVersion, KIT_ROOT } from '../version.mjs';
@@ -11,7 +12,8 @@ import {
   ANSWER_KEYS, QUESTIONS, askInteractively, defaultAnswers, defaultLang, describeAnswer, invalidAnswer, readAnswersFile, resolveClaudeBin,
 } from '../init/answers.mjs';
 import {
-  GITIGNORE_PATH, inspectTarget, isInside, isoStamp, makeDirs, nearestExisting, rollback, writeNew, writeVault,
+  GITIGNORE_PATH, inspectTarget, isInside, isoStamp, makeDirs, makeOwnTree, nearestExisting, recordMode, rollback, writeNew,
+  writeVault,
 } from '../init/skeleton.mjs';
 import { runValidate } from './validate.mjs';
 import { runLint } from './lint.mjs';
@@ -51,6 +53,43 @@ import { runLint } from './lint.mjs';
 // vault failing.
 
 const USAGE_FLAGS_WITH_VALUE = Object.freeze(['--lang', '--from-answers']);
+
+// The variables that make git act on a repository other than the one its
+// working directory is in (`git rev-parse --local-env-vars`; this list is
+// what it prints, and the live output is added to it at run time). With
+// GIT_DIR exported, as dotfiles setups and some CI wrappers do, `git init`
+// in the new vault would configure, and `git commit` would commit into,
+// THAT repository. Every git command init runs, and the validate and lint
+// it runs on the result, run with these removed: init acts on the vault
+// it is creating and on nothing else.
+const LOCAL_GIT_VARS = Object.freeze([
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_CONFIG', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_COUNT', 'GIT_OBJECT_DIRECTORY',
+  'GIT_DIR', 'GIT_WORK_TREE', 'GIT_IMPLICIT_WORK_TREE', 'GIT_GRAFT_FILE', 'GIT_INDEX_FILE', 'GIT_NO_REPLACE_OBJECTS',
+  'GIT_REPLACE_REF_BASE', 'GIT_PREFIX', 'GIT_SHALLOW_FILE', 'GIT_COMMON_DIR',
+]);
+
+export function withoutLocalGitVars(env, names = LOCAL_GIT_VARS) {
+  const clean = { ...env };
+  for (const name of names) delete clean[name];
+  return clean;
+}
+
+// The same removal for code that runs in this process and reads
+// process.env itself (validate and lint), restored afterwards.
+async function withProcessEnvCleaned(names, fn) {
+  const saved = {};
+  for (const name of names) {
+    if (Object.hasOwn(process.env, name)) {
+      saved[name] = process.env[name];
+      delete process.env[name];
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    Object.assign(process.env, saved);
+  }
+}
 
 function parseArgs(argv) {
   const result = { dir: undefined, lang: undefined, yes: false, answersFile: undefined, help: false };
@@ -258,7 +297,9 @@ export async function runInit(argv, io, t, {
   }
 
   const target = canonicalOf(resolve(cwd, parsed.dir ?? '.'));
-  const stateDir = resolve(stateDirFor(target, env));
+  // Canonical like the target, so a state directory reached through a
+  // symbolic link into the vault is seen to be inside it.
+  const stateDir = canonicalOf(resolve(cwd, stateDirFor(target, env)));
   const machinePath = join(stateDir, MACHINE_FILENAME);
   const first = refuseLocations(io, t, target, stateDir, machinePath);
   if (first !== null) return first;
@@ -268,6 +309,9 @@ export async function runInit(argv, io, t, {
     io.stderr.write(`${t('init.git_unavailable', { detail: gitCheck.stderr.trim() })}\n`);
     return EXIT.FAILURE;
   }
+  const listed = run('git', ['rev-parse', '--local-env-vars']);
+  const localVars = [...new Set([...LOCAL_GIT_VARS, ...(listed.status === 0 ? listed.stdout.split(/\s+/).filter(Boolean) : [])])];
+  const gitEnv = withoutLocalGitVars(env, localVars);
 
   // The answers: the file's, then --lang, then (with --yes) the defaults
   // for whatever is still missing, then a terminal for the rest, and when
@@ -333,8 +377,18 @@ export async function runInit(argv, io, t, {
   // Nested inside another repository is allowed (an empty directory in a
   // dotfiles home, say): `git add -A` in the outer one records the vault
   // as one gitlink, never its files. It is said, not refused.
-  const outer = run('git', ['rev-parse', '--show-toplevel'], { cwd: nearestExisting(target) });
+  const outer = run('git', ['rev-parse', '--show-toplevel'], { cwd: nearestExisting(target), env: gitEnv });
   const outerRoot = outer.status === 0 ? outer.stdout.trim() : '';
+
+  // A state directory that already exists keeps its mode if this run
+  // fails, and is named on success if init tightened it.
+  let priorMode = null;
+  try {
+    const st = statSync(stateDir);
+    if (st.isDirectory()) priorMode = st.mode & 0o7777;
+  } catch {
+    // Absent: init creates it.
+  }
 
   // --- from here on, init writes ---------------------------------------------
   //
@@ -343,38 +397,64 @@ export async function runInit(argv, io, t, {
   // created) is the one precondition that cannot be proved by reading, so
   // it is proved by writing, where undoing it touches nothing of the
   // person's. Everything after that is recorded in the ledger, and any
-  // failure until the repository is set up removes all of it.
+  // failure until the repository is set up undoes all of it.
+  //
+  // SIGINT and SIGTERM (a Ctrl-C, a service manager stopping) are held
+  // for the length of the writes: the writes are synchronous, so a signal
+  // is only seen once they stop, and a git child it killed is a failure
+  // like any other. Either way the ledger is undone, and init exits with
+  // the conventional status for that signal.
   const ledger = [];
-  try {
-    makeDirs(ledger, stateDir);
-    ensureStateDir(stateDir);
-    writeNew(ledger, machinePath, `${JSON.stringify(machine, null, 2)}\n`, 0o600);
-    chmodSync(machinePath, 0o600);
-  } catch (error) {
-    return undo(io, t, ledger, t('init.state_unwritable', { state: stateDir, detail: error.message }), target);
-  }
-
+  let interrupted = null;
+  const onSignal = (signal) => {
+    interrupted ??= signal;
+  };
+  process.on('SIGINT', onSignal);
+  process.on('SIGTERM', onSignal);
+  let failure = null;
   let manifest;
   try {
-    manifest = writeVault(target, {
-      lang: answers.lang,
-      stamp: isoStamp(now()),
-      ledger,
-      files: {
-        [CONFIG_FILENAME]: `${JSON.stringify(config, null, 2)}\n`,
-        [GITIGNORE_PATH]: gitignoreText(t),
-      },
-    });
-    // .git is recorded before git runs, so a git that fails halfway
-    // through creating it is undone too; it did not exist (checked twice).
-    ledger.push({ path: join(target, '.git'), kind: 'tree' });
-    for (const [step, args] of [['git init', ['init', '-q']], ['git config core.hooksPath', ['config', 'core.hooksPath', '.githooks']]]) {
-      const result = run('git', args, { cwd: target });
-      if (result.status !== 0) throw new Error(t('init.git_failed', { step, detail: result.stderr.trim() }));
+    try {
+      makeDirs(ledger, stateDir);
+      if (priorMode !== null && priorMode !== 0o700) recordMode(ledger, stateDir, priorMode);
+      ensureStateDir(stateDir);
+      writeNew(ledger, machinePath, `${JSON.stringify(machine, null, 2)}\n`, 0o600);
+      chmodSync(machinePath, 0o600);
+    } catch (error) {
+      failure = t('init.state_unwritable', { state: stateDir, detail: error.message });
     }
-  } catch (error) {
-    return undo(io, t, ledger, error.message, target);
+    if (failure === null) {
+      try {
+        manifest = writeVault(target, {
+          lang: answers.lang,
+          stamp: isoStamp(now()),
+          ledger,
+          files: {
+            [CONFIG_FILENAME]: `${JSON.stringify(config, null, 2)}\n`,
+            [GITIGNORE_PATH]: gitignoreText(t),
+          },
+        });
+        makeOwnTree(ledger, join(target, '.git'));
+        for (const [step, args] of [['git init', ['init', '-q']], ['git config core.hooksPath', ['config', 'core.hooksPath', '.githooks']]]) {
+          const result = run('git', args, { cwd: target, env: gitEnv });
+          if (result.status !== 0) throw new Error(t('init.git_failed', { step, detail: result.stderr.trim() }));
+        }
+      } catch (error) {
+        failure = error.message;
+      }
+    }
+    // Let a signal that arrived during the synchronous writes be delivered.
+    await new Promise((settle) => setImmediate(settle));
+    await new Promise((settle) => setImmediate(settle));
+  } finally {
+    process.off('SIGINT', onSignal);
+    process.off('SIGTERM', onSignal);
   }
+  if (interrupted !== null) {
+    undo(io, t, ledger, t('init.interrupted', { signal: interrupted }), target);
+    return 128 + (osConstants.signals[interrupted] ?? 0);
+  }
+  if (failure !== null) return undo(io, t, ledger, failure, target);
 
   if (defaulted.length > 0) {
     io.stdout.write(`${t('init.using_defaults')}\n`);
@@ -383,14 +463,19 @@ export async function runInit(argv, io, t, {
   io.stdout.write(`${t('init.created', { dir: target, count: manifest.files.length })}\n`);
   if (outerRoot !== '') io.stdout.write(`${t('init.nested_repository', { root: outerRoot })}\n`);
   io.stdout.write(`${t('init.state_written', { file: machinePath })}\n`);
+  if (priorMode !== null && priorMode !== 0o700) {
+    io.stdout.write(`${t('init.state_tightened', { state: stateDir, mode: priorMode.toString(8) })}\n`);
+  }
 
   io.stdout.write(`${t('init.checking')}\n`);
   const runChecks = checks ?? {
     validate: (args, cio, ct) => runValidate(args, cio, ct, walkVault),
     lint: (args, cio, ct) => runLint(args, cio, ct, walkVault),
   };
-  const validated = await runChecks.validate([target], io, t);
-  const linted = await runChecks.lint([target, '--base', 'all'], io, t);
+  const [validated, linted] = await withProcessEnvCleaned(localVars, async () => [
+    await runChecks.validate([target], io, t),
+    await runChecks.lint([target, '--base', 'all'], io, t),
+  ]);
   const checked = worseExit(validated, linted);
 
   // The first commit, when asked for, only over a vault both checks
@@ -402,8 +487,8 @@ export async function runInit(argv, io, t, {
   } else if (checked !== EXIT.OK) {
     io.stderr.write(`${t('init.commit_skipped')}\n`);
   } else {
-    const added = run('git', ['add', '-A'], { cwd: target });
-    const committed = added.status === 0 ? run('git', ['commit', '-q', '-m', t('init.commit_message')], { cwd: target }) : added;
+    const added = run('git', ['add', '-A'], { cwd: target, env: gitEnv });
+    const committed = added.status === 0 ? run('git', ['commit', '-q', '-m', t('init.commit_message')], { cwd: target, env: gitEnv }) : added;
     if (committed.status !== 0) {
       io.stderr.write(`${t('init.commit_failed', { detail: committed.stderr.trim() })}\n`);
       code = EXIT.DEGRADED;

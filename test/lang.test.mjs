@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { KIT_ROOT, kitVersion } from '../src/version.mjs';
-import { createTranslator, loadMessages, interpolate, LANG_VARIABLES, REFERENCE_LANG, SUPPORTED_LANGS, resolveLang } from '../src/lang.mjs';
+import { createTranslator, loadMessages, interpolate, LANG_VARIABLES, REFERENCE_LANG, SUPPORTED_LANGS, resolveLang, resolveLangDetailed } from '../src/lang.mjs';
 
 const pkg = JSON.parse(readFileSync(join(KIT_ROOT, 'package.json'), 'utf8'));
 
@@ -256,6 +256,8 @@ test('resolveLang: BRAIN_KIT_LANG, then LC_ALL, then LC_MESSAGES, then LANG; pt 
   const cases = [
     [{ BRAIN_KIT_LANG: 'en', LC_ALL: 'pt_BR.UTF-8', LANG: 'pt_BR.UTF-8' }, 'en'],
     [{ BRAIN_KIT_LANG: 'pt-BR', LC_ALL: 'C' }, 'pt-BR'],
+    [{ BRAIN_KIT_LANG: 'fr', LANG: 'pt_BR.UTF-8' }, 'pt-BR'],
+    [{ BRAIN_KIT_LANG: 'pt_PT', LANG: 'en_US.UTF-8' }, 'en'],
     [{ LC_ALL: 'pt_BR.UTF-8', LC_MESSAGES: 'en_US.UTF-8', LANG: 'en_US.UTF-8' }, 'pt-BR'],
     [{ LC_ALL: 'C', LANG: 'pt_BR.UTF-8' }, 'en'],
     [{ LC_ALL: 'POSIX', LANG: 'pt_BR.UTF-8' }, 'en'],
@@ -270,4 +272,11 @@ test('resolveLang: BRAIN_KIT_LANG, then LC_ALL, then LC_MESSAGES, then LANG; pt 
   ];
   for (const [env, expected] of cases) assert.equal(resolveLang(env), expected, JSON.stringify(env));
   assert.deepEqual(LANG_VARIABLES, ['BRAIN_KIT_LANG', 'LC_ALL', 'LC_MESSAGES', 'LANG']);
+});
+
+test('resolveLangDetailed reports an unsupported BRAIN_KIT_LANG, and only that', () => {
+  assert.deepEqual(resolveLangDetailed({ BRAIN_KIT_LANG: 'fr', LANG: 'C' }), { lang: 'en', unsupported: 'fr' });
+  assert.deepEqual(resolveLangDetailed({ BRAIN_KIT_LANG: 'pt-BR' }), { lang: 'pt-BR', unsupported: null });
+  assert.deepEqual(resolveLangDetailed({ LANG: 'fr_FR.UTF-8' }), { lang: 'en', unsupported: null });
+  assert.deepEqual(resolveLangDetailed({}), { lang: 'en', unsupported: null });
 });

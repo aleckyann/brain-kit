@@ -1,5 +1,6 @@
 import {
-  chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeSync,
+  chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, rmdirSync, statSync, unlinkSync,
+  writeSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { KIT_ROOT } from '../version.mjs';
@@ -140,19 +141,47 @@ export function stampGenerated(text, stamp) {
 // --- the ledger: what this run created, so a failure can undo it exactly ---
 //
 // Every directory and file init creates is recorded the moment it exists,
-// in order. The target was checked empty or absent twice, so everything
-// under it that is in the ledger is init's own, and removing the ledger
-// in reverse leaves the target exactly as it was found (and gone again,
-// with any parents init made, when it did not exist). A file is recorded
-// AFTER its exclusive open succeeds, so one that already existed (EEXIST)
-// is never recorded and never removed, and BEFORE a byte is written, so
-// a write that fails halfway (a full disk) is still removed.
+// in order, and a failure removes the ledger in reverse. Removal never
+// reaches past what init itself made:
+//   - a file is recorded AFTER its exclusive open succeeds, so one that
+//     already existed (EEXIST, another process in the gap) is never
+//     recorded and never removed, and BEFORE a byte is written, so a
+//     write that fails halfway (a full disk) is still removed;
+//   - a directory is removed with a plain rmdir, never recursively: the
+//     files init wrote into it are in the ledger and go first, so an
+//     rmdir that fails (ENOTEMPTY) means someone else wrote there, and
+//     that directory is reported as left behind rather than deleted;
+//   - `.git` is the one tree removed recursively, because git fills it,
+//     and it is recorded only after init itself created it, empty, with a
+//     non-recursive mkdir: a repository another process made in the gap
+//     makes that mkdir fail and is never claimed (git init accepts an
+//     empty .git it did not create);
+//   - a directory that already existed and whose mode init changed (the
+//     state directory, tightened to 0700) gets its old mode back.
 
-// Creates `dir` and any missing parents, recording the topmost directory
-// it created, if any.
+// Creates `dir` and any missing parents, recording every directory it
+// created, outermost first, so the reverse order removes innermost first.
 export function makeDirs(ledger, dir) {
   const first = mkdirSync(dir, { recursive: true });
-  if (first !== undefined) ledger.push({ path: first, kind: 'tree' });
+  if (first === undefined) return;
+  const chain = [];
+  for (let current = dir; ; current = dirname(current)) {
+    chain.unshift(current);
+    if (current === first || dirname(current) === current) break;
+  }
+  for (const path of chain) ledger.push({ path, kind: 'dir' });
+}
+
+// Creates `dir` itself, which must not exist, recording it as a tree the
+// ledger may remove recursively. Used for .git only.
+export function makeOwnTree(ledger, dir) {
+  mkdirSync(dir);
+  ledger.push({ path: dir, kind: 'tree' });
+}
+
+// Records that `dir` existed with `mode` before init changed it.
+export function recordMode(ledger, dir, mode) {
+  ledger.push({ path: dir, kind: 'mode', mode });
 }
 
 // Creates `path` exclusively, records it, then writes all of `bytes`
@@ -173,15 +202,18 @@ export function writeNew(ledger, path, bytes, mode = 0o666) {
   }
 }
 
-// Removes the ledger in reverse. Returns the paths it could not remove,
+// Undoes the ledger in reverse. Returns the paths it could not undo,
 // empty when the undo was exact. A path already gone is not a failure.
 export function rollback(ledger) {
   const left = [];
-  for (const { path, kind } of [...ledger].reverse()) {
+  for (const entry of [...ledger].reverse()) {
     try {
-      rmSync(path, { recursive: kind === 'tree', force: false });
+      if (entry.kind === 'file') unlinkSync(entry.path);
+      else if (entry.kind === 'dir') rmdirSync(entry.path);
+      else if (entry.kind === 'tree') rmSync(entry.path, { recursive: true, force: false });
+      else chmodSync(entry.path, entry.mode);
     } catch (error) {
-      if (error.code !== 'ENOENT') left.push(path);
+      if (error.code !== 'ENOENT') left.push(entry.path);
     }
   }
   return left;

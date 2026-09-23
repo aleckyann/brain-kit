@@ -244,5 +244,8 @@
   "init.rollback_incomplete": "brain-kit init: {detail}. Removing what this run had created failed for: {left}. Remove those by hand before running init again.",
   "init.commit_skipped": "The first commit was not made, because validate or lint found a problem above. Fix it, then commit with git add -A and git commit.",
   "init.nested_repository": "Note: this vault is nested inside another git repository, {root}. That repository records the vault as one entry, never its files.",
-  "init.unreadable": "brain-kit init: {dir} cannot be listed ({detail}), so init cannot be sure nothing in it would be overwritten. Nothing was written."
+  "init.unreadable": "brain-kit init: {dir} cannot be listed ({detail}), so init cannot be sure nothing in it would be overwritten. Nothing was written.",
+  "lang.unsupported_setting": "[brain-kit] BRAIN_KIT_LANG={value} is not a supported language ({langs}); using {lang}, from the locale.",
+  "init.interrupted": "interrupted by {signal}",
+  "init.state_tightened": "The state directory {state} already existed with mode {mode}; init set it to 700, because it holds this machine's logs about a private vault."
 }

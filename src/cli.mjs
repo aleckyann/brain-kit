@@ -1,6 +1,6 @@
 import { EXIT } from './exit-codes.mjs';
 import { kitVersion } from './version.mjs';
-import { createTranslator, resolveLang } from './lang.mjs';
+import { createTranslator, resolveLangDetailed, SUPPORTED_LANGS } from './lang.mjs';
 import { runHook } from './commands/hook.mjs';
 import { runValidate } from './commands/validate.mjs';
 import { runLint } from './commands/lint.mjs';
@@ -51,9 +51,11 @@ const BUILTIN_COMMANDS = new Map([
 ]);
 
 export async function main(argv, io, { commands = BUILTIN_COMMANDS } = {}) {
-  const t = createTranslator(resolveLang(process.env), {
+  const { lang, unsupported } = resolveLangDetailed(process.env);
+  const t = createTranslator(lang, {
     warn: (message) => io.stderr.write(`${message}\n`),
   });
+  if (unsupported !== null) io.stderr.write(`${t('lang.unsupported_setting', { value: unsupported, langs: SUPPORTED_LANGS, lang })}\n`);
   const [command, ...rest] = argv;
 
   if (command === undefined || command === '--help' || command === '-h' || command === 'help') {

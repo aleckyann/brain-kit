@@ -11,18 +11,31 @@ export const SUPPORTED_LANGS = Object.freeze(['pt-BR', 'en']);
 // every sentence it prints and every default it offers agree: the first
 // of BRAIN_KIT_LANG, LC_ALL, LC_MESSAGES and LANG that is set decides
 // (POSIX's own order for message language, with this tool's variable in
-// front). A value starting with "pt" is Portuguese; anything else, "C"
-// and "POSIX" included, and nothing set at all, is English, the pack
-// every language falls back to for a person who reads neither.
+// front). For the locale variables a value starting with "pt" is
+// Portuguese and anything else, "C" and "POSIX" included, is English, as
+// is nothing set at all. BRAIN_KIT_LANG is different: it is this tool's
+// own setting, a choice made on purpose, so it must name a supported
+// language exactly; a value that does not is reported back (`unsupported`)
+// for the caller to warn about once, and the locale chain decides.
 export const LANG_VARIABLES = Object.freeze(['BRAIN_KIT_LANG', 'LC_ALL', 'LC_MESSAGES', 'LANG']);
 
-export function resolveLang(env = process.env) {
+export function resolveLangDetailed(env = process.env) {
+  let unsupported = null;
   for (const name of LANG_VARIABLES) {
     const value = env[name];
     if (typeof value !== 'string' || value === '') continue;
-    return value.toLowerCase().startsWith('pt') ? 'pt-BR' : 'en';
+    if (name === 'BRAIN_KIT_LANG') {
+      if (SUPPORTED_LANGS.includes(value)) return { lang: value, unsupported };
+      unsupported = value;
+      continue;
+    }
+    return { lang: value.toLowerCase().startsWith('pt') ? 'pt-BR' : 'en', unsupported };
   }
-  return 'en';
+  return { lang: 'en', unsupported };
+}
+
+export function resolveLang(env = process.env) {
+  return resolveLangDetailed(env).lang;
 }
 
 const cache = new Map();

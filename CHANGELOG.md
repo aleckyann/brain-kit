@@ -45,7 +45,18 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   clone knows. A branch that deletes a pattern and then violates it is refused whenever one
   of those still declares it. The configuration file's own content is read for credential
   shapes only, so a literal inside it is not refused. `brain-kit` is found on PATH only;
-  the vault carries no package. Nothing installs the hook into a vault yet.
+  the vault carries no package. `brain-kit init` installs it into a new vault.
+- `brain-kit init [dir] [--lang en|pt-BR] [--yes] [--from-answers <file>]` makes a new
+  vault in an empty or new directory: the language skeleton, the configuration, the hook,
+  a manifest of what the kit wrote, a git repository, and `machine.json` in the state
+  directory, outside the vault. It refuses, writing nothing, a directory that is not empty,
+  is a repository or is a vault; it never waits on a stdin that is not a terminal; it undoes
+  everything it created when it fails halfway; and it commits only when told to, after
+  `validate` and `lint` pass.
+- The default output language of every command now follows the locale (`LC_ALL`, then
+  `LC_MESSAGES`, then `LANG`; a value starting with `pt` is Portuguese) and falls back to
+  English; it used to be Portuguese unless `BRAIN_KIT_LANG` said otherwise. `BRAIN_KIT_LANG`
+  still wins, and an unsupported value is reported once.
 
 ## 0.0.1 (published on npm on 18/09/2026)
 

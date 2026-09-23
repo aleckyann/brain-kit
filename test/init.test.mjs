@@ -394,10 +394,12 @@ test('without git on PATH, init exits 1 before writing anything', () => {
 test('a first commit that fails leaves the vault written, says so, and exits 3', () => {
   const { base, vault, state } = freshTarget();
   const file = writeAnswers(base, { ...ANSWERS.en, commit: true });
-  const env = testEnv(state, {
-    GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
-    GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'user.useConfigOnly', GIT_CONFIG_VALUE_0: 'true',
-  });
+  // A global configuration that forbids guessing an identity, and none
+  // given: the commit must fail. (Not GIT_CONFIG_COUNT: init removes the
+  // repository-local git variables from what its git commands see.)
+  const globalConfig = join(base, 'gitconfig');
+  writeFileSync(globalConfig, '[user]\n\tuseConfigOnly = true\n');
+  const env = testEnv(state, { GIT_CONFIG_GLOBAL: globalConfig, GIT_CONFIG_NOSYSTEM: '1' });
   for (const key of ['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'EMAIL']) delete env[key];
   const r = brainKit(['init', vault, '--from-answers', file], { env });
   assert.equal(r.status, EXIT.DEGRADED, r.stdout + r.stderr);
@@ -865,6 +867,16 @@ for (const failing of ['init', 'config']) {
   });
 }
 
+test('a failing git init under two directory levels init itself made removes both levels', () => {
+  const { base, state } = freshTarget();
+  const vault = join(base, 'new parent', 'vault');
+  const file = writeAnswers(base, ANSWERS.en);
+  const r = brainKit(['init', vault, '--from-answers', file], { env: testEnv(state, { PATH: failingGit(base, 'init') }) });
+  assert.equal(r.status, EXIT.FAILURE, r.stdout + r.stderr);
+  assert.match(r.stderr, /Everything this run had created was removed/);
+  assert.equal(existsSync(join(base, 'new parent')), false);
+});
+
 for (const failing of ['init', 'config']) {
   test(`a failing git ${failing} into an EXISTING empty directory leaves it empty, .git included, as it was found`, () => {
     const { base, vault, state } = freshTarget();
@@ -1125,4 +1137,161 @@ test('an empty target inside another repository is accepted, with one line namin
   const r2 = brainKit(['init', alone.vault, '--from-answers', writeAnswers(alone.base, ANSWERS.en)], { env: testEnv(alone.state) });
   assert.equal(r2.status, EXIT.OK);
   assert.doesNotMatch(r2.stdout, /nested inside another git repository/);
+});
+
+// --- fix round 2 --------------------------------------------------------------
+
+function refsOf(gitDir) {
+  const r = spawnSync('git', ['--git-dir', gitDir, 'for-each-ref', '--format=%(refname) %(objectname)'], { encoding: 'utf8', env: withoutGitVars() });
+  return `${r.stdout}|${readFileSync(join(gitDir, 'HEAD'), 'utf8')}`;
+}
+
+function withoutGitVars() {
+  const env = { ...process.env, ...TEST_GIT_ENV };
+  for (const name of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE']) delete env[name];
+  return env;
+}
+
+test('with GIT_DIR (and GIT_INDEX_FILE) exported for another repository, init leaves that repository byte-identical and gives the vault its own .git', () => {
+  const { base, vault, state } = freshTarget();
+  const foreign = join(base, 'dotfiles');
+  assert.equal(spawnSync('git', ['init', '-q', foreign], { env: withoutGitVars() }).status, 0);
+  writeFileSync(join(foreign, 'a'), 'tracked by the other repository\n');
+  assert.equal(git(foreign, ['add', 'a'], withoutGitVars()).status, 0);
+  assert.equal(git(foreign, ['commit', '-q', '-m', 'theirs'], withoutGitVars()).status, 0);
+  assert.equal(git(foreign, ['config', 'core.hooksPath', '.husky'], withoutGitVars()).status, 0);
+  const foreignGit = join(foreign, '.git');
+  const before = { config: readFileSync(join(foreignGit, 'config')), index: readFileSync(join(foreignGit, 'index')), refs: refsOf(foreignGit) };
+
+  const file = writeAnswers(base, { ...ANSWERS.en, commit: true });
+  const r = brainKit(['init', vault, '--from-answers', file], {
+    env: testEnv(state, { GIT_DIR: foreignGit, GIT_INDEX_FILE: join(foreignGit, 'index') }),
+  });
+  assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
+
+  assert.deepEqual(readFileSync(join(foreignGit, 'config')), before.config, 'the other repository\'s config is untouched');
+  assert.deepEqual(readFileSync(join(foreignGit, 'index')), before.index, 'its index is untouched');
+  assert.equal(refsOf(foreignGit), before.refs, 'its refs are untouched');
+  assert.ok(statSync(join(vault, '.git')).isDirectory(), 'the vault has its own repository');
+  const own = { ...withoutGitVars() };
+  assert.equal(spawnSync('git', ['config', 'core.hooksPath'], { cwd: vault, encoding: 'utf8', env: own }).stdout.trim(), '.githooks');
+  assert.equal(spawnSync('git', ['rev-list', '--count', 'HEAD'], { cwd: vault, encoding: 'utf8', env: own }).stdout.trim(), '1');
+  assert.doesNotMatch(r.stdout, /nested inside another git repository/);
+  // init's own lint read the vault's repository, not the other one (whose
+  // tracked file `a` does not exist here).
+  assert.doesNotMatch(r.stdout, /missing from the working tree/);
+});
+
+test('a file another process writes into a directory init created is never removed by the rollback, and is named', () => {
+  const { base, vault, state } = freshTarget();
+  const file = writeAnswers(base, ANSWERS.en);
+  const PATH = failingGit(base, 'init', 'echo theirs > core/foreign.txt;');
+  const r = brainKit(['init', vault, '--from-answers', file], { env: testEnv(state, { PATH }) });
+  assert.equal(r.status, EXIT.FAILURE, r.stdout + r.stderr);
+  assert.equal(readFileSync(join(vault, 'core', 'foreign.txt'), 'utf8'), 'theirs\n');
+  assert.match(r.stderr, /Removing what this run had created failed for: /);
+  assert.ok(r.stderr.includes(join(vault, 'core')), r.stderr);
+  assert.deepEqual(listFiles(vault), ['core/foreign.txt'], 'everything init wrote is gone, the foreign file is not');
+  assert.equal(existsSync(state), false);
+});
+
+// A git that, on the rev-parse init makes after its second check, runs
+// `action` first: another process acting in the gap between the check
+// and the first write.
+function gapGit(base, action) {
+  const shims = join(base, 'gap-shims');
+  mkdirSync(shims, { recursive: true });
+  writeFileSync(join(shims, 'git'), `#!/usr/bin/env bash\nif [ "$1" = rev-parse ] && [ "$2" = --show-toplevel ]; then ${action} fi\nexec ${JSON.stringify(realGit())} "$@"\n`);
+  chmodSync(join(shims, 'git'), 0o755);
+  return `${shims}${delimiter}${process.env.PATH}`;
+}
+
+test('a repository another process makes in the target during the gap is never claimed or removed', () => {
+  const { base, vault, state } = freshTarget();
+  mkdirSync(vault);
+  const file = writeAnswers(base, ANSWERS.en);
+  const theirs = join(vault, '.git');
+  const PATH = gapGit(base, `mkdir -p ${JSON.stringify(join(theirs, 'objects'))}; echo 'ref: refs/heads/theirs' > ${JSON.stringify(join(theirs, 'HEAD'))};`);
+  const r = brainKit(['init', vault, '--from-answers', file], { env: testEnv(state, { PATH }) });
+  assert.equal(r.status, EXIT.FAILURE, r.stdout + r.stderr);
+  assert.equal(readFileSync(join(theirs, 'HEAD'), 'utf8'), 'ref: refs/heads/theirs\n');
+  assert.deepEqual(listFiles(vault), ['.git/HEAD'], 'only the other process\'s repository is left');
+});
+
+test('a machine.json another run writes between the check and init\'s exclusive open is neither recorded nor removed', () => {
+  const { base, vault, state } = freshTarget();
+  const file = writeAnswers(base, ANSWERS.en);
+  const theirs = join(state, MACHINE_FILENAME);
+  const PATH = gapGit(base, `mkdir -p ${JSON.stringify(state)}; echo '{"other":"run"}' > ${JSON.stringify(theirs)};`);
+  const r = brainKit(['init', vault, '--from-answers', file], { env: testEnv(state, { PATH }) });
+  assert.equal(r.status, EXIT.FAILURE, r.stdout + r.stderr);
+  assert.match(r.stderr, /EEXIST/);
+  assert.equal(readFileSync(theirs, 'utf8'), '{"other":"run"}\n');
+  assert.equal(existsSync(vault), false);
+});
+
+test('a state directory that already existed, holding a file, keeps the file and its own mode when init fails', () => {
+  const { base, vault } = freshTarget();
+  const state = join(base, 'mystate');
+  mkdirSync(state);
+  chmodSync(state, 0o755);
+  writeFileSync(join(state, 'notes.txt'), 'mine\n');
+  const before = snapshot(state);
+  const file = writeAnswers(base, ANSWERS.en);
+  const r = brainKit(['init', vault, '--from-answers', file], { env: testEnv(state, { PATH: failingGit(base, 'init') }) });
+  assert.equal(r.status, EXIT.FAILURE, r.stdout + r.stderr);
+  assert.match(r.stderr, /Everything this run had created was removed/);
+  assert.deepEqual(snapshot(state), before, 'the directory, its mode and its file are as they were');
+});
+
+test('on success, init says in one line that it tightened an existing state directory to 0700', () => {
+  const { base, vault } = freshTarget();
+  const state = join(base, 'mystate');
+  mkdirSync(state);
+  chmodSync(state, 0o755);
+  const r = brainKit(['init', vault, '--from-answers', writeAnswers(base, ANSWERS.en)], { env: testEnv(state) });
+  assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
+  assert.equal(statSync(state).mode & 0o777, 0o700);
+  assert.equal(r.stdout.split('\n').filter((line) => /already existed with mode 755; init set it to 700/.test(line)).length, 1);
+
+  const fresh = freshTarget();
+  const r2 = brainKit(['init', fresh.vault, '--from-answers', writeAnswers(fresh.base, ANSWERS.en)], { env: testEnv(fresh.state) });
+  assert.equal(r2.status, EXIT.OK);
+  assert.doesNotMatch(r2.stdout, /already existed with mode/);
+});
+
+test('a state directory reached through a symbolic link into the vault is refused, and nothing is written', () => {
+  const { base, vault } = freshTarget();
+  mkdirSync(vault);
+  symlinkSync(vault, join(base, 'link'));
+  const file = writeAnswers(base, { ...ANSWERS.en, commit: true });
+  const watched = [[vault, snapshot(vault)], [base, snapshot(base)]];
+  const r = brainKit(['init', vault, '--from-answers', file], { env: testEnv(join(base, 'link', 'st')) });
+  assertRefusedUntouched(r, watched, /state directory/);
+});
+
+for (const [signal, status] of [['INT', 130], ['TERM', 143]]) {
+  test(`SIG${signal} during init rolls everything back, says so, and exits ${status}`, () => {
+    const { base, vault, state } = freshTarget();
+    const file = writeAnswers(base, ANSWERS.en);
+    // What a Ctrl-C (or a service manager) does: the signal reaches init
+    // and the git it is running.
+    const PATH = failingGit(base, 'init', `kill -${signal} $PPID; exit ${status};`);
+    const r = brainKit(['init', vault, '--from-answers', file], { env: testEnv(state, { PATH }) });
+    assert.equal(r.status, status, r.stdout + r.stderr);
+    assert.match(r.stderr, new RegExp(`interrupted by SIG${signal}`));
+    assert.match(r.stderr, /Everything this run had created was removed/);
+    assert.equal(existsSync(vault), false);
+    assert.equal(existsSync(state), false);
+  });
+}
+
+test('BRAIN_KIT_LANG set to an unsupported value is reported once, and the locale decides', () => {
+  const env = localeEnv('', { BRAIN_KIT_LANG: 'fr', LANG: 'C.UTF-8' });
+  const r = brainKit(['nope'], { env });
+  assert.equal(r.status, EXIT.USAGE);
+  assert.equal(r.stderr.split('\n').filter((line) => line.includes('BRAIN_KIT_LANG=fr is not a supported language')).length, 1);
+  assert.match(r.stderr, /unknown command/);
+  const supported = brainKit(['nope'], { env: localeEnv('', { BRAIN_KIT_LANG: 'en', LANG: 'pt_BR.UTF-8' }) });
+  assert.doesNotMatch(supported.stderr, /not a supported language/);
 });
