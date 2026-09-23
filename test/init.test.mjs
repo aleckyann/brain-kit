@@ -33,12 +33,13 @@ import { delimiter, dirname, join, relative, isAbsolute } from 'node:path';
 import { KIT_ROOT, kitVersion } from '../src/version.mjs';
 import { CONFIG_FILENAME, MACHINE_FILENAME, findMachineOnlyKeys, validateConfig, validateMachine } from '../src/config.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
-import { createTranslator } from '../src/lang.mjs';
+import { createTranslator, LANG_VARIABLES } from '../src/lang.mjs';
+import { LINT_RULES } from '../src/rules/lint.mjs';
 import { walkVault } from '../src/vault.mjs';
 import { splitFrontmatter, readMapping } from '../src/frontmatter.mjs';
 import { completeDefaults } from '../src/init/config.mjs';
 import { resolveClaudeBin, defaultAnswers, invalidAnswer } from '../src/init/answers.mjs';
-import { ROOT_CONTRACT_FILES, HOOK_PATH, stampGenerated, writeVault } from '../src/init/skeleton.mjs';
+import { ROOT_CONTRACT_FILES, HOOK_PATH, isInside, stampGenerated, writeVault } from '../src/init/skeleton.mjs';
 import { runInit, worseExit } from '../src/commands/init.mjs';
 import { MANIFEST_PATH, readManifest } from '../src/manifest.mjs';
 import { makeTempDir } from './helpers/tmp.mjs';
@@ -115,16 +116,24 @@ function snapshot(root) {
   return out;
 }
 
+// Every run gets its own scratch area: the target, a state directory
+// beside it, and an EMPTY working directory, also beside it, that the
+// command runs from. No test ever runs init from the kit's own checkout,
+// so a regression that loses the directory argument writes into this
+// scratch directory, where a listing sees it, instead of into the
+// repository the suite runs from.
 function freshTarget(prefix = 'brain-kit-init-') {
   const base = makeTempDir(prefix);
-  return { base, vault: join(base, 'vault'), state: join(base, 'state') };
+  const cwd = join(base, 'cwd');
+  mkdirSync(cwd);
+  return { base, vault: join(base, 'vault'), state: join(base, 'state'), cwd };
 }
 
 function testEnv(state, extra = {}) {
   return { ...process.env, BRAIN_KIT_LANG: 'en', BRAIN_KIT_STATE_DIR: state, USER: 'ana', LOGNAME: 'ana', TZ: 'UTC', ...TEST_GIT_ENV, ...extra };
 }
 
-function brainKit(args, { env, cwd, stdio } = {}) {
+function brainKit(args, { env, cwd = makeTempDir('brain-kit-init-cwd-'), stdio } = {}) {
   return spawnSync(process.execPath, [BIN, ...args], { encoding: 'utf8', env, cwd, stdio });
 }
 
@@ -157,11 +166,10 @@ function fakeTty(lines, { end = true } = {}) {
   return stream;
 }
 
-async function initDirect(argv, { stdin = fakeTty([], { end: true }), env, checks } = {}) {
+async function initDirect(argv, { stdin = fakeTty([], { end: true }), env, checks, cwd = makeTempDir('brain-kit-init-cwd-') } = {}) {
   const stdout = collector();
   const stderr = collector();
-  if (!stdin.isTTY && stdin.isTTY !== false) stdin.isTTY = false;
-  const code = await runInit(argv, { stdin, stdout, stderr }, createTranslator('en'), { walkVault, env, checks });
+  const code = await runInit(argv, { stdin, stdout, stderr }, createTranslator('en'), { walkVault, env, checks, cwd });
   return { code, stdout: stdout.text, stderr: stderr.text };
 }
 
@@ -495,14 +503,17 @@ test('--lang that disagrees with the answers file is refused', () => {
 });
 
 test('an unknown option, or a flag without its value, is a usage error that writes nothing', () => {
-  const { vault, state } = freshTarget();
+  const { vault, state, cwd } = freshTarget();
+  const cwdBefore = snapshot(cwd);
   for (const args of [
     ['init', vault, '--force'], ['init', vault, '--lang'], ['init', vault, '--from-answers'], ['init', vault, '--yes', '--from-answers'],
     ['init', vault, '--lang', 'fr', '--yes'], ['init', vault, 'second', '--yes'],
   ]) {
-    const r = brainKit(args, { env: testEnv(state) });
+    const r = brainKit(args, { env: testEnv(state), cwd });
     assert.equal(r.status, EXIT.USAGE, `${args.join(' ')}\n${r.stderr}`);
     assert.equal(existsSync(vault), false);
+    assert.deepEqual(snapshot(cwd), cwdBefore, `${args.join(' ')} wrote where init runs`);
+    assert.equal(existsSync(join(cwd, 'second')), false);
   }
 });
 
@@ -514,11 +525,39 @@ test('an unsupported --lang is named as such', () => {
 });
 
 test('an argument that looks like an option is never taken for the directory', () => {
-  const { base, state } = freshTarget();
-  const before = snapshot(base);
-  const r = brainKit(['init', '--force', '--yes'], { env: testEnv(state), cwd: base });
+  const { state, cwd } = freshTarget();
+  const before = snapshot(cwd);
+  const r = brainKit(['init', '--force', '--yes'], { env: testEnv(state), cwd });
   assert.equal(r.status, EXIT.USAGE);
-  assert.deepEqual(snapshot(base), before);
+  assert.deepEqual(snapshot(cwd), before);
+});
+
+// The working directory is empty and the state directory is outside it,
+// so a refusal skipped here would write a vault into it: nothing else
+// masks the guard under test.
+test('an unknown option is refused with exit 2 and nothing is written where init runs', () => {
+  const { state, cwd } = freshTarget();
+  const before = snapshot(cwd);
+  const r = brainKit(['init', '--adopt', '--yes'], { env: testEnv(state), cwd });
+  assert.equal(r.status, EXIT.USAGE, r.stdout + r.stderr);
+  assert.match(r.stderr, /unexpected argument "--adopt"/);
+  assert.deepEqual(snapshot(cwd), before);
+  assert.equal(existsSync(state), false);
+});
+
+test('on a terminal, a flag missing its value and an unknown option are refused before any question, writing nothing', async () => {
+  const lines = ['en', 'Ana Souza', 'asouza', 'Field Notes', '', 'y', 'UTC'];
+  for (const argv of [['--from-answers'], ['elsewhere', '--from-answers'], ['--lang'], ['--adopt'], ['elsewhere', '--adopt']]) {
+    const { state, cwd } = freshTarget();
+    const before = snapshot(cwd);
+    const r = await initDirect(argv, { stdin: fakeTty(lines), env: testEnv(state), cwd });
+    assert.equal(r.code, EXIT.USAGE, `${argv.join(' ')}: ${r.stdout}${r.stderr}`);
+    assert.equal(r.stdout, '', `${argv.join(' ')}: no question may be asked`);
+    assert.match(r.stderr, argv.includes('--adopt') ? /unexpected argument "--adopt"/ : /needs a value/);
+    assert.deepEqual(snapshot(cwd), before, `${argv.join(' ')} wrote where init runs`);
+    assert.equal(existsSync(join(cwd, 'elsewhere')), false);
+    assert.equal(existsSync(state), false);
+  }
 });
 
 test('--yes uses every default and says so, and makes no commit', () => {
@@ -800,16 +839,290 @@ function realGit() {
   throw new Error('git not found on PATH');
 }
 
+// A git shim that answers --version and passes everything through except
+// the one subcommand under test, which fails after running `before`.
+function failingGit(base, failing, before = '') {
+  const shims = join(base, 'shims');
+  mkdirSync(shims, { recursive: true });
+  writeFileSync(join(shims, 'git'), `#!/usr/bin/env bash\nif [ "$1" = ${JSON.stringify(failing)} ]; then ${before} echo "refused by the test" >&2; exit 1; fi\nexec ${JSON.stringify(realGit())} "$@"\n`);
+  chmodSync(join(shims, 'git'), 0o755);
+  return `${shims}${delimiter}${process.env.PATH}`;
+}
+
 for (const failing of ['init', 'config']) {
-  test(`a failing git ${failing} makes init exit 1, naming the step`, () => {
+  test(`a failing git ${failing} rolls back everything init created, says so, and exits 1`, () => {
     const { base, vault, state } = freshTarget();
-    const shims = join(base, 'shims');
-    mkdirSync(shims);
-    writeFileSync(join(shims, 'git'), `#!/usr/bin/env bash\nif [ "$1" = ${JSON.stringify(failing)} ]; then echo "refused by the test" >&2; exit 1; fi\nexec ${JSON.stringify(realGit())} "$@"\n`);
-    chmodSync(join(shims, 'git'), 0o755);
     const file = writeAnswers(base, ANSWERS.en);
-    const r = brainKit(['init', vault, '--from-answers', file], { env: testEnv(state, { PATH: `${shims}${delimiter}${process.env.PATH}` }) });
+    const r = brainKit(['init', vault, '--from-answers', file], { env: testEnv(state, { PATH: failingGit(base, failing) }) });
     assert.equal(r.status, EXIT.FAILURE, r.stdout + r.stderr);
     assert.match(r.stderr, new RegExp(`git ${failing}[^\\n]* failed: refused by the test`));
+    assert.match(r.stderr, /Everything this run had created was removed/);
+    assert.equal(existsSync(vault), false, 'the half vault is gone');
+    assert.equal(existsSync(state), false, 'the state directory init made is gone');
+    // And nothing stops the next run, as a half vault would.
+    const again = brainKit(['init', vault, '--from-answers', file], { env: testEnv(state) });
+    assert.equal(again.status, EXIT.OK, again.stdout + again.stderr);
   });
 }
+
+for (const failing of ['init', 'config']) {
+  test(`a failing git ${failing} into an EXISTING empty directory leaves it empty, .git included, as it was found`, () => {
+    const { base, vault, state } = freshTarget();
+    mkdirSync(vault, { mode: 0o750 });
+    chmodSync(vault, 0o750);
+    const before = snapshot(vault);
+    const file = writeAnswers(base, ANSWERS.en);
+    const r = brainKit(['init', vault, '--from-answers', file], { env: testEnv(state, { PATH: failingGit(base, failing) }) });
+    assert.equal(r.status, EXIT.FAILURE, r.stdout + r.stderr);
+    assert.deepEqual(snapshot(vault), before);
+  });
+}
+
+const IS_ROOT = typeof process.getuid === 'function' && process.getuid() === 0;
+
+test('an unwritable state home is found before a byte of the vault is written, and exits 1 with a sentence', { skip: IS_ROOT && 'root ignores permissions' }, () => {
+  const { base, vault } = freshTarget();
+  const xdg = join(base, 'xdg');
+  mkdirSync(xdg);
+  chmodSync(xdg, 0o500);
+  try {
+    const file = writeAnswers(base, ANSWERS.en);
+    // A git that leaves a mark whenever it is asked to create a
+    // repository: the state is proved before the vault, so it never is.
+    const marker = join(base, 'git-init-ran');
+    const shims = join(base, 'marking-shims');
+    mkdirSync(shims);
+    writeFileSync(join(shims, 'git'), `#!/usr/bin/env bash\nif [ "$1" = init ]; then : > ${JSON.stringify(marker)}; fi\nexec ${JSON.stringify(realGit())} "$@"\n`);
+    chmodSync(join(shims, 'git'), 0o755);
+    const env = testEnv('', { XDG_STATE_HOME: xdg, PATH: `${shims}${delimiter}${process.env.PATH}` });
+    delete env.BRAIN_KIT_STATE_DIR;
+    const r = brainKit(['init', vault, '--from-answers', file], { env });
+    assert.equal(existsSync(marker), false, 'git init ran before the state directory was proved writable');
+    assert.equal(r.status, EXIT.FAILURE, r.stdout + r.stderr);
+    assert.match(r.stderr, /cannot create the state directory or write machine\.json/);
+    assert.match(r.stderr, /nothing was written into the vault/);
+    assert.equal(existsSync(vault), false);
+    assert.deepEqual(readdirSync(xdg), []);
+  } finally {
+    chmodSync(xdg, 0o700);
+  }
+});
+
+test('a write failing midway (a file-size limit standing in for a full disk) rolls back everything, and exits 1', () => {
+  const { base, vault, state } = freshTarget();
+  const file = writeAnswers(base, ANSWERS.en);
+  // 8 KiB: the skeleton notes fit, the configuration (about 9 KiB) does not.
+  const r = spawnSync('bash', ['-c', 'ulimit -f 8; exec "$0" "$@"', process.execPath, BIN, 'init', vault, '--from-answers', file], {
+    encoding: 'utf8', env: testEnv(state), cwd: base,
+  });
+  assert.equal(r.status, EXIT.FAILURE, r.stdout + r.stderr);
+  assert.match(r.stderr, /EFBIG/);
+  assert.match(r.stderr, /Everything this run had created was removed/);
+  assert.equal(existsSync(vault), false);
+  assert.equal(existsSync(state), false);
+});
+
+test('a write failing midway into an EXISTING empty directory removes even the file cut short, leaving it as found', () => {
+  const { base, vault, state } = freshTarget();
+  mkdirSync(vault);
+  const before = snapshot(vault);
+  const file = writeAnswers(base, ANSWERS.en);
+  const r = spawnSync('bash', ['-c', 'ulimit -f 8; exec "$0" "$@"', process.execPath, BIN, 'init', vault, '--from-answers', file], {
+    encoding: 'utf8', env: testEnv(state), cwd: base,
+  });
+  assert.equal(r.status, EXIT.FAILURE, r.stdout + r.stderr);
+  assert.deepEqual(snapshot(vault), before, 'brain-kit.config.json, cut short at the limit, must not survive');
+});
+
+test('when the rollback itself fails, init names what it left behind', { skip: IS_ROOT && 'root ignores permissions' }, () => {
+  const { base, vault, state } = freshTarget();
+  const file = writeAnswers(base, ANSWERS.en);
+  // git init runs inside the new vault; the shim locks core/ first, so
+  // the notes in it cannot be removed.
+  const PATH = failingGit(base, 'init', 'chmod 0500 core;');
+  try {
+    const r = brainKit(['init', vault, '--from-answers', file], { env: testEnv(state, { PATH }) });
+    assert.equal(r.status, EXIT.FAILURE, r.stdout + r.stderr);
+    assert.match(r.stderr, /Removing what this run had created failed for: /);
+    assert.ok(r.stderr.includes(join(vault, 'core', 'identity.md')), r.stderr);
+    assert.doesNotMatch(r.stderr, /Everything this run had created was removed/);
+  } finally {
+    if (existsSync(join(vault, 'core'))) chmodSync(join(vault, 'core'), 0o755);
+  }
+});
+
+// --- the real validate and lint, not injected ----------------------------------
+
+const KEY_TITLE = `Notes ${'AKIA'}${'IOSFODNN7EXAMPL2'}`;
+
+test('a credential-shaped answer makes init exit 1 through the REAL lint, naming the configuration', () => {
+  const { base, vault, state } = freshTarget();
+  const file = writeAnswers(base, { ...ANSWERS.en, title: KEY_TITLE });
+  const r = brainKit(['init', vault, '--from-answers', file], { env: testEnv(state) });
+  assert.equal(r.status, EXIT.FAILURE, r.stdout + r.stderr);
+  assert.match(r.stdout, /brain-kit\.config\.json:\d+ {2}secrets\b/);
+});
+
+test('the first commit, when asked for, is not made over a vault that fails lint, and the output says why', () => {
+  const { base, vault, state } = freshTarget();
+  const file = writeAnswers(base, { ...ANSWERS.en, title: KEY_TITLE, commit: true });
+  const r = brainKit(['init', vault, '--from-answers', file], { env: testEnv(state) });
+  assert.equal(r.status, EXIT.FAILURE, r.stdout + r.stderr);
+  assert.match(r.stderr, /The first commit was not made, because validate or lint found a problem/);
+  assert.notEqual(git(vault, ['rev-parse', '--verify', '-q', 'HEAD']).status, 0, 'nothing reached history');
+});
+
+// validate through the REAL wiring. No answer reaches a note, so the only
+// way to make validate fail on what init writes, with lint still clean,
+// is the clock the notes are stamped from: a year past 9999 has no
+// four-digit ISO form, and validate (not lint) judges timestamps.
+test('a vault that fails the REAL validate, with lint clean, makes init exit 1', async () => {
+  const { base, vault, state } = freshTarget();
+  const file = writeAnswers(base, ANSWERS.en);
+  const stdout = collector();
+  const stderr = collector();
+  const code = await runInit([vault, '--from-answers', file], { stdin: fakeTty([]), stdout, stderr }, createTranslator('en'), {
+    walkVault, env: testEnv(state), cwd: base, now: () => new Date('+010000-01-01T00:00:00Z'),
+  });
+  assert.equal(code, EXIT.FAILURE, stdout.text + stderr.text);
+  assert.match(stdout.text, /findings above \(guidance or house rules\) block this run/);
+  assert.match(stdout.text, /Totals: 0 error\(s\), 0 warning\(s\)/, 'lint itself was clean');
+});
+
+// Every lint rule raised to error, each keeping its own settings.
+function everyRuleAtError(config) {
+  const lint = { ...config.lint };
+  for (const { settingKey } of LINT_RULES) {
+    const current = lint[settingKey];
+    lint[settingKey] = current !== null && typeof current === 'object' ? { ...current, severity: 'error' } : 'error';
+  }
+  return { ...config, lint };
+}
+
+for (const lang of ['en', 'pt-BR']) {
+  test(`${lang}: what init writes passes lint --base all with every rule at error, and validate`, () => {
+    const { base, vault, state } = freshTarget();
+    const file = writeAnswers(base, ANSWERS[lang]);
+    assert.equal(brainKit(['init', vault, '--from-answers', file], { env: testEnv(state) }).status, EXIT.OK);
+    writeFileSync(join(vault, CONFIG_FILENAME), `${JSON.stringify(everyRuleAtError(readConfig(vault)), null, 2)}\n`);
+    const v = brainKit(['validate', vault, '--json'], { env: testEnv(state) });
+    assert.equal(v.status, EXIT.OK, v.stdout + v.stderr);
+    const l = brainKit(['lint', vault, '--base', 'all', '--json'], { env: testEnv(state) });
+    assert.equal(l.status, EXIT.OK, l.stdout + l.stderr);
+    const report = JSON.parse(l.stdout);
+    assert.deepEqual(report.findings, [], JSON.stringify(report.findings));
+    assert.deepEqual(report.counts, { error: 0, warn: 0, defect: 0, skipped: 0 });
+    assert.equal(report.scope.base, 'all');
+    assert.equal(report.scope.files, skeletonFiles(lang).filter((p) => p.endsWith('.md')).length, 'every note was read');
+  });
+}
+
+// --- the inside check, the privacy question, unreadable and closed ---------------
+
+test('isInside: the same path and a first segment starting with ".." are inside; a sibling and the parent are not', () => {
+  const vault = join(makeTempDir('brain-kit-inside-'), 'vault');
+  assert.equal(isInside(vault, vault), true);
+  assert.equal(isInside(join(vault, '..state'), vault), true);
+  assert.equal(isInside(join(vault, '..state', 'x'), vault), true);
+  assert.equal(isInside(join(dirname(vault), 'state'), vault), false);
+  assert.equal(isInside(dirname(vault), vault), false);
+});
+
+test('a state directory inside the vault whose name starts with ".." is refused', () => {
+  const { base, vault } = freshTarget();
+  const file = writeAnswers(base, ANSWERS.en);
+  const r = brainKit(['init', vault, '--from-answers', file], { env: testEnv(join(vault, '..state')) });
+  assertRefusedUntouched(r, [[vault, ['<absent>']]], /state directory/);
+});
+
+test('on a terminal, a garbled answer to the private-repository question is asked again, never read as yes', async () => {
+  const { vault, state } = freshTarget();
+  const stdin = fakeTty(['en', 'Ana Souza', 'asouza', 'Field Notes', '', 'maybe', 'n', 'UTC']);
+  const r = await initDirect([vault], { stdin, env: testEnv(state) });
+  assert.equal(r.code, EXIT.USAGE, 'the second answer, "n", decides: refused');
+  assert.equal(r.stdout.match(/Confirm it will be private/g).length, 2);
+  assert.match(r.stdout, /not a valid answer for "private"/);
+  assert.equal(existsSync(vault), false);
+});
+
+test('a target init cannot list is a translated refusal with exit 2', { skip: IS_ROOT && 'root ignores permissions' }, () => {
+  const { base, vault, state } = freshTarget();
+  mkdirSync(vault);
+  chmodSync(vault, 0o300);
+  try {
+    const file = writeAnswers(base, ANSWERS.en);
+    const r = brainKit(['init', vault, '--from-answers', file], { env: testEnv(state) });
+    assert.equal(r.status, EXIT.USAGE, r.stdout + r.stderr);
+    assert.match(r.stderr, /cannot be listed \(EACCES\)/);
+    assert.equal(existsSync(state), false);
+  } finally {
+    chmodSync(vault, 0o700);
+  }
+  assert.deepEqual(readdirSync(vault), []);
+});
+
+test('a genuinely closed stdin (descriptor 0 closed, not /dev/null) exits 2 at once, naming the first missing answer', () => {
+  const { vault, state } = freshTarget();
+  const started = Date.now();
+  const r = spawnSync('bash', ['-c', 'exec "$0" "$@" <&-', process.execPath, BIN, 'init', vault], {
+    encoding: 'utf8', env: testEnv(state), cwd: makeTempDir('brain-kit-init-cwd-'),
+  });
+  assert.equal(r.status, EXIT.USAGE, r.stdout + r.stderr);
+  assert.ok(Date.now() - started < 1500);
+  assert.match(r.stderr, /"lang"/);
+  assert.equal(existsSync(vault), false);
+});
+
+// --- the language, from one function for the CLI and the default --------------
+
+function localeEnv(state, vars) {
+  const env = testEnv(state);
+  for (const name of LANG_VARIABLES) delete env[name];
+  return { ...env, ...vars };
+}
+
+for (const [vars, lang] of [
+  [{ LANG: 'pt_BR.UTF-8' }, 'pt-BR'],
+  [{ LANG: 'en_US.UTF-8' }, 'en'],
+  [{ LC_ALL: 'C', LANG: 'pt_BR.UTF-8' }, 'en'],
+  [{ LC_MESSAGES: 'pt_PT.UTF-8', LANG: 'en_US.UTF-8' }, 'pt-BR'],
+  [{}, 'en'],
+]) {
+  test(`with ${JSON.stringify(vars)}, init --yes asks nothing in one language and defaults to another: both are ${lang}`, () => {
+    const { vault, state } = freshTarget();
+    const r = brainKit(['init', vault, '--yes'], { env: localeEnv(state, vars), stdio: ['ignore', 'pipe', 'pipe'] });
+    assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
+    assert.equal(readConfig(vault).lang, lang);
+    assert.match(r.stdout, lang === 'pt-BR' ? /^--yes: usando o padr/m : /^--yes: using every default/m);
+  });
+}
+
+test('the CLI\'s own messages follow the same resolution as init\'s default', () => {
+  const pt = brainKit(['nope'], { env: localeEnv('', { LANG: 'pt_BR.UTF-8' }) });
+  const en = brainKit(['nope'], { env: localeEnv('', { LC_ALL: 'POSIX', LANG: 'pt_BR.UTF-8' }) });
+  assert.equal(pt.status, EXIT.USAGE);
+  assert.equal(en.status, EXIT.USAGE);
+  assert.match(en.stderr, /unknown command/);
+  assert.doesNotMatch(pt.stderr, /unknown command/);
+  assert.match(pt.stderr, /^Uso: brain-kit/m, 'the Portuguese usage text');
+});
+
+// --- nested inside another repository ------------------------------------------
+
+test('an empty target inside another repository is accepted, with one line naming that repository', () => {
+  const { base, state } = freshTarget();
+  const outer = join(base, 'dotfiles');
+  assert.equal(spawnSync('git', ['init', '-q', outer]).status, 0);
+  const vault = join(outer, 'notes', 'vault');
+  const file = writeAnswers(base, ANSWERS.en);
+  const r = brainKit(['init', vault, '--from-answers', file], { env: testEnv(state) });
+  assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
+  const lines = r.stdout.split('\n').filter((line) => line.includes('nested inside another git repository'));
+  assert.equal(lines.length, 1);
+  assert.ok(lines[0].includes(realpathSync(outer)), lines[0]);
+
+  const alone = freshTarget();
+  const r2 = brainKit(['init', alone.vault, '--from-answers', writeAnswers(alone.base, ANSWERS.en)], { env: testEnv(alone.state) });
+  assert.equal(r2.status, EXIT.OK);
+  assert.doesNotMatch(r2.stdout, /nested inside another git repository/);
+});

@@ -83,6 +83,14 @@ test('every form of well-formed UTF-8 at its own edges decodes to its code point
 test('decoding never throws, keeps ASCII as ASCII, and never produces a replacement character, on arbitrary bytes', () => {
   for (let i = 0; i < 300; i += 1) {
     const input = randomBytes(1 + (i % 97));
+    // EF BF BD is the well-formed UTF-8 encoding of U+FFFD itself, which
+    // decodes, correctly, to U+FFFD: random bytes produce it about once
+    // in every sixteen million three-byte windows, and the suite flaked on
+    // it. Rewritten to EF BF BC (U+FFFC), so this test only ever asks the
+    // question it names: whether decoding INVENTS a replacement character.
+    for (let k = 0; k + 2 < input.length; k += 1) {
+      if (input[k] === 0xef && input[k + 1] === 0xbf && input[k + 2] === 0xbd) input[k + 2] = 0xbc;
+    }
     const decoded = decodeBytes(input);
     assert.ok(!decoded.includes('\uFFFD'));
     for (let at = 0; at < input.length; at += 1) {
@@ -91,6 +99,10 @@ test('decoding never throws, keeps ASCII as ASCII, and never produces a replacem
       }
     }
   }
+});
+
+test('the encoded replacement character itself decodes to U+FFFD, which is why the random test above rewrites it', () => {
+  assert.equal(decodeBytes(Buffer.from([0x41, 0xef, 0xbf, 0xbd])), 'A' + String.fromCharCode(0xfffd));
 });
 
 test('a Uint8Array decodes exactly like the Buffer holding the same bytes', () => {

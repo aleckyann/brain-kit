@@ -1,7 +1,7 @@
 import { mkdirSync, chmodSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, isAbsolute, join, resolve } from 'node:path';
 
 // Names of every file (or, for LOG_DIR, directory) later slices write inside
 // a vault's state directory. Declared here, in the one module that resolves
@@ -36,8 +36,13 @@ export const STATE_FILES = Object.freeze({
   QUESTIONS_LOG: 'questions.log',
 });
 
+// A relative XDG_STATE_HOME is ignored, as the XDG Base Directory
+// specification requires: resolved against whatever directory a command
+// happens to run from, it would put one vault's state in a different
+// place for every working directory.
 function stateHome(env) {
-  return env.XDG_STATE_HOME || join(homedir(), '.local', 'state');
+  const configured = env.XDG_STATE_HOME;
+  return configured && isAbsolute(configured) ? configured : join(homedir(), '.local', 'state');
 }
 
 // Short, stable hash of the vault's absolute path. Used as a disambiguator

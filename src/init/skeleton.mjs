@@ -1,12 +1,12 @@
 import {
-  chmodSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync,
+  chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { KIT_ROOT } from '../version.mjs';
 import { CONFIG_FILENAME } from '../config.mjs';
 import { findVaultRoot } from '../vault.mjs';
 import { splitFrontmatter, readMapping } from '../frontmatter.mjs';
-import { MANIFEST_PATH, sha256Of, writeManifest } from '../manifest.mjs';
+import { MANIFEST_PATH, serializeManifest, sha256Of } from '../manifest.mjs';
 
 // Everything `init` does to the filesystem inside the target directory:
 // the checks that must all pass before a single byte is written
@@ -16,10 +16,11 @@ import { MANIFEST_PATH, sha256Of, writeManifest } from '../manifest.mjs';
 // writes would leave half a vault in a person's directory, so every
 // precondition is decided by inspectTarget first, which only reads, and
 // writeVault is called only once all of them have passed. writeVault
-// also creates every file exclusively ('wx', COPYFILE_EXCL), so even a
-// directory filled in the window between the check and the write (a
-// person typing answers while something else writes there) makes it
-// fail on the first existing file rather than replace it.
+// also creates every file exclusively ('wx'), so even a directory filled
+// in the window between the check and the write (a person typing answers
+// while something else writes there) makes it fail on the first existing
+// file rather than replace it; and it records everything it creates in a
+// ledger, so a failure after the first write is undone exactly.
 
 export const HOOK_PATH = '.githooks/pre-push';
 export const TEMPLATE_HOOK = join(KIT_ROOT, 'templates', 'githooks', 'pre-push');
@@ -62,7 +63,7 @@ function present(path) {
 // The nearest ancestor of `dir` (itself included) that is present, so a
 // target that does not exist yet can still be checked for sitting inside
 // a vault, or under a path component that is a file or a dangling link.
-function nearestExisting(dir) {
+export function nearestExisting(dir) {
   let current = dir;
   while (!present(current)) {
     const parent = dirname(current);
@@ -100,7 +101,14 @@ export function inspectTarget(target) {
   if (existing !== dir) return null; // does not exist yet: nothing in it to overwrite
 
   if (existsSync(join(dir, '.git'))) return { key: 'already_repository', params: { dir } };
-  const entries = readdirSync(dir);
+  // A directory init cannot list is a directory whose contents it cannot
+  // promise not to overwrite.
+  let entries;
+  try {
+    entries = readdirSync(dir);
+  } catch (error) {
+    return { key: 'unreadable', params: { dir, detail: error.code ?? error.message } };
+  }
   if (entries.length > 0) return { key: 'not_empty', params: { dir, count: entries.length } };
   return null;
 }
@@ -129,13 +137,63 @@ export function stampGenerated(text, stamp) {
   return result;
 }
 
+// --- the ledger: what this run created, so a failure can undo it exactly ---
+//
+// Every directory and file init creates is recorded the moment it exists,
+// in order. The target was checked empty or absent twice, so everything
+// under it that is in the ledger is init's own, and removing the ledger
+// in reverse leaves the target exactly as it was found (and gone again,
+// with any parents init made, when it did not exist). A file is recorded
+// AFTER its exclusive open succeeds, so one that already existed (EEXIST)
+// is never recorded and never removed, and BEFORE a byte is written, so
+// a write that fails halfway (a full disk) is still removed.
+
+// Creates `dir` and any missing parents, recording the topmost directory
+// it created, if any.
+export function makeDirs(ledger, dir) {
+  const first = mkdirSync(dir, { recursive: true });
+  if (first !== undefined) ledger.push({ path: first, kind: 'tree' });
+}
+
+// Creates `path` exclusively, records it, then writes all of `bytes`
+// into it. writeSync may write fewer bytes than asked and return without
+// an error (a file-size limit, a disk filling up), so it is called until
+// every byte is down; the call after a short write is the one that
+// throws, and a truncated file is never left looking finished.
+export function writeNew(ledger, path, bytes, mode = 0o666) {
+  makeDirs(ledger, dirname(path));
+  const buffer = typeof bytes === 'string' ? Buffer.from(bytes, 'utf8') : bytes;
+  const fd = openSync(path, 'wx', mode);
+  ledger.push({ path, kind: 'file' });
+  try {
+    let offset = 0;
+    while (offset < buffer.length) offset += writeSync(fd, buffer, offset, buffer.length - offset);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// Removes the ledger in reverse. Returns the paths it could not remove,
+// empty when the undo was exact. A path already gone is not a failure.
+export function rollback(ledger) {
+  const left = [];
+  for (const { path, kind } of [...ledger].reverse()) {
+    try {
+      rmSync(path, { recursive: kind === 'tree', force: false });
+    } catch (error) {
+      if (error.code !== 'ENOENT') left.push(path);
+    }
+  }
+  return left;
+}
+
 // Writes the vault into `target`, which inspectTarget has already
-// accepted. `files` maps each vault-relative path init writes beyond the
-// skeleton (the configuration and .gitignore) to its text. Every byte is
-// prepared in memory first, stamping included, so a skeleton this
-// function cannot stamp throws before anything reaches the disk. Returns
-// the manifest it wrote.
-export function writeVault(target, { lang, stamp, files }) {
+// accepted, recording everything it creates in `ledger`. `files` maps
+// each vault-relative path init writes beyond the skeleton (the
+// configuration and .gitignore) to its text. Every byte is prepared in
+// memory first, stamping included, so a skeleton this function cannot
+// stamp throws before anything reaches the disk. Returns the manifest.
+export function writeVault(target, { lang, stamp, files, ledger = [] }) {
   const skeleton = listSkeleton(lang);
   for (const rel of ROOT_CONTRACT_FILES) {
     if (!skeleton.includes(rel)) throw new Error(`the ${lang} skeleton has no ${rel}`);
@@ -147,32 +205,25 @@ export function writeVault(target, { lang, stamp, files }) {
   });
   const hookBytes = readFileSync(TEMPLATE_HOOK);
 
-  mkdirSync(target, { recursive: true });
-  const writeNew = (rel, bytes) => {
-    const abs = join(target, rel);
-    mkdirSync(dirname(abs), { recursive: true });
-    writeFileSync(abs, bytes, { flag: 'wx' });
-  };
+  makeDirs(ledger, target);
   const entries = [];
   for (const { rel, bytes, class: cls } of prepared) {
-    writeNew(rel, bytes);
+    writeNew(ledger, join(target, rel), bytes);
     entries.push({ path: rel, sha256: sha256Of(bytes), class: cls });
   }
-  for (const [rel, text] of Object.entries(files)) writeNew(rel, text);
+  for (const [rel, text] of Object.entries(files)) writeNew(ledger, join(target, rel), text);
 
-  // The hook is copied byte for byte, then made executable; its hash is
-  // of the bytes that landed, not of the template read a moment earlier.
+  // The hook: the template's bytes, created with the ordinary file mode
+  // and then made executable here, so whether the hook runs never depends
+  // on the mode the template happened to have in a checkout or a package
+  // (git skips a hook without the execute bit, with only a hint).
   const hook = join(target, HOOK_PATH);
-  mkdirSync(dirname(hook), { recursive: true });
-  copyFileSync(TEMPLATE_HOOK, hook, constants.COPYFILE_EXCL);
+  writeNew(ledger, hook, hookBytes);
   chmodSync(hook, 0o755);
-  const landed = readFileSync(hook);
-  if (!landed.equals(hookBytes)) throw new Error(`${HOOK_PATH} changed while init was copying it`);
-  entries.push({ path: HOOK_PATH, sha256: sha256Of(landed), class: 'managed' });
+  entries.push({ path: HOOK_PATH, sha256: sha256Of(readFileSync(hook)), class: 'managed' });
 
-  if (existsSync(join(target, MANIFEST_PATH))) throw new Error(`${MANIFEST_PATH} appeared while init was writing`);
   const manifest = { files: entries };
-  writeManifest(target, manifest);
+  writeNew(ledger, join(target, MANIFEST_PATH), serializeManifest(manifest));
   return manifest;
 }
 

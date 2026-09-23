@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve, basename } from 'node:path';
 import { EXIT } from '../exit-codes.mjs';
 import { kitVersion, KIT_ROOT } from '../version.mjs';
@@ -10,7 +10,9 @@ import { completeDefaults } from '../init/config.mjs';
 import {
   ANSWER_KEYS, QUESTIONS, askInteractively, defaultAnswers, defaultLang, describeAnswer, invalidAnswer, readAnswersFile, resolveClaudeBin,
 } from '../init/answers.mjs';
-import { GITIGNORE_PATH, inspectTarget, isInside, isoStamp, writeVault } from '../init/skeleton.mjs';
+import {
+  GITIGNORE_PATH, inspectTarget, isInside, isoStamp, makeDirs, nearestExisting, rollback, writeNew, writeVault,
+} from '../init/skeleton.mjs';
 import { runValidate } from './validate.mjs';
 import { runLint } from './lint.mjs';
 
@@ -34,11 +36,19 @@ import { runLint } from './lint.mjs';
 // questions takes long enough for something else to write there.
 //
 // It never commits unless the answers say `"commit": true`: the first
-// commit of a vault is its owner's, made when they have looked at it.
+// commit of a vault is its owner's, made when they have looked at it; and
+// even then only once validate and lint have both passed.
+//
+// A failure after the first write (a git that fails, a disk that fills)
+// removes everything the run created, exactly, since the target was
+// empty or absent: a half vault would be refused by the next init as
+// "already a vault", with nothing able to finish it.
 //
 // `deps` is not part of the CLI surface: src/cli.mjs supplies walkVault,
-// and tests may supply `env`, `now` and `checks` (the validate and lint
-// runs) to reach the exit-code logic without a real vault failing.
+// and tests may supply `env`, `now`, `cwd` (so no test ever resolves a
+// path against the directory the suite runs from) and `checks` (the
+// validate and lint runs) to reach the exit-code logic without a real
+// vault failing.
 
 const USAGE_FLAGS_WITH_VALUE = Object.freeze(['--lang', '--from-answers']);
 
@@ -105,13 +115,14 @@ function canonicalOf(target) {
 }
 
 function refuseTarget(io, t, refusal) {
-  const { dir, vault, count } = refusal.params;
+  const { dir, vault, count, detail } = refusal.params;
   let line;
   switch (refusal.key) {
     case 'not_a_directory': line = t('init.not_a_directory', { dir }); break;
     case 'inside_vault': line = t('init.inside_vault', { dir, vault }); break;
     case 'already_vault': line = t('init.already_vault', { dir }); break;
     case 'already_repository': line = t('init.already_repository', { dir }); break;
+    case 'unreadable': line = t('init.unreadable', { dir, detail }); break;
     default: line = t('init.not_empty', { dir, count }); break;
   }
   io.stderr.write(`${line}\n`);
@@ -143,19 +154,19 @@ function refuseAnswer(io, t, key, value) {
   return EXIT.USAGE;
 }
 
-function gitignoreText(vt) {
+function gitignoreText(t) {
   return [
-    `# ${vt('init.gitignore_header')}`,
+    `# ${t('init.gitignore_header')}`,
     '',
-    `# ${vt('init.gitignore_dependencies')}`,
+    `# ${t('init.gitignore_dependencies')}`,
     'node_modules/',
     '',
-    `# ${vt('init.gitignore_environment')}`,
+    `# ${t('init.gitignore_environment')}`,
     '.env',
     '.env.*',
     '!.env.example',
     '',
-    `# ${vt('init.gitignore_system')}`,
+    `# ${t('init.gitignore_system')}`,
     '.DS_Store',
     'Thumbs.db',
     '*.swp',
@@ -197,7 +208,9 @@ function refuseLocations(io, t, target, stateDir, machinePath) {
   return null;
 }
 
-export async function runInit(argv, io, t, { walkVault, env = process.env, now = () => new Date(), checks = null } = {}) {
+export async function runInit(argv, io, t, {
+  walkVault, env = process.env, now = () => new Date(), checks = null, cwd = process.cwd(),
+} = {}) {
   const parsed = parseArgs(argv);
   if (parsed.missingValue) {
     io.stderr.write(`${t('init.missing_value', { flag: parsed.missingValue })}\n`);
@@ -222,7 +235,7 @@ export async function runInit(argv, io, t, { walkVault, env = process.env, now =
   // directory is even looked at.
   let fileAnswers = {};
   if (parsed.answersFile !== undefined) {
-    const file = resolve(parsed.answersFile);
+    const file = resolve(cwd, parsed.answersFile);
     const read = readAnswersFile(file);
     if (read.error) {
       const { kind, detail, key } = read.error;
@@ -244,7 +257,7 @@ export async function runInit(argv, io, t, { walkVault, env = process.env, now =
     }
   }
 
-  const target = canonicalOf(resolve(parsed.dir ?? process.cwd()));
+  const target = canonicalOf(resolve(cwd, parsed.dir ?? '.'));
   const stateDir = resolve(stateDirFor(target, env));
   const machinePath = join(stateDir, MACHINE_FILENAME);
   const first = refuseLocations(io, t, target, stateDir, machinePath);
@@ -279,7 +292,7 @@ export async function runInit(argv, io, t, { walkVault, env = process.env, now =
   if (missing !== undefined) {
     if (io.stdin?.isTTY !== true) {
       if (parsed.answersFile !== undefined) {
-        io.stderr.write(`${t('init.answers_missing', { file: resolve(parsed.answersFile), answer: missing })}\n`);
+        io.stderr.write(`${t('init.answers_missing', { file: resolve(cwd, parsed.answersFile), answer: missing })}\n`);
       } else {
         io.stderr.write(`${t('init.missing_answer', { answer: missing })}\n`);
       }
@@ -298,75 +311,116 @@ export async function runInit(argv, io, t, { walkVault, env = process.env, now =
     if (invalidAnswer(key, answers[key]) !== null) return refuseAnswer(io, translatorFor(io, answers.lang), key, answers[key]);
   }
 
-  const vt = translatorFor(io, answers.lang);
+  // From here on every sentence is in the vault's own language.
+  t = translatorFor(io, answers.lang);
   const config = completeDefaults(readDefaults(answers.lang), answers, { kitVersion: kitVersion() });
   const configErrors = validateConfig(config);
   if (configErrors.length > 0) {
-    io.stderr.write(`${vt('init.config_invalid', { errors: configErrors })}\n`);
+    io.stderr.write(`${t('init.config_invalid', { errors: configErrors })}\n`);
     return EXIT.FAILURE;
   }
   const machine = buildMachine(target, stateDir, env);
   const machineErrors = validateMachine(machine);
   if (machineErrors.length > 0) {
-    io.stderr.write(`${vt('init.machine_invalid', { errors: machineErrors })}\n`);
+    io.stderr.write(`${t('init.machine_invalid', { errors: machineErrors })}\n`);
     return EXIT.FAILURE;
   }
 
   // Second pass, just before writing: see the header.
-  const second = refuseLocations(io, vt, target, stateDir, machinePath);
+  const second = refuseLocations(io, t, target, stateDir, machinePath);
   if (second !== null) return second;
 
-  // --- from here on, init writes ---------------------------------------------
-  const manifest = writeVault(target, {
-    lang: answers.lang,
-    stamp: isoStamp(now()),
-    files: {
-      [CONFIG_FILENAME]: `${JSON.stringify(config, null, 2)}\n`,
-      [GITIGNORE_PATH]: gitignoreText(vt),
-    },
-  });
+  // Nested inside another repository is allowed (an empty directory in a
+  // dotfiles home, say): `git add -A` in the outer one records the vault
+  // as one gitlink, never its files. It is said, not refused.
+  const outer = run('git', ['rev-parse', '--show-toplevel'], { cwd: nearestExisting(target) });
+  const outerRoot = outer.status === 0 ? outer.stdout.trim() : '';
 
-  for (const [step, args] of [['git init', ['init', '-q']], ['git config core.hooksPath', ['config', 'core.hooksPath', '.githooks']]]) {
-    const result = run('git', args, { cwd: target });
-    if (result.status !== 0) {
-      io.stderr.write(`${vt('init.git_failed', { step, detail: result.stderr.trim() })}\n`);
-      return EXIT.FAILURE;
-    }
+  // --- from here on, init writes ---------------------------------------------
+  //
+  // The state directory and machine.json come first, before a byte of the
+  // vault: an unwritable state home (a ~/.local/state an earlier sudo run
+  // created) is the one precondition that cannot be proved by reading, so
+  // it is proved by writing, where undoing it touches nothing of the
+  // person's. Everything after that is recorded in the ledger, and any
+  // failure until the repository is set up removes all of it.
+  const ledger = [];
+  try {
+    makeDirs(ledger, stateDir);
+    ensureStateDir(stateDir);
+    writeNew(ledger, machinePath, `${JSON.stringify(machine, null, 2)}\n`, 0o600);
+    chmodSync(machinePath, 0o600);
+  } catch (error) {
+    return undo(io, t, ledger, t('init.state_unwritable', { state: stateDir, detail: error.message }), target);
   }
 
-  ensureStateDir(stateDir);
-  writeFileSync(machinePath, `${JSON.stringify(machine, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
-  chmodSync(machinePath, 0o600);
+  let manifest;
+  try {
+    manifest = writeVault(target, {
+      lang: answers.lang,
+      stamp: isoStamp(now()),
+      ledger,
+      files: {
+        [CONFIG_FILENAME]: `${JSON.stringify(config, null, 2)}\n`,
+        [GITIGNORE_PATH]: gitignoreText(t),
+      },
+    });
+    // .git is recorded before git runs, so a git that fails halfway
+    // through creating it is undone too; it did not exist (checked twice).
+    ledger.push({ path: join(target, '.git'), kind: 'tree' });
+    for (const [step, args] of [['git init', ['init', '-q']], ['git config core.hooksPath', ['config', 'core.hooksPath', '.githooks']]]) {
+      const result = run('git', args, { cwd: target });
+      if (result.status !== 0) throw new Error(t('init.git_failed', { step, detail: result.stderr.trim() }));
+    }
+  } catch (error) {
+    return undo(io, t, ledger, error.message, target);
+  }
 
   if (defaulted.length > 0) {
-    io.stdout.write(`${vt('init.using_defaults')}\n`);
-    for (const key of defaulted) io.stdout.write(`  ${key}: ${describeAnswer(vt, answers[key])}\n`);
+    io.stdout.write(`${t('init.using_defaults')}\n`);
+    for (const key of defaulted) io.stdout.write(`  ${key}: ${describeAnswer(t, answers[key])}\n`);
   }
-  io.stdout.write(`${vt('init.created', { dir: target, count: manifest.files.length })}\n`);
-  io.stdout.write(`${vt('init.state_written', { file: machinePath })}\n`);
+  io.stdout.write(`${t('init.created', { dir: target, count: manifest.files.length })}\n`);
+  if (outerRoot !== '') io.stdout.write(`${t('init.nested_repository', { root: outerRoot })}\n`);
+  io.stdout.write(`${t('init.state_written', { file: machinePath })}\n`);
 
-  let code = EXIT.OK;
-  if (answers.commit === true) {
-    const added = run('git', ['add', '-A'], { cwd: target });
-    const committed = added.status === 0 ? run('git', ['commit', '-q', '-m', vt('init.commit_message')], { cwd: target }) : added;
-    if (committed.status !== 0) {
-      io.stderr.write(`${vt('init.commit_failed', { detail: committed.stderr.trim() })}\n`);
-      code = EXIT.DEGRADED;
-    } else {
-      io.stdout.write(`${vt('init.committed')}\n`);
-    }
-  } else {
-    io.stdout.write(`${vt('init.no_commit')}\n`);
-  }
-
-  io.stdout.write(`${vt('init.checking')}\n`);
+  io.stdout.write(`${t('init.checking')}\n`);
   const runChecks = checks ?? {
     validate: (args, cio, ct) => runValidate(args, cio, ct, walkVault),
     lint: (args, cio, ct) => runLint(args, cio, ct, walkVault),
   };
-  const validated = await runChecks.validate([target], io, vt);
-  const linted = await runChecks.lint([target, '--base', 'all'], io, vt);
-  return worseExit(code, worseExit(validated, linted));
+  const validated = await runChecks.validate([target], io, t);
+  const linted = await runChecks.lint([target, '--base', 'all'], io, t);
+  const checked = worseExit(validated, linted);
+
+  // The first commit, when asked for, only over a vault both checks
+  // passed: a credential-shaped answer must never reach history, even a
+  // history no one has pushed yet.
+  let code = EXIT.OK;
+  if (answers.commit !== true) {
+    io.stdout.write(`${t('init.no_commit')}\n`);
+  } else if (checked !== EXIT.OK) {
+    io.stderr.write(`${t('init.commit_skipped')}\n`);
+  } else {
+    const added = run('git', ['add', '-A'], { cwd: target });
+    const committed = added.status === 0 ? run('git', ['commit', '-q', '-m', t('init.commit_message')], { cwd: target }) : added;
+    if (committed.status !== 0) {
+      io.stderr.write(`${t('init.commit_failed', { detail: committed.stderr.trim() })}\n`);
+      code = EXIT.DEGRADED;
+    } else {
+      io.stdout.write(`${t('init.committed')}\n`);
+    }
+  }
+  return worseExit(code, checked);
+}
+
+// A failure after the first write: remove everything this run created,
+// and say whether that worked, naming what is left when it did not.
+function undo(io, t, ledger, detail, target) {
+  const left = rollback(ledger);
+  if (left.length === 0) io.stderr.write(`${t('init.rolled_back', { detail, dir: target })}\n`);
+  else io.stderr.write(`${t('init.rollback_incomplete', { detail, left })}\n`);
+  return EXIT.FAILURE;
 }
 
 function translatorFor(io, lang) {

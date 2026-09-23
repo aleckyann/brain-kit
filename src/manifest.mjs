@@ -105,10 +105,18 @@ export function readManifest(root) {
   return manifest;
 }
 
-export function writeManifest(root, manifest) {
+// The manifest's text, after the same check readManifest applies, so a
+// caller that writes the file itself (init, creating every file
+// exclusively) still never writes one this module would refuse to read.
+export function serializeManifest(manifest) {
   const errors = manifestErrors(manifest);
   if (errors.length > 0) throw new ManifestError(`Refusing to write an invalid manifest:\n  ${errors.join('\n  ')}`);
+  return `${JSON.stringify(manifest, null, 2)}\n`;
+}
+
+export function writeManifest(root, manifest) {
+  const text = serializeManifest(manifest);
   const file = join(root, MANIFEST_PATH);
   mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`);
+  writeFileSync(file, text);
 }

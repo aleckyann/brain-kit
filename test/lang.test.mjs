@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { KIT_ROOT, kitVersion } from '../src/version.mjs';
-import { createTranslator, loadMessages, interpolate, REFERENCE_LANG, SUPPORTED_LANGS } from '../src/lang.mjs';
+import { createTranslator, loadMessages, interpolate, LANG_VARIABLES, REFERENCE_LANG, SUPPORTED_LANGS, resolveLang } from '../src/lang.mjs';
 
 const pkg = JSON.parse(readFileSync(join(KIT_ROOT, 'package.json'), 'utf8'));
 
@@ -250,4 +250,24 @@ test('every note of the reference skeleton has its counterpart in each language,
       assert.equal(fileShape(read(lang, translated[index])), fileShape(read(REFERENCE_LANG, file)), `${lang} ${translated[index]} differs in shape from ${REFERENCE_LANG} ${file}`);
     });
   }
+});
+
+test('resolveLang: BRAIN_KIT_LANG, then LC_ALL, then LC_MESSAGES, then LANG; pt gives pt-BR, C, POSIX and the rest give English', () => {
+  const cases = [
+    [{ BRAIN_KIT_LANG: 'en', LC_ALL: 'pt_BR.UTF-8', LANG: 'pt_BR.UTF-8' }, 'en'],
+    [{ BRAIN_KIT_LANG: 'pt-BR', LC_ALL: 'C' }, 'pt-BR'],
+    [{ LC_ALL: 'pt_BR.UTF-8', LC_MESSAGES: 'en_US.UTF-8', LANG: 'en_US.UTF-8' }, 'pt-BR'],
+    [{ LC_ALL: 'C', LANG: 'pt_BR.UTF-8' }, 'en'],
+    [{ LC_ALL: 'POSIX', LANG: 'pt_BR.UTF-8' }, 'en'],
+    [{ LC_MESSAGES: 'pt_PT.UTF-8', LANG: 'en_US.UTF-8' }, 'pt-BR'],
+    [{ LC_MESSAGES: 'C.UTF-8', LANG: 'pt_BR.UTF-8' }, 'en'],
+    [{ LANG: 'pt_BR.UTF-8' }, 'pt-BR'],
+    [{ LANG: 'PT_BR' }, 'pt-BR'],
+    [{ LANG: 'en_GB.UTF-8' }, 'en'],
+    [{ LANG: 'fr_FR.UTF-8' }, 'en'],
+    [{ BRAIN_KIT_LANG: '', LC_ALL: '', LC_MESSAGES: '', LANG: 'pt_BR.UTF-8' }, 'pt-BR'],
+    [{}, 'en'],
+  ];
+  for (const [env, expected] of cases) assert.equal(resolveLang(env), expected, JSON.stringify(env));
+  assert.deepEqual(LANG_VARIABLES, ['BRAIN_KIT_LANG', 'LC_ALL', 'LC_MESSAGES', 'LANG']);
 });

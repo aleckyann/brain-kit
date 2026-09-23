@@ -2,7 +2,7 @@ import { accessSync, constants, readFileSync, statSync } from 'node:fs';
 import { delimiter, isAbsolute, join } from 'node:path';
 import { userInfo } from 'node:os';
 import { createInterface } from 'node:readline';
-import { REFERENCE_LANG, SUPPORTED_LANGS } from '../lang.mjs';
+import { SUPPORTED_LANGS, resolveLang } from '../lang.mjs';
 
 // The answers `init` needs from a person, where they come from, and what
 // each one may be.
@@ -89,11 +89,10 @@ export function toHandle(text) {
 }
 
 // The language a vault defaults to: the one this CLI is already speaking
-// (BRAIN_KIT_LANG, falling back to the reference pack exactly as
-// src/cli.mjs's own translator does), so the default is never a language
-// the person was not already reading.
+// (resolveLang in src/lang.mjs, the same function src/cli.mjs builds its
+// translator from), so the questions and the default never disagree.
 export function defaultLang(env) {
-  return SUPPORTED_LANGS.includes(env.BRAIN_KIT_LANG) ? env.BRAIN_KIT_LANG : REFERENCE_LANG;
+  return resolveLang(env);
 }
 
 // Every default, for one language. `title` needs that language's pack.

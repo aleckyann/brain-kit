@@ -7,6 +7,24 @@ import { KIT_ROOT } from './version.mjs';
 export const REFERENCE_LANG = 'pt-BR';
 export const SUPPORTED_LANGS = Object.freeze(['pt-BR', 'en']);
 
+// The language a person is reading, decided once for the whole CLI, so
+// every sentence it prints and every default it offers agree: the first
+// of BRAIN_KIT_LANG, LC_ALL, LC_MESSAGES and LANG that is set decides
+// (POSIX's own order for message language, with this tool's variable in
+// front). A value starting with "pt" is Portuguese; anything else, "C"
+// and "POSIX" included, and nothing set at all, is English, the pack
+// every language falls back to for a person who reads neither.
+export const LANG_VARIABLES = Object.freeze(['BRAIN_KIT_LANG', 'LC_ALL', 'LC_MESSAGES', 'LANG']);
+
+export function resolveLang(env = process.env) {
+  for (const name of LANG_VARIABLES) {
+    const value = env[name];
+    if (typeof value !== 'string' || value === '') continue;
+    return value.toLowerCase().startsWith('pt') ? 'pt-BR' : 'en';
+  }
+  return 'en';
+}
+
 const cache = new Map();
 
 export function loadMessages(lang) {

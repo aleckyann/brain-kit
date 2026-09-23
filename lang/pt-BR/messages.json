@@ -213,7 +213,7 @@
   "init.stdin_ended": "brain-kit init: a entrada terminou antes da resposta para \"{answer}\". Nada foi escrito.",
   "init.config_invalid": "brain-kit init: a configuração montada com essas respostas não é válida, o que é um defeito do brain-kit: {errors}. Nada foi escrito.",
   "init.machine_invalid": "brain-kit init: o arquivo de máquina montado para este vault não é válido, o que é um defeito do brain-kit: {errors}. Nada foi escrito.",
-  "init.git_failed": "brain-kit init: {step} falhou: {detail}",
+  "init.git_failed": "{step} falhou: {detail}",
   "init.using_defaults": "--yes: usando o padrão para todas as respostas não dadas:",
   "init.created": "Vault criado em {dir} ({count} arquivos registrados em .brain-kit/manifest.json).",
   "init.state_written": "As configurações desta máquina foram escritas em {file}, fora do vault.",
@@ -238,5 +238,11 @@
   "init.ask_title": "Título do vault [{value}]: ",
   "init.ask_repo": "Repositório no GitHub como dono/nome, ou em branco para ainda não [{value}]: ",
   "init.ask_private": "O repositório precisa ser privado: pessoas/ e os outros diretórios pessoais guardam dados de terceiros. Confirme que ele será privado (s/n) [{value}]: ",
-  "init.ask_timezone": "Fuso horário [{value}]: "
+  "init.ask_timezone": "Fuso horário [{value}]: ",
+  "init.state_unwritable": "não foi possível criar o diretório de estado nem escrever o machine.json em {state} ({detail}); nada foi escrito no vault",
+  "init.rolled_back": "brain-kit init: {detail}. Tudo o que esta execução tinha criado foi removido, então {dir} está como estava antes. Corrija a causa e rode o init de novo.",
+  "init.rollback_incomplete": "brain-kit init: {detail}. A remoção do que esta execução tinha criado falhou para: {left}. Remova isso á mão antes de rodar o init de novo.",
+  "init.commit_skipped": "O primeiro commit não foi feito, porque o validate ou o lint encontrou um problema acima. Corrija e depois faça o commit com git add -A e git commit.",
+  "init.nested_repository": "Aviso: este vault está dentro de outro repositório git, {root}. Aquele repositório registra o vault como uma entrada só, nunca os arquivos dele.",
+  "init.unreadable": "brain-kit init: não foi possível listar {dir} ({detail}), então o init não pode garantir que nada ali seria sobrescrito. Nada foi escrito."
 }

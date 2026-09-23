@@ -85,3 +85,10 @@ test('STATE_FILES names every file the later slices will write, and nothing coll
 test('STATE_FILES is frozen so no other module can invent or rename an entry', () => {
   assert.ok(Object.isFrozen(STATE_FILES));
 });
+
+test('a relative XDG_STATE_HOME is ignored, as the XDG specification says, and the default is used', () => {
+  const vault = makeTempDir('brain-kit-relxdg-');
+  const dir = stateDirFor(vault, { XDG_STATE_HOME: 'relative/state' });
+  assert.ok(dir.startsWith(join(homedir(), '.local', 'state', 'brain-kit')), dir);
+  assert.equal(dir.includes('relative'), false);
+});

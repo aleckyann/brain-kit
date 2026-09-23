@@ -213,7 +213,7 @@
   "init.stdin_ended": "brain-kit init: input ended before \"{answer}\" was answered. Nothing was written.",
   "init.config_invalid": "brain-kit init: the configuration built from these answers is not valid, which is a defect in brain-kit: {errors}. Nothing was written.",
   "init.machine_invalid": "brain-kit init: the machine file built for this vault is not valid, which is a defect in brain-kit: {errors}. Nothing was written.",
-  "init.git_failed": "brain-kit init: {step} failed: {detail}",
+  "init.git_failed": "{step} failed: {detail}",
   "init.using_defaults": "--yes: using every default for the answers not given:",
   "init.created": "Created the vault in {dir} ({count} files recorded in .brain-kit/manifest.json).",
   "init.state_written": "Wrote this machine's settings to {file}, outside the vault.",
@@ -238,5 +238,11 @@
   "init.ask_title": "Vault title [{value}]: ",
   "init.ask_repo": "GitHub repository as owner/name, or blank for not yet [{value}]: ",
   "init.ask_private": "The repository must be private: people/ and other personal directories hold data about third parties. Confirm it will be private (y/n) [{value}]: ",
-  "init.ask_timezone": "Time zone [{value}]: "
+  "init.ask_timezone": "Time zone [{value}]: ",
+  "init.state_unwritable": "cannot create the state directory or write machine.json in {state} ({detail}); nothing was written into the vault",
+  "init.rolled_back": "brain-kit init: {detail}. Everything this run had created was removed, so {dir} is as it was before. Fix the cause and run init again.",
+  "init.rollback_incomplete": "brain-kit init: {detail}. Removing what this run had created failed for: {left}. Remove those by hand before running init again.",
+  "init.commit_skipped": "The first commit was not made, because validate or lint found a problem above. Fix it, then commit with git add -A and git commit.",
+  "init.nested_repository": "Note: this vault is nested inside another git repository, {root}. That repository records the vault as one entry, never its files.",
+  "init.unreadable": "brain-kit init: {dir} cannot be listed ({detail}), so init cannot be sure nothing in it would be overwritten. Nothing was written."
 }

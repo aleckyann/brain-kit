@@ -1,6 +1,6 @@
 import { EXIT } from './exit-codes.mjs';
 import { kitVersion } from './version.mjs';
-import { createTranslator, REFERENCE_LANG } from './lang.mjs';
+import { createTranslator, resolveLang } from './lang.mjs';
 import { runHook } from './commands/hook.mjs';
 import { runValidate } from './commands/validate.mjs';
 import { runLint } from './commands/lint.mjs';
@@ -51,7 +51,7 @@ const BUILTIN_COMMANDS = new Map([
 ]);
 
 export async function main(argv, io, { commands = BUILTIN_COMMANDS } = {}) {
-  const t = createTranslator(process.env.BRAIN_KIT_LANG || REFERENCE_LANG, {
+  const t = createTranslator(resolveLang(process.env), {
     warn: (message) => io.stderr.write(`${message}\n`),
   });
   const [command, ...rest] = argv;
