@@ -163,6 +163,7 @@ function allSites() {
     ...extractRuleMessageSites(readSrc('src/rules/spec.mjs'), 'src/rules/spec.mjs'),
     ...extractRuleMessageSites(readSrc('src/rules/house.mjs'), 'src/rules/house.mjs'),
     ...extractRuleMessageSites(readSrc('src/rules/lint.mjs'), 'src/rules/lint.mjs'),
+    ...extractRuleMessageSites(readSrc('src/doctor/checks.mjs'), 'src/doctor/checks.mjs'),
   ];
   const direct = [
     ...extractTranslatorCallSites(readSrc('src/cli.mjs'), 'src/cli.mjs'),
@@ -172,6 +173,7 @@ function allSites() {
     ...extractTranslatorCallSites(readSrc('src/commands/push-gate.mjs'), 'src/commands/push-gate.mjs'),
     ...extractTranslatorCallSites(readSrc('src/commands/init.mjs'), 'src/commands/init.mjs'),
     ...extractTranslatorCallSites(readSrc('src/init/answers.mjs'), 'src/init/answers.mjs'),
+    ...extractTranslatorCallSites(readSrc('src/commands/doctor.mjs'), 'src/commands/doctor.mjs'),
   ];
   return [...rule, ...direct];
 }
