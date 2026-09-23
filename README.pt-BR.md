@@ -94,8 +94,8 @@ Existem dois gates de push, com alcances diferentes. O gate deste repositório v
 objeto que um push carrega contra uma lista pessoal de padrões mantida fora do repositório.
 O hook de template feito para um vault, em `templates/githooks/`, roda `validate` e `lint`
 sobre a árvore de trabalho e depois a mesma varredura de objetos sobre o que o push carrega,
-contra os padrões configurados do próprio vault, os da árvore de trabalho e os do branch
-padrão juntos. Nada o instala num vault ainda. O [SECURITY.md](SECURITY.md) lista o que os
+contra os padrões configurados do próprio vault, os da árvore de trabalho, os de cada ponta
+enviada e os do branch padrão juntos. Nada o instala num vault ainda. O [SECURITY.md](SECURITY.md) lista o que os
 gates não cobrem.
 
 ## Contribuindo

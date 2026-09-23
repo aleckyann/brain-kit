@@ -601,6 +601,26 @@ export async function runScanBlobs(argv, io, { metadataBatch = METADATA_BATCH } 
   return scanRecordStream(raw, { ...prepared, io, metadataBatch });
 }
 
+// A leading byte-order mark, which some editors write and JSON.parse
+// refuses. Built at runtime: this file stays ASCII.
+const BYTE_ORDER_MARK = String.fromCharCode(0xfeff);
+export function withoutByteOrderMark(text) {
+  return text.startsWith(BYTE_ORDER_MARK) ? text.slice(BYTE_ORDER_MARK.length) : text;
+}
+
+// Whether a blob, held as latin1 like every channel here, is a
+// configuration in shape: JSON whose top level is an object. Only such a
+// blob at the vault-root configuration path gets configContent's patterns.
+function parsesAsJsonObject(latin1Text) {
+  let parsed;
+  try {
+    parsed = JSON.parse(withoutByteOrderMark(decodeLatin1Text(latin1Text)));
+  } catch {
+    return false;
+  }
+  return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed);
+}
+
 // Parses and scans one record stream (see parseEntries for its framing),
 // held as latin1 text, one character per byte. Returns the exit code: OK
 // when every channel was read and nothing matched (an exempt identity
@@ -609,7 +629,10 @@ export async function runScanBlobs(argv, io, { metadataBatch = METADATA_BATCH } 
 //
 // `configContent`, when given, is { path, patterns }: the CONTENT of a
 // blob record whose path is exactly `path` (held as latin1, like every
-// path here) is read against `patterns` instead. It exists for one file,
+// path here), and which parses as a JSON object, is read against
+// `patterns` instead. A plain-text note saved under that name is an
+// ordinary file. A literal in another field of a real configuration, or
+// in its history, is left unrefused: the linter's trade-off, below. It exists for one file,
 // the adopting vault's own brain-kit.config.json at the vault root, which
 // DECLARES the vault's patterns: read against them, every literal pattern
 // matches its own declaration and every push that touches the
@@ -1004,7 +1027,10 @@ export function scanRecordStream(raw, { patterns, budgetMs, io, metadataBatch = 
       continue;
     }
 
-    const isConfig = configContent !== null && path === configContent.path;
+    // The exact path, byte for byte and case included: on a case-sensitive
+    // filesystem Brain-Kit.Config.json is another file, and a comparison
+    // that folds case exempts it.
+    const isConfig = configContent !== null && path === configContent.path && parsesAsJsonObject(blob.content);
     scan(blob.content, `${label} (CONTENT, at ${short})`, isConfig ? { against: configContent.patterns } : {});
   }
 

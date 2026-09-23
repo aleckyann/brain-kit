@@ -27,12 +27,16 @@
 #      and committer and its raw headers, every annotated tag, and the
 #      destination name of every reference it writes or deletes. The
 #      patterns are the generic credential shapes plus privacy.secret_patterns
-#      from TWO configurations, the working tree's and the one on the
-#      remote's default branch as this repository knows it
-#      (refs/remotes/<remote>/HEAD), because a pushed branch can delete a
-#      pattern from its own configuration and then violate it. The vault's
-#      own brain-kit.config.json is read for credential shapes only, since it
-#      declares the patterns and would match every one of them.
+#      from the working tree's configuration, from the configuration at
+#      every pushed tip, and from the one on the remote's default branch as
+#      this repository knows it (refs/remotes/<remote>/HEAD, else main, else
+#      master; on a push by url, those of every configured remote), because
+#      a pushed branch can delete a pattern from its own configuration and
+#      then violate it. The vault's own brain-kit.config.json, when it
+#      parses as a JSON object, is read for credential shapes only, since it
+#      declares the patterns and would match every one of them; a literal
+#      written into its other fields is therefore not refused, the same
+#      trade-off the linter makes.
 #   4. Refuses a push made under the vault's own automation identity
 #      (brain-kit.config.json's git.agent_identity) whose DESTINATION is
 #      the vault's default branch, whatever the ref being pushed from is
@@ -57,10 +61,15 @@
 #     name split across a line break, or written in decomposed Unicode (a
 #     letter followed by a combining accent) where the pattern has the
 #     letter precomposed. The maintainer's gate has the same limits.
-#   - A remote whose default branch this repository does not know (a
-#     remote added by hand and never fetched, or a push by url rather than
-#     by remote name) is scanned with the working tree's patterns alone.
-#     The gate says so on one line and names the command that fixes it.
+#   - The default branch is read from remote-tracking references this
+#     clone already holds, never asked of the remote. A clone holding none
+#     of refs/remotes/<remote>/HEAD, main or master for the remote pushed
+#     to (or, on a push by url, for any configured remote) is scanned with
+#     the working tree's and the pushed tips' patterns alone: a vault
+#     before its first push, or one whose default branch has another name
+#     and whose remote HEAD was never recorded (`git pull` does not record
+#     it, and neither does `git fetch` before git 2.48). The gate says so
+#     on one line and names a command that fixes it for that case.
 #   - `git push --no-verify` skips every step of this hook. So does a clone
 #     that never ran `git config core.hooksPath .githooks`, and so does a
 #     checked-out branch whose own .githooks/pre-push says something else:
@@ -266,8 +275,18 @@ fi
 # refuse: refusing every push an automation makes, including the ones to
 # its own branches, is how a vault learns to pass --no-verify, which would
 # turn this guard off permanently instead of for one push.
+#
+# The remedy it names has to work for the push at hand: `git remote
+# set-head` takes a remote's NAME, and on a push by url git hands this hook
+# the url, for which that command only fails. So a url gets the remedy
+# that does work: push by the remote's name.
 if [ "$guard_active" -eq 1 ] && [ -z "$DEFAULT_BRANCH" ]; then
-  echo "pre-push: WARNING: could not determine this vault's default branch (no $remote_shown/HEAD, no local main or master, no remote-tracking main or master), so the guard against an automated push to it is NOT running for this push. Set it with: git remote set-head $remote_shown --auto" >&2
+  if git remote | grep -qxF -- "$remote_name"; then
+    remedy="Set it with: git remote set-head $remote_shown --auto"
+  else
+    remedy="'$remote_shown' is not the name of a remote: push by the remote's name (git remote -v lists them), then set it with: git remote set-head <that name> --auto"
+  fi
+  echo "pre-push: WARNING: could not determine this vault's default branch (no $remote_shown/HEAD, no local main or master, no remote-tracking main or master), so the guard against an automated push to it is NOT running for this push. $remedy" >&2
 fi
 
 # The ref negotiation, from the scratch file it was read into above.

@@ -44,11 +44,11 @@ import { realpathSync } from 'node:fs';
 import { isAbsolute, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EXIT } from '../exit-codes.mjs';
-import { CONFIG_FILENAME, loadConfig } from '../config.mjs';
+import { CONFIG_FILENAME, loadConfig, validateConfig } from '../config.mjs';
 import { decodeBytes } from '../io.mjs';
 import { loadPatterns } from '../leak.mjs';
 import { findVaultRoot } from '../vault.mjs';
-import { parseEntries, perScanBudgetMs, preparePersonalScan, scanRecordStream } from './scan-blobs.mjs';
+import { parseEntries, perScanBudgetMs, preparePersonalScan, scanRecordStream, withoutByteOrderMark } from './scan-blobs.mjs';
 
 // The pattern lists this command knows how to load. `personal` is the
 // maintainer's own list outside any repository (src/leak.mjs,
@@ -231,7 +231,7 @@ export async function runPushGate(argv, io, t, { recordsScript = RECORDS_SCRIPT,
     prepared = preparePersonalScan(io, process.env);
     if (prepared === null) return EXIT.FAILURE;
   } else if (args.patterns === 'config') {
-    const outcome = prepareConfigScan(io, t, args.remoteName, process.env);
+    const outcome = prepareConfigScan(io, t, args.remoteName, input, process.env);
     if (outcome.exit !== undefined) return outcome.exit;
     prepared = outcome.prepared;
   } else {
@@ -246,75 +246,135 @@ export async function runPushGate(argv, io, t, { recordsScript = RECORDS_SCRIPT,
 
 // --- --patterns config ------------------------------------------------------
 //
-// WHICH CONFIGURATION SUPPLIES THE PATTERNS (ruled 22/09/2026, because a
-// branch can change it). The configuration is data, and a pushed branch can
-// delete a pattern from it and then violate that pattern in the same push.
-// So the set is the generic credential shapes plus the UNION of
-// privacy.secret_patterns from two configurations: the working tree's,
-// which is what is about to be committed, and the one on the remote's
-// default branch as this repository knows it (refs/remotes/<remote>/HEAD,
-// resolved to a commit), which is what a person merged. A union can only
-// over-include. A branch's own configuration is never the only source,
-// with one stated exception: when the default branch cannot be resolved,
-// or holds no configuration this can read, the gate says so on one line
-// and scans with the working tree's patterns alone, because refusing every
-// push until then would leave a new vault only one way out, --no-verify.
+// WHICH CONFIGURATIONS SUPPLY THE PATTERNS (ruled 22/09/2026, widened
+// 23/09/2026 after review). The configuration is data, and a pushed branch
+// can delete a pattern from it and then violate that pattern in the same
+// push. So the set is the generic credential shapes plus the UNION of
+// privacy.secret_patterns from:
+//
+//   - the working tree's configuration, which is what is about to be
+//     committed;
+//   - the configuration at EVERY pushed tip: a branch can add a pattern,
+//     and a pattern added can only refuse more;
+//   - the configuration on the remote's default branch as this repository
+//     knows it, which is what a person merged. For the named remote that is
+//     the first of refs/remotes/<remote>/HEAD (a branch of that remote),
+//     refs/remotes/<remote>/main and refs/remotes/<remote>/master that
+//     resolves to a commit: `git remote add` plus a first push creates
+//     <remote>/main and never <remote>/HEAD, which is how most vaults
+//     start. On a push by url, or for a name with none of the three, the
+//     same ladder is walked for EVERY configured remote.
+//
+// A union can only over-include. The one line saying the push is scanned
+// without a default branch prints only when none of those resolved, and it
+// names a command that makes one resolve in that case.
+//
+// A configuration that cannot be USED (not JSON, not a JSON object, not
+// valid against the schema, not a file) adds nothing and says so on one
+// line, naming where it is; it is never reported as read. An object git
+// cannot read refuses, and so does a pattern that does not compile, naming
+// the configuration it lives in, because refusing is the only safe answer
+// and a person needs to know which file to fix.
 //
 // THE CONFIGURATION FILE'S OWN CONTENT is read against the generic shapes
-// alone, in every commit of the push (see scanRecordStream's configContent):
-// it is where the literal patterns are declared, so it matches every one of
-// them. Its path, and each commit's message, identities and headers, are
-// read against the whole set.
+// alone (see scanRecordStream's configContent), and only when that blob
+// parses as a JSON object: it is where the literal patterns are declared,
+// so it matches every one of them. That leaves a literal written into
+// another field of a real configuration, or into its history, unrefused,
+// which is the same trade-off the linter's `secrets` rule makes for the
+// working tree's copy (src/rules/lint.mjs). Anything else stored under that
+// name is an ordinary file.
 //
 // Returns { prepared } for scanRecordStream, or { exit } after saying why.
-export function prepareConfigScan(io, t, remoteName, env = process.env, cwd = process.cwd()) {
-  const say = (key, params) => io.stderr.write(`${t(key, params)}\n`);
+export function prepareConfigScan(io, t, remoteName, input, env = process.env, cwd = process.cwd()) {
+  const line = (text) => io.stderr.write(`${text}\n`);
   const file = CONFIG_FILENAME;
   const remote = withoutUserinfo(remoteName);
 
   const vaultRoot = findVaultRoot(cwd);
   if (vaultRoot === null) {
-    say('push_gate.not_a_vault', { file });
+    line(t('push_gate.not_a_vault', { file }));
     return { exit: EXIT.USAGE };
   }
   let working;
   try {
     working = loadConfig(vaultRoot);
   } catch (error) {
-    say('push_gate.config_unloadable', { file, reason: error.message });
+    line(t('push_gate.config_unloadable', { file, reason: error.message }));
     return { exit: EXIT.FAILURE };
   }
-
   const configPath = configPathInRepository(vaultRoot);
-  const fromDefault = configPath === null ? { state: 'outside' } : readDefaultBranchConfig(remoteName, configPath);
-  let defaultPatterns = [];
-  switch (fromDefault.state) {
-    case 'read':
-      defaultPatterns = fromDefault.patterns;
-      say('push_gate.config_patterns_union', { file, branch: fromDefault.branch, remote });
-      break;
-    case 'unresolved':
-      say('push_gate.default_branch_unresolved', { file, remote });
-      break;
-    case 'absent':
-      say('push_gate.default_branch_no_config', { file, path: configPath, branch: fromDefault.branch, remote });
-      break;
-    case 'unreadable':
-      say('push_gate.default_branch_config_unreadable', { file, path: configPath, branch: fromDefault.branch, remote, reason: fromDefault.reason });
-      break;
-    case 'outside':
-      say('push_gate.config_outside_repository', { file });
-      break;
-    default:
-      // 'failed': git could not read an object it said was there. Nothing
-      // here says what the merged configuration declares, so nothing is
-      // scanned without it.
-      say('push_gate.default_branch_read_failed', { path: configPath, branch: fromDefault.branch ?? '?', remote, reason: fromDefault.reason });
+
+  // Each source is compiled on its own first, so a pattern that does not
+  // compile is refused naming the configuration it came from.
+  const sources = [{ kind: 'working', patterns: secretPatternsOf(working) }];
+
+  if (configPath === null) {
+    line(t('push_gate.config_outside_repository', { file }));
+  } else {
+    // Every pushed tip, once each, in the order git sent them.
+    const seen = new Set();
+    pushedTips(input).forEach(({ sha, number }) => {
+      if (seen.has(sha)) return;
+      seen.add(sha);
+      sources.push({ kind: 'tip', number, read: readConfigAtCommit(`${sha}^{commit}`, configPath, { missingCommitIsAbsent: true }) });
+    });
+    const branches = defaultBranches(remoteName);
+    for (const branch of branches.resolved) {
+      sources.push({ kind: 'default', branch: branch.name, read: readConfigAtCommit(branch.sha, configPath) });
+    }
+    if (branches.resolved.length === 0) {
+      // Each names a command that makes a rung resolve in its own case:
+      // a remote-tracking branch for a named remote, every configured
+      // remote's for a push by url, and a remote to track for none.
+      if (branches.nameIsRemote) {
+        const command = `git fetch ${quotedForShell(remote)} && git remote set-head ${quotedForShell(remote)} --auto`;
+        line(t('push_gate.default_branch_unresolved_named', { file, remote, command }));
+      } else if (branches.remotes.length > 0) {
+        line(t('push_gate.default_branch_unresolved_by_url', { file, remote, remotes: branches.remotes.join(', ') }));
+      } else {
+        const command = `git remote add origin ${quotedForShell(remote)} && git fetch origin`;
+        line(t('push_gate.default_branch_unresolved_no_remotes', { file, remote, command }));
+      }
+    }
+  }
+
+  for (const source of sources) {
+    if (source.kind === 'working') continue;
+    const { read } = source;
+    if (read.state === 'failed') {
+      if (source.kind === 'tip') line(t('push_gate.tip_config_read_failed', { path: configPath, number: source.number, reason: read.reason }));
+      else line(t('push_gate.default_branch_read_failed', { path: configPath, branch: source.branch, reason: read.reason }));
       return { exit: EXIT.FAILURE };
+    }
+    if (read.state === 'unusable') {
+      if (source.kind === 'tip') line(t('push_gate.tip_config_unusable', { path: configPath, number: source.number, reason: read.reason }));
+      else line(t('push_gate.default_config_unusable', { path: configPath, branch: source.branch, reason: read.reason }));
+    } else if (read.state === 'absent' && source.kind === 'default') {
+      line(t('push_gate.default_branch_no_config', { path: configPath, branch: source.branch }));
+    }
+    source.patterns = read.state === 'read' ? read.patterns : [];
+  }
+
+  for (const source of sources) {
+    try {
+      loadPatterns({ configPatterns: source.patterns });
+    } catch (error) {
+      if (source.kind === 'working') line(t('push_gate.pattern_uncompilable_working', { file, reason: error.message }));
+      else if (source.kind === 'tip') line(t('push_gate.pattern_uncompilable_tip', { path: configPath, number: source.number, reason: error.message }));
+      else line(t('push_gate.pattern_uncompilable_default', { path: configPath, branch: source.branch, reason: error.message }));
+      return { exit: EXIT.FAILURE };
+    }
+  }
+
+  const usedBranches = sources.filter((source) => source.kind === 'default' && source.read.state === 'read').map((source) => source.branch);
+  const usedTips = sources.filter((source) => source.kind === 'tip' && source.read.state === 'read').length;
+  if (usedBranches.length > 0) {
+    line(t('push_gate.config_patterns_union', { file, tips: usedTips, branches: usedBranches.join(', ') }));
   }
 
   try {
-    const patterns = loadPatterns({ configPatterns: [...secretPatternsOf(working), ...defaultPatterns] });
+    const patterns = loadPatterns({ configPatterns: sources.flatMap((source) => source.patterns) });
     const shapesOnly = loadPatterns({});
     const budgetMs = perScanBudgetMs(env);
     const configContent = configPath === null ? null : { path: Buffer.from(configPath, 'utf8').toString('latin1'), patterns: shapesOnly };
@@ -325,19 +385,48 @@ export function prepareConfigScan(io, t, remoteName, env = process.env, cwd = pr
   }
 }
 
-// privacy.secret_patterns of a parsed configuration, its strings only, the
-// way the linter's `secrets` rule reads it.
+// A word as a person can paste it into a POSIX shell: as it is when it
+// holds nothing a shell reads specially, and single-quoted otherwise. Only
+// for the remedy sentences, which a person copies; nothing here runs it.
+export function quotedForShell(word) {
+  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(word)) return word;
+  return `'${word.replace(/'/g, "'\\''")}'`;
+}
+
+// privacy.secret_patterns of a configuration the schema already accepted.
 function secretPatternsOf(config) {
   const listed = config?.privacy?.secret_patterns;
   return Array.isArray(listed) ? listed.filter((entry) => typeof entry === 'string') : [];
 }
 
+// Every git read here refuses replacement objects: a local `git replace`
+// over the default branch's configuration would otherwise choose the
+// patterns this push is judged by.
 function gitRead(args, encoding = 'utf8') {
   return spawnSync('git', ['--no-replace-objects', ...args], {
     encoding,
     env: { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' },
     maxBuffer: 64 * 1024 * 1024,
   });
+}
+
+// The local object id of every reference line that is not a deletion, with
+// the line's number, read from the right as the enumeration reads it. The
+// enumeration has already refused a line whose ids are not ids.
+export function pushedTips(bytes) {
+  const tips = [];
+  const text = Buffer.from(bytes).toString('latin1');
+  const pieces = text.split('\n');
+  const tail = pieces.pop();
+  if (/[^ \t]/.test(tail)) pieces.push(tail);
+  pieces.forEach((piece, index) => {
+    const words = piece.split(' ');
+    if (words.length < 4) return;
+    const sha = words[words.length - 3];
+    if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(sha) || /^0+$/.test(sha)) return;
+    tips.push({ sha, number: index + 1 });
+  });
+  return tips;
 }
 
 // The vault's configuration file as a path inside the repository being
@@ -358,40 +447,71 @@ function configPathInRepository(vaultRoot) {
   return [...parts, CONFIG_FILENAME].join('/');
 }
 
-// The configuration on the remote's default branch as this repository knows
-// it. `refs/remotes/<remote>/HEAD` must be a symbolic reference to a branch
-// of that same remote and resolve to a commit; anything else is
-// 'unresolved'. The file is found by its path in that commit and read as
-// the blob it is (cat-file: no text conversion, no filter, no replacement
-// object stands in for it).
-function readDefaultBranchConfig(remoteName, configPath) {
-  const prefix = `refs/remotes/${remoteName}/`;
-  const symref = gitRead(['symbolic-ref', '-q', `${prefix}HEAD`]);
-  if (symref.error) return { state: 'failed', reason: symref.error.message };
-  if (symref.status !== 0) return { state: 'unresolved' };
-  const target = symref.stdout.trim();
-  if (!target.startsWith(prefix) || target.length === prefix.length) return { state: 'unresolved' };
-  const branch = target.slice('refs/remotes/'.length);
-  const commit = gitRead(['rev-parse', '-q', '--verify', `${target}^{commit}`]);
-  if (commit.error) return { state: 'failed', branch, reason: commit.error.message };
-  if (commit.status !== 0) return { state: 'unresolved' };
+const DEFAULT_BRANCH_RUNGS = ['HEAD', 'main', 'master'];
+
+// The first rung of one remote's ladder that resolves to a commit, as
+// { name, sha }, or null. HEAD counts only as a symbolic reference to a
+// branch of that same remote.
+function defaultBranchOf(remote) {
+  const prefix = `refs/remotes/${remote}/`;
+  for (const rung of DEFAULT_BRANCH_RUNGS) {
+    let target = `${prefix}${rung}`;
+    if (rung === 'HEAD') {
+      const symref = gitRead(['symbolic-ref', '-q', target]);
+      if (symref.error || symref.status !== 0) continue;
+      target = symref.stdout.trim();
+      if (!target.startsWith(prefix) || target.length === prefix.length) continue;
+    }
+    const commit = gitRead(['rev-parse', '-q', '--verify', `${target}^{commit}`]);
+    if (commit.error || commit.status !== 0) continue;
+    return { name: target.slice('refs/remotes/'.length), sha: commit.stdout.trim() };
+  }
+  return null;
+}
+
+// The default branches this push is judged against: the named remote's
+// when its ladder resolves (its remote-tracking references decide, whether
+// or not the name is still configured), and otherwise every configured
+// remote's.
+function defaultBranches(remoteName) {
+  const listed = gitRead(['remote']);
+  const remotes = listed.error || listed.status !== 0 ? [] : listed.stdout.split('\n').filter((name) => name !== '');
+  const nameIsRemote = remotes.includes(remoteName);
+  const own = defaultBranchOf(remoteName);
+  if (own !== null) return { resolved: [own], nameIsRemote, remotes };
+  const resolved = remotes.map(defaultBranchOf).filter((branch) => branch !== null);
+  return { resolved, nameIsRemote, remotes };
+}
+
+// The configuration at `revision` (a commit), read as the blob it is, with
+// cat-file: no text conversion, no filter, no replacement object. Returns
+// { state: 'read', patterns } | 'absent' | 'unusable' (with a reason) |
+// 'failed' (git could not read what it said was there).
+function readConfigAtCommit(revision, configPath, { missingCommitIsAbsent = false } = {}) {
+  const commit = gitRead(['rev-parse', '-q', '--verify', revision]);
+  if (commit.error) return { state: 'failed', reason: commit.error.message };
+  // A pushed tip that is a tag of a tree or a blob has no configuration.
+  if (commit.status !== 0) return missingCommitIsAbsent ? { state: 'absent' } : { state: 'failed', reason: `${revision} does not resolve to a commit` };
   const sha = commit.stdout.trim();
   const entry = gitRead(['rev-parse', '-q', '--verify', `${sha}:${configPath}`]);
-  if (entry.error) return { state: 'failed', branch, reason: entry.error.message };
-  if (entry.status !== 0) return { state: 'absent', branch };
+  if (entry.error) return { state: 'failed', reason: entry.error.message };
+  if (entry.status !== 0) return { state: 'absent' };
   const oid = entry.stdout.trim();
   const type = gitRead(['cat-file', '-t', oid]);
-  if (type.error || type.status !== 0) return { state: 'failed', branch, reason: type.error ? type.error.message : `git cat-file exited ${type.status}` };
-  if (type.stdout.trim() !== 'blob') return { state: 'unreadable', branch, reason: `it is a ${type.stdout.trim()}, not a file` };
+  if (type.error || type.status !== 0) return { state: 'failed', reason: type.error ? type.error.message : `git cat-file exited ${type.status}` };
+  if (type.stdout.trim() !== 'blob') return { state: 'unusable', reason: `it is a ${type.stdout.trim()}, not a file` };
   const blob = gitRead(['cat-file', 'blob', oid], 'buffer');
-  if (blob.error || blob.status !== 0) return { state: 'failed', branch, reason: blob.error ? blob.error.message : `git cat-file exited ${blob.status}` };
+  if (blob.error || blob.status !== 0) return { state: 'failed', reason: blob.error ? blob.error.message : `git cat-file exited ${blob.status}` };
   let parsed;
   try {
-    parsed = JSON.parse(decodeBytes(blob.stdout));
+    parsed = JSON.parse(withoutByteOrderMark(decodeBytes(blob.stdout)));
   } catch (error) {
-    return { state: 'unreadable', branch, reason: error.message };
+    return { state: 'unusable', reason: error.message };
   }
-  return { state: 'read', branch, patterns: secretPatternsOf(parsed) };
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return { state: 'unusable', reason: 'it is not a JSON object' };
+  const errors = validateConfig(parsed);
+  if (errors.length > 0) return { state: 'unusable', reason: `it does not match the configuration schema: ${errors[0]}${errors.length > 1 ? ` (and ${errors.length - 1} more)` : ''}` };
+  return { state: 'read', patterns: secretPatternsOf(parsed) };
 }
 
 // A url as it may be printed: without its userinfo, which can carry a

@@ -93,8 +93,8 @@ There are two push gates, with different reach. This repository's own gate scans
 object a push carries against a personal pattern list kept outside the repository. The
 template hook meant for a vault, in `templates/githooks/`, runs `validate` and `lint` over
 the working tree, then the same object scan over what the push carries, against the
-vault's own configured patterns, those of its working tree and of its default branch
-together. Nothing installs it into a vault yet. [SECURITY.md](SECURITY.md) lists what the
+vault's own configured patterns, those of its working tree, of every pushed tip and of its
+default branch together. Nothing installs it into a vault yet. [SECURITY.md](SECURITY.md) lists what the
 gates do not cover.
 
 ## Contributing

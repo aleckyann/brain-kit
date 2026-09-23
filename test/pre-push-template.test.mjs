@@ -573,7 +573,7 @@ test('a branch whose own configuration deletes the pattern it then violates is r
   const { work, bare } = setupBranchThatDropsThePattern();
   const r = git(work, ['push', '-q', 'origin', 'drop-it']);
   refusedByTheObjectScan(r);
-  assert.match(r.stderr, /from the working tree's brain-kit\.config\.json and from the one on origin\/main, the default branch of remote 'origin'/);
+  assert.match(r.stderr, /from the default branch as this repository knows it \(origin\/main\)/);
   assert.match(r.stderr, /possible leak in people\/ana\.md \(CONTENT/);
   assert.equal(landedRef(bare, 'refs/heads/drop-it'), false);
 });
@@ -599,15 +599,33 @@ test('the working tree\'s patterns count too: a pattern only the working tree de
   assert.equal(landedRef(bare, 'refs/heads/main'), false);
 });
 
-test('with no known default branch, the same branch is scanned with the working tree\'s patterns alone, and the gate says so', () => {
-  // The stated exception, measured: this is what gets through with no
-  // edit, and the one line it prints is the only sign.
+test('with no default branch reference at all, the same branch is scanned with the working tree\'s and the tips\' patterns alone, the gate says so, and its remedy works', () => {
+  // The stated exception, measured: with none of origin/HEAD, origin/main
+  // or origin/master in this clone, a branch that drops its own pattern
+  // is judged by its own configuration. The one line it prints names a
+  // command, and running that command is what closes it.
   const { work, bare } = setupBranchThatDropsThePattern();
+  assert.equal(spawnSync('git', ['--git-dir', bare, 'symbolic-ref', 'HEAD', 'refs/heads/main']).status, 0);
   assert.equal(git(work, ['symbolic-ref', '--delete', 'refs/remotes/origin/HEAD']).status, 0);
+  assert.equal(git(work, ['update-ref', '-d', 'refs/remotes/origin/main']).status, 0);
+  // A clean branch first, so the fallback is observed without landing the
+  // leak.
+  assert.equal(git(work, ['checkout', '-q', '-b', 'tidy', 'main']).status, 0);
+  writeFileSync(join(work, 'memory', 'log.md'), `${CLEAN_LOG}\nA tidy entry.\n`);
+  commitEverything(work, 'tidy');
+  const tidy = git(work, ['push', '-q', 'origin', 'tidy']);
+  assert.equal(tidy.status, 0, tidy.stderr);
+  const said = tidy.stderr.match(/no default branch of remote 'origin' is known to this repository .* from the working tree's brain-kit\.config\.json and from the pushed tips alone\. To add the default branch's, run: (.+)$/m);
+  assert.ok(said, tidy.stderr);
+  assert.equal(said[1], 'git fetch origin && git remote set-head origin --auto');
+  for (const step of said[1].split(' && ')) {
+    const ran = git(work, step.split(' ').slice(1));
+    assert.equal(ran.status, 0, `${step}: ${ran.stderr}`);
+  }
+  assert.equal(git(work, ['checkout', '-q', 'drop-it']).status, 0);
   const r = git(work, ['push', '-q', 'origin', 'drop-it']);
-  assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stderr, /the default branch of remote 'origin' is not known to this repository .* scanned with privacy\.secret_patterns from the working tree's brain-kit\.config\.json alone\. To add the default branch's, run: git remote set-head origin --auto/);
-  assert.equal(landedRef(bare, 'refs/heads/drop-it'), true);
+  refusedByTheObjectScan(r);
+  assert.equal(landedRef(bare, 'refs/heads/drop-it'), false);
 });
 
 test('a default branch that has no configuration yet says so and scans with the working tree\'s patterns', () => {
@@ -621,7 +639,7 @@ test('a default branch that has no configuration yet says so and scans with the 
   assert.equal(git(work, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main']).status, 0);
   const r = git(work, ['push', '-q', 'origin', 'main']);
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stderr, /origin\/main, the default branch of remote 'origin', has no brain-kit\.config\.json/);
+  assert.match(r.stderr, /origin\/main, a default branch as this repository knows it, has no brain-kit\.config\.json/);
   assert.equal(landedRef(bare, 'refs/heads/main'), true);
 });
 
@@ -741,8 +759,11 @@ test('a push by url that carries a token prints it nowhere', () => {
   const r = git(work, ['push', '-q', typed, 'trunk'], AGENT);
   assert.equal(r.status, 0, r.stderr);
   assert.doesNotMatch(r.stderr, new RegExp(token));
-  assert.match(r.stderr, /the default branch of remote 'https:\/\/example\.invalid\/vault\.git' is not known/);
-  assert.match(r.stderr, /git remote set-head https:\/\/example\.invalid\/vault\.git --auto/);
+  assert.match(r.stderr, /'https:\/\/example\.invalid\/vault\.git' is not the name of a remote, and no configured remote \(origin\) has a default branch/);
+  // The guard's remedy names the push by remote name, not a set-head of a
+  // url, which only fails.
+  assert.match(r.stderr, /'https:\/\/example\.invalid\/vault\.git' is not the name of a remote: push by the remote's name/);
+  assert.doesNotMatch(r.stderr, /set-head https:/);
   assert.equal(landedRef(bare, 'refs/heads/trunk'), true);
 });
 
@@ -766,4 +787,120 @@ test('the template hands push-gate the url git pushes to: a pushurl that differs
   refusedByTheObjectScan(r);
   assert.match(r.stderr, /possible leak in people\/ana\.md \(CONTENT/);
   assert.equal(landedRef(destination, 'refs/heads/leaky'), false);
+});
+
+// --- fix round 1: every source the union reads, by real push -------------
+
+test('a new vault wired with remote add and a first push has no origin/HEAD; a pattern-dropping branch is still refused, through origin/main', () => {
+  const { work, bare } = setup({ config: WITH_LITERAL });
+  commitEverything(work, 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main']).status, 0);
+  assert.notEqual(git(work, ['rev-parse', '-q', '--verify', 'refs/remotes/origin/HEAD']).status, 0, 'the precondition: no origin/HEAD');
+  assert.equal(git(work, ['rev-parse', '-q', '--verify', 'refs/remotes/origin/main']).status, 0, 'the precondition: origin/main');
+  assert.equal(git(work, ['checkout', '-q', '-b', 'drop-it']).status, 0);
+  withoutLiteralInConfig(work);
+  writeFileSync(join(work, 'people', 'ana.md'), `${CLEAN_PERSON}\nMet the ${LITERAL} team.\n`);
+  commitEverything(work, 'drop the pattern, then use it');
+  const r = git(work, ['push', '-q', 'origin', 'drop-it']);
+  refusedByTheObjectScan(r);
+  assert.match(r.stderr, /from the default branch as this repository knows it \(origin\/main\)/);
+  // A default branch resolved, so the fallback line is not printed: a line
+  // on every push is a line people stop reading.
+  assert.doesNotMatch(r.stderr, /no default branch of remote|is not the name of a remote/);
+  assert.equal(landedRef(bare, 'refs/heads/drop-it'), false);
+
+  // The same branch pushed BY URL: every configured remote's default
+  // branch is read.
+  const byUrl = git(work, ['push', '-q', bare, 'drop-it']);
+  refusedByTheObjectScan(byUrl);
+  assert.match(byUrl.stderr, /from the default branch as this repository knows it \(origin\/main\)/);
+  assert.equal(landedRef(bare, 'refs/heads/drop-it'), false);
+});
+
+test('a pattern the pushed branch adds is honoured while another branch is checked out', () => {
+  const { work, bare } = setup();
+  commitEverything(work, 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main']).status, 0);
+  assert.equal(git(work, ['checkout', '-q', '-b', 'adds']).status, 0);
+  const configPath = join(work, 'brain-kit.config.json');
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  config.privacy.secret_patterns.push(LITERAL);
+  writeFileSync(configPath, JSON.stringify(config, null, 2));
+  writeFileSync(join(work, 'people', 'ana.md'), `${CLEAN_PERSON}\nMet the ${LITERAL} team.\n`);
+  commitEverything(work, 'add a pattern and a match');
+  writeFileSync(join(work, 'people', 'ana.md'), CLEAN_PERSON);
+  commitEverything(work, 'take the match out again');
+  assert.equal(git(work, ['checkout', '-q', 'main']).status, 0);
+  const r = git(work, ['push', '-q', 'origin', 'adds']);
+  refusedByTheObjectScan(r);
+  assert.match(r.stderr, /possible leak in people\/ana\.md \(CONTENT/);
+  assert.equal(landedRef(bare, 'refs/heads/adds'), false);
+});
+
+test('a plain-text note saved as brain-kit.config.json is an ordinary file, read against every pattern', () => {
+  const { work, bare } = setup({ config: WITH_LITERAL });
+  commitEverything(work, 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main']).status, 0);
+  assert.equal(git(work, ['checkout', '-q', '-b', 'notes']).status, 0);
+  writeFileSync(join(work, 'brain-kit.config.json'), `Meeting notes: the ${LITERAL} renewal.\n`);
+  assert.equal(git(work, ['add', '-A']).status, 0);
+  assert.equal(git(work, ['commit', '-q', '-m', 'a note under that name']).status, 0);
+  assert.equal(git(work, ['checkout', '-q', 'main']).status, 0);
+  const r = git(work, ['push', '-q', 'origin', 'notes']);
+  refusedByTheObjectScan(r);
+  assert.match(r.stderr, /the brain-kit\.config\.json at reference #1 of this push could not be used/);
+  assert.match(r.stderr, /possible leak in brain-kit\.config\.json \(CONTENT/);
+  assert.equal(landedRef(bare, 'refs/heads/notes'), false);
+});
+
+test('a file named like the configuration in another case is an ordinary file', () => {
+  // Byte for byte: Brain-Kit.Config.json at the vault root, a JSON object,
+  // carrying the literal and taken out again. A comparison that folds case
+  // would exempt it.
+  const { work, bare } = setup({ config: WITH_LITERAL });
+  commitEverything(work, 'init');
+  writeFileSync(join(work, 'Brain-Kit.Config.json'), JSON.stringify({ note: `the ${LITERAL} contract` }));
+  commitEverything(work, 'a lookalike');
+  unlinkSync(join(work, 'Brain-Kit.Config.json'));
+  commitEverything(work, 'gone again');
+  const r = git(work, ['push', '-q', 'origin', 'main']);
+  refusedByTheObjectScan(r);
+  assert.match(r.stderr, /possible leak in Brain-Kit\.Config\.json \(CONTENT/);
+  assert.equal(landedRef(bare, 'refs/heads/main'), false);
+});
+
+test('a local replace ref over the default branch\'s configuration does not change the patterns', () => {
+  const { work, bare } = setupBranchThatDropsThePattern();
+  const merged = git(work, ['rev-parse', 'origin/main:brain-kit.config.json']).stdout.trim();
+  const dropped = git(work, ['rev-parse', 'drop-it:brain-kit.config.json']).stdout.trim();
+  assert.notEqual(merged, dropped);
+  assert.equal(git(work, ['replace', merged, dropped]).status, 0);
+  assert.doesNotMatch(git(work, ['show', 'origin/main:brain-kit.config.json']).stdout, new RegExp(LITERAL), 'the precondition: an ordinary read now sees the replacement');
+  const r = git(work, ['push', '-q', 'origin', 'drop-it']);
+  refusedByTheObjectScan(r);
+  assert.equal(landedRef(bare, 'refs/heads/drop-it'), false);
+});
+
+test('reference lines that cannot all be read refuse: a cat that stops after one line and fails', () => {
+  // push-gate cross-checks what it is handed, so a truncation BEFORE it
+  // agrees with itself. Only the hook's own read can catch it.
+  const { root, work, bare } = setup({ config: WITH_LITERAL });
+  commitEverything(work, 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main']).status, 0);
+  assert.equal(git(work, ['branch', 'aaa-clean']).status, 0);
+  assert.equal(git(work, ['checkout', '-q', '-b', 'zzz-leaky']).status, 0);
+  writeFileSync(join(work, 'people', 'ana.md'), `${CLEAN_PERSON}\nMet the ${LITERAL} team.\n`);
+  commitEverything(work, 'a note');
+  writeFileSync(join(work, 'people', 'ana.md'), CLEAN_PERSON);
+  commitEverything(work, 'take it out');
+  assert.equal(git(work, ['checkout', '-q', 'main']).status, 0);
+  const brokenBin = join(root, 'a broken cat');
+  mkdirSync(brokenBin);
+  writeFileSync(join(brokenBin, 'cat'), '#!/usr/bin/env bash\nIFS= read -r first\nprintf \'%s\\n\' "$first"\nexit 1\n');
+  chmodSync(join(brokenBin, 'cat'), 0o755);
+  const r = git(work, ['push', '-q', 'origin', 'aaa-clean', 'zzz-leaky'], { env: { PATH: `${brokenBin}${delimiter}${PATH_WITH_BRAIN_KIT}` } });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /could not read the reference lines git sent for this push/);
+  assert.equal(landedRef(bare, 'refs/heads/aaa-clean'), false);
+  assert.equal(landedRef(bare, 'refs/heads/zzz-leaky'), false);
 });

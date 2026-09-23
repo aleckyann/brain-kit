@@ -636,8 +636,13 @@ test('an installed enumeration emptied to zero bytes can no longer let a leak la
   commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'a clean message');
   truncateSync(join(gateDir, 'engine', 'src', 'push', 'records.sh'), 0);
   const r = git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  // The verdict, not the sentence: an empty script exits without reading
+  // its standard input, so push-gate's write to it may meet EPIPE and
+  // refuse as "could not run the push enumeration" before the count
+  // mismatch is ever reached. Either way it refuses and nothing lands.
   assert.notEqual(r.status, 0, r.stderr);
-  assert.match(r.stderr, /git sent 1 reference line\(s\) for this push and the push enumeration listed 0 reference\(s\)/);
+  assert.match(r.stderr, /git sent 1 reference line\(s\) for this push and the push enumeration listed 0 reference\(s\)|could not run the push enumeration/);
+  assert.doesNotMatch(r.stderr, /leak gate ran/);
   assert.equal(spawnSync('git', ['--git-dir', bare, 'rev-parse', '-q', '--verify', 'refs/heads/main']).status, 1);
 });
 
@@ -1366,7 +1371,7 @@ test('--patterns config refuses a match of the working tree\'s own pattern', () 
   const r = configGate(work, bare, refLine(sha), { BRAIN_KIT_LEAK_PATTERNS: personal });
   assert.equal(r.status, 1, r.stderr);
   assert.match(r.stderr, /possible leak in notes\.md \(CONTENT/);
-  assert.match(r.stderr, /the default branch of remote 'origin' is not known to this repository/);
+  assert.match(r.stderr, /no default branch of remote 'origin' is known to this repository/);
 });
 
 test('the default branch\'s patterns are added to the working tree\'s, not substituted for them', () => {
@@ -1384,7 +1389,7 @@ test('the default branch\'s patterns are added to the working tree\'s, not subst
     const r = configGate(work, bare, `refs/heads/main ${sha} refs/heads/main ${tip}\n`, { BRAIN_KIT_LEAK_PATTERNS: personal });
     assert.equal(r.status, 1, `${word}: ${r.stderr}`);
     assert.match(r.stderr, new RegExp(`possible leak in ${file.replace('.', '\\.')} \\(CONTENT`), word);
-    assert.match(r.stderr, /and from the one on origin\/main, the default branch of remote 'origin'/);
+    assert.match(r.stderr, /and from the default branch as this repository knows it \(origin\/main\)/);
   }
 });
 
@@ -1396,14 +1401,15 @@ test('a default branch whose configuration is not JSON, or not a file, says so a
   const broken = spawnSync('git', ['mktree'], { cwd: work, input: `100644 blob ${blob}\tbrain-kit.config.json\n`, encoding: 'utf8' }).stdout.trim();
   const inner = spawnSync('git', ['mktree'], { cwd: work, input: '', encoding: 'utf8' }).stdout.trim();
   const asTree = spawnSync('git', ['mktree'], { cwd: work, input: `040000 tree ${inner}\tbrain-kit.config.json\n`, encoding: 'utf8' }).stdout.trim();
-  for (const [tree, said, file] of [[broken, /could not be read as a configuration \(.+\)/, 'notes.md'], [asTree, /could not be read as a configuration \(it is a tree, not a file\)/, 'more.md']]) {
+  for (const [tree, said, file] of [[broken, /brain-kit\.config\.json on origin\/main, a default branch as this repository knows it, could not be used \(.+\)/, 'notes.md'], [asTree, /could not be used \(it is a tree, not a file\)/, 'more.md']]) {
     const merged = git(work, ['commit-tree', tree, '-m', 'merged']).stdout.trim();
     knowDefaultBranch(work, merged);
     const sha = commit(work, file, `A call with ${CONFIG_LITERAL}.\n`, 'a note');
     const r = configGate(work, bare, `refs/heads/main ${sha} refs/heads/main ${good}\n`, { BRAIN_KIT_LEAK_PATTERNS: personal });
     assert.equal(r.status, 1, r.stderr);
     assert.match(r.stderr, said);
-    assert.match(r.stderr, /from the working tree's brain-kit\.config\.json alone/);
+    assert.match(r.stderr, /it adds no patterns to this push/);
+    assert.doesNotMatch(r.stderr, /from the default branch as this repository knows it/);
     assert.match(r.stderr, new RegExp(`possible leak in ${file.replace('.', '\\.')} \\(CONTENT`));
   }
 });
@@ -1414,7 +1420,7 @@ test('a remote HEAD that points outside that remote\'s own branches is not a def
   assert.equal(git(work, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/heads/main']).status, 0);
   const r = configGate(work, bare, refLine(sha), { BRAIN_KIT_LEAK_PATTERNS: personal });
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stderr, /the default branch of remote 'origin' is not known to this repository/);
+  assert.match(r.stderr, /no default branch of remote 'origin' is known to this repository/);
 });
 
 test('a working tree configuration that does not load refuses, before anything is scanned', () => {
@@ -1436,7 +1442,10 @@ test('a pattern on the default branch that does not compile refuses, like one in
   writeFileSync(join(work, 'brain-kit.config.json'), JSON.stringify(config, null, 2));
   const r = configGate(work, bare, refLine(good), { BRAIN_KIT_LEAK_PATTERNS: personal });
   assert.equal(r.status, 1, r.stderr);
-  assert.match(r.stderr, /refusing to push/);
+  // It names where the pattern lives, and the way out: a person who looks
+  // at their working tree finds nothing wrong there.
+  assert.match(r.stderr, /a pattern in the brain-kit\.config\.json on origin\/main, the default branch as this repository knows it, does not compile/);
+  assert.match(r.stderr, /fix it through the host's own interface/);
   assert.doesNotMatch(r.stderr, /leak gate ran/);
 });
 
@@ -1500,7 +1509,7 @@ test('a configuration on the default branch that git cannot read refuses rather 
   knowDefaultBranch(work, merged.stdout.trim());
   const r = configGate(work, bare, refLine(sha), { BRAIN_KIT_LEAK_PATTERNS: personal });
   assert.equal(r.status, 1, r.stderr);
-  assert.match(r.stderr, /could not read the brain-kit\.config\.json on origin\/main, the default branch of remote 'origin'/);
+  assert.match(r.stderr, /could not read the brain-kit\.config\.json on origin\/main, a default branch as this repository knows it/);
   assert.doesNotMatch(r.stderr, /leak gate ran/);
 });
 
@@ -1530,7 +1539,7 @@ test('a vault in a subdirectory of the repository: its configuration is found at
   writeFileSync(personal, 'zqxpersonalmark\n');
   const own = pushGate(vault, ['origin', bare, '--patterns', 'config'], refLine(edit, base), { BRAIN_KIT_LEAK_PATTERNS: personal });
   assert.equal(own.status, 0, own.stderr);
-  assert.match(own.stderr, /and from the one on origin\/main/);
+  assert.match(own.stderr, /from the default branch as this repository knows it \(origin\/main\)/);
   const leak = commit(repo, join('my vault', 'notes.md'), `About ${CONFIG_LITERAL}.\n`, 'a note');
   const r = pushGate(vault, ['origin', bare, '--patterns', 'config'], refLine(leak, edit), { BRAIN_KIT_LEAK_PATTERNS: personal });
   assert.equal(r.status, 1, r.stderr);
@@ -1564,5 +1573,168 @@ test('a remote HEAD that names a branch this repository no longer has is not a d
   assert.equal(git(work, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/gone']).status, 0);
   const r = configGate(work, bare, refLine(sha), { BRAIN_KIT_LEAK_PATTERNS: personal });
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stderr, /the default branch of remote 'origin' is not known to this repository/);
+  assert.match(r.stderr, /no default branch of remote 'origin' is known to this repository/);
+});
+
+// --- fix round 1: the sources, their failures, and the remedies ------------
+
+test('a default branch configuration that fails the schema is not reported as read, and says why', () => {
+  const { work, bare, config, personal } = setupVault();
+  const good = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  const bad = { ...config, privacy: { ...config.privacy, secret_patterns: CONFIG_LITERAL } };
+  const merged = commit(work, 'brain-kit.config.json', JSON.stringify(bad, null, 2), 'a string, not a list');
+  knowDefaultBranch(work, merged);
+  writeFileSync(join(work, 'brain-kit.config.json'), JSON.stringify(config, null, 2));
+  const r = configGate(work, bare, refLine(good), { BRAIN_KIT_LEAK_PATTERNS: personal });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /on origin\/main, a default branch as this repository knows it, could not be used \(it does not match the configuration schema: /);
+  assert.doesNotMatch(r.stderr, /from the default branch as this repository knows it/);
+});
+
+test('a default branch configuration with a byte-order mark is read', () => {
+  const { work, bare, config, personal } = setupVault();
+  const base = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  const bom = String.fromCharCode(0xfeff);
+  const merged = commit(work, 'brain-kit.config.json', `${bom}${JSON.stringify(config, null, 2)}`, 'saved by an editor that writes a BOM');
+  knowDefaultBranch(work, merged);
+  // The pushed branch drops the pattern and uses it.
+  assert.equal(git(work, ['checkout', '-q', '-b', 'drop-it', base]).status, 0);
+  const dropped = { ...config, privacy: { ...config.privacy, secret_patterns: [] } };
+  commit(work, 'brain-kit.config.json', JSON.stringify(dropped, null, 2), 'drop');
+  const tip = commit(work, 'notes.md', `A call with ${CONFIG_LITERAL}.\n`, 'use');
+  const r = configGate(work, bare, `refs/heads/drop-it ${tip} refs/heads/drop-it ${ZERO}\n`, { BRAIN_KIT_LEAK_PATTERNS: personal });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /from the default branch as this repository knows it \(origin\/main\)/);
+  assert.match(r.stderr, /possible leak in notes\.md \(CONTENT/);
+});
+
+test('a pushed tip whose configuration pattern does not compile refuses, naming the reference', () => {
+  const { work, bare, config, personal } = setupVault();
+  const bad = { ...config, privacy: { ...config.privacy, secret_patterns: ['([unclosed'] } };
+  const tip = commit(work, 'brain-kit.config.json', JSON.stringify(bad, null, 2), 'bad');
+  writeFileSync(join(work, 'brain-kit.config.json'), JSON.stringify(config, null, 2));
+  const r = configGate(work, bare, refLine(tip), { BRAIN_KIT_LEAK_PATTERNS: personal });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /a pattern in the brain-kit\.config\.json at reference #1 of this push does not compile/);
+});
+
+test('a pushed tip that is a deletion, or names a tree, adds no configuration and refuses nothing', async () => {
+  const { pushedTips } = await import('../src/commands/push-gate.mjs');
+  const sha = 'a'.repeat(40);
+  assert.deepEqual(pushedTips(Buffer.from(`(delete) ${ZERO} refs/heads/x ${sha}\nrefs/heads/y ${sha} refs/heads/y ${ZERO}\n:/a b ${'b'.repeat(64)} refs/heads/z ${ZERO}`)), [
+    { sha, number: 2 },
+    { sha: 'b'.repeat(64), number: 3 },
+  ]);
+  // A configuration with nothing configured, so the tree tip, which is
+  // scanned as an object with every pattern, has nothing to match.
+  const { work, bare, personal } = setupVault({ patterns: [] });
+  const tree = git(work, ['rev-parse', 'HEAD^{tree}']).stdout.trim();
+  const r = configGate(work, bare, `refs/heads/t ${tree} refs/tags/t ${ZERO}\n`, { BRAIN_KIT_LEAK_PATTERNS: personal });
+  assert.equal(r.status, 0, r.stderr);
+  assert.doesNotMatch(r.stderr, /at reference #1 of this push/);
+});
+
+test('a remedy naming a path is quoted the way a shell reads it', async () => {
+  const { quotedForShell } = await import('../src/commands/push-gate.mjs');
+  assert.equal(quotedForShell('origin'), 'origin');
+  assert.equal(quotedForShell('https://example.invalid/vault.git'), 'https://example.invalid/vault.git');
+  assert.equal(quotedForShell("/tmp/a vault d'Ana"), "'/tmp/a vault d'\\''Ana'");
+});
+
+test('by url with configured remotes that know no default branch, the remedy is git fetch --all, and it works', () => {
+  const { work, bare, config, personal } = setupVault();
+  const base = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  assert.equal(spawnSync('git', ['--git-dir', bare, 'fetch', '-q', work, 'main:main']).status, 0);
+  assert.equal(spawnSync('git', ['--git-dir', bare, 'symbolic-ref', 'HEAD', 'refs/heads/main']).status, 0);
+  const dropped = { ...config, privacy: { ...config.privacy, secret_patterns: [] } };
+  assert.equal(git(work, ['checkout', '-q', '-b', 'drop-it']).status, 0);
+  commit(work, 'brain-kit.config.json', JSON.stringify(dropped, null, 2), 'drop');
+  const tip = commit(work, 'notes.md', `A call with ${CONFIG_LITERAL}.\n`, 'use');
+  const line = `refs/heads/drop-it ${tip} refs/heads/drop-it ${ZERO}\n`;
+  const before = pushGate(work, [bare, bare, '--patterns', 'config'], line, { BRAIN_KIT_LEAK_PATTERNS: personal });
+  assert.equal(before.status, 0, before.stderr);
+  assert.match(before.stderr, /is not the name of a remote, and no configured remote \(origin\) has a default branch .* To add them, run: git fetch --all/);
+  assert.equal(git(work, ['fetch', '--all', '-q']).status, 0);
+  const after = pushGate(work, [bare, bare, '--patterns', 'config'], line, { BRAIN_KIT_LEAK_PATTERNS: personal });
+  assert.equal(after.status, 1, after.stderr);
+  assert.match(after.stderr, /from the default branch as this repository knows it \(origin\/main\)/);
+  void base;
+});
+
+test('with no remote configured, the remedy adds one and fetches it, and it works', () => {
+  const { work, bare, config, personal } = setupVault();
+  assert.equal(spawnSync('git', ['--git-dir', bare, 'fetch', '-q', work, 'main:main']).status, 0);
+  assert.equal(spawnSync('git', ['--git-dir', bare, 'symbolic-ref', 'HEAD', 'refs/heads/main']).status, 0);
+  assert.equal(git(work, ['remote', 'remove', 'origin']).status, 0);
+  const dropped = { ...config, privacy: { ...config.privacy, secret_patterns: [] } };
+  assert.equal(git(work, ['checkout', '-q', '-b', 'drop-it']).status, 0);
+  commit(work, 'brain-kit.config.json', JSON.stringify(dropped, null, 2), 'drop');
+  const tip = commit(work, 'notes.md', `A call with ${CONFIG_LITERAL}.\n`, 'use');
+  const line = `refs/heads/drop-it ${tip} refs/heads/drop-it ${ZERO}\n`;
+  const before = pushGate(work, [bare, bare, '--patterns', 'config'], line, { BRAIN_KIT_LEAK_PATTERNS: personal });
+  assert.equal(before.status, 0, before.stderr);
+  const said = before.stderr.match(/has no remote configured, .* To add one, run: (.+)$/m);
+  assert.ok(said, before.stderr);
+  // Run exactly as printed, the way a person pastes it into a shell: the
+  // path has a space and an accented letter in it.
+  const ran = spawnSync('bash', ['-c', said[1]], { cwd: work, encoding: 'utf8' });
+  assert.equal(ran.status, 0, `${said[1]}: ${ran.stderr}`);
+  const after = pushGate(work, [bare, bare, '--patterns', 'config'], line, { BRAIN_KIT_LEAK_PATTERNS: personal });
+  assert.equal(after.status, 1, after.stderr);
+  assert.match(after.stderr, /from the default branch as this repository knows it \(origin\/main\)/);
+});
+
+test('the master rung: a remote whose default branch is master is read through origin/master', () => {
+  const { work, bare, config, personal } = setupVault();
+  const base = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  assert.equal(git(work, ['update-ref', 'refs/remotes/origin/master', base]).status, 0);
+  const dropped = { ...config, privacy: { ...config.privacy, secret_patterns: [] } };
+  commit(work, 'brain-kit.config.json', JSON.stringify(dropped, null, 2), 'drop');
+  const tip = commit(work, 'notes.md', `A call with ${CONFIG_LITERAL}.\n`, 'use');
+  const r = configGate(work, bare, refLine(tip, base), { BRAIN_KIT_LEAK_PATTERNS: personal });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /from the default branch as this repository knows it \(origin\/master\)/);
+});
+
+test('the HEAD rung: a default branch with another name is read through origin/HEAD, before main', () => {
+  const { work, bare, config, personal } = setupVault();
+  const base = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  // origin/main exists too, and declares nothing: HEAD must win.
+  const empty = { ...config, privacy: { ...config.privacy, secret_patterns: [] } };
+  const other = commit(work, 'brain-kit.config.json', JSON.stringify(empty, null, 2), 'an old main');
+  assert.equal(git(work, ['update-ref', 'refs/remotes/origin/main', other]).status, 0);
+  assert.equal(git(work, ['update-ref', 'refs/remotes/origin/trunk', base]).status, 0);
+  assert.equal(git(work, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/trunk']).status, 0);
+  const tip = commit(work, 'notes.md', `A call with ${CONFIG_LITERAL}.\n`, 'use');
+  const r = configGate(work, bare, refLine(tip, base), { BRAIN_KIT_LEAK_PATTERNS: personal });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /from the default branch as this repository knows it \(origin\/trunk\)/);
+});
+
+test('JSON at the configuration path that is not an object is an ordinary file', () => {
+  const { work, bare, personal } = setupVault();
+  const base = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  for (const [content, file] of [[JSON.stringify([`the ${CONFIG_LITERAL} deal`]), 'a'], [JSON.stringify(`the ${CONFIG_LITERAL} deal`), 'b']]) {
+    const sha = commit(work, 'brain-kit.config.json', content, `not an object ${file}`);
+    // The working tree keeps a real configuration; only the commit holds
+    // the lookalike.
+    assert.equal(git(work, ['checkout', '-q', base, '--', 'brain-kit.config.json']).status, 0);
+    const r = configGate(work, bare, refLine(sha, base), { BRAIN_KIT_LEAK_PATTERNS: personal });
+    assert.equal(r.status, 1, `${content}: ${r.stderr}`);
+    assert.match(r.stderr, /possible leak in brain-kit\.config\.json \(CONTENT/, content);
+  }
+});
+
+test('a configuration saved with a byte-order mark is still read for credential shapes only', () => {
+  // It declares the literal, as every configuration of this vault does;
+  // with the mark it must still be recognised as the configuration, or its
+  // own declaration refuses the push.
+  const { work, bare, config, personal } = setupVault();
+  const base = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  const bom = String.fromCharCode(0xfeff);
+  const sha = commit(work, 'brain-kit.config.json', `${bom}${JSON.stringify({ ...config, lang: 'en' }, null, 4)}`, 'saved with a BOM');
+  assert.equal(git(work, ['checkout', '-q', base, '--', 'brain-kit.config.json']).status, 0);
+  const r = configGate(work, bare, refLine(sha, base), { BRAIN_KIT_LEAK_PATTERNS: personal });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /leak gate ran/);
 });

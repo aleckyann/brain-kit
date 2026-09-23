@@ -30,8 +30,20 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   identities, reference names, and object headers. It reads the objects git will send,
   not a replaced stand-in, and says on every clean push that it ran.
 - A template pre-push hook for a vault, which runs `validate` and `lint` and refuses a push
-  to the default branch by the vault's automation identity. It checks the working tree and
-  not yet the commits a push carries, so nothing installs it into a vault until it does.
+  to the default branch by the vault's automation identity.
+
+### Phase 1, slice 1D: the gate that ships
+
+- One push enumeration behind one command, `brain-kit push-gate`, which both gates call.
+- The template hook for a vault now runs `validate`, `lint --base all`, then `brain-kit
+  push-gate --patterns config` over the objects the push carries, then the automation
+  guard. A credential that ever reached a commit is refused whatever the working tree
+  shows: in the history, in a tip hidden by an uncommitted edit, or on a branch that is
+  not checked out. Its patterns are the generic credential shapes plus
+  `privacy.secret_patterns` from the working tree's configuration, from every pushed tip,
+  and from the default branch the clone knows, so a branch that deletes a pattern and then
+  violates it is still refused. `brain-kit` is found on PATH only; the vault carries no
+  package. Nothing installs the hook into a vault yet.
 
 ## 0.0.1 (published on npm on 18/09/2026)
 
