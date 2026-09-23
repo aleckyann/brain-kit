@@ -1827,6 +1827,33 @@ function isConfidentialTrue(value) {
   return typeof value === 'string' && value.trim().toLowerCase() === 'true';
 }
 
+// Which frontmatter field marks a note confidential. Slice D, task 3
+// review (I2): this rule used to read the literal key `confidential`, so
+// a Portuguese vault, whose boolean extension carries the Portuguese
+// spelling of the word (the language's own vocabulary, like its other
+// extension names), could mark a note confidential outside every
+// confidential directory and never be told. The name now comes from `privacy.confidential_field` (schema-
+// validated as a frontmatter key), and the English default is ALSO read
+// whatever the configuration names: a vault adopted from notes written in
+// English still carries `confidential`, a marking in either spelling
+// outside the boundary is the same leak, and reading one extra key costs
+// no false positive, since no vault uses `confidential: true` to mean
+// anything else. Missing a real marking is the direction this rule cannot
+// afford, as isConfidentialTrue's own comment says. Why a key of its own
+// rather than inferring it from `frontmatter.extensions`: a vault may
+// declare several boolean extensions, and guessing which one means
+// "confidential" is exactly the kind of silent reading this rule exists
+// to avoid.
+const DEFAULT_CONFIDENTIAL_FIELD = 'confidential';
+
+function confidentialFields(config) {
+  const configured = config?.privacy?.confidential_field;
+  if (typeof configured !== 'string' || configured === '') return [DEFAULT_CONFIDENTIAL_FIELD];
+  // The English name configured explicitly is read twice when nothing
+  // matches; the loop's `break` keeps a match to one finding either way.
+  return [configured, DEFAULT_CONFIDENTIAL_FIELD];
+}
+
 const privacy = {
   id: 'privacy',
   settingKey: 'privacy',
@@ -1866,6 +1893,7 @@ const privacy = {
     // owns, so it is disclosed here rather than attempted.
     const confidentialDirs = Array.isArray(configuredDirs) ? configuredDirs.filter((d) => typeof d === 'string' && d.length > 0) : [];
     if (confidentialDirs.length === 0) return findings; // nothing declared confidential: nothing for either clause to check against
+    const fields = confidentialFields(context.config);
 
     for (const file of files) {
       if (isUnderAnyConfidentialDir(file, confidentialDirs)) continue; // only a file OUTSIDE the boundary can leak across it
@@ -1896,14 +1924,16 @@ const privacy = {
       });
 
       const { frontmatter } = splitFrontmatter(context.readFile(file));
-      if (isConfidentialTrue(readScalar(frontmatter, 'confidential'))) {
+      for (const field of fields) {
+        if (!isConfidentialTrue(readScalar(frontmatter, field))) continue;
         findings.push({
           file,
-          line: frontmatterKeyLine(frontmatter, 'confidential'),
+          line: frontmatterKeyLine(frontmatter, field),
           check: 'confidential-field-outside',
           messageKey: 'lint.privacy.confidential_outside',
-          params: {},
+          params: { field },
         });
+        break; // one finding per note: two spellings of the same marking are one leak
       }
     }
     return findings;

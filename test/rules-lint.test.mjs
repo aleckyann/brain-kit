@@ -40,7 +40,7 @@ import { join } from 'node:path';
 import { loadConfig } from '../src/config.mjs';
 import { walkVault } from '../src/vault.mjs';
 import { LINT_RULES, runLintRules, displaySecretPattern } from '../src/rules/lint.mjs';
-import { createTranslator } from '../src/lang.mjs';
+import { createTranslator, SUPPORTED_LANGS } from '../src/lang.mjs';
 import { OVERALL_SCAN_TIMEOUT_MS, PERSONAL_PATTERN_LABEL } from '../src/leak.mjs';
 import { makeScanFile } from '../src/commands/validate.mjs';
 import { buildSecretScan } from '../src/commands/lint.mjs';
@@ -2156,6 +2156,89 @@ test('a note outside every confidential directory carrying confidential: false i
   };
   const findings = findingsFor({ files }).filter(isLintCheck('privacy', 'confidential-field-outside'));
   assert.deepEqual(findings, []);
+});
+
+// Slice D, task 3 review (I2): the field that marks a note confidential
+// comes from privacy.confidential_field. A Portuguese vault names its own
+// boolean extension, `confidencial`, and the rule used to read only the
+// literal English key, so that vault's marking never fired.
+test('a vault that names its own confidential field has that field read: confidencial: true outside the boundary is reported, naming the field and its line', () => {
+  const files = {
+    'index.md': '# Welcome\n\n[Projects](projects/)\n\n[People](people/)\n',
+    'projects/index.md': '# Projects\n',
+    'projects/leaky.md': '---\ntype: project\nconfidencial: true\n---\n# Leaky\n',
+    'people/index.md': '# People\n',
+    'people/ana.md': '---\nconfidencial: true\n---\n# Ana\n',
+  };
+  const config = { privacy: { confidential_field: 'confidencial' } };
+  const findings = findingsFor({ files, config }).filter(isLintCheck('privacy', 'confidential-field-outside'));
+  assert.equal(findings.length, 1, 'only the note outside the boundary should be reported');
+  assert.equal(findings[0].file, 'projects/leaky.md');
+  assert.equal(findings[0].line, 3);
+  assert.deepEqual(findings[0].params, { field: 'confidencial' });
+  // The message names the field the note actually carries, in both packs.
+  for (const lang of SUPPORTED_LANGS) {
+    assert.match(createTranslator(lang)(findings[0].messageKey, findings[0].params), /confidencial: true/, lang);
+  }
+});
+
+test('a vault that names its own confidential field still has the English one read, since either spelling outside the boundary is the same leak', () => {
+  const files = {
+    'index.md': '# Welcome\n\n[Projects](projects/)\n',
+    'projects/index.md': '# Projects\n',
+    'projects/leaky.md': '---\nconfidential: true\n---\n# Leaky\n',
+  };
+  const config = { privacy: { confidential_field: 'confidencial' } };
+  const findings = findingsFor({ files, config }).filter(isLintCheck('privacy', 'confidential-field-outside'));
+  assert.equal(findings.length, 1);
+  assert.deepEqual(findings[0].params, { field: 'confidential' });
+});
+
+test('a note carrying both spellings of the confidential marking is one finding, not two', () => {
+  const files = {
+    'index.md': '# Welcome\n\n[Projects](projects/)\n',
+    'projects/index.md': '# Projects\n',
+    'projects/leaky.md': '---\nconfidencial: true\nconfidential: true\n---\n# Leaky\n',
+  };
+  const config = { privacy: { confidential_field: 'confidencial' } };
+  const findings = findingsFor({ files, config }).filter(isLintCheck('privacy', 'confidential-field-outside'));
+  assert.equal(findings.length, 1);
+  assert.deepEqual(findings[0].params, { field: 'confidencial' });
+});
+
+test('with the English field configured, another language\'s spelling is an ordinary field, not a marking', () => {
+  const files = {
+    'index.md': '# Welcome\n\n[Projects](projects/)\n',
+    'projects/index.md': '# Projects\n',
+    'projects/other.md': '---\nconfidencial: true\n---\n# Other\n',
+  };
+  const findings = findingsFor({ files, config: { privacy: { confidential_field: 'confidential' } } }).filter(isLintCheck('privacy', 'confidential-field-outside'));
+  assert.deepEqual(findings, []);
+});
+
+// Bypasses loadConfig, like the default-severity test below: every example
+// configuration now names the field, so only a configuration built here
+// can observe what the rule reads when nothing names it (an adopted vault
+// whose configuration predates the key).
+test('when the configuration never names a confidential field, the rule reads the English one', () => {
+  const files = {
+    'index.md': '# Welcome\n\n[Projects](projects/)\n',
+    'projects/index.md': '# Projects\n',
+    'projects/leaky.md': '---\nconfidential: true\n---\n# Leaky\n',
+    // A line an EMPTY key name would match: read as a field named "", it
+    // would be reported as a marking. An empty name must mean "not named".
+    'projects/odd.md': '---\n: true\n---\n# Odd\n',
+  };
+  const root = makeVault({ files });
+  for (const privacy of [{ confidential_dirs: ['people/'] }, { confidential_dirs: ['people/'], confidential_field: '' }]) {
+    const config = { privacy };
+    const all = walkVault(root, config, { all: true });
+    const mdFiles = all.filter((path) => path.endsWith('.md'));
+    const context = { root, config, all: new Set(all), readFile: (relPath) => readFileSync(join(root, relPath), 'utf8'), scanFile: makeScanFile(root), secretScan: secretScanFor(root, config) };
+    const findings = runLintRules(mdFiles, context, IGNORED_SCOPE).filter(isLintCheck('privacy', 'confidential-field-outside'));
+    assert.equal(findings.length, 1, JSON.stringify(privacy));
+    assert.deepEqual(findings[0].params, { field: 'confidential' });
+  }
 });
 
 test('with no confidential directories declared at all, privacy reports nothing for either clause', () => {

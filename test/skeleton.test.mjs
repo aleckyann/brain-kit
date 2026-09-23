@@ -169,6 +169,27 @@ for (const lang of LANGS) {
     assert.ok(JSON.parse(validate.stdout).findings.some((finding) => finding.id === 'type-required'), validate.stdout);
   });
 
+  // Slice D, task 3 review (I2), end to end in each language: a note
+  // outside the confidential directory, marked with the field this
+  // language's defaults name, fails lint. The Portuguese vault's marking
+  // used to pass in silence.
+  test(`${lang}: a note marked confidential outside the confidential directory fails lint, in the field this language names`, () => {
+    const config = completedConfig(lang);
+    const field = config.privacy.confidential_field;
+    assert.equal(field, lang === 'en' ? 'confidential' : 'confidencial');
+    assert.equal(config.frontmatter.extensions[field]?.type, 'boolean', `${field} must be this language's own boolean extension`);
+    const dir = materialise(lang, config);
+    const projects = Object.keys(config.taxonomy.collections).find((key) => config.taxonomy.collections[key].type === 'project');
+    const note = `${projects}/leaky.md`;
+    writeFileSync(join(dir, note), `---\ntype: project\ntitle: Leaky\ndescription: A note marked confidential in the wrong place.\n${field}: true\ngenerated:\n  by: human:ana\n  at: 2026-09-22T00:00:00+00:00\n---\n\n# Leaky\n`);
+    const index = join(dir, projects, 'index.md');
+    writeFileSync(index, `${readFileSync(index, 'utf8')}\n- [Leaky](leaky.md)\n`);
+    const result = brainKit(['lint', dir, '--base', 'all', '--json']);
+    assert.equal(result.status, EXIT.FAILURE, result.stdout);
+    const findings = JSON.parse(result.stdout).findings;
+    assert.deepEqual(findings.map((finding) => [finding.id, finding.check, finding.file, finding.params.field]), [['privacy', 'confidential-field-outside', note, field]]);
+  });
+
   test(`${lang}: the defaults name every lint rule, carry no trace of an example owner, and track the kit`, () => {
     const defaults = readDefaults(lang);
     assert.equal(defaults.lang, lang);

@@ -187,6 +187,7 @@
       "type": "object", "additionalProperties": false, "required": ["confidential_dirs", "require_private_repo"],
       "properties": {
         "confidential_dirs": { "type": "array", "items": { "type": "string" } },
+        "confidential_field": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$" },
         "require_private_repo": { "type": "boolean" },
         "secret_patterns": { "type": "array", "items": { "type": "string", "minLength": 1 } },
         "third_party_data_acknowledged": { "type": "boolean" },

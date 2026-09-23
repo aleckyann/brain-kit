@@ -84,7 +84,7 @@
   "lint.secrets.file_too_large": "this file is {bytes} bytes, over the {max} byte limit for one file, so it was NOT scanned for secrets, and this run fails rather than calling it clean: nothing here was checked, which is not the same as nothing being here; if the file is known to be safe, list it under lint.secrets.exclude_paths, where the exclusion shows in review",
   "lint.secrets.pattern_is_a_credential": "an entry in privacy.secret_patterns is itself shaped like a real credential; that list is for DETECTION patterns, never for the secret you want detected, so rotate that credential now, remove it from the configuration and follow SECURITY.md",
   "lint.privacy.linked_into_confidential": "this file sits outside every confidential directory but links into one (\"{target}\"), exposing a confidential note from a place meant to be shared more broadly",
-  "lint.privacy.confidential_outside": "this note carries confidential: true but sits outside every directory the configuration marks confidential",
+  "lint.privacy.confidential_outside": "this note carries {field}: true but sits outside every directory the configuration marks confidential",
   "lint.attribution.missing_source_id": "sources[{index}] has no id, so no footnote can ever anchor a claim to it",
   "lint.attribution.unknown_footnote": "this footnote key (\"{key}\") matches no id declared in sources; a footnote is meant to anchor a claim to one of the ids listed there",
   "lint.attribution.source_not_anchored": "sources declares the id \"{id}\" but no footnote in the body ever cites it; when a note draws on more than one source, this check expects each one to be anchored somewhere in the body",

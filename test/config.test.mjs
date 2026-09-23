@@ -165,6 +165,30 @@ test('lint.style.base, removed because nothing read it, is refused by the schema
   assert.ok(errors.some((e) => e.startsWith('$.lint.style.base') && /unknown key/.test(e)), errors.join('\n'));
 });
 
+// Slice D, task 3 review (I2): the privacy rule reads the field that marks
+// a note confidential from privacy.confidential_field, so the schema holds
+// it to the shape of a frontmatter key. An empty name or one with a space
+// or a colon could never match a key, and would read as a rule configured
+// to watch nothing.
+test('privacy.confidential_field is accepted as a frontmatter key name and refused otherwise', () => {
+  const config = fixture('config/valid.json');
+  for (const good of ['confidential', 'confidencial', 'is_private', 'private-note']) {
+    config.privacy.confidential_field = good;
+    assert.deepEqual(validateConfig(config), [], good);
+  }
+  for (const bad of ['', 'two words', 'field:', '1st', true]) {
+    config.privacy.confidential_field = bad;
+    assert.ok(validateConfig(config).some((e) => e.startsWith('$.privacy.confidential_field')), String(bad));
+  }
+});
+
+test('each example configuration names the confidential field of its own language', () => {
+  assert.equal(fixture('config/valid.json').privacy.confidential_field, 'confidential');
+  const pt = fixture('config/valid-pt-BR.json');
+  assert.equal(pt.privacy.confidential_field, 'confidencial');
+  assert.equal(pt.frontmatter.extensions.confidencial.type, 'boolean', 'the named field is the language\'s own boolean extension');
+});
+
 // Final fix round 2: the secrets rule's own escape, a list of vault paths
 // its scan leaves out, is a real setting of that rule, and only a list of
 // non-empty paths is one.

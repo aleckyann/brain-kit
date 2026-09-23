@@ -215,6 +215,7 @@
     "confidential_dirs": [
       "people/"
     ],
+    "confidential_field": "confidential",
     "require_private_repo": true,
     "secret_patterns": [
       "-----BEGIN (RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY-----",
