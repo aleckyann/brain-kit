@@ -476,8 +476,9 @@ function cleanStreamScript(root, name, count, tail) {
   return script;
 }
 
+// Reference lines whose destination is the one the scripts list.
 function lines(count) {
-  return 'x\n'.repeat(count);
+  return `refs/heads/main ${ZERO} refs/heads/main ${ZERO}\n`.repeat(count);
 }
 
 test('an enumeration that writes a clean stream and exits non-zero is refused on its status alone', () => {
@@ -840,6 +841,123 @@ test('the hook hands the enumeration the remote NAME git gave it, which is the o
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stderr, /could not query remote 'mirror' \(git ls-remote failed\)/);
   assert.match(r.stderr, /leak gate ran/);
+});
+
+// --- a source expression with a space in it -------------------------------
+
+// git writes the source expression of a push exactly as typed, spaces
+// included, as the first field of the reference line. A gate reading the
+// line from the left took the second word of it for the pushed commit.
+function setupSpaced() {
+  const { root, work, bare, patterns } = setup();
+  const { installed } = installGate(root, work);
+  assert.equal(installed.status, 0, `${installed.stdout}${installed.stderr}`);
+  commit(work, 'README.md', 'hello world\n', 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main'], { BRAIN_KIT_LEAK_PATTERNS: patterns }).status, 0);
+  return { root, work, bare, patterns };
+}
+
+test('a source expression with a space (:/wip main) is scanned as the commit it names, and refused', () => {
+  const { work, bare, patterns } = setupSpaced();
+  assert.equal(git(work, ['checkout', '-q', '-b', 'side']).status, 0);
+  commit(work, 'notes.md', 'Meeting with Hunter2Corp tomorrow\n', 'wip main notes');
+  assert.equal(git(work, ['checkout', '-q', 'main']).status, 0);
+  const r = git(work, ['push', '-q', 'origin', ':/wip main:refs/heads/tidy'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in notes\.md \(CONTENT/);
+  assert.equal(landed(bare, 'refs/heads/tidy'), false);
+});
+
+test('behind a spaced source expression, a destination name that matches is refused and never printed', () => {
+  const { work, bare, patterns } = setupSpaced();
+  assert.equal(git(work, ['checkout', '-q', '-b', 'side']).status, 0);
+  commit(work, 'tidy.md', 'nothing secret here\n', 'wip main notes');
+  assert.equal(git(work, ['checkout', '-q', 'main']).status, 0);
+  const r = git(work, ['push', '-q', 'origin', ':/wip main:refs/heads/hunter2corp'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr, /possible leak in the destination name of reference #1 of this push \(REFERENCE NAME/);
+  // git itself names the ref it failed to push; every line the GATE wrote
+  // (they all begin pre-push:) withholds it.
+  const gateLines = r.stderr.split('\n').filter((line) => line.startsWith('pre-push:') || line.startsWith('brain-kit'));
+  assert.ok(gateLines.length > 0, r.stderr);
+  for (const line of gateLines) assert.doesNotMatch(line, /hunter2corp/i);
+  assert.equal(landed(bare, 'refs/heads/hunter2corp'), false);
+});
+
+test('ordinary spaced source expressions still push when clean', () => {
+  const { work, bare, patterns } = setupSpaced();
+  assert.equal(git(work, ['checkout', '-q', '-b', 'side']).status, 0);
+  commit(work, 'tidy.md', 'nothing secret here\n', 'wip main notes');
+  assert.equal(git(work, ['checkout', '-q', 'main']).status, 0);
+  const found = git(work, ['push', '-q', 'origin', ':/wip main:refs/heads/copy'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(found.status, 0, found.stderr);
+  assert.equal(landed(bare, 'refs/heads/copy'), true);
+  const dated = git(work, ['push', '-q', 'origin', 'main@{0 minutes ago}:refs/heads/dated'], { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(dated.status, 0, dated.stderr);
+  assert.equal(landed(bare, 'refs/heads/dated'), true);
+});
+
+test('a reference line whose object ids are not object ids is refused without being printed', () => {
+  const { work, bare, patterns } = setup();
+  const sha = commit(work, 'README.md', 'hello world\n', 'init');
+  for (const line of [
+    `refs/heads/x hunter2corp refs/heads/y ${ZERO}\n`,
+    `refs/heads/x ${sha} refs/heads/y ${'0'.repeat(39)}\n`,
+    `refs/heads/x ${sha.toUpperCase()} refs/heads/y ${ZERO}\n`,
+    `refs/heads/x ${sha} refs/heads/y\n`,
+    'refs/heads/x hunter2corp\n',
+  ]) {
+    const r = pushGate(work, ['origin', bare, '--patterns', 'personal'], line, { BRAIN_KIT_LEAK_PATTERNS: patterns });
+    assert.equal(r.status, 1, `${line}: ${r.stderr}`);
+    assert.match(r.stderr, /reference #1 of this push is not a line git would write/, line);
+    assert.doesNotMatch(r.stderr, /hunter2corp/i);
+  }
+  // A 64-character id, the length a SHA-256 repository writes, is an id.
+  const long = pushGate(work, ['origin', bare, '--patterns', 'personal'], `refs/heads/x ${'a'.repeat(64)} refs/heads/y ${ZERO}\n`, { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.doesNotMatch(long.stderr, /not a line git would write/);
+});
+
+test('push-gate refuses a stream whose reference name is not the destination git sent on that line', () => {
+  const { root, work, patterns } = setup();
+  const script = join(root, 'renamed.sh');
+  writeFileSync(script, [
+    '#!/usr/bin/env bash',
+    'cat > /dev/null',
+    "printf 'ref\\0001\\000refs/heads/other\\000'",
+    'exit 0',
+    '',
+  ].join('\n'));
+  const r = driveWith(root, work, patterns, { recordsScript: script }, lines(1));
+  assert.match(r.stderr, /destination name the push enumeration listed for reference #1 of this push is not the one git sent/);
+  assert.doesNotMatch(r.stderr, /refs\/heads\/other|leak gate ran/);
+  assert.match(r.stdout, /STATUS:1/);
+});
+
+test('push-gate reads a spaced source expression from the right, the way the enumeration does', () => {
+  const { work, bare, patterns } = setup();
+  const sha = commit(work, 'README.md', 'hello world\n', 'wip main');
+  const r = pushGate(work, ['origin', bare, '--patterns', 'personal'], `:/wip main ${sha} refs/heads/copy ${ZERO}\n`, { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /leak gate ran: .* across 1 reference\(s\)/);
+});
+
+test('an unterminated tail of blanks is not a reference, to the enumeration or to push-gate', () => {
+  const { work, bare, patterns } = setup();
+  const sha = commit(work, 'README.md', 'hello world\n', 'init');
+  const r = pushGate(work, ['origin', bare, '--patterns', 'personal'], `refs/heads/main ${sha} refs/heads/main ${ZERO}\n \t `, { BRAIN_KIT_LEAK_PATTERNS: patterns });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /across 1 reference\(s\)/);
+});
+
+test('destination names are read from each line as the enumeration reads them', async () => {
+  const { referenceDestinations } = await import('../src/commands/push-gate.mjs');
+  const z = ZERO;
+  assert.deepEqual(referenceDestinations(Buffer.from(`refs/heads/a ${z} refs/heads/b ${z}\n`)), ['refs/heads/b']);
+  assert.deepEqual(referenceDestinations(Buffer.from(`:/wip main now ${z} refs/heads/c ${z}\n`)), ['refs/heads/c']);
+  // Truncated lines: split on blanks, the third field or nothing.
+  assert.deepEqual(referenceDestinations(Buffer.from(`refs/heads/x ${z}`)), ['']);
+  assert.deepEqual(referenceDestinations(Buffer.from('a\tb\tc\n')), ['c']);
+  assert.deepEqual(referenceDestinations(Buffer.from(`a b c ${z}\nd e f ${z}`)), ['c', 'f']);
 });
 
 // --- the installed gate, and where the enumeration is read from ----------

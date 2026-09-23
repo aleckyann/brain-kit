@@ -273,12 +273,67 @@ ref_number=0
 # guarded anyway, because "the producer always does X" is what the other
 # four findings all assumed about something.
 #
-# `|| [ -n "${local_ref:-}" ]` runs the body one last time for that
-# partial line. A partial line with fewer than four fields leaves the
-# later variables empty, and an empty destination name is something the
-# engine refuses outright rather than scans, so a truncation cannot turn
-# into a reference that passes.
-while read -r local_ref local_sha remote_ref remote_sha || [ -n "${local_ref:-}" ]; do
+# `|| has_field "${ref_line:-}"` runs the body one last time for that
+# partial line, when it carries anything but blanks. A partial line with
+# fewer than four fields leaves the later variables empty, and an empty
+# destination name is something the engine refuses outright rather than
+# scans, so a truncation cannot turn into a reference that passes.
+#
+# 22/09/2026: THE LINE IS PARSED FROM THE RIGHT. Git writes
+# `<local ref> SP <local sha> SP <remote ref> SP <remote sha>`, and the
+# local ref is the source expression exactly as it was typed, which can
+# contain spaces (`:/wip main`, `main@{1 minute ago}`). Read left to right,
+# the second word of such an expression became the local sha and every
+# field after it shifted: `git push origin ':/wip main:refs/heads/<name>'`
+# scanned main's history instead of the pushed commit, never scanned the
+# real destination name, and printed that name in clear in a message about
+# the remote sha. Measured by real push, and live on every earlier version
+# of this gate. Only the local ref can hold a space (a ref name cannot, and
+# an object id is hex), so the last three fields are taken from the right
+# and everything left of them is the local ref. Both object ids are then
+# checked for the shape git gives them, 40 or 64 lowercase hex characters,
+# which the all-zeros id of a deletion or a new ref has too; a line whose
+# ids are not ids is refused, without printing it. A line with fewer than
+# four fields is the truncated case above and is split the old way, its
+# missing fields left empty for the engine to refuse, but only when what is
+# missing includes the destination.
+has_field() {
+  case "$1" in
+    *[!" $TAB"]*) return 0 ;;
+  esac
+  return 1
+}
+is_object_id() {
+  case "$1" in
+    "" | *[!0-9a-f]*) return 1 ;;
+  esac
+  [ "${#1}" -eq 40 ] || [ "${#1}" -eq 64 ]
+}
+while IFS= read -r ref_line || has_field "${ref_line:-}"; do
+  case "$ref_line" in
+    *" "*" "*" "*)
+      remote_sha="${ref_line##* }"
+      ref_rest="${ref_line% *}"
+      remote_ref="${ref_rest##* }"
+      ref_rest="${ref_rest% *}"
+      local_sha="${ref_rest##* }"
+      local_ref="${ref_rest% *}"
+      if ! is_object_id "$local_sha" || ! is_object_id "$remote_sha"; then
+        echo "pre-push: reference #$((ref_number + 1)) of this push is not a line git would write (its object ids are not object ids), so this gate cannot tell what it pushes or where; refusing without printing it." >&2
+        exit 1
+      fi
+      ;;
+    *)
+      # Only a line cut short BEFORE its destination is left to the engine,
+      # which refuses the empty name. One that names a destination and not
+      # the remote sha would read as a range from nothing, which is empty.
+      read -r local_ref local_sha remote_ref remote_sha <<< "$ref_line"
+      if [ -n "$remote_ref" ] || { [ -n "$local_sha" ] && ! is_object_id "$local_sha"; }; then
+        echo "pre-push: reference #$((ref_number + 1)) of this push is not a line git would write (its object ids are not object ids), so this gate cannot tell what it pushes or where; refusing without printing it." >&2
+        exit 1
+      fi
+      ;;
+  esac
   # (q). Every reference gets a NUMBER, and from here down this file names
   # references by that number and never by their text. The number is what
   # makes a finding actionable without printing the thing that was found:

@@ -158,5 +158,6 @@
   "push_gate.git_killed": "brain-kit push-gate: git was stopped by signal {signal} while this gate asked whether this is a repository, so it cannot say what the push contains; refusing to push.",
   "push_gate.messages_too_large": "brain-kit push-gate: the push enumeration wrote more than {limit} bytes of messages, more than this gate reads for one push; refusing without scanning.",
   "push_gate.reference_count_mismatch": "brain-kit push-gate: git sent {sent} reference line(s) for this push and the push enumeration listed {listed} reference(s), so some of what this push carries would go unscanned; refusing instead of calling it clean.",
-  "push_gate.reference_numbering": "brain-kit push-gate: the push enumeration did not number its references 1 to {sent}, in the order git sent them, so its list does not describe this push; refusing instead of calling it clean."
+  "push_gate.reference_numbering": "brain-kit push-gate: the push enumeration did not number its references 1 to {sent}, in the order git sent them, so its list does not describe this push; refusing instead of calling it clean.",
+  "push_gate.reference_name_mismatch": "brain-kit push-gate: the destination name the push enumeration listed for reference #{number} of this push is not the one git sent on that line, so its list does not describe this push; refusing instead of calling it clean (neither name is printed)."
 }

@@ -332,12 +332,26 @@ way that rewrites nothing further. Ask where the question would go
 (`ls-remote --get-url`), and when that is not the destination, treat the
 remote as unknown and scan everything. Both holes predate the gate's move to
 Node and were live on every earlier version of it.
+**Addendum, 22/09/2026: the reference line has a free-form first field.**
+Git hands the hook `<local ref> <local sha> <remote ref> <remote sha>`, and the
+local ref is the source expression exactly as it was typed, spaces included.
+Read from the left, `git push origin ':/wip main:refs/heads/<name>'` made the
+second word of the expression the pushed commit and shifted every field after
+it: the gate scanned main's history instead of the commit git sent, never
+scanned the real destination name, and printed that name in clear. It needed
+no edit and was live on every earlier version of the gate. The rule: parse a
+record from the side whose shape is fixed, check every field that has a shape
+for that shape, and refuse a record that does not have it. The line is now read
+from the right, both object ids must be 40 or 64 lowercase hex characters, and
+push-gate compares each line's destination with the name the enumeration
+listed for it, so a shifted line is refused even if the parse regresses.
 **Where it lives in brain-kit.** `src/push/records.sh`, the push enumeration
 `brain-kit push-gate` runs out of the installed snapshot (moved there from
 `.githooks/pre-push` on 22/09/2026): `remote_sha..local_sha` for a ref the
 remote already has; `query_remote`'s live `git ls-remote` of the url git is
 pushing to, once per run, for one it does not, with the `--get-url` check that
-falls back to a full scan when that url would be rewritten; full-history
+falls back to a full scan when that url would be rewritten; each reference
+line read from the right, its object ids checked for their shape; full-history
 fallback when the remote cannot be asked or the range fails to compute; `git
 diff-tree -m` with a per-commit `sort -zu` dedupe, so merges are diffed against
 every parent; `--diff-filter=d`, which drops only deletions, so typechanges
@@ -363,7 +377,12 @@ the first, and refused", "a pushInsteadOf rewrite: the push is scanned
 against the rewritten destination and refused", "the mirror idiom (insteadOf
 to a mirror, identity pushInsteadOf upstream) is scanned in full and
 refused", "a chained rewrite (a pushurl mapped to a url that a second
-insteadOf maps elsewhere) is scanned in full and refused").
+insteadOf maps elsewhere) is scanned in full and refused", "a source
+expression with a space (:/wip main) is scanned as the commit it names, and
+refused", "behind a spaced source expression, a destination name that matches
+is refused and never printed", "a reference line whose object ids are not
+object ids is refused without being printed", "push-gate refuses a stream
+whose reference name is not the destination git sent on that line").
 
 ## Headless runs, network and scheduling
 

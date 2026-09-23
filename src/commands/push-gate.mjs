@@ -171,10 +171,11 @@ export async function runPushGate(argv, io, t, { recordsScript = RECORDS_SCRIPT,
   // enumeration's own loop: every newline ends a line, and an unterminated
   // last line counts when it carries a field.
   const stream = records.stdout.toString('latin1');
-  const sent = countReferenceLines(input);
+  const destinations = referenceDestinations(input);
+  const sent = destinations.length;
   let listed;
   try {
-    listed = parseEntries(stream).filter((entry) => entry.kind === 'ref').map((entry) => entry.number);
+    listed = parseEntries(stream).filter((entry) => entry.kind === 'ref');
   } catch {
     // A stream that does not parse is refused by the scanner, with its own
     // reason; there is nothing to count here.
@@ -185,8 +186,18 @@ export async function runPushGate(argv, io, t, { recordsScript = RECORDS_SCRIPT,
       io.stderr.write(`${t('push_gate.reference_count_mismatch', { sent, listed: listed.length })}\n`);
       return EXIT.FAILURE;
     }
-    if (listed.some((number, index) => number !== String(index + 1))) {
+    if (listed.some((entry, index) => entry.number !== String(index + 1))) {
       io.stderr.write(`${t('push_gate.reference_numbering', { sent })}\n`);
+      return EXIT.FAILURE;
+    }
+    // And each one must be the destination git named on that line, read
+    // here from the right the way the enumeration reads it, so a line
+    // whose fields shifted is refused even if the enumeration's own parse
+    // regressed. Neither name is printed: either may be the one that
+    // matches a pattern.
+    const differs = listed.findIndex((entry, index) => entry.name !== destinations[index]);
+    if (differs !== -1) {
+      io.stderr.write(`${t('push_gate.reference_name_mismatch', { number: differs + 1 })}\n`);
       return EXIT.FAILURE;
     }
   }
@@ -201,14 +212,27 @@ export async function runPushGate(argv, io, t, { recordsScript = RECORDS_SCRIPT,
   return scanRecordStream(stream, { ...prepared, io });
 }
 
-// How many reference lines the enumeration's loop will read out of these
-// bytes: `while read ... || [ -n "$local_ref" ]` runs once per newline, and
-// once more for a final unterminated line whose first field is not empty
-// (the default IFS splits on space and tab, and a newline cannot be left in
-// an unterminated line).
-export function countReferenceLines(bytes) {
+// The destination name of every reference line the enumeration's loop will
+// read out of these bytes, in order, held as latin1 like the stream. The
+// loop runs once per newline, and once more for a final unterminated line
+// that carries anything but blanks (spaces and tabs). A line with at least
+// three spaces is read from the right, since only its first field, the
+// source expression, can contain a space: the destination is the field
+// before the last. A shorter line is the truncated case, split the way
+// bash's `read` splits it (on runs of blanks, with none at either end),
+// its destination the third field or nothing.
+export function referenceDestinations(bytes) {
   const text = Buffer.from(bytes).toString('latin1');
   const pieces = text.split('\n');
   const tail = pieces.pop();
-  return pieces.length + (/[^ \t]/.test(tail) ? 1 : 0);
+  if (/[^ \t]/.test(tail)) pieces.push(tail);
+  return pieces.map((line) => {
+    const words = line.split(' ');
+    if (words.length >= 4) return words[words.length - 2];
+    return line.split(/[ \t]+/).filter((word) => word !== '')[2] ?? '';
+  });
+}
+
+export function countReferenceLines(bytes) {
+  return referenceDestinations(bytes).length;
 }
