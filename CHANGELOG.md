@@ -59,7 +59,10 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   notes, plain dates) and prints every inference; then it writes only the configuration and
   a manifest recording every existing file as the person's, plus `machine.json` outside the
   vault. It never changes a note, never writes the hook, never changes the repository and
-  never commits. `validate` now refuses a `privacy.confidential_field` that names no
+  never commits, and refuses a `.brain-kit` that is a link or a file before writing anything.
+  `brain-kit --help` and init's refusal of a non-empty directory or a repository point to
+  it. The manifest records the vault's language at its top level (optional, so an older
+  manifest still reads). `validate` now refuses a `privacy.confidential_field` that names no
   declared boolean extension, since a misspelt one silently switched the privacy rule off.
 - The default output language of every command now follows the locale (`LC_ALL`, then
   `LC_MESSAGES`, then `LANG`; a value starting with `pt` is Portuguese) and falls back to

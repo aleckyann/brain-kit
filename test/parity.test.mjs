@@ -50,7 +50,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
@@ -489,10 +489,15 @@ test(
   () => {
     const vaultRoot = resolve(VAULT);
     const listingBefore = vaultListing(vaultRoot);
+    let listingAfter = null;
     const work = mkdtempSync(join(tmpdir(), 'brain-kit-adopt-parity-'));
     try {
       const copy = join(work, 'vault');
-      const skipGit = (source) => !['.git', 'node_modules'].includes(basename(source));
+      // No symbolic link is copied at all: an absolute link inside the
+      // reference vault would point, from the copy, back into the vault
+      // itself (or anywhere else it points), and adopt or validate could
+      // then read or write through it.
+      const skipGit = (source) => !['.git', 'node_modules'].includes(basename(source)) && !lstatSync(source).isSymbolicLink();
       cpSync(vaultRoot, copy, { recursive: true, filter: skipGit });
       // A second real copy for the recorded configuration, rather than the
       // test above's hard links: this one lives in the temporary directory,
@@ -521,7 +526,10 @@ test(
       assert.equal(adoptedRun.status, recordedRun.status, 'the two verdicts disagree on the exit code');
     } finally {
       rmSync(work, { recursive: true, force: true });
-      assert.deepEqual(vaultListing(vaultRoot), listingBefore, 'the reference vault changed during this test');
+      // Recorded here, asserted below: an assertion inside `finally` would
+      // replace the failure that brought the run here.
+      listingAfter = vaultListing(vaultRoot);
     }
+    assert.deepEqual(listingAfter, listingBefore, 'the reference vault changed during this test');
   },
 );

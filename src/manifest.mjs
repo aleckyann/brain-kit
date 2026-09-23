@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
+import { SUPPORTED_LANGS } from './lang.mjs';
 
 // .brain-kit/manifest.json: every file `init` (and later `adopt`) wrote
 // into a vault, whose it is, and the sha256 of its bytes at the moment
@@ -12,9 +13,14 @@ import { dirname, join } from 'node:path';
 //   seeded   the kit only started it: from the moment of init it is the
 //            person's note, and `update` never touches it.
 //
-// Shape: { files: [{ path, sha256, class }] }, `path` vault-relative with
-// forward slashes. Nothing else is allowed, at either level, so a field
-// a later version adds has to be added here on purpose.
+// Shape: { lang?, files: [{ path, sha256, class }] }, `path` vault-relative
+// with forward slashes. Nothing else is allowed, at either level, so a
+// field a later version adds has to be added here on purpose.
+//
+// `lang` is the language the vault was installed or adopted in: the
+// skeleton init wrote from, or the language adopt inferred the
+// configuration in. Optional, so a manifest written before it existed
+// still reads.
 //
 // readManifest THROWS on every way the file can fail to be a real
 // manifest: missing, unreadable, empty, not JSON, or not this shape,
@@ -27,7 +33,7 @@ import { dirname, join } from 'node:path';
 export const MANIFEST_PATH = '.brain-kit/manifest.json';
 export const MANIFEST_CLASSES = Object.freeze(['managed', 'seeded']);
 
-const TOP_KEYS = Object.freeze(['files']);
+const TOP_KEYS = Object.freeze(['lang', 'files']);
 const ENTRY_KEYS = Object.freeze(['path', 'sha256', 'class']);
 const SHA256 = /^[0-9a-f]{64}$/;
 
@@ -60,6 +66,9 @@ export function manifestErrors(manifest) {
   if (!isPlainObject(manifest)) return ['$: must be an object'];
   for (const key of Object.keys(manifest)) {
     if (!TOP_KEYS.includes(key)) errors.push(`$.${key}: unknown key`);
+  }
+  if (Object.hasOwn(manifest, 'lang') && !SUPPORTED_LANGS.includes(manifest.lang)) {
+    errors.push(`$.lang: must be one of ${SUPPORTED_LANGS.join(', ')}`);
   }
   if (!Array.isArray(manifest.files)) {
     errors.push('$.files: must be an array');

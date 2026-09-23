@@ -98,3 +98,17 @@ for (const [name, value] of INVALID) {
     assert.equal(existsSync(join(root, MANIFEST_PATH)), false);
   });
 }
+
+// Slice D, task 5 fix round: the manifest may record the vault's language
+// at its top level. Optional, so a manifest written before the field
+// existed still reads; when present, only a shipped language is a value.
+test('lang is optional at the top level, and must be a supported language when present', () => {
+  for (const lang of ['en', 'pt-BR']) {
+    const root = rootWith(JSON.stringify({ lang, ...sample() }));
+    assert.equal(readManifest(root).lang, lang);
+  }
+  assert.equal(readManifest(rootWith(JSON.stringify(sample()))).lang, undefined, 'a manifest without lang still reads');
+  for (const bad of ['fr', '', null, 1]) {
+    assert.throws(() => readManifest(rootWith(JSON.stringify({ lang: bad, ...sample() }))), /\$\.lang: must be one of en, pt-BR|\$\.lang: must be one of pt-BR, en/, String(bad));
+  }
+});

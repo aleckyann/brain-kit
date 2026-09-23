@@ -28,7 +28,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { PassThrough } from 'node:stream';
 import {
-  chmodSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync,
+  appendFileSync, chmodSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { KIT_ROOT, kitVersion } from '../src/version.mjs';
@@ -197,6 +197,7 @@ for (const c of CASES) {
     assert.deepEqual(manifest.files.map((f) => f.path).sort(), existing.sort());
     assert.ok(manifest.files.length >= 20);
     assert.ok(manifest.files.some((f) => f.path === '.gitignore'), 'a dot-file the vault already has is recorded as the person\'s');
+    assert.equal(manifest.lang, c.lang, 'the manifest records the language adopt inferred in');
     for (const entry of manifest.files) {
       assert.equal(entry.class, 'seeded', entry.path);
       assert.equal(entry.sha256, createHash('sha256').update(readFileSync(join(copy.vault, entry.path))).digest('hex'), entry.path);
@@ -242,10 +243,10 @@ test('en fixture: collections, domains, per-type enums, tables, the log and the 
   const { config, notes } = inferConfig(join(FIXTURES, 'en'), { lang: 'en' });
   assert.deepEqual(config.taxonomy.collections, {
     core: { type: 'core' },
-    decisions: { type: 'decision', filename_pattern: 'YYYY-MM-<slug>' },
+    decisions: { type: 'decision' },
     pending: { type: 'pending' },
     people: { type: 'person' },
-    projects: { type: 'project', template: 'templates/template-project.md' },
+    projects: { type: 'project' },
   });
   assert.deepEqual(config.taxonomy.domains, ['memory']);
   assert.deepEqual(config.frontmatter.extensions, {
@@ -262,7 +263,7 @@ test('en fixture: collections, domains, per-type enums, tables, the log and the 
   assert.equal(config.taxonomy.files.promises, null);
   assert.equal(config.taxonomy.files.style_guide, null);
   assert.equal(config.taxonomy.log, 'memory/log.md');
-  assert.deepEqual(config.stale_policy.months, { 'people/': 6, 'organizations/': 12, 'pending/': 3 });
+  assert.deepEqual(config.stale_policy.months, { 'people/': 6, 'pending/': 3 }, 'no default for organizations/, a folder this vault does not have');
   assert.equal(config.validate.timestamp_deviation, 'forbid', 'every timestamp here carries an offset');
   assert.ok(!keysOf(notes).includes('adopt.note.plain_dates'));
   assert.ok(!keysOf(notes).includes('adopt.note.confidential_field'), 'the field is already this language\'s');
@@ -274,7 +275,7 @@ test('pt-BR fixture: markers in three folders become three confidential director
   assert.deepEqual(notes.find((n) => n.messageKey === 'adopt.note.confidential_dirs').params.added, ['projetos/', 'reunioes/']);
   assert.equal(config.validate.timestamp_deviation, 'allow');
   assert.equal(notes.find((n) => n.messageKey === 'adopt.note.plain_dates').params.count, 6);
-  assert.deepEqual(config.stale_policy.months, { 'pessoas/': 6, 'organizacoes/': 12, 'pendencias/': 3 });
+  assert.deepEqual(config.stale_policy.months, { 'pessoas/': 6, 'pendencias/': 3 });
   assert.deepEqual(notes.filter((n) => n.messageKey === 'adopt.note.stale_inconsistent').map((n) => n.params.dir), ['projetos/']);
   assert.deepEqual(Object.keys(config.frontmatter.extensions), ['confidencial', 'fase', 'vinculo']);
 });
@@ -396,7 +397,7 @@ test('a marked note at the vault root is named, not covered by declaring the who
   const root = tinyVault({ 'secret.md': note('x', 'confidential: true\n'), 'a/one.md': note('x') });
   const { config, notes } = inferConfig(root, { lang: 'en' });
   assert.deepEqual(config.privacy.confidential_dirs, ['people/']);
-  assert.deepEqual(notes.find((n) => n.messageKey === 'adopt.note.confidential_at_root').params.files, ['secret.md']);
+  assert.deepEqual(notes.find((n) => n.messageKey === 'adopt.note.confidential_uncovered').params.files, ['secret.md']);
 });
 
 test('a marked note nested under a directory already confidential adds nothing', () => {
@@ -416,10 +417,20 @@ test('the log: the default when it exists, the only log.md otherwise, and said s
   assert.deepEqual(several.notes.find((n) => n.messageKey === 'adopt.note.log_ambiguous').params.files, ['a/log.md', 'b/log.md']);
 });
 
-test('with no stale_after anywhere, the stale policy is the default one, and said so', () => {
-  const { config, notes } = inferConfig(tinyVault({ 'a/one.md': note('x') }), { lang: 'en' });
-  assert.deepEqual(config.stale_policy, readDefaults('en').stale_policy);
-  assert.ok(keysOf(notes).includes('adopt.note.stale_defaults'));
+test('with no stale_after anywhere, a default is kept only for a folder the vault has, and each one kept is said', () => {
+  const none = inferConfig(tinyVault({ 'a/one.md': note('x') }), { lang: 'en' });
+  assert.deepEqual(none.config.stale_policy, { key: 'path', months: {} });
+  assert.ok(keysOf(none.notes).includes('adopt.note.stale_none'));
+  const some = inferConfig(tinyVault({ 'people/one.md': note('person'), 'a/one.md': note('x') }), { lang: 'en' });
+  assert.deepEqual(some.config.stale_policy.months, { 'people/': 6 });
+  assert.deepEqual(some.notes.filter((n) => n.messageKey === 'adopt.note.stale_default_kept').map((n) => n.params), [{ dir: 'people/', months: 6 }]);
+  assert.ok(!keysOf(some.notes).includes('adopt.note.stale_none'));
+});
+
+test('a folder matching a language-default collection inherits no template and no file-name pattern', () => {
+  const root = tinyVault({ 'decisions/move.md': note('decision'), 'templates/template-decision.md': note('decision') });
+  const { config } = inferConfig(root, { lang: 'en' });
+  assert.deepEqual(config.taxonomy.collections, { decisions: { type: 'decision' } });
 });
 
 test('a folder whose notes agree on a whole-month offset sets it; one plain generated.at alone turns on the deviation', () => {
@@ -496,13 +507,13 @@ test('a directory already adopted, by its configuration or by its manifest alone
   const withConfig = freshCopy('en');
   writeFileSync(join(withConfig.vault, CONFIG_FILENAME), '{}\n');
   const beforeConfig = snapshot(withConfig.vault);
-  assertRefused(adopt(withConfig, ANSWERS.en), withConfig, beforeConfig, /already a brain-kit vault/);
+  assertRefused(adopt(withConfig, ANSWERS.en), withConfig, beforeConfig, /is already adopted/);
 
   const withManifest = freshCopy('en');
   mkdirSync(join(withManifest.vault, '.brain-kit'));
   writeFileSync(join(withManifest.vault, MANIFEST_PATH), '{"files":[]}\n');
   const beforeManifest = snapshot(withManifest.vault);
-  assertRefused(adopt(withManifest, ANSWERS.en), withManifest, beforeManifest, /already a brain-kit vault/);
+  assertRefused(adopt(withManifest, ANSWERS.en), withManifest, beforeManifest, /is already adopted/);
 
   const secondRun = freshCopy('en');
   assert.equal(adopt(secondRun, ANSWERS.en).status, EXIT.FAILURE, 'the fixture holds two house findings');
@@ -510,6 +521,12 @@ test('a directory already adopted, by its configuration or by its manifest alone
   const stateBefore = snapshot(secondRun.state);
   const again = adopt(secondRun, ANSWERS.en);
   assert.equal(again.status, EXIT.USAGE, again.stderr);
+  // The way back, in the refusal itself: edit the configuration, or
+  // remove the three files to adopt from scratch; never `update`, which
+  // does not redo an inference.
+  assert.match(again.stderr, /edit brain-kit\.config\.json/);
+  assert.ok(again.stderr.includes(`remove brain-kit.config.json, .brain-kit/manifest.json and ${join(realpathSync(secondRun.state), MACHINE_FILENAME)}`), again.stderr);
+  assert.doesNotMatch(again.stderr, /update/);
   assert.deepEqual(snapshot(secondRun.vault), beforeSecond);
   assert.deepEqual(snapshot(secondRun.state), stateBefore);
 });
@@ -562,7 +579,7 @@ test('a state directory inside the vault, or one already holding a machine.json,
   const beforeState = snapshot(taken.state);
   const t = adopt(taken, ANSWERS.en);
   assert.equal(t.status, EXIT.USAGE, t.stderr);
-  assert.match(t.stderr, /already exists, and init never overwrites it/);
+  assert.match(t.stderr, /already exists, and adopt never overwrites it/);
   assert.deepEqual(snapshot(taken.vault), beforeVault);
   assert.deepEqual(snapshot(taken.state), beforeState);
 });
@@ -591,11 +608,13 @@ test('a .brain-kit directory the vault already has keeps what is in it, recorded
 
 // --- a failure after the first write --------------------------------------------------
 
-test('a failure after the first write removes everything adopt created and touches nothing of the vault', () => {
+test('a failure after the first write removes everything adopt created and touches nothing of the vault', { skip: IS_ROOT && 'root ignores permissions' }, () => {
   const copy = freshCopy('en');
-  // A file where the manifest's directory would go: the configuration is
+  // A .brain-kit directory adopt may not write into: the configuration is
   // written, then the manifest cannot be.
-  writeFileSync(join(copy.vault, '.brain-kit'), 'not a directory\n');
+  const brainKitDir = join(copy.vault, '.brain-kit');
+  mkdirSync(brainKitDir);
+  chmodSync(brainKitDir, 0o500);
   const before = snapshot(copy.vault);
   const r = adopt(copy, ANSWERS.en);
   assert.equal(r.status, EXIT.FAILURE, r.stdout + r.stderr);
@@ -627,7 +646,7 @@ test('a configuration that appears while the questions are answered is refused j
   stdin.end();
   const code = await pending;
   assert.equal(code, EXIT.USAGE, stdout.text + stderr.text);
-  assert.match(stderr.text, /already a brain-kit vault/);
+  assert.match(stderr.text, /is already adopted/);
   assert.deepEqual(snapshot(copy.vault), before);
   assert.equal(existsSync(copy.state), false);
 });
@@ -696,7 +715,7 @@ test('a configuration that is a dangling symbolic link is still a configuration,
   const copy = freshCopy('en', { repository: false });
   symlinkSync(join(copy.base, 'nowhere.json'), join(copy.vault, CONFIG_FILENAME));
   const before = snapshot(copy.vault);
-  assertRefused(adopt(copy, ANSWERS.en), copy, before, /already a brain-kit vault/);
+  assertRefused(adopt(copy, ANSWERS.en), copy, before, /is already adopted/);
 });
 
 // The refusals that need no answer come before the first question: a
@@ -767,4 +786,184 @@ test('adopt exits with the worse of the two checks, never better', async () => {
     });
     assert.equal(code, expected, `validate ${validate}, lint ${lint}`);
   }
+});
+
+// --- fix round 1 ----------------------------------------------------------------------
+
+// I1: .brain-kit is created through, so a link there would put the
+// manifest wherever it points (a confidential folder, outside the vault),
+// and a file there would fail the write halfway. Both are refused before
+// anything is written, the outside directory included.
+test('a .brain-kit that is a symbolic link, to a folder of the vault or outside it, or a file, is refused with exit 2 and nothing written', () => {
+  for (const shape of ['link-inside', 'link-outside', 'file']) {
+    const copy = freshCopy('en');
+    const outside = join(copy.base, 'outside');
+    mkdirSync(outside);
+    const where = join(copy.vault, '.brain-kit');
+    if (shape === 'link-inside') symlinkSync(join(copy.vault, 'people'), where);
+    else if (shape === 'link-outside') symlinkSync(outside, where);
+    else writeFileSync(where, 'not a directory\n');
+    const before = snapshot(copy.vault);
+    const beforeOutside = snapshot(outside);
+    const r = adopt(copy, ANSWERS.en);
+    assertRefused(r, copy, before, /exists and is not a directory/);
+    assert.deepEqual(snapshot(outside), beforeOutside, `${shape}: something was written outside the vault`);
+  }
+});
+
+// I2: a folder or a note type named like a machine-only setting would sit
+// at a key position of the configuration, which refuses those names
+// anywhere; it is left out, said so, and the rest of the vault adopted.
+function reservedVault() {
+  return tinyVault({
+    'cars/one.md': note('model', 'fuel: gas\n'),
+    'cars/two.md': note('model', 'fuel: gas\n'),
+    'cars/three.md': note('car', 'fuel: diesel\n'),
+    'cars/four.md': note('car', 'fuel: diesel\n'),
+    'paths/walk.md': note('trail'),
+    'paths/climb.md': note('trail'),
+    'state_dir/one.md': note('log-entry'),
+  });
+}
+
+test('a note type or a first-level folder named like a machine-only setting is left out where it would collide, said so, and the rest adopted', () => {
+  const { config, notes } = inferConfig(reservedVault(), { lang: 'en' });
+  assert.deepEqual(validateConfig(completeDefaults(config, ANSWERS.en, { kitVersion: kitVersion() })), []);
+  assert.deepEqual(config.taxonomy.collections, {}, 'cars/ mixes two types; the other two folders are reserved names');
+  assert.deepEqual(config.taxonomy.domains, ['cars']);
+  assert.deepEqual(config.frontmatter.extensions.fuel, { type: 'enum', values_by_type: { car: ['diesel'] } });
+  assert.deepEqual(notes.filter((n) => n.messageKey === 'adopt.note.collection_reserved').map((n) => n.params.dir), ['paths', 'state_dir']);
+  assert.deepEqual(notes.filter((n) => n.messageKey === 'adopt.note.enum_type_reserved').map((n) => n.params), [{ field: 'fuel', type: 'model' }]);
+});
+
+test('an enum whose only type is reserved is declared a free string, and the vault is still adopted end to end', () => {
+  const only = inferConfig(tinyVault({ 'a/one.md': note('model', 'fuel: gas\n'), 'a/two.md': note('model', 'fuel: gas\n') }), { lang: 'en' });
+  assert.deepEqual(only.config.frontmatter.extensions.fuel, { type: 'string' });
+  const base = makeTempDir('brain-kit-adopt-reserved-');
+  const copy = { base, vault: reservedVault(), state: join(base, 'state'), cwd: base };
+  const r = adopt(copy, ANSWERS.en);
+  assert.notEqual(r.status, EXIT.FAILURE, r.stdout + r.stderr);
+  assert.deepEqual(loadConfig(copy.vault).taxonomy.domains, ['cars']);
+  assert.doesNotMatch(r.stderr, /defect in brain-kit/);
+});
+
+// I3: the refusal of an invalid configuration still fires, and before
+// anything is written, when inference hands it one.
+test('an inferred configuration the kit refuses stops adopt with exit 1 before anything is written', async () => {
+  const copy = freshCopy('en');
+  const before = snapshot(copy.vault);
+  const file = join(copy.base, 'answers.json');
+  writeFileSync(file, JSON.stringify(ANSWERS.en));
+  const invalid = (root, options) => {
+    const inferred = inferConfig(root, options);
+    inferred.config.frontmatter.extensions.model = { type: 'string' };
+    return inferred;
+  };
+  const stdout = collector();
+  const stderr = collector();
+  const code = await runInit(['--adopt', copy.vault, '--from-answers', file], { stdin: null, stdout, stderr }, createTranslator('en'), {
+    walkVault, env: testEnv(copy.state), cwd: copy.cwd, infer: invalid,
+  });
+  assert.equal(code, EXIT.FAILURE, stdout.text + stderr.text);
+  assert.match(stderr.text, /frontmatter\.extensions\.model: machine-only key/);
+  assert.deepEqual(snapshot(copy.vault), before);
+  assert.equal(existsSync(copy.state), false);
+});
+
+// I3: a file adopt reads only to checksum it (an attachment) is as much a
+// refusal as an unreadable note: never recorded with the hash of nothing.
+test('an unreadable file that is not a note, tracked or ignored, is refused with exit 2 and never checksummed', { skip: IS_ROOT && 'root ignores permissions' }, () => {
+  for (const rel of ['projects/plan.pdf', 'private-scans/scan.pdf']) {
+    const copy = freshCopy('en', { repository: false });
+    appendFileSync(join(copy.vault, '.gitignore'), 'private-scans/\n');
+    mkdirSync(join(copy.vault, rel.split('/')[0]), { recursive: true });
+    const target = join(copy.vault, rel);
+    writeFileSync(target, '%PDF-1.4 fictional\n');
+    const mode = statSync(target).mode & 0o7777;
+    const before = snapshot(copy.vault);
+    chmodSync(target, 0o000);
+    let r;
+    try {
+      r = adopt(copy, ANSWERS.en);
+    } finally {
+      chmodSync(target, mode);
+    }
+    assertRefused(r, copy, before, /cannot be read \(EACCES\)/);
+  }
+});
+
+// M1: one description per field, the one the configuration ends up with.
+test('the confidentiality field is described once, as what it is declared, whatever values it holds', () => {
+  const clean = inferConfig(join(FIXTURES, 'en'), { lang: 'en' }).notes;
+  const about = (list, field) => list.filter((n) => n.params.field === field && n.messageKey.startsWith('adopt.note.extension'));
+  assert.deepEqual(about(clean, 'confidential').map((n) => n.params.kind), ['boolean']);
+  const yes = inferConfig(tinyVault({ 'a/one.md': note('x', 'confidential: yes\n'), 'a/two.md': note('x', 'confidential: yes\n') }), { lang: 'en' }).notes;
+  assert.deepEqual(about(yes, 'confidential'), [], 'no "string" or "enum" before the boolean it becomes');
+  assert.ok(keysOf(yes).includes('adopt.note.confidential_not_boolean'));
+});
+
+test('a value the reader cannot read is named with its file, and the field is declared from the notes it can read', () => {
+  const root = tinyVault({
+    'a/one.md': note('x', 'stage: open\n'),
+    'a/two.md': note('x', 'stage: open\n'),
+    'a/three.md': note('x', 'stage: done\n\tstill part of it\n'),
+    'a/four.md': note('x', 'aliases: [one, uno]\n'),
+  });
+  const { config, notes } = inferConfig(root, { lang: 'en' });
+  assert.deepEqual(notes.find((n) => n.messageKey === 'adopt.note.extension_unreadable').params, { field: 'stage', file: 'a/three.md' });
+  assert.deepEqual(config.frontmatter.extensions.stage, { type: 'enum', values_by_type: { x: ['open'] } }, 'declared from the two notes it could read');
+  assert.deepEqual(notes.find((n) => n.messageKey === 'adopt.note.extension_skipped').params, { field: 'aliases', file: 'a/four.md' });
+  assert.ok(!notes.some((n) => n.messageKey === 'adopt.note.extension_skipped' && n.params.field === 'stage'));
+});
+
+test('a template or an index carrying the marker makes no directory confidential, is named, and "nothing marked" is never said', () => {
+  const root = tinyVault({
+    'templates/template-person.md': note('person', 'confidential: true\n'),
+    'notes/index.md': '---\nconfidential: true\n---\n# Notes\n',
+    'notes/one.md': note('x'),
+  });
+  const { config, notes } = inferConfig(root, { lang: 'en' });
+  assert.deepEqual(config.privacy.confidential_dirs, ['people/']);
+  assert.deepEqual(notes.find((n) => n.messageKey === 'adopt.note.confidential_uncovered').params.files, ['notes/index.md', 'templates/template-person.md']);
+  assert.ok(!keysOf(notes).includes('adopt.note.confidential_field_unused'));
+  assert.ok(keysOf(notes).includes('adopt.note.confidential_dirs_default'));
+});
+
+test('a marked note in a folder and another in its subfolder add the folder once', () => {
+  const root = tinyVault({ 'a/one.md': note('x', 'confidential: true\n'), 'a/b/two.md': note('x', 'confidential: true\n') });
+  assert.deepEqual(inferConfig(root, { lang: 'en' }).config.privacy.confidential_dirs, ['people/', 'a/']);
+});
+
+// M3: a person with an existing vault meets --adopt from the help and from
+// init's refusal of that vault.
+test('brain-kit --help lists init --adopt, and init refusing an existing vault points to it', () => {
+  const copy = freshCopy('en');
+  for (const lang of ['en', 'pt-BR']) {
+    const help = brainKit(['--help'], { env: testEnv(copy.state, { BRAIN_KIT_LANG: lang }), cwd: copy.cwd });
+    assert.match(help.stdout, /init --adopt \[dir\]/, lang);
+  }
+  const repo = brainKit(['init', copy.vault, '--yes'], { env: testEnv(copy.state), cwd: copy.cwd });
+  assert.equal(repo.status, EXIT.USAGE);
+  assert.match(repo.stderr, /already a git repository.*brain-kit init --adopt/s);
+  const plain = freshCopy('en', { repository: false });
+  const full = brainKit(['init', plain.vault, '--yes'], { env: testEnv(plain.state), cwd: plain.cwd });
+  assert.equal(full.status, EXIT.USAGE);
+  assert.match(full.stderr, /is not empty.*brain-kit init --adopt/s);
+});
+
+// M4: after an adoption with findings, the output says the adoption is done
+// and to edit the configuration, not to run adopt again; and a machine.json
+// left from an earlier adoption is named as something to remove.
+test('after an adoption with findings, the way forward is to edit the configuration, and a redo names every file to remove', () => {
+  const copy = freshCopy('en');
+  const r = adopt(copy, ANSWERS.en);
+  assert.equal(r.status, EXIT.FAILURE);
+  assert.match(r.stdout, /The adoption is done/);
+  assert.match(r.stdout, /edit brain-kit\.config\.json: do not run adopt again/);
+  rmSync(join(copy.vault, CONFIG_FILENAME));
+  rmSync(join(copy.vault, MANIFEST_PATH));
+  const redo = adopt(copy, ANSWERS.en);
+  assert.equal(redo.status, EXIT.USAGE);
+  assert.match(redo.stderr, /earlier adoption of this vault that you are redoing, remove it too/);
+  assert.doesNotMatch(redo.stderr, /no longer exists/);
 });

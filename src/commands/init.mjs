@@ -65,7 +65,8 @@ import { runLint } from './lint.mjs';
 // and tests may supply `env`, `now`, `cwd` (so no test ever resolves a
 // path against the directory the suite runs from) and `checks` (the
 // validate and lint runs) to reach the exit-code logic without a real
-// vault failing.
+// vault failing, and `infer` (adopt's inferConfig) to hand the refusal of
+// an invalid configuration one that inference itself no longer produces.
 
 const USAGE_FLAGS_WITH_VALUE = Object.freeze(['--lang', '--from-answers']);
 
@@ -159,16 +160,23 @@ function canonicalOf(target) {
   return join(realpathSync(existing), ...rest);
 }
 
-function refuseTarget(io, t, refusal) {
+// Under --adopt, a vault already adopted is refused with the way to adopt
+// it again (the three files to remove), never with `update`, which does
+// not redo an inference.
+function refuseTarget(io, t, refusal, { adopt, machinePath }) {
   const { dir, vault, count, detail } = refusal.params;
   let line;
   switch (refusal.key) {
     case 'not_a_directory': line = t('init.not_a_directory', { dir }); break;
     case 'inside_vault': line = t('init.inside_vault', { dir, vault }); break;
-    case 'already_vault': line = t('init.already_vault', { dir }); break;
+    case 'already_vault':
+      if (adopt) line = t('init.adopt_already_vault', { dir, machine: machinePath });
+      else line = t('init.already_vault', { dir });
+      break;
     case 'already_repository': line = t('init.already_repository', { dir }); break;
     case 'unreadable': line = t('init.unreadable', { dir, detail }); break;
     case 'adopt_no_index': line = t('init.adopt_no_index', { dir }); break;
+    case 'adopt_brain_kit_not_directory': line = t('init.adopt_brain_kit_not_directory', { path: refusal.params.path }); break;
     default: line = t('init.not_empty', { dir, count }); break;
   }
   io.stderr.write(`${line}\n`);
@@ -239,25 +247,26 @@ function buildMachine(canonical, stateDir, env) {
 }
 
 // Every check on the two places init writes, in one function, so the
-// second pass just before writing is the same code as the first. `inspect`
-// is the check on the target: inspectTarget for a new vault,
-// inspectAdoptTarget for an existing one.
-function refuseLocations(io, t, target, stateDir, machinePath, inspect) {
-  const refusal = inspect(target);
-  if (refusal !== null) return refuseTarget(io, t, refusal);
+// second pass just before writing is the same code as the first. The check
+// on the target is inspectTarget for a new vault, inspectAdoptTarget for
+// an existing one.
+function refuseLocations(io, t, target, stateDir, machinePath, adopt) {
+  const refusal = adopt ? inspectAdoptTarget(target) : inspectTarget(target);
+  if (refusal !== null) return refuseTarget(io, t, refusal, { adopt, machinePath });
   if (isInside(stateDir, target)) {
     io.stderr.write(`${t('init.state_inside_vault', { state: stateDir, dir: target })}\n`);
     return EXIT.USAGE;
   }
   if (existsSync(machinePath)) {
-    io.stderr.write(`${t('init.machine_exists', { file: machinePath })}\n`);
+    if (adopt) io.stderr.write(`${t('init.adopt_machine_exists', { file: machinePath })}\n`);
+    else io.stderr.write(`${t('init.machine_exists', { file: machinePath })}\n`);
     return EXIT.USAGE;
   }
   return null;
 }
 
 export async function runInit(argv, io, t, {
-  walkVault, env = process.env, now = () => new Date(), checks = null, cwd = process.cwd(),
+  walkVault, env = process.env, now = () => new Date(), checks = null, cwd = process.cwd(), infer = inferConfig,
 } = {}) {
   const parsed = parseArgs(argv);
   if (parsed.missingValue) {
@@ -317,8 +326,7 @@ export async function runInit(argv, io, t, {
   // symbolic link into the vault is seen to be inside it.
   const stateDir = canonicalOf(resolve(cwd, stateDirFor(target, env)));
   const machinePath = join(stateDir, MACHINE_FILENAME);
-  const inspect = parsed.adopt ? inspectAdoptTarget : inspectTarget;
-  const first = refuseLocations(io, t, target, stateDir, machinePath, inspect);
+  const first = refuseLocations(io, t, target, stateDir, machinePath, parsed.adopt);
   if (first !== null) return first;
 
   // adopt runs no git of its own, so it does not need one.
@@ -387,8 +395,8 @@ export async function runInit(argv, io, t, {
     // is a vault adopt cannot describe, nor record in the manifest: a
     // refusal, like a root it cannot list, and nothing is written.
     try {
-      inferred = inferConfig(target, { lang: answers.lang });
-      adoption = buildAdoptionManifest(target);
+      inferred = infer(target, { lang: answers.lang });
+      adoption = buildAdoptionManifest(target, { lang: answers.lang });
     } catch (error) {
       io.stderr.write(`${t('init.adopt_unreadable', { dir: target, detail: error.code ?? error.message })}\n`);
       return EXIT.USAGE;
@@ -412,7 +420,7 @@ export async function runInit(argv, io, t, {
   }
 
   // Second pass, just before writing: see the header.
-  const second = refuseLocations(io, t, target, stateDir, machinePath, inspect);
+  const second = refuseLocations(io, t, target, stateDir, machinePath, parsed.adopt);
   if (second !== null) return second;
 
   // Nested inside another repository is allowed (an empty directory in a

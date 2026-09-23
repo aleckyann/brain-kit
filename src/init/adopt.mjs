@@ -57,6 +57,7 @@ const MAX_ENUM_VALUES = 12;
 const NUMBER = /^-?\d+(\.\d+)?$/;
 const DATE_PREFIX = /^(\d{4})-(\d{2})-(\d{2})/;
 const RESERVED_FILENAMES = Object.freeze(['index.md', 'log.md']);
+const BRAIN_KIT_DIR = MANIFEST_PATH.split('/')[0];
 
 function isReserved(file) {
   return RESERVED_FILENAMES.includes(posix.basename(file));
@@ -93,6 +94,19 @@ export function inspectAdoptTarget(target) {
   // alone is enough, because adopt would have to overwrite the one there.
   if (present(join(dir, CONFIG_FILENAME)) || present(join(dir, MANIFEST_PATH))) {
     return { key: 'already_vault', params: { dir } };
+  }
+  // .brain-kit is where the manifest goes, and it is created through: a
+  // symbolic link there (to a confidential folder, to somewhere outside
+  // the vault) would put the manifest wherever it points, and a file there
+  // would fail the write halfway. Absent or a real directory, nothing else.
+  let brainKitDir = null;
+  try {
+    brainKitDir = lstatSync(join(dir, BRAIN_KIT_DIR));
+  } catch {
+    // Absent: adopt creates it.
+  }
+  if (brainKitDir !== null && !brainKitDir.isDirectory()) {
+    return { key: 'adopt_brain_kit_not_directory', params: { dir, path: join(dir, BRAIN_KIT_DIR) } };
   }
   try {
     readdirSync(dir);
@@ -196,18 +210,23 @@ export function inferConfig(root, { lang }) {
     if (type === null) entry.untyped++;
     else entry.types.add(type);
   }
+  // A name the versioned configuration reserves for machine.json (see
+  // MACHINE_ONLY_KEYS) is refused at ANY key position of it, so a folder
+  // or a note type carrying one ("paths/", "type: model") cannot become a
+  // key here: that one collection or that one type's list is left out,
+  // said so, and the rest of the vault is adopted. A frontmatter key with
+  // such a name is left undeclared the same way, further down.
+  const reserved = (name) => MACHINE_ONLY_KEYS.includes(name);
   const collections = new Map();
   const domains = [];
   for (const [dir, entry] of [...folders.entries()].sort(([a], [b]) => (a < b ? -1 : 1))) {
     if (entry.notes > 0 && entry.untyped === 0 && entry.types.size === 1) {
       const [type] = entry.types;
-      const collection = { type };
-      const known = defaults.taxonomy.collections[dir];
-      if (known?.type === type) {
-        if (known.template && all.includes(known.template)) collection.template = known.template;
-        if (known.filename_pattern) collection.filename_pattern = known.filename_pattern;
+      if (reserved(dir)) {
+        notes.push({ messageKey: 'adopt.note.collection_reserved', params: { dir, type } });
+        continue;
       }
-      collections.set(dir, collection);
+      collections.set(dir, { type });
       notes.push({ messageKey: 'adopt.note.collection', params: { dir, type, count: entry.notes } });
     } else {
       domains.push(dir);
@@ -220,75 +239,115 @@ export function inferConfig(root, { lang }) {
   // --- extensions, from the keys the notes carry beyond the format's -------
   const skip = new Set([...FORMAT_KEYS, ...defaults.frontmatter.required, ...defaults.frontmatter.forbidden]);
   const fieldValues = new Map();
-  const nonScalar = new Set();
-  // A note may well carry `model:` or `paths:`, but the versioned
-  // configuration refuses those names anywhere in it (they belong to
-  // machine.json), so declaring one would make the whole configuration
-  // invalid and adopt fail. Left undeclared, and said so.
+  // A list or a mapping in some note: the field is not a scalar, and is
+  // left undeclared. A value the reader could not read at all (a shape
+  // it declines, PARSER_LIMITS): the field is declared from the notes it
+  // could read, and validate points at the one it could not. Each names
+  // the first file it was seen in.
+  const collection = new Map();
+  const unreadable = new Map();
   const machineOnly = new Set();
   for (const file of learnFrom) {
     const frontmatter = parsed.get(file);
     for (const key of topLevelKeys(frontmatter)) {
       if (skip.has(key)) continue;
-      if (MACHINE_ONLY_KEYS.includes(key)) {
+      if (reserved(key)) {
         machineOnly.add(key);
         continue;
       }
       const value = readScalar(frontmatter, key);
+      if (typeof value === 'string' && value.trim() === '') continue; // blank: nothing to learn from
       const list = readList(frontmatter, key);
       const mapping = readMapping(frontmatter, key);
-      if (value === undefined || Array.isArray(list) || (mapping !== null && mapping !== undefined)) {
-        nonScalar.add(key);
+      if (Array.isArray(list) || (mapping !== null && mapping !== undefined && typeof mapping === 'object')) {
+        if (!collection.has(key)) collection.set(key, file);
         continue;
       }
-      if (value === null || value.trim() === '') continue;
+      if (value === undefined) {
+        if (!unreadable.has(key)) unreadable.set(key, file);
+        continue;
+      }
+      if (value === null) continue;
       if (!fieldValues.has(key)) fieldValues.set(key, []);
       fieldValues.get(key).push({ value: value.trim(), type: typeOf(file) });
     }
   }
+
+  // The confidentiality marker is settled before any extension is
+  // described, so a spelling it re-declares is described once, as what it
+  // ends up being. The spellings the kit knows are the ones its language
+  // defaults configure; a spelling counts as used wherever the lint that
+  // follows would see it, templates, indexes and logs included, so
+  // "nothing is marked" is never said about a vault something is marked
+  // in.
+  const spellings = [...new Set(SUPPORTED_LANGS.map((code) => readDefaults(code).privacy.confidential_field))].filter((s) => typeof s === 'string');
+  const everyFrontmatter = markdown.map((file) => splitFrontmatter(readFile(file)).frontmatter);
+  const used = spellings.filter((spelling) => everyFrontmatter.some((frontmatter) => readScalar(frontmatter, spelling) !== null));
+  const langField = defaults.privacy.confidential_field;
+  // Of the spellings used, the one that is not the English spelling is
+  // configured: the privacy rule reads the English one anyway, so both
+  // are then watched.
+  const field = used.find((spelling) => spelling !== DEFAULT_CONFIDENTIAL_FIELD) ?? used[0] ?? langField;
+  const marker = new Set(used.length > 0 ? used : [field]);
+
   const extensions = new Map();
-  for (const [field, entries] of fieldValues) {
-    if (nonScalar.has(field)) continue;
+  const extensionNotes = [];
+  for (const [name, entries] of fieldValues) {
+    if (collection.has(name) || marker.has(name)) continue;
     const kind = classifyValues(entries.map((entry) => entry.value));
     if (kind === 'enum') {
       const byType = new Map();
       for (const { value, type } of entries) {
         if (type === null) continue;
+        if (reserved(type)) {
+          if (!byType.has(type)) extensionNotes.push({ messageKey: 'adopt.note.enum_type_reserved', params: { field: name, type } });
+          byType.set(type, null);
+          continue;
+        }
         if (!byType.has(type)) byType.set(type, new Set());
         byType.get(type).add(value);
       }
-      const valuesByType = sortedObject(new Map([...byType].map(([type, set]) => [type, [...set].sort()])));
-      extensions.set(field, { type: 'enum', values_by_type: valuesByType });
+      const kept = [...byType].filter(([, set]) => set !== null);
+      if (kept.length === 0) {
+        extensions.set(name, { type: 'string' });
+        extensionNotes.push({ messageKey: 'adopt.note.extension_kind', params: { field: name, kind: 'string' } });
+        continue;
+      }
+      const valuesByType = sortedObject(new Map(kept.map(([type, set]) => [type, [...set].sort()])));
+      extensions.set(name, { type: 'enum', values_by_type: valuesByType });
       const values = Object.entries(valuesByType).map(([type, list]) => `${type}: ${list.join(' / ')}`);
-      notes.push({ messageKey: 'adopt.note.extension_enum', params: { field, values } });
+      extensionNotes.push({ messageKey: 'adopt.note.extension_enum', params: { field: name, values } });
     } else {
-      extensions.set(field, { type: kind });
-      notes.push({ messageKey: 'adopt.note.extension_kind', params: { field, kind } });
+      extensions.set(name, { type: kind });
+      extensionNotes.push({ messageKey: 'adopt.note.extension_kind', params: { field: name, kind } });
     }
   }
-  for (const field of [...nonScalar].sort()) notes.push({ messageKey: 'adopt.note.extension_skipped', params: { field } });
-  for (const field of [...machineOnly].sort()) notes.push({ messageKey: 'adopt.note.extension_reserved', params: { field } });
+  notes.push(...extensionNotes);
+  for (const [name, file] of [...unreadable].sort(([a], [b]) => (a < b ? -1 : 1))) {
+    if (marker.has(name) || collection.has(name)) continue;
+    notes.push({ messageKey: 'adopt.note.extension_unreadable', params: { field: name, file } });
+  }
+  for (const [name, file] of [...collection].sort(([a], [b]) => (a < b ? -1 : 1))) {
+    notes.push({ messageKey: 'adopt.note.extension_skipped', params: { field: name, file } });
+  }
+  for (const name of [...machineOnly].sort()) notes.push({ messageKey: 'adopt.note.extension_reserved', params: { field: name } });
 
   // --- the confidentiality marker ------------------------------------------
   //
   // privacy.confidential_field must name a DECLARED BOOLEAN extension
-  // (validateConfig says so), and the privacy rule reads it plus the
-  // English spelling. The spellings the kit knows are the ones its
-  // language defaults configure. Of those the vault uses, the one that is
-  // not the English spelling is configured, because the rule reads the
-  // English one anyway: both are then watched.
-  const spellings = [...new Set(SUPPORTED_LANGS.map((code) => readDefaults(code).privacy.confidential_field))].filter((s) => typeof s === 'string');
-  const used = spellings.filter((spelling) => fieldValues.has(spelling));
-  const langField = defaults.privacy.confidential_field;
-  const field = used.find((spelling) => spelling !== DEFAULT_CONFIDENTIAL_FIELD) ?? used[0] ?? langField;
-  for (const spelling of used) {
-    if (extensions.get(spelling)?.type !== 'boolean') {
+  // (validateConfig says so). Every spelling in use is declared boolean,
+  // whatever values it holds: the privacy rule reads only "true", so a
+  // "yes" is a marker the rule cannot see, and validate says so per note.
+  for (const spelling of marker) {
+    const values = fieldValues.get(spelling)?.map((entry) => entry.value) ?? [];
+    if (used.includes(spelling) && (values.some((v) => v !== 'true' && v !== 'false') || unreadable.has(spelling) || collection.has(spelling))) {
       notes.push({ messageKey: 'adopt.note.confidential_not_boolean', params: { field: spelling } });
+    } else if (used.includes(spelling)) {
+      notes.push({ messageKey: 'adopt.note.extension_kind', params: { field: spelling, kind: 'boolean' } });
     }
     extensions.set(spelling, { type: 'boolean', default: false });
   }
   if (used.length === 0) {
-    extensions.set(field, { type: 'boolean', default: false });
     notes.push({ messageKey: 'adopt.note.confidential_field_unused', params: { field } });
   } else if (field !== langField) {
     notes.push({ messageKey: 'adopt.note.confidential_field', params: { field, default: langField } });
@@ -296,24 +355,31 @@ export function inferConfig(root, { lang }) {
   config.frontmatter.extensions = sortedObject(extensions);
   config.privacy.confidential_field = field;
 
-  // Where the marker actually sits. The privacy rule itself is asked
-  // which marked notes lie outside the confidential directories, so this
-  // reconciliation can never disagree with the lint that follows; each
-  // one's own directory joins the list. A marked note at the vault root
-  // has no directory to add short of the whole vault, and is named
-  // instead. `.brain-kit/` rides along only so the rule never returns
-  // early on an empty list: the walk never enters a dot-directory.
+  // Where the marker actually sits. The privacy rule itself is asked, over
+  // the same files the lint that follows reads, which marked notes lie
+  // outside the confidential directories, so this reconciliation can never
+  // disagree with that lint; each one's own directory joins the list. Three
+  // places never become a confidential directory, and their marked files
+  // are named instead: the vault root (short of declaring the whole vault),
+  // the templates directory (a template carries a marker as the default for
+  // the notes made from it, not as a statement about itself), and an index
+  // or a log (a marker there would declare a whole folder confidential
+  // because of its table of contents). `.brain-kit/` rides along only so
+  // the rule never returns early on an empty list: the walk never enters a
+  // dot-directory.
   const privacyRule = LINT_RULES.find((rule) => rule.id === 'privacy');
   const dirs = [...defaults.privacy.confidential_dirs];
   const probe = { root, all: new Set(all), readFile, config: { privacy: { confidential_dirs: [...dirs, '.brain-kit/'], confidential_field: field } } };
   const outside = privacyRule.check(markdown, probe).filter((finding) => finding.check === 'confidential-field-outside').map((finding) => finding.file);
-  const atRoot = outside.filter((file) => posix.dirname(file) === '.');
-  const added = [...new Set(outside.filter((file) => posix.dirname(file) !== '.').map((file) => withSlash(posix.dirname(file))))].sort();
+  const notCovered = (file) => posix.dirname(file) === '.' || isUnderPath(file, templatesDir) || isReserved(file);
+  const uncovered = outside.filter(notCovered);
+  const added = [...new Set(outside.filter((file) => !notCovered(file)).map((file) => withSlash(posix.dirname(file))))].sort();
   const covered = [...dirs, ...added].filter((dir, index, list) => !list.some((other, otherIndex) => otherIndex !== index && other !== dir && isUnderPath(dir.slice(0, -1), other)));
   const addedKept = added.filter((dir) => covered.includes(dir));
   config.privacy.confidential_dirs = covered;
   if (addedKept.length > 0) notes.push({ messageKey: 'adopt.note.confidential_dirs', params: { dirs: covered, added: addedKept } });
-  if (atRoot.length > 0) notes.push({ messageKey: 'adopt.note.confidential_at_root', params: { files: atRoot } });
+  else notes.push({ messageKey: 'adopt.note.confidential_dirs_default', params: { dirs: covered } });
+  if (uncovered.length > 0) notes.push({ messageKey: 'adopt.note.confidential_uncovered', params: { files: uncovered } });
   // The price of those directories, said before the first lint says it:
   // a link from outside them into one of their notes is a leak by the
   // privacy rule's own definition, and each one is reported.
@@ -370,18 +436,31 @@ export function inferConfig(root, { lang }) {
     if (!offsets.has(dir)) offsets.set(dir, []);
     offsets.get(dir).push(monthOffset(at, staleAfter));
   }
-  if (offsets.size === 0) {
-    notes.push({ messageKey: 'adopt.note.stale_defaults', params: {} });
+  // The policy starts from the folders this vault has: a language default
+  // for a folder it does not have is left out, one for a folder it has is
+  // kept and said so, and a folder whose notes agree on a whole-month
+  // offset sets its own.
+  const present = new Set(all.filter((path) => path.includes('/')).map((path) => withSlash(path.split('/')[0])));
+  const months = {};
+  for (const [dir, value] of Object.entries(defaults.stale_policy.months)) {
+    if (present.has(withSlash(dir))) months[dir] = value;
   }
   for (const [dir, list] of [...offsets.entries()].sort(([a], [b]) => (a < b ? -1 : 1))) {
     const [first] = list;
-    if (first !== null && list.every((months) => months === first)) {
-      config.stale_policy.months[dir] = first;
+    if (first !== null && list.every((value) => value === first)) {
+      months[dir] = first;
       notes.push({ messageKey: 'adopt.note.stale_months', params: { dir, months: first, count: list.length } });
+    } else if (Object.hasOwn(months, dir)) {
+      notes.push({ messageKey: 'adopt.note.stale_inconsistent_default', params: { dir, months: months[dir] } });
     } else {
       notes.push({ messageKey: 'adopt.note.stale_inconsistent', params: { dir } });
     }
   }
+  for (const [dir, value] of Object.entries(months)) {
+    if (!offsets.has(dir)) notes.push({ messageKey: 'adopt.note.stale_default_kept', params: { dir, months: value } });
+  }
+  config.stale_policy.months = months;
+  if (Object.keys(months).length === 0) notes.push({ messageKey: 'adopt.note.stale_none', params: {} });
   if (plainDates > 0) {
     config.validate.timestamp_deviation = 'allow';
     notes.push({ messageKey: 'adopt.note.plain_dates', params: { count: plainDates } });
@@ -393,9 +472,12 @@ export function inferConfig(root, { lang }) {
 // Every file of the vault as it is now, each `seeded`: the person's, from
 // before the kit arrived, and never `update`'s to replace. Dot-entries are
 // listed too (a .gitignore, a CI workflow), `.git` itself never.
-export function buildAdoptionManifest(root) {
+// `lang` is the language adopt inferred the configuration in, recorded at
+// the manifest's top level as init records the language it installed.
+export function buildAdoptionManifest(root, { lang }) {
   const files = walkVault(root, {}, { all: true, dotEntries: true }).filter((path) => path !== CONFIG_FILENAME && path !== MANIFEST_PATH);
   return {
+    lang,
     files: files.map((path) => ({ path, sha256: sha256Of(readFileSync(join(root, ...path.split('/')))), class: 'seeded' })),
   };
 }
