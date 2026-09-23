@@ -32,6 +32,14 @@ export const GITIGNORE_PATH = '.gitignore';
 // of the skeleton is a note the person owns from the moment of init.
 export const ROOT_CONTRACT_FILES = Object.freeze(['AGENTS.md', 'CLAUDE.md', 'CONVENTIONS.md', 'SECURITY.md']);
 
+// The pull request body template `propose` renders (git.pr_body's
+// default): the kit's text, so `managed` as well, and refreshed by
+// `update` like the contract files.
+export const PR_BODY_PATH = '.brain-kit/pr-body.md';
+
+// Every skeleton file the kit keeps current: `managed` in the manifest.
+export const MANAGED_SKELETON_FILES = Object.freeze([...ROOT_CONTRACT_FILES, PR_BODY_PATH]);
+
 export function skeletonDir(lang) {
   return join(KIT_ROOT, 'lang', lang, 'vault');
 }
@@ -272,13 +280,13 @@ export function rollback(ledger) {
 // stamp throws before anything reaches the disk. Returns the manifest.
 export function writeVault(target, { lang, stamp, files, ledger = [] }) {
   const skeleton = listSkeleton(lang);
-  for (const rel of ROOT_CONTRACT_FILES) {
+  for (const rel of MANAGED_SKELETON_FILES) {
     if (!skeleton.includes(rel)) throw new Error(`the ${lang} skeleton has no ${rel}`);
   }
   const prepared = skeleton.map((rel) => {
     const raw = readFileSync(join(skeletonDir(lang), rel));
     const bytes = rel.endsWith('.md') ? Buffer.from(stampGenerated(raw.toString('utf8'), stamp), 'utf8') : raw;
-    return { rel, bytes, class: ROOT_CONTRACT_FILES.includes(rel) ? 'managed' : 'seeded' };
+    return { rel, bytes, class: MANAGED_SKELETON_FILES.includes(rel) ? 'managed' : 'seeded' };
   });
   const hookBytes = readFileSync(TEMPLATE_HOOK);
 

@@ -12,6 +12,7 @@ import { runUpdate } from './commands/update.mjs';
 import { runSync } from './commands/sync.mjs';
 import { runMachine } from './commands/machine.mjs';
 import { runVerify } from './commands/verify.mjs';
+import { runPropose } from './commands/propose.mjs';
 import { walkVault } from './vault.mjs';
 import { ConfigError } from './config.mjs';
 
@@ -54,6 +55,7 @@ const BUILTIN_COMMANDS = new Map([
   ['sync', (argv, io, t) => runSync(argv, io, t)],
   ['machine', (argv, io, t) => runMachine(argv, io, t)],
   ['verify', (argv, io, t) => runVerify(argv, io, t)],
+  ['propose', (argv, io, t) => runPropose(argv, io, t, { walkVault })],
   ['scan-blobs', (argv, io) => runScanBlobs(argv, io)],
   ['push-gate', (argv, io) => runPushGate(argv, io, createTranslator(GATE_LANG, {
     warn: (message) => io.stderr.write(`${message}\n`),

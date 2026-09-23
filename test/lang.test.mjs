@@ -107,6 +107,9 @@ const SKELETON_ROLES = Object.freeze({
   memory: { en: 'memory', 'pt-BR': 'memoria' },
   attachments: { en: 'attachments', 'pt-BR': 'anexos' },
   templates: { en: 'templates', 'pt-BR': 'templates' },
+  // The kit's own machinery, the same folder in every language: the pull
+  // request body template propose renders.
+  kit: { en: '.brain-kit', 'pt-BR': '.brain-kit' },
 });
 
 function skeletonFiles(lang, rel = '') {

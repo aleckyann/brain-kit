@@ -846,19 +846,27 @@ export function aheadBehind(root, a, b, { env = process.env } = {}) {
 // command, when git fails or prints a record it cannot read: a record
 // dropped is a dirty tree read as clean.
 export function dirtyPaths(root, { env = process.env } = {}) {
+  return [...new Set(dirtyPathBytes(root, { env }).map((path) => decodeBytes(path)))].sort();
+}
+
+// The same paths as dirtyPaths, as the bytes git printed, distinct and in
+// byte order: what a command hands back to git (propose stages them), since
+// a name that is not valid UTF-8 survives no decoding.
+export function dirtyPathBytes(root, { env = process.env } = {}) {
   const args = ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=none', '--no-renames'];
   const result = ask(root, args, { env, encoding: 'buffer' });
   if (result.status !== 0) {
     throw new Error(`git ${args.join(' ')} exited with status ${result.status}: ${decodeBytes(Buffer.from(result.stderr)).trim()}`);
   }
-  const paths = [];
+  const byKey = new Map();
   for (const record of splitNulFields(result.stdout)) {
     if (record.length < 4 || record[2] !== 0x20) {
       throw new Error(`git ${args.join(' ')} printed a record of an unknown shape (hex ${record.toString('hex')})`);
     }
-    paths.push(decodeBytes(record.subarray(3)));
+    const path = Buffer.from(record.subarray(3));
+    byKey.set(path.toString('hex'), path);
   }
-  return [...new Set(paths)].sort();
+  return [...byKey.values()].sort(Buffer.compare);
 }
 
 export function isClean(root, options = {}) {

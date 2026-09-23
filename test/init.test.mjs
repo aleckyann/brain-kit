@@ -35,11 +35,11 @@ import { CONFIG_FILENAME, MACHINE_FILENAME, findMachineOnlyKeys, validateConfig,
 import { EXIT } from '../src/exit-codes.mjs';
 import { createTranslator, LANG_VARIABLES } from '../src/lang.mjs';
 import { LINT_RULES } from '../src/rules/lint.mjs';
-import { walkVault } from '../src/vault.mjs';
+import { hasDotSegment, walkVault } from '../src/vault.mjs';
 import { splitFrontmatter, readMapping } from '../src/frontmatter.mjs';
 import { completeDefaults } from '../src/init/config.mjs';
 import { resolveClaudeBin, defaultAnswers, invalidAnswer } from '../src/init/answers.mjs';
-import { ROOT_CONTRACT_FILES, HOOK_PATH, isInside, stampGenerated, writeVault } from '../src/init/skeleton.mjs';
+import { MANAGED_SKELETON_FILES, HOOK_PATH, PR_BODY_PATH, isInside, stampGenerated, writeVault } from '../src/init/skeleton.mjs';
 import { runInit, worseExit } from '../src/commands/init.mjs';
 import { MANIFEST_PATH, readManifest } from '../src/manifest.mjs';
 import { makeTempDir } from './helpers/tmp.mjs';
@@ -230,9 +230,13 @@ for (const lang of ['en', 'pt-BR']) {
     assert.equal(byPath.get(HOOK_PATH).class, 'managed');
     assert.equal(byPath.get('.gitignore').class, 'managed');
     assert.equal(byPath.has(CONFIG_FILENAME), false);
-    for (const file of ROOT_CONTRACT_FILES) assert.equal(byPath.get(file)?.class, 'managed', file);
+    for (const file of MANAGED_SKELETON_FILES) assert.equal(byPath.get(file)?.class, 'managed', file);
+    // The pull request body template propose renders is the kit's, in the
+    // vault's language (slice C, task 3).
+    assert.equal(byPath.get(PR_BODY_PATH)?.class, 'managed');
+    assert.equal(readFileSync(join(vault, PR_BODY_PATH), 'utf8'), readFileSync(join(KIT_ROOT, 'lang', lang, 'vault', PR_BODY_PATH), 'utf8'));
     for (const file of skeletonFiles(lang)) {
-      if (!ROOT_CONTRACT_FILES.includes(file)) assert.equal(byPath.get(file)?.class, 'seeded', file);
+      if (!MANAGED_SKELETON_FILES.includes(file)) assert.equal(byPath.get(file)?.class, 'seeded', file);
     }
     // A managed file carries the hash of its bytes; a seeded one none.
     for (const entry of manifest.files) {
@@ -1076,7 +1080,7 @@ for (const lang of ['en', 'pt-BR']) {
     assert.deepEqual(report.findings, [], JSON.stringify(report.findings));
     assert.deepEqual(report.counts, { error: 0, warn: 0, defect: 0, skipped: 0 });
     assert.equal(report.scope.base, 'all');
-    assert.equal(report.scope.files, skeletonFiles(lang).filter((p) => p.endsWith('.md')).length, 'every note was read');
+    assert.equal(report.scope.files, skeletonFiles(lang).filter((p) => p.endsWith('.md') && !hasDotSegment(p)).length, 'every note was read');
   });
 }
 

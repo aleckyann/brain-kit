@@ -27,6 +27,7 @@ import { cpSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { KIT_ROOT, kitVersion } from '../src/version.mjs';
 import { CONFIG_FILENAME, validateConfig } from '../src/config.mjs';
+import { hasDotSegment } from '../src/vault.mjs';
 import { SUPPORTED_LANGS } from '../src/lang.mjs';
 import { LINT_RULES } from '../src/rules/lint.mjs';
 import { GENERIC_PATTERNS } from '../src/leak.mjs';
@@ -142,8 +143,11 @@ function completedConfig(lang) {
   return everyRuleAtError(config);
 }
 
-function markdownCount(lang) {
-  return listFiles(skeletonDir(lang)).filter((file) => file.endsWith('.md')).length;
+// The notes: a markdown file under a dot-directory (.brain-kit/pr-body.md,
+// the pull request body template) is the kit's machinery, never walked as
+// a note, and still read by the secrets rule, which reads dot-files too.
+function markdownCount(lang, { dotEntries = false } = {}) {
+  return listFiles(skeletonDir(lang)).filter((file) => file.endsWith('.md') && (dotEntries || !hasDotSegment(file))).length;
 }
 
 for (const lang of LANGS) {
@@ -174,7 +178,7 @@ for (const lang of LANGS) {
     // Every skeleton file plus the configuration itself: the configuration
     // is scanned against the credential shapes its own
     // privacy.secret_patterns lists, and must not flag itself.
-    assert.equal(report.secrets.scanned, markdownCount(lang) + 1);
+    assert.equal(report.secrets.scanned, markdownCount(lang, { dotEntries: true }) + 1);
   });
 
   test(`${lang}: a broken copy of the skeleton fails both commands, so the clean runs above can fail`, () => {

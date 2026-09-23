@@ -49,7 +49,7 @@ import { KIT_ROOT } from '../src/version.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { splitFrontmatter, readMapping } from '../src/frontmatter.mjs';
-import { HOOK_PATH, ROOT_CONTRACT_FILES, gitignoreText, stampGenerated } from '../src/init/skeleton.mjs';
+import { HOOK_PATH, MANAGED_SKELETON_FILES, gitignoreText, stampGenerated } from '../src/init/skeleton.mjs';
 import { GATE_LINE, installGate } from '../src/init/gate.mjs';
 import { MANIFEST_PATH, readManifest } from '../src/manifest.mjs';
 import { runUpdate } from '../src/commands/update.mjs';
@@ -602,10 +602,10 @@ test('with no directory argument, update acts on the vault it is run from', () =
   assert.match(r.stdout, /AGENTS\.md/);
 });
 
-test('every root contract file, the hook and .gitignore are managed, so the tests above cover what update refreshes', () => {
+test('every root contract file, the pull request body template, the hook and .gitignore are managed, so the tests above cover what update refreshes', () => {
   const v = initVault();
   const managed = readManifest(v.vault).files.filter((f) => f.class === 'managed').map((f) => f.path).sort();
-  assert.deepEqual(managed, [...ROOT_CONTRACT_FILES, HOOK_PATH, '.gitignore'].sort());
+  assert.deepEqual(managed, [...MANAGED_SKELETON_FILES, HOOK_PATH, '.gitignore'].sort());
 });
 
 test('a manifest that changes while update runs is not overwritten, and the run exits 1 saying so', async () => {
@@ -624,7 +624,7 @@ test('a manifest that changes while update runs is not overwritten, and the run 
   assert.equal(code, EXIT.FAILURE, stderr.text);
   assert.equal(readFileSync(file, 'utf8'), theirs);
   assert.match(stderr.text, /manifest\.json/);
-  assert.deepEqual(readdirSync(join(v.vault, '.brain-kit')), ['manifest.json'], 'no temporary file is left');
+  assert.deepEqual(readdirSync(join(v.vault, '.brain-kit')).sort(), ['manifest.json', 'pr-body.md'], 'no temporary file is left');
 });
 
 test('a refreshed file carries the moment of the update in generated.at, not the stamp it had', async () => {
@@ -747,7 +747,7 @@ test('--accept after taking the offer wholesale records the file\'s own hash, an
   assert.equal(manifestEntry(v.vault, 'AGENTS.md').sha256, sha(readFileSync(abs)));
   const r = update(v);
   assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
-  assert.ok(r.stdout.includes(T('update.summary', { managed: 6, refreshed: 0, current: 6, kept: 0, seeded: 27, attention: 0 })), r.stdout);
+  assert.ok(r.stdout.includes(T('update.summary', { managed: 7, refreshed: 0, current: 7, kept: 0, seeded: 27, attention: 0 })), r.stdout);
 });
 
 test('--accept clears a blocked offer, so the loop of "run update again" ends', () => {
@@ -1066,8 +1066,8 @@ test('--check\'s summary says what would be updated, never that anything was', (
   const v = initVault();
   makeOlder(v.vault, 'AGENTS.md');
   const check = update(v, ['--check']);
-  says(check, 'update.check_summary', { managed: 6, refreshed: 1, current: 5, kept: 0, seeded: 27, attention: 0 });
-  assert.ok(!check.stdout.includes(T('update.summary', { managed: 6, refreshed: 1, current: 5, kept: 0, seeded: 27, attention: 0 })));
+  says(check, 'update.check_summary', { managed: 7, refreshed: 1, current: 6, kept: 0, seeded: 27, attention: 0 });
+  assert.ok(!check.stdout.includes(T('update.summary', { managed: 7, refreshed: 1, current: 6, kept: 0, seeded: 27, attention: 0 })));
 });
 
 // A directory swapped for a link between the read and the write.
