@@ -28,15 +28,19 @@
 #      destination name of every reference it writes or deletes. The
 #      patterns are the generic credential shapes plus privacy.secret_patterns
 #      from the working tree's configuration, from the configuration at
-#      every pushed tip, and from the one on the remote's default branch as
+#      every pushed tip and at every earlier commit of the push that no
+#      remote-tracking reference holds yet, and from the one on the
+#      remote's default branch as
 #      this repository knows it (refs/remotes/<remote>/HEAD, else main, else
 #      master; on a push by url, those of every configured remote), because
 #      a pushed branch can delete a pattern from its own configuration and
 #      then violate it. The vault's own brain-kit.config.json, when it
 #      parses as a JSON object, is read for credential shapes only, since it
-#      declares the patterns and would match every one of them; a literal
-#      written into its other fields is therefore not refused, the same
-#      trade-off the linter makes.
+#      declares the patterns and would match every one of them. So a
+#      literal written into its other fields is not refused: for the
+#      checked-out copy that is the trade-off the linter already makes, and
+#      for the file's history, or any JSON object stored under its name, it
+#      is this gate's own accepted trade-off.
 #   4. Refuses a push made under the vault's own automation identity
 #      (brain-kit.config.json's git.agent_identity) whose DESTINATION is
 #      the vault's default branch, whatever the ref being pushed from is
@@ -65,9 +69,9 @@
 #     clone already holds, never asked of the remote. A clone holding none
 #     of refs/remotes/<remote>/HEAD, main or master for the remote pushed
 #     to (or, on a push by url, for any configured remote) is scanned with
-#     the working tree's and the pushed tips' patterns alone: a vault
-#     before its first push, or one whose default branch has another name
-#     and whose remote HEAD was never recorded (`git pull` does not record
+#     the working tree's patterns and those of the configurations the push
+#     carries alone: a vault before its first push, or one whose default
+#     branch has another name and whose remote HEAD was never recorded (`git pull` does not record
 #     it, and neither does `git fetch` before git 2.48). The gate says so
 #     on one line and names a command that fixes it for that case.
 #   - `git push --no-verify` skips every step of this hook. So does a clone

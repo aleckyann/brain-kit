@@ -1371,7 +1371,7 @@ test('--patterns config refuses a match of the working tree\'s own pattern', () 
   const r = configGate(work, bare, refLine(sha), { BRAIN_KIT_LEAK_PATTERNS: personal });
   assert.equal(r.status, 1, r.stderr);
   assert.match(r.stderr, /possible leak in notes\.md \(CONTENT/);
-  assert.match(r.stderr, /no default branch of remote 'origin' is known to this repository/);
+  assert.match(r.stderr, /this repository holds no remote-tracking branch of remote 'origin'/);
 });
 
 test('the default branch\'s patterns are added to the working tree\'s, not substituted for them', () => {
@@ -1573,7 +1573,7 @@ test('a remote HEAD that names a branch this repository no longer has is not a d
   assert.equal(git(work, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/gone']).status, 0);
   const r = configGate(work, bare, refLine(sha), { BRAIN_KIT_LEAK_PATTERNS: personal });
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stderr, /no default branch of remote 'origin' is known to this repository/);
+  assert.match(r.stderr, /this repository holds no remote-tracking branch of remote 'origin'/);
 });
 
 // --- fix round 1: the sources, their failures, and the remedies ------------
@@ -1587,7 +1587,7 @@ test('a default branch configuration that fails the schema is not reported as re
   writeFileSync(join(work, 'brain-kit.config.json'), JSON.stringify(config, null, 2));
   const r = configGate(work, bare, refLine(good), { BRAIN_KIT_LEAK_PATTERNS: personal });
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stderr, /on origin\/main, a default branch as this repository knows it, could not be used \(it does not match the configuration schema: /);
+  assert.match(r.stderr, /on origin\/main, a default branch as this repository knows it, could not be used \(its privacy\.secret_patterns is not a list of strings\)/);
   assert.doesNotMatch(r.stderr, /from the default branch as this repository knows it/);
 });
 
@@ -1645,6 +1645,10 @@ test('by url with configured remotes that know no default branch, the remedy is 
   const { work, bare, config, personal } = setupVault();
   const base = git(work, ['rev-parse', 'HEAD']).stdout.trim();
   assert.equal(spawnSync('git', ['--git-dir', bare, 'fetch', '-q', work, 'main:main']).status, 0);
+  // Published from this clone's view, but under no rung of the ladder: the
+  // commit that declares the pattern is then neither a default branch nor
+  // a configuration this push carries for the first time.
+  assert.equal(git(work, ['update-ref', 'refs/remotes/origin/published', base]).status, 0);
   assert.equal(spawnSync('git', ['--git-dir', bare, 'symbolic-ref', 'HEAD', 'refs/heads/main']).status, 0);
   const dropped = { ...config, privacy: { ...config.privacy, secret_patterns: [] } };
   assert.equal(git(work, ['checkout', '-q', '-b', 'drop-it']).status, 0);
@@ -1666,6 +1670,9 @@ test('with no remote configured, the remedy adds one and fetches it, and it work
   assert.equal(spawnSync('git', ['--git-dir', bare, 'fetch', '-q', work, 'main:main']).status, 0);
   assert.equal(spawnSync('git', ['--git-dir', bare, 'symbolic-ref', 'HEAD', 'refs/heads/main']).status, 0);
   assert.equal(git(work, ['remote', 'remove', 'origin']).status, 0);
+  // Published from this clone's view (a remote-tracking reference left by
+  // a remote since removed), so the declaring commit is not carried.
+  assert.equal(git(work, ['update-ref', 'refs/remotes/old/published', git(work, ['rev-parse', 'HEAD']).stdout.trim()]).status, 0);
   const dropped = { ...config, privacy: { ...config.privacy, secret_patterns: [] } };
   assert.equal(git(work, ['checkout', '-q', '-b', 'drop-it']).status, 0);
   commit(work, 'brain-kit.config.json', JSON.stringify(dropped, null, 2), 'drop');
@@ -1737,4 +1744,148 @@ test('a configuration saved with a byte-order mark is still read for credential 
   const r = configGate(work, bare, refLine(sha, base), { BRAIN_KIT_LEAK_PATTERNS: personal });
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stderr, /leak gate ran/);
+});
+
+// --- fix round 2: the configurations a push carries, and another engine's --
+
+test('a remote this clone never fetched: the line names git fetch alone, and running it adds the default branch', () => {
+  const { work, bare, personal } = setupVault();
+  assert.equal(spawnSync('git', ['--git-dir', bare, 'fetch', '-q', work, 'main:main']).status, 0);
+  assert.equal(spawnSync('git', ['--git-dir', bare, 'symbolic-ref', 'HEAD', 'refs/heads/main']).status, 0);
+  const tip = commit(work, 'notes.md', 'nothing here\n', 'clean');
+  const before = configGate(work, bare, refLine(tip), { BRAIN_KIT_LEAK_PATTERNS: personal });
+  assert.equal(before.status, 0, before.stderr);
+  const said = before.stderr.match(/holds no remote-tracking branch of remote 'origin'.* run: (.+)$/m);
+  assert.ok(said, before.stderr);
+  assert.equal(said[1], 'git fetch origin');
+  const ran = spawnSync('bash', ['-c', said[1]], { cwd: work, encoding: 'utf8' });
+  assert.equal(ran.status, 0, ran.stderr);
+  const after = configGate(work, bare, refLine(tip), { BRAIN_KIT_LEAK_PATTERNS: personal });
+  assert.equal(after.status, 0, after.stderr);
+  assert.match(after.stderr, /from the default branch as this repository knows it \(origin\/main\)/);
+});
+
+test('a configuration an earlier commit of the push carries that cannot be used, or does not compile, is named by its commit', () => {
+  const { work, bare, config, personal } = setupVault({ patterns: [] });
+  const broken = commit(work, 'brain-kit.config.json', 'not json at all\n', 'a broken configuration');
+  commit(work, 'brain-kit.config.json', JSON.stringify(config, null, 2), 'fixed again');
+  const tip = commit(work, 'notes.md', 'nothing here\n', 'clean');
+  const unusable = configGate(work, bare, refLine(tip), { BRAIN_KIT_LEAK_PATTERNS: personal });
+  assert.equal(unusable.status, 0, unusable.stderr);
+  assert.match(unusable.stderr, new RegExp(`the brain-kit\\.config\\.json at commit ${broken.slice(0, 7)} of this push could not be used`));
+
+  const bad = { ...config, privacy: { ...config.privacy, secret_patterns: ['([unclosed'] } };
+  const uncompilable = commit(work, 'brain-kit.config.json', JSON.stringify(bad, null, 2), 'a bad pattern');
+  commit(work, 'brain-kit.config.json', JSON.stringify(config, null, 2), 'fixed again');
+  const later = commit(work, 'more.md', 'still nothing\n', 'clean');
+  const r = configGate(work, bare, refLine(later), { BRAIN_KIT_LEAK_PATTERNS: personal });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, new RegExp(`a pattern in the brain-kit\\.config\\.json at commit ${uncompilable.slice(0, 7)} of this push does not compile`));
+});
+
+test('a configuration already on a remote is not read again as one the push carries', () => {
+  // The declaring commit is on origin/published, a reference no rung
+  // reads: it is neither carried nor a default branch, so the pattern it
+  // declared, dropped since, does not refuse.
+  const { work, bare, config, personal } = setupVault();
+  const base = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  assert.equal(git(work, ['update-ref', 'refs/remotes/origin/published', base]).status, 0);
+  const dropped = { ...config, privacy: { ...config.privacy, secret_patterns: [] } };
+  commit(work, 'brain-kit.config.json', JSON.stringify(dropped, null, 2), 'drop');
+  const tip = commit(work, 'notes.md', `A call with ${CONFIG_LITERAL}.\n`, 'use');
+  const r = configGate(work, bare, refLine(tip), { BRAIN_KIT_LEAK_PATTERNS: personal });
+  assert.equal(r.status, 0, r.stderr);
+});
+
+test('a default branch configuration another engine version wrote still contributes its patterns', () => {
+  // A key this engine does not know: the full schema refuses it, and the
+  // pattern read must not.
+  const { work, bare, config, personal } = setupVault();
+  const base = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  const newer = { ...config, a_key_from_a_newer_engine: { enabled: true } };
+  const merged = commit(work, 'brain-kit.config.json', JSON.stringify(newer, null, 2), 'written by a newer engine');
+  knowDefaultBranch(work, merged);
+  assert.equal(git(work, ['checkout', '-q', '-b', 'drop-it', base]).status, 0);
+  assert.equal(git(work, ['update-ref', 'refs/remotes/origin/published', base]).status, 0);
+  const dropped = { ...config, privacy: { ...config.privacy, secret_patterns: [] } };
+  commit(work, 'brain-kit.config.json', JSON.stringify(dropped, null, 2), 'drop');
+  const tip = commit(work, 'notes.md', `A call with ${CONFIG_LITERAL}.\n`, 'use');
+  const r = configGate(work, bare, `refs/heads/drop-it ${tip} refs/heads/drop-it ${ZERO}\n`, { BRAIN_KIT_LEAK_PATTERNS: personal });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /from the default branch as this repository knows it \(origin\/main\)/);
+  assert.match(r.stderr, /possible leak in notes\.md \(CONTENT/);
+});
+
+test('a default branch configuration whose privacy field is not an object could not be used', () => {
+  const { work, bare, config, personal } = setupVault();
+  const good = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  assert.equal(git(work, ['update-ref', 'refs/remotes/origin/published', good]).status, 0);
+  const merged = commit(work, 'brain-kit.config.json', JSON.stringify({ ...config, privacy: 'none' }, null, 2), 'privacy as a string');
+  knowDefaultBranch(work, merged);
+  writeFileSync(join(work, 'brain-kit.config.json'), JSON.stringify(config, null, 2));
+  const r = configGate(work, bare, refLine(good), { BRAIN_KIT_LEAK_PATTERNS: personal });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /could not be used \(its privacy field is not an object\)/);
+});
+
+test('a configuration carried only on the side of a merge that took the other side is read too', () => {
+  // side declares the pattern and commits a match; main merges it with
+  // `-s ours`, so the merge's configuration is main's. Git's default
+  // history simplification follows main alone and never lists the side's
+  // configuration; the push carries the side's commits all the same.
+  const { work, bare, config, personal } = setupVault({ patterns: [] });
+  assert.equal(git(work, ['checkout', '-q', '-b', 'side']).status, 0);
+  const declared = { ...config, privacy: { ...config.privacy, secret_patterns: [CONFIG_LITERAL] } };
+  commit(work, 'brain-kit.config.json', JSON.stringify(declared, null, 2), 'declare');
+  commit(work, 'notes.md', `A call with ${CONFIG_LITERAL}.\n`, 'use');
+  assert.equal(git(work, ['checkout', '-q', 'main']).status, 0);
+  assert.equal(git(work, ['merge', '-q', '-s', 'ours', '-m', 'take main', 'side']).status, 0);
+  const tip = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  assert.doesNotMatch(git(work, ['show', 'HEAD:brain-kit.config.json']).stdout, new RegExp(CONFIG_LITERAL), 'the precondition: the merge kept main\'s configuration');
+  const r = configGate(work, bare, refLine(tip), { BRAIN_KIT_LEAK_PATTERNS: personal });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /possible leak in notes\.md \(CONTENT/);
+});
+
+test('when git cannot list the commits a push carries, the configuration read refuses', () => {
+  // Driven in process: through the command the enumeration would already
+  // have refused this repository, whose tip's parent object is gone.
+  const { root, work, personal } = setupVault();
+  const parent = commit(work, 'a.md', 'a\n', 'a parent');
+  const tip = commit(work, 'b.md', 'b\n', 'a tip');
+  rmSync(join(work, '.git', 'objects', parent.slice(0, 2), parent.slice(2)));
+  const driver = join(root, 'carried-driver.mjs');
+  writeFileSync(driver, [
+    `import { prepareConfigScan } from ${JSON.stringify(join(KIT_ROOT, 'src', 'commands', 'push-gate.mjs'))};`,
+    `import { createTranslator } from ${JSON.stringify(join(KIT_ROOT, 'src', 'lang.mjs'))};`,
+    "import { Buffer } from 'node:buffer';",
+    `const outcome = prepareConfigScan({ stderr: process.stderr }, createTranslator('en'), 'origin', Buffer.from(${JSON.stringify(refLine(tip))}));`,
+    'process.stdout.write(`EXIT:${outcome.exit}\\n`);',
+    '',
+  ].join('\n'));
+  const r = spawnSync(process.execPath, [driver], { cwd: work, encoding: 'utf8', env: { ...process.env, BRAIN_KIT_LEAK_PATTERNS: personal } });
+  assert.match(r.stdout, /EXIT:1/, r.stderr);
+  assert.match(r.stderr, /could not list the commits of this push that change brain-kit\.config\.json/);
+});
+
+test('a default branch configuration with a non-string pattern could not be used; one with no privacy field at all is read, and adds nothing', () => {
+  const { work, bare, config, personal } = setupVault();
+  const good = git(work, ['rev-parse', 'HEAD']).stdout.trim();
+  assert.equal(git(work, ['update-ref', 'refs/remotes/origin/published', good]).status, 0);
+  const mixed = commit(work, 'brain-kit.config.json', JSON.stringify({ ...config, privacy: { ...config.privacy, secret_patterns: [CONFIG_LITERAL, 42] } }, null, 2), 'a number in the list');
+  knowDefaultBranch(work, mixed);
+  writeFileSync(join(work, 'brain-kit.config.json'), JSON.stringify(config, null, 2));
+  const r = configGate(work, bare, refLine(good), { BRAIN_KIT_LEAK_PATTERNS: personal });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /could not be used \(its privacy\.secret_patterns is not a list of strings\)/);
+
+  const { privacy, ...withoutPrivacy } = config;
+  void privacy;
+  const bare2 = commit(work, 'brain-kit.config.json', JSON.stringify(withoutPrivacy, null, 2), 'no privacy field');
+  knowDefaultBranch(work, bare2);
+  writeFileSync(join(work, 'brain-kit.config.json'), JSON.stringify(config, null, 2));
+  const read = configGate(work, bare, refLine(good), { BRAIN_KIT_LEAK_PATTERNS: personal });
+  assert.equal(read.status, 0, read.stderr);
+  assert.match(read.stderr, /from the default branch as this repository knows it \(origin\/main\)/);
+  assert.doesNotMatch(read.stderr, /could not be used/);
 });

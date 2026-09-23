@@ -631,8 +631,11 @@ function parsesAsJsonObject(latin1Text) {
 // blob record whose path is exactly `path` (held as latin1, like every
 // path here), and which parses as a JSON object, is read against
 // `patterns` instead. A plain-text note saved under that name is an
-// ordinary file. A literal in another field of a real configuration, or
-// in its history, is left unrefused: the linter's trade-off, below. It exists for one file,
+// ordinary file. A literal in another field of the checked-out
+// configuration is left unrefused, as the linter leaves it; the same
+// literal in the configuration's history, or in any JSON object stored at
+// that path, is left unrefused too, and that part is this gate's own
+// accepted trade-off, since the linter never reads history. It exists for one file,
 // the adopting vault's own brain-kit.config.json at the vault root, which
 // DECLARES the vault's patterns: read against them, every literal pattern
 // matches its own declaration and every push that touches the

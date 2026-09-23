@@ -57,16 +57,17 @@ gate, and the reference is identified by its position in the push instead.
 The template hook an adopting vault installs (`templates/githooks/pre-push`) runs the same
 scan of the same seven channels through the same command, `brain-kit push-gate`, against a
 different list: the generic credential shapes plus the vault's own
-`privacy.secret_patterns`, from its working tree, from every pushed tip and from its
-default branch as the clone knows it (`refs/remotes/<remote>/HEAD`, else `main`, else
+`privacy.secret_patterns`, from its working tree, from every pushed tip, from every earlier
+commit of the push that no remote-tracking reference holds yet, and from its default branch as the clone knows it (`refs/remotes/<remote>/HEAD`, else `main`, else
 `master`; on a push by url, those of every configured remote) together, because a pushed
 branch can delete a pattern from its own configuration. The vault's `brain-kit.config.json`,
 when it parses as a JSON object, is read for credential shapes only, since it declares the
-patterns; a literal in its other fields is not refused, the trade-off the linter makes too.
+patterns; a literal in its other fields is not refused, which for the checked-out copy is the
+linter's trade-off too and for the file's history is this gate's own.
 Where it differs from this gate: its engine is whatever `brain-kit` is on PATH, the hook
 itself lives in the vault's working tree, so a checked-out branch can change it, and a
-clone that holds no default branch reference is scanned with the working tree's and the
-pushed tips' patterns alone, which the gate says on one line.
+clone that holds no default branch reference is scanned with the working tree's patterns
+and those the push carries alone, which the gate says on one line.
 
 **Install it once per clone with `.githooks/install-gate`**, and re-run that script
 whenever the gate itself changes. Do NOT point `core.hooksPath` at `.githooks`: the file

@@ -606,6 +606,10 @@ test('with no default branch reference at all, the same branch is scanned with t
   // command, and running that command is what closes it.
   const { work, bare } = setupBranchThatDropsThePattern();
   assert.equal(spawnSync('git', ['--git-dir', bare, 'symbolic-ref', 'HEAD', 'refs/heads/main']).status, 0);
+  // Published, from this clone's view, under a name no rung reads: the
+  // commit that declares the pattern is known to be on the remote, so the
+  // push does not carry it for the first time.
+  assert.equal(git(work, ['update-ref', 'refs/remotes/origin/published', 'main']).status, 0);
   assert.equal(git(work, ['symbolic-ref', '--delete', 'refs/remotes/origin/HEAD']).status, 0);
   assert.equal(git(work, ['update-ref', '-d', 'refs/remotes/origin/main']).status, 0);
   // A clean branch first, so the fallback is observed without landing the
@@ -615,7 +619,7 @@ test('with no default branch reference at all, the same branch is scanned with t
   commitEverything(work, 'tidy');
   const tidy = git(work, ['push', '-q', 'origin', 'tidy']);
   assert.equal(tidy.status, 0, tidy.stderr);
-  const said = tidy.stderr.match(/no default branch of remote 'origin' is known to this repository .* from the working tree's brain-kit\.config\.json and from the pushed tips alone\. To add the default branch's, run: (.+)$/m);
+  const said = tidy.stderr.match(/no default branch of remote 'origin' is known to this repository .* from the working tree's brain-kit\.config\.json and from the configurations this push carries alone\. To add the default branch's, run: (.+)$/m);
   assert.ok(said, tidy.stderr);
   assert.equal(said[1], 'git fetch origin && git remote set-head origin --auto');
   for (const step of said[1].split(' && ')) {
@@ -903,4 +907,84 @@ test('reference lines that cannot all be read refuse: a cat that stops after one
   assert.match(r.stderr, /could not read the reference lines git sent for this push/);
   assert.equal(landedRef(bare, 'refs/heads/aaa-clean'), false);
   assert.equal(landedRef(bare, 'refs/heads/zzz-leaky'), false);
+});
+
+// --- fix round 2: every remote's default branch, and a first push --------
+
+function addLiteralToConfig(work) {
+  const configPath = join(work, 'brain-kit.config.json');
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  config.privacy.secret_patterns.push(LITERAL);
+  writeFileSync(configPath, JSON.stringify(config, null, 2));
+}
+
+function dropAndUse(work, branch = 'drop-it') {
+  assert.equal(git(work, ['checkout', '-q', '-b', branch]).status, 0);
+  withoutLiteralInConfig(work);
+  writeFileSync(join(work, 'people', 'ana.md'), `${CLEAN_PERSON}\nMet the ${LITERAL} team.\n`);
+  commitEverything(work, 'drop the pattern, then use it');
+}
+
+test('pushed by url, EVERY configured remote\'s default branch is read, not the first one found', () => {
+  // archive got main before the pattern was declared, origin after. The
+  // remotes are listed archive first, so a gate that kept only the first
+  // default branch it found would read the one without the pattern.
+  const { root, work, bare } = setup();
+  const archive = join(root, 'archive.git');
+  assert.equal(spawnSync('git', ['init', '-q', '--bare', archive]).status, 0);
+  assert.equal(git(work, ['remote', 'remove', 'origin']).status, 0);
+  assert.equal(git(work, ['remote', 'add', 'archive', archive]).status, 0);
+  assert.equal(git(work, ['remote', 'add', 'origin', bare]).status, 0);
+  assert.deepEqual(git(work, ['remote']).stdout.trim().split('\n'), ['archive', 'origin'], 'the precondition: archive is listed first');
+  commitEverything(work, 'init');
+  assert.equal(git(work, ['push', '-q', 'archive', 'main']).status, 0);
+  addLiteralToConfig(work);
+  commitEverything(work, 'declare the pattern');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main']).status, 0);
+  dropAndUse(work);
+  const r = git(work, ['push', '-q', bare, 'drop-it']);
+  refusedByTheObjectScan(r);
+  assert.match(r.stderr, /from the default branch as this repository knows it \(archive\/main, origin\/main\)/);
+  assert.equal(landedRef(bare, 'refs/heads/drop-it'), false);
+});
+
+test('pushed by name to a remote with no branch of its own, the other remotes\' default branches are read', () => {
+  // mirror is configured and never pushed to: its own ladder resolves
+  // nothing, and a gate that stopped there would read no default branch.
+  const { root, work } = setup({ config: WITH_LITERAL });
+  commitEverything(work, 'init');
+  assert.equal(git(work, ['push', '-q', 'origin', 'main']).status, 0);
+  const mirror = join(root, 'mirror.git');
+  assert.equal(spawnSync('git', ['init', '-q', '--bare', mirror]).status, 0);
+  assert.equal(git(work, ['remote', 'add', 'mirror', mirror]).status, 0);
+  dropAndUse(work);
+  const r = git(work, ['push', '-q', 'mirror', 'drop-it']);
+  refusedByTheObjectScan(r);
+  assert.match(r.stderr, /from the default branch as this repository knows it \(origin\/main\)/);
+  assert.equal(landedRef(mirror, 'refs/heads/drop-it'), false);
+});
+
+test('a vault\'s very first push reads the configurations it carries: a pattern declared earlier in it and dropped on the pushed branch refuses', () => {
+  const { work, bare } = setup({ config: WITH_LITERAL });
+  commitEverything(work, 'init');
+  dropAndUse(work);
+  const r = git(work, ['push', '-q', 'origin', 'drop-it']);
+  refusedByTheObjectScan(r);
+  assert.match(r.stderr, /possible leak in people\/ana\.md \(CONTENT/);
+  // Nothing is published, so no command can make a default branch appear,
+  // and the line does not pretend one can.
+  assert.match(r.stderr, /holds no remote-tracking branch of remote 'origin'.* If nothing is published there yet, there is no merged configuration to add and nothing to run; if this clone has simply never fetched it, run: git fetch origin$/m);
+  assert.doesNotMatch(r.stderr, /set-head/);
+  assert.equal(landedRef(bare, 'refs/heads/drop-it'), false);
+});
+
+test('the same on the default branch itself: a first push of main that drops and uses a pattern its own history declared refuses', () => {
+  const { work, bare } = setup({ config: WITH_LITERAL });
+  commitEverything(work, 'init');
+  withoutLiteralInConfig(work);
+  writeFileSync(join(work, 'people', 'ana.md'), `${CLEAN_PERSON}\nMet the ${LITERAL} team.\n`);
+  commitEverything(work, 'drop the pattern, then use it');
+  const r = git(work, ['push', '-q', 'origin', 'main']);
+  refusedByTheObjectScan(r);
+  assert.equal(landedRef(bare, 'refs/heads/main'), false);
 });
