@@ -225,12 +225,10 @@ function buildMachine(canonical, stateDir, env) {
     claude_bin: resolveClaudeBin(env),
     state_dir: stateDir,
     paths: {
-      lock: join(stateDir, STATE_FILES.LOCK),
       watermark: join(stateDir, STATE_FILES.WATERMARK),
       last_run: join(stateDir, STATE_FILES.LAST_RUN),
       log_dir: join(stateDir, STATE_FILES.LOG_DIR),
       questions_log: join(stateDir, STATE_FILES.QUESTIONS_LOG),
-      snapshot: join(stateDir, STATE_FILES.SNAPSHOT),
     },
   };
 }

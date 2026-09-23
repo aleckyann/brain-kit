@@ -48,10 +48,11 @@
 // no path is ever quoted. Run with the caller's git environment removed and
 // without taking the index's optional lock (src/guards/location.mjs).
 //
-// WHERE AND FOR WHOM. The snapshot is GUARD_FILES.SNAPSHOT in the vault's
-// git common directory, like the lock, and records the real path of the
-// working tree it was taken of: `splitDirty` refuses a snapshot of another
-// working tree (a linked worktree shares the common directory). Outside a
+// WHERE AND FOR WHOM. The snapshot is GUARD_FILES.SNAPSHOT in the git
+// directory of the working tree it describes (`git rev-parse --git-dir`),
+// not the common directory the lock uses: two linked worktrees, each with a
+// session of its own, keep two snapshots. It also records the real path of
+// that working tree, and `splitDirty` refuses a snapshot of another one. Outside a
 // repository there is nothing to snapshot and nowhere to keep one: refused,
 // exit 2. Like src/git.mjs, `root` must be the top level of its working
 // tree; a vault nested inside a larger repository is refused, not guessed
@@ -113,7 +114,7 @@ function distinct(paths) {
 
 // The working tree's top level, which `root` must be.
 function topLevelOf(root, env) {
-  const { commonDir, topLevel } = locateRepository(root, env);
+  const { gitDir, topLevel } = locateRepository(root, env);
   if (realpathSync(root) !== topLevel) {
     throw new GuardError({
       code: 'SNAPSHOT_NOT_TOPLEVEL',
@@ -122,20 +123,20 @@ function topLevelOf(root, env) {
       message: `${root} is inside the repository at ${topLevel}, not the top level of its own`,
     });
   }
-  return { commonDir, topLevel };
+  return { gitDir, topLevel };
 }
 
-function snapshotFile(commonDir) {
-  return join(commonDir, GUARD_FILES.SNAPSHOT);
+function snapshotFile(gitDir) {
+  return join(gitDir, GUARD_FILES.SNAPSHOT);
 }
 
 // Record every path git reports in `root` now, in any state, and return
 // the snapshot: `{ at, root, paths }`, `paths` being Buffers in byte order.
 export function takeSnapshot(root, { env = process.env, now = new Date() } = {}) {
-  const { commonDir, topLevel } = topLevelOf(root, env);
+  const { gitDir, topLevel } = topLevelOf(root, env);
   const paths = distinct(readStatus(root, env).map((entry) => entry.path));
   const snapshot = { at: now.toISOString(), root: topLevel, paths };
-  const target = snapshotFile(commonDir);
+  const target = snapshotFile(gitDir);
   const tmp = `${target}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
   const stored = { format: FORMAT, at: snapshot.at, root: snapshot.root, paths: paths.map((path) => path.toString('hex')) };
   writeFileSync(tmp, `${JSON.stringify(stored, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
@@ -158,8 +159,8 @@ function unreadableSnapshot(file) {
 // would read as "no snapshot", and a caller would take a fresh one, filing
 // every foreign path as already there.
 export function readSnapshot(root, { env = process.env } = {}) {
-  const { commonDir } = locateRepository(root, env);
-  const file = snapshotFile(commonDir);
+  const { gitDir } = locateRepository(root, env);
+  const file = snapshotFile(gitDir);
   let text;
   try {
     text = readFileSync(file, 'utf8');

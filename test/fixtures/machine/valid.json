@@ -7,7 +7,7 @@
   "notify_command": ["notify-send", "-u", "normal", "{title}", "{body}"],
   "path_extra": ["~/.npm-global/bin", "~/.local/bin"],
   "transcripts_dir": "~/.claude/projects",
-  "paths": { "lock": "curate.lock", "watermark": "watermark.json", "last_run": "last-run.json", "log_dir": "logs", "questions_log": "questions.tsv", "snapshot": "snapshot.json", "viz": "viz.html" },
+  "paths": { "watermark": "watermark.json", "last_run": "last-run.json", "log_dir": "logs", "questions_log": "questions.tsv", "viz": "viz.html" },
   "log_retention_days": 30,
   "keep_stream": false,
   "briefing_task_id": null

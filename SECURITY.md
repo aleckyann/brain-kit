@@ -173,3 +173,9 @@ unstated gets trusted past them.
 
 The only way to close the first two is a check the person pushing cannot skip, which means
 a server-side hook or a required status check. This repository has neither today.
+
+## The vault lock, and what it does not cover
+
+- **Two machines cloned from one image, with the same machine id and host name, sharing a
+  vault over a network file system, can both take the vault lock**, because each reads the
+  other's live lock as left behind by a previous boot of the same machine.

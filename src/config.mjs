@@ -74,8 +74,27 @@ function confidentialFieldErrors(config) {
   return [`$.privacy.confidential_field: "${field}" must name a boolean extension declared in frontmatter.extensions`];
 }
 
+// Keys under `paths` that machine.json files written before slice 1C carry:
+// the lock and the session snapshot, which used to live in the state
+// directory and now live in the repository (src/guards/location.mjs).
+// Nothing reads them any more and init no longer writes them, but an older
+// file carrying them must still read: they are ignored, never an error, and
+// never handed on, so no caller can take a lock at a path the guards do not
+// use.
+export const RETIRED_MACHINE_PATHS = Object.freeze(['lock', 'snapshot']);
+
+// `machine` without the retired `paths` keys; every other value, and
+// anything that is not the expected shape, is left for the schema to judge.
+export function withoutRetiredPaths(machine) {
+  const paths = machine?.paths;
+  if (paths === null || typeof paths !== 'object' || Array.isArray(paths)) return machine;
+  const kept = { ...paths };
+  for (const key of RETIRED_MACHINE_PATHS) delete kept[key];
+  return { ...machine, paths: kept };
+}
+
 export function validateMachine(machine) {
-  return validateSchema(machine, loadSchema('machine.schema.json'));
+  return validateSchema(withoutRetiredPaths(machine), loadSchema('machine.schema.json'));
 }
 
 // Decoded the one way every scanner in this project decodes bytes
@@ -106,7 +125,7 @@ export function loadConfig(vaultDir) {
 export function loadMachine(stateDir) {
   const file = join(stateDir, MACHINE_FILENAME);
   if (!existsSync(file)) throw new ConfigError(`Machine file not found: ${file} (created by brain-kit init from phase 1 onward)`);
-  const machine = readJson(file);
+  const machine = withoutRetiredPaths(readJson(file));
   const errors = validateMachine(machine);
   if (errors.length) throw new ConfigError(`Invalid ${file}`, errors);
   return machine;

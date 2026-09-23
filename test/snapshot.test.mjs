@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { takeSnapshot, readSnapshot, splitDirty } from '../src/guards/snapshot.mjs';
 import { GUARD_FILES, GuardError } from '../src/guards/location.mjs';
@@ -83,7 +83,7 @@ test('outside a repository there is nothing to snapshot and nowhere to keep one:
 
 // --- where it is kept, and how -----------------------------------------------------
 
-test('the snapshot is kept in the git common directory, 0600, paths in hex, with nothing else left there, and read back identical', () => {
+test('the snapshot is kept in the working tree\'s git directory, 0600, paths in hex, with nothing else left there, and read back identical', () => {
   const root = makeRepo(FILES);
   write(root, 'notes/a.md', 'edited\n');
   const snapshot = takeSnapshot(root, { now: NOW });
@@ -448,15 +448,25 @@ test('taking a snapshot writes nothing into the vault, not even the index refres
   assert.equal(readFileSync(join(root, 'notes/a.md'), 'utf8'), 'edited\n');
 });
 
-test('two linked worktrees share one snapshot file: the second snapshot replaces the first, which then refuses to answer', () => {
+test('two linked worktrees keep two snapshots, each in its own git directory, each answering for its own tree', () => {
   const root = makeRepo(FILES);
   const worktree = join(root, '..', 'worktree');
   git(root, ['worktree', 'add', '-q', '-b', 'other', worktree]);
+  write(root, 'notes/a.md', 'main tree, before\n');
+  write(worktree, 'notes/b.md', 'linked tree, before\n');
   const first = takeSnapshot(root);
-  takeSnapshot(worktree);
-  assert.equal(readSnapshot(root).root, realpathSync(worktree));
-  assert.equal(codeOf(() => splitDirty(root, readSnapshot(root))), 'SNAPSHOT_OTHER_ROOT');
-  assertSplit(splitDirty(root, first), { before: [], since: [] });
-  rmSync(worktree, { recursive: true, force: true });
+  const second = takeSnapshot(worktree);
+  const linkedGitDir = realpathSync(git(worktree, ['rev-parse', '--git-dir']).replace(/\n$/, ''));
+  assert.notEqual(linkedGitDir, join(root, '.git'));
+  assert.equal(JSON.parse(readFileSync(join(linkedGitDir, GUARD_FILES.SNAPSHOT), 'utf8')).root, realpathSync(worktree));
+  assert.equal(JSON.parse(readFileSync(snapshotFile(root), 'utf8')).root, root);
+  assert.deepEqual(readSnapshot(root), first);
+  assert.deepEqual(readSnapshot(worktree), second);
+  write(root, 'notes/c.md', 'main tree, since\n');
+  write(worktree, 'notes/c.md', 'linked tree, since\n');
+  assertSplit(splitDirty(root, readSnapshot(root)), { before: ['notes/a.md'], since: ['notes/c.md'] });
+  assertSplit(splitDirty(worktree, readSnapshot(worktree)), { before: ['notes/b.md'], since: ['notes/c.md'] });
+  // Handed the other tree's snapshot, each still refuses.
+  assert.equal(codeOf(() => splitDirty(root, second)), 'SNAPSHOT_OTHER_ROOT');
+  assert.equal(codeOf(() => splitDirty(worktree, first)), 'SNAPSHOT_OTHER_ROOT');
 });
-

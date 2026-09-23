@@ -7,10 +7,6 @@ import { basename, isAbsolute, join, resolve } from 'node:path';
 // a vault's state directory. Declared here, in the one module that resolves
 // that directory, so no other module invents or renames one of these paths.
 //
-//   LOCK          the exclusive lock the scheduled curator loop takes before
-//                 a run, so two runs against the same vault never overlap
-//                 (ports the original vault's flock-based lock, now scoped
-//                 per vault instead of one lock shared by every vault).
 //   WATERMARK     the high-water mark of the last day (or ref) the scheduled
 //                 curator has already read, carried over from the original
 //                 vault's own watermark file. Kept as JSON, not a bare date
@@ -19,28 +15,23 @@ import { basename, isAbsolute, join, resolve } from 'node:path';
 //   LAST_RUN      a small record of the most recent run's outcome (status,
 //                 timestamp), so a briefing or `doctor` can answer "did the
 //                 last run succeed" without re-parsing the log directory.
-//   SNAPSHOT      a path machine.json records under `paths.snapshot`.
-//
-// The guards every writing command takes, the vault lock and the session
-// snapshot, do NOT live here: a state directory is chosen by the caller's
-// environment (BRAIN_KIT_STATE_DIR, XDG_STATE_HOME, the path the vault was
-// reached by), so one vault can have several, and a lock kept in one of
-// them lets a second writer in through another. They live in the vault's
-// git common directory instead (src/guards/location.mjs), the one place
-// every environment, symlink and linked worktree of a repository agrees on.
-// LOCK and SNAPSHOT above are what machine.json records, and the guards
-// read neither.
 //   LOG_DIR       directory holding one dated log file per run (the
 //                 individual file names are dynamic, so only the directory
 //                 itself is named here).
 //   QUESTIONS_LOG open questions the curator raised but could not resolve on
 //                 its own; kept apart from the run log because it is read on
 //                 its own by the briefing, independent of any single run.
+//
+// There is no lock and no snapshot here, on purpose. A state directory is
+// chosen by the caller's environment (BRAIN_KIT_STATE_DIR, XDG_STATE_HOME),
+// so one vault can have several, and a lock kept in one of them lets a
+// second writer in through another. The vault lock every writing command
+// takes, the scheduled curator's included, lives in the repository's git
+// common directory, and the session snapshot in the working tree's git
+// directory (src/guards/location.mjs). machine.json no longer names either.
 export const STATE_FILES = Object.freeze({
-  LOCK: 'lock',
   WATERMARK: 'watermark.json',
   LAST_RUN: 'last-run.json',
-  SNAPSHOT: 'snapshot.json',
   LOG_DIR: 'logs',
   QUESTIONS_LOG: 'questions.log',
 });

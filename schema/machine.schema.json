@@ -17,10 +17,10 @@
     "state_dir": { "type": "string" },
     "paths": {
       "type": "object", "additionalProperties": false,
-      "required": ["lock", "watermark", "last_run", "log_dir"],
+      "required": ["watermark", "last_run", "log_dir"],
       "properties": {
-        "lock": { "type": "string" }, "watermark": { "type": "string" }, "last_run": { "type": "string" }, "log_dir": { "type": "string" },
-        "questions_log": { "type": "string" }, "snapshot": { "type": "string" }, "viz": { "type": "string" }
+        "watermark": { "type": "string" }, "last_run": { "type": "string" }, "log_dir": { "type": "string" },
+        "questions_log": { "type": "string" }, "viz": { "type": "string" }
       }
     },
     "log_retention_days": { "type": "integer", "minimum": 1 },

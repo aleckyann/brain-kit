@@ -5,7 +5,9 @@ import { readFileSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
-import { validateConfig, validateMachine, findMachineOnlyKeys, loadConfig, ConfigError, CONFIG_FILENAME } from '../src/config.mjs';
+import {
+  validateConfig, validateMachine, findMachineOnlyKeys, loadConfig, loadMachine, ConfigError, CONFIG_FILENAME, RETIRED_MACHINE_PATHS, withoutRetiredPaths,
+} from '../src/config.mjs';
 
 const fixture = (name) => JSON.parse(readFileSync(join(KIT_ROOT, 'test', 'fixtures', name), 'utf8'));
 const rawFixture = (name) => readFileSync(join(KIT_ROOT, 'test', 'fixtures', name), 'utf8');
@@ -236,6 +238,41 @@ test('lint.secrets.exclude_paths is accepted as a list of paths and refuses an e
   assert.ok(validateConfig(config).some((e) => e.startsWith('$.lint.secrets.exclude_paths[0]')));
   config.lint.secrets = { exclude_paths: 'attachments/' };
   assert.ok(validateConfig(config).some((e) => e.startsWith('$.lint.secrets.exclude_paths')));
+});
+
+test('machine.json names no lock and no snapshot: a new file without them is valid, and paths still requires the state files', () => {
+  const machine = fixture('machine/valid.json');
+  assert.equal('lock' in machine.paths, false);
+  assert.equal('snapshot' in machine.paths, false);
+  assert.deepEqual(validateMachine(machine), []);
+  for (const key of ['watermark', 'last_run', 'log_dir']) {
+    const without = fixture('machine/valid.json');
+    delete without.paths[key];
+    assert.deepEqual(validateMachine(without), [`$.paths.${key}: required`], key);
+  }
+  const unknown = fixture('machine/valid.json');
+  unknown.paths.other = 'x';
+  assert.notDeepEqual(validateMachine(unknown), [], 'any other unknown key under paths is still refused');
+});
+
+test('an older machine.json carrying paths.lock and paths.snapshot still reads: the keys are ignored and never handed on', () => {
+  const older = fixture('machine/valid.json');
+  older.paths.lock = '/home/ana/.local/state/brain-kit/brain-1a2b3c4d/lock';
+  older.paths.snapshot = '/home/ana/.local/state/brain-kit/brain-1a2b3c4d/snapshot.json';
+  assert.deepEqual(validateMachine(older), []);
+  assert.deepEqual(validateMachine({ ...older, paths: { ...older.paths, lock: 5 } }), [], 'ignored whatever they hold');
+  assert.equal(older.paths.lock.endsWith('/lock'), true, 'validating never changes what it was given');
+  const dir = makeTempDir('brain-kit-machine-older-');
+  writeFileSync(join(dir, 'machine.json'), JSON.stringify(older));
+  const loaded = loadMachine(dir);
+  assert.equal('lock' in loaded.paths, false);
+  assert.equal('snapshot' in loaded.paths, false);
+  assert.equal(loaded.paths.watermark, older.paths.watermark);
+  assert.deepEqual(RETIRED_MACHINE_PATHS, ['lock', 'snapshot']);
+  // Nothing but paths is touched, and a paths that is not an object is left for the schema.
+  assert.deepEqual(withoutRetiredPaths({ vault_id: 'x' }), { vault_id: 'x' });
+  assert.deepEqual(validateMachine({ ...older, paths: ['lock'] }), ['$.paths: expected object, got array']);
+  assert.deepEqual(validateMachine({ ...older, paths: null }), ['$.paths: expected object, got null']);
 });
 
 test('the example machine.json is valid and canonical_path is required', () => {

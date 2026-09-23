@@ -1,4 +1,5 @@
-// Where the guards live: the vault's git common directory.
+// Where the guards live: the lock in the vault's git common directory, the
+// session snapshot in the git directory of the working tree it describes.
 //
 // The first version kept the lock and the snapshot in the vault's state
 // directory, and the review ran four live holders on one vault at once: one
@@ -8,8 +9,12 @@
 // default; the incidents these guards exist for (docs/incidents.md,
 // 29/07/2026 and 16/09/2026) are exactly a scheduled round against a live
 // session. What every environment, every symbolic link and every linked
-// worktree of one repository agrees on is the repository itself, so both
-// files live in `git rev-parse --git-common-dir`: GUARD_FILES below.
+// worktree of one repository agrees on is the repository itself, so the lock
+// lives in `git rev-parse --git-common-dir`: one lock for every working tree
+// of a repository, since they share its objects, its refs and its index of
+// branches. The snapshot is about one working tree, so it lives in that
+// tree's own `git rev-parse --git-dir`: two linked worktrees, each with a
+// session of its own, keep two snapshots instead of overwriting one.
 //
 // Every writing command in this slice needs a repository, so outside one
 // the guards refuse, with exit 2 (usage: not a vault this command can work
@@ -25,7 +30,9 @@ import { run } from '../exec.mjs';
 import { EXIT } from '../exit-codes.mjs';
 import { localGitVarNames, withoutLocalGitVars } from '../git-env.mjs';
 
-// Names inside the git common directory. LOCK_RECLAIM is the marker a
+// LOCK and LOCK_RECLAIM live in the git common directory, SNAPSHOT in the
+// working tree's own git directory (the same directory for the main
+// working tree). LOCK_RECLAIM is the marker a
 // process creates, exclusively, to earn the right to replace a stale LOCK
 // (src/guards/lock.mjs says why a rename needs it). LOCK, LOCK_RECLAIM and
 // SNAPSHOT are each written through a transient sibling named
@@ -80,8 +87,9 @@ function printedPath(stdout) {
   return stdout.endsWith('\n') ? stdout.slice(0, -1) : stdout;
 }
 
-// The repository `root` is in: its git common directory and the top level
-// of the working tree `root` belongs to, both as real paths. Refuses, with
+// The repository `root` is in: its git common directory, the git directory
+// of the working tree `root` belongs to, and that tree's top level, all as
+// real paths. Refuses, with
 // exit 2, a directory that is not inside a working tree (no repository at
 // all, a bare repository, the inside of a .git directory). "Not a
 // repository" is concluded only when git says exactly that: git missing,
@@ -107,5 +115,5 @@ export function locateRepository(root, env = process.env) {
     if (result.status !== 0 || printedPath(result.stdout) === '') throw gitFailed(root, ['rev-parse', flag], result);
     return realpathSync(resolve(root, printedPath(result.stdout)));
   };
-  return { commonDir: askFor('--git-common-dir'), topLevel: askFor('--show-toplevel') };
+  return { commonDir: askFor('--git-common-dir'), gitDir: askFor('--git-dir'), topLevel: askFor('--show-toplevel') };
 }

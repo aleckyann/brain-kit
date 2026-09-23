@@ -73,11 +73,12 @@ test('calling ensureStateDir twice is harmless', () => {
 });
 
 test('STATE_FILES names every file the later slices will write, and nothing collides', () => {
-  const expectedKeys = ['LOCK', 'WATERMARK', 'LAST_RUN', 'SNAPSHOT', 'LOG_DIR', 'QUESTIONS_LOG'];
+  const expectedKeys = ['WATERMARK', 'LAST_RUN', 'LOG_DIR', 'QUESTIONS_LOG'];
   for (const key of expectedKeys) {
     assert.equal(typeof STATE_FILES[key], 'string', `STATE_FILES.${key} must be a string`);
     assert.ok(STATE_FILES[key].length > 0, `STATE_FILES.${key} must not be empty`);
   }
+  assert.deepEqual(Object.keys(STATE_FILES).sort(), [...expectedKeys].sort(), 'no lock and no snapshot: the guards live in the repository');
   const names = Object.values(STATE_FILES);
   assert.equal(names.length, new Set(names).size, 'no two STATE_FILES entries may share a name');
 });

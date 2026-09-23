@@ -538,7 +538,8 @@ test('a marker left by a reclaim that died blocks the reclaim: the message says 
   writeFileSync(markerPath(root), `${JSON.stringify(deadReclaimer)}\n`);
   const error = thrown(() => acquireLock(root, { command: 'propose' }));
   assert.equal(error.code, 'LOCK_RECLAIM_DIED');
-  assert.equal(error.exitCode, EXIT.TEMPFAIL);
+  assert.equal(error.exitCode, EXIT.FAILURE, 'it needs a person: a scheduler reads 75 as "try later"');
+  assert.equal(error.exitCode, 1);
   assert.equal(error.blockedBy, markerPath(root));
   assert.equal(error.holder, null);
   assert.equal(error.messageKey, 'lock.reclaim_died');
@@ -687,6 +688,28 @@ test('leftover private files are removed on the next acquire when their writer i
   const names = readdirSync(dir);
   for (const name of gone) assert.equal(names.includes(name), false, `${name} should have been removed`);
   for (const name of kept) assert.equal(names.includes(name), true, `${name} should have been kept`);
+  lock.release();
+});
+
+test('acquiring from a linked worktree sweeps its own git directory and the common one', () => {
+  const root = makeRepo({ 'index.md': '# Ana\n' });
+  const worktree = join(root, '..', 'worktree');
+  git(root, ['worktree', 'add', '-q', '-b', 'other', worktree]);
+  const linkedGitDir = realpathSync(git(worktree, ['rev-parse', '--git-dir']).replace(/\n$/, ''));
+  const hourAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  const old = join(linkedGitDir, 'brain-kit-snapshot.json.4242.aaaaaaaaaaaa.tmp');
+  const recent = join(linkedGitDir, 'brain-kit-snapshot.json.4243.bbbbbbbbbbbb.tmp');
+  writeFileSync(old, '{"format":1');
+  utimesSync(old, hourAgo, hourAgo);
+  writeFileSync(recent, '{"format":1');
+  // And the common directory is swept too, from whichever worktree acquires.
+  const deadLockTmp = join(commonDir(root), `brain-kit.lock.${deadPid()}.cccccccccccc.tmp`);
+  writeFileSync(deadLockTmp, JSON.stringify(holderLikeMe()));
+  const lock = acquireLock(worktree, { command: 'propose' });
+  assert.equal(existsSync(old), false);
+  assert.equal(existsSync(recent), true);
+  assert.equal(existsSync(deadLockTmp), false);
+  assert.equal(lock.lockPath, lockPath(root), 'the lock itself stays in the common directory');
   lock.release();
 });
 

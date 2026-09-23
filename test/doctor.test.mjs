@@ -215,7 +215,7 @@ function setup({
       canonical_path: realpathSync(root),
       claude_bin: 'claude',
       state_dir: stateDir,
-      paths: { lock: 'lock', watermark: 'watermark.json', last_run: 'last-run.json', log_dir: 'logs' },
+      paths: { watermark: 'watermark.json', last_run: 'last-run.json', log_dir: 'logs' },
       ...machine,
     };
     writeFileSync(machineFile, machineText ?? JSON.stringify(value, null, 2));
@@ -646,7 +646,7 @@ function setupThroughLink({ machineUnder }) {
   const file = join(target, 'machine.json');
   writeFileSync(file, JSON.stringify({
     vault_id: 'ana-brain', canonical_path: real, claude_bin: 'claude',
-    paths: { lock: 'lock', watermark: 'watermark.json', last_run: 'last-run.json', log_dir: 'logs' },
+    paths: { watermark: 'watermark.json', last_run: 'last-run.json', log_dir: 'logs' },
   }));
   chmodSync(file, 0o600);
   return { ...fx, root: link, real, linkState, realState };
@@ -694,7 +694,7 @@ test('state-dir-resolves and machine-valid honour BRAIN_KIT_STATE_DIR', async ()
   chmodSync(pinned, 0o700);
   writeFileSync(join(pinned, 'machine.json'), JSON.stringify({
     vault_id: 'ana-brain', canonical_path: realpathSync(fx.root), claude_bin: 'claude',
-    paths: { lock: 'lock', watermark: 'watermark.json', last_run: 'last-run.json', log_dir: 'logs' },
+    paths: { watermark: 'watermark.json', last_run: 'last-run.json', log_dir: 'logs' },
   }));
   chmodSync(join(pinned, 'machine.json'), 0o600);
   const env = { ...fx.env, BRAIN_KIT_STATE_DIR: pinned };

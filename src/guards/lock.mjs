@@ -63,16 +63,24 @@
 // another reclaim already finished finds a lock that is no longer the one
 // it judged, and loses to the live holder. Exactly one winner.
 //
+// A DECLARED LIMIT: two machines cloned from one image, with the same
+// machine id and host name, sharing a vault over a network file system,
+// each read the other's live lock as left by a previous boot and can both
+// take it.
+//
 // A known limit, stated rather than hidden: a reclaimer that dies between
 // taking the marker and removing it leaves the marker behind, and every
 // later reclaim of that lock then refuses, saying a reclaim died and naming
-// the marker for a person to remove (LockHeld's `blockedBy`). Reclaiming the
+// the marker for a person to remove (LockHeld's `blockedBy`), with exit 1,
+// not 75: a scheduler reads 75 as "try later", and later never comes. Reclaiming the
 // marker itself automatically would need the same guarantee one level
 // down; the window is a handful of system calls long, and a refusal is the
 // safe direction.
 //
 // LEFTOVERS. A process killed while holding a private temporary file leaves
-// it behind. Each acquire removes the ones whose creator is provably dead
+// it behind. Each acquire looks in the git common directory and in its own
+// working tree's git directory (where that tree's snapshot is written), and
+// removes the ones whose creator is provably dead
 // (the holder written in them, judged by the same rule as a lock), and
 // those that name no one (killed before their first byte) or belong to a
 // snapshot, once they are an hour old: no live write takes that long.
@@ -163,6 +171,7 @@ function reclaimDied(lockPath, markerPath) {
   const error = new LockHeld({ ...UNREADABLE }, lockPath);
   Object.assign(error, {
     code: 'LOCK_RECLAIM_DIED',
+    exitCode: EXIT.FAILURE,
     holder: null,
     blockedBy: markerPath,
     messageKey: 'lock.reclaim_died', params: { marker: markerPath },
@@ -375,7 +384,7 @@ export function acquireLock(root, { command, now = new Date(), env = process.env
   if (typeof command !== 'string' || command === '') {
     throw new TypeError('acquireLock needs the name of the command taking the lock');
   }
-  const { commonDir } = locateRepository(root, env);
+  const { commonDir, gitDir } = locateRepository(root, env);
   const lockPath = join(commonDir, GUARD_FILES.LOCK);
   const holder = {
     pid: process.pid,
@@ -388,7 +397,7 @@ export function acquireLock(root, { command, now = new Date(), env = process.env
   };
   const text = `${JSON.stringify(holder)}\n`;
   const ctx = { dir: commonDir, lockPath, markerPath: join(commonDir, GUARD_FILES.LOCK_RECLAIM), text, onStage, me: identity, link };
-  sweepLeftovers(commonDir, identity);
+  for (const dir of new Set([commonDir, gitDir])) sweepLeftovers(dir, identity);
   let lastSeen = UNREADABLE;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
     let ino = createExclusively(commonDir, lockPath, GUARD_FILES.LOCK, text, link);

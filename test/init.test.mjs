@@ -782,7 +782,11 @@ test('machine.json lands in the state directory with mode 0600, the directory wi
   assert.equal(machine.canonical_path, realpathSync(vault));
   assert.equal(machine.state_dir, state);
   assert.match(machine.vault_id, /^vault-[0-9a-f]{8}$/);
-  assert.equal(machine.paths.lock, join(state, 'lock'));
+  // The lock and the snapshot live in the repository, not here, and
+  // machine.json names neither (src/guards/location.mjs).
+  assert.equal('lock' in machine.paths, false);
+  assert.equal('snapshot' in machine.paths, false);
+  assert.deepEqual(Object.keys(machine.paths).sort(), ['last_run', 'log_dir', 'questions_log', 'watermark']);
   assert.equal(machine.paths.log_dir, join(state, 'logs'));
   assert.equal(typeof machine.claude_bin, 'string');
   assert.ok(machine.claude_bin.length > 0);

@@ -108,9 +108,10 @@ Nothing below is on npm yet. It runs from a clone of the repository.
 
 ### Phase 1, slice 1C: the git loop
 
-- Two guards for every command that writes to a vault, both kept in the repository's git
-  common directory, so every environment, symbolic link and linked worktree of one vault
-  finds the same ones; outside a repository they refuse. The lock names the holder's pid,
+- Two guards for every command that writes to a vault, kept in the repository: the lock in
+  its git common directory, so every environment, symbolic link and linked worktree of one
+  vault finds the same one, and the session snapshot in each working tree's own git
+  directory, so two linked worktrees keep two; outside a repository they refuse. The lock names the holder's pid,
   host, command and start time, and its machine, boot and process namespace where the
   platform has them; a second writer is refused at once, naming the holder. A lock is
   replaced only when its holder is provably dead (same machine after a reboot, or same
@@ -121,6 +122,9 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   the vault.
 - The state directory of a vault reached through a symbolic link is now the one derived
   from its real path, so `machine.json` is found whichever path a command starts from.
+- `machine.json` no longer names a lock or a snapshot path (`paths.lock` and
+  `paths.snapshot` are gone from the schema and from what `init` writes); an older file
+  carrying them still reads, and the two keys are ignored.
 
 ## 0.0.1 (published on npm on 18/09/2026)
 
