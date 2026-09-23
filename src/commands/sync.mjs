@@ -23,12 +23,15 @@
 //      is exit 1.
 //   4. The upstream is what the default branch tracks (branch.<default>.remote
 //      and branch.<default>.merge), else the remote the resolver read and
-//      the same-named branch there. A remote that is not configured is
-//      exit 1.
+//      the same-named branch there. A default branch tracking a branch of
+//      this repository (remote ".") is exit 1, and so is a remote that is
+//      not configured.
 //   5. The branch is fetched and the fetch proved (src/git.mjs, fetch). A
 //      remote that cannot be reached, or a fetch that reached nothing, is
-//      exit 1, and never read as "up to date". A remote reached that has
-//      no such branch yet (before the first push) is said, exit 0.
+//      exit 1, and never read as "up to date". A remote reached that lists
+//      no branch at all (before the first push) is said, exit 0; a remote
+//      that lists branches but not this one is exit 1, naming them and a
+//      remedy (a default renamed on the forge, a typo, master against main).
 //   6. With no local branch of that name, exit 1, naming the command that
 //      creates one: sync moves an existing branch, it never invents one.
 //   7. The ahead and behind counts decide, and every outcome states them:
@@ -53,6 +56,14 @@
 // through src/git.mjs), so a GIT_DIR naming another repository moves
 // nothing there.
 //
+// Declared, not handled: a run killed by a signal leaves its lock (the next
+// run reclaims it, the holder being provably dead) and can leave a git
+// child it started still running, since spawnSync's children outlive the
+// parent; killed during a checkout or a merge, that child can still be
+// writing when the next run starts. And the fetch writes the one
+// remote-tracking reference sync compares against, whatever the remote's
+// configured fetch refspec maps (a single-branch clone gains it).
+//
 // `deps` hands in the environment and the working directory, for the
 // tests. Production passes nothing.
 import { existsSync, statSync } from 'node:fs';
@@ -63,7 +74,7 @@ import { findVaultRoot } from '../vault.mjs';
 import { acquireLock } from '../guards/lock.mjs';
 import { GuardError } from '../guards/location.mjs';
 import {
-  aheadBehind, currentBranch, defaultBranch, dirtyPaths, fetch, ignoredInTheWay, operationInProgress, resolveCommit, runGit, trackedRemote, upstreamOfBranch,
+  aheadBehind, currentBranch, defaultBranch, dirtyPaths, defaultBranchUpstream, fetch, ignoredInTheWay, operationInProgress, resolveCommit, runGit, trackedRemote,
 } from '../git.mjs';
 
 const ROOT_INDEX = 'index.md';
@@ -158,9 +169,15 @@ function syncUnderLock(root, io, t, env) {
   const branch = found.bare;
   // What the default branch itself tracks (its remote and the branch
   // there), else the remote the resolver read and the same-named branch.
-  const tracked = upstreamOfBranch(root, branch, { env });
-  const remote = tracked.remote ?? found.remote;
-  const remoteBranch = tracked.branch ?? branch;
+  // A default branch tracking a branch of this repository is refused: its
+  // upstream is not any remote's history.
+  const tracked = defaultBranchUpstream(root, found, { env });
+  if (tracked.local) {
+    const key = `branch.${branch}.remote`;
+    io.stderr.write(`${t('sync.local_upstream', { branch, key })}\n`);
+    return EXIT.FAILURE;
+  }
+  const { remote, branch: remoteBranch } = tracked;
   if (!configuredRemotes(root, env).includes(remote)) {
     io.stderr.write(`${t('sync.no_remote', { remote, branch })}\n`);
     return EXIT.FAILURE;
@@ -171,6 +188,13 @@ function syncUnderLock(root, io, t, env) {
   if (fetched.status === 'absent') {
     io.stdout.write(`${t('sync.remote_has_no_branch', { remote, branch: remoteBranch })}\n`);
     return EXIT.OK;
+  }
+  if (fetched.status === 'missing') {
+    const published = fetched.branches;
+    const head = fetched.head ?? '-';
+    const command = `git fetch --prune ${remote} && git remote set-head ${remote} --auto`;
+    io.stderr.write(`${t('sync.remote_lacks_branch', { remote, branch: remoteBranch, published, head, file: CONFIG_FILENAME, command })}\n`);
+    return EXIT.FAILURE;
   }
   if (fetched.status === 'failed') {
     io.stderr.write(`${t('sync.fetch_failed', { remote, branch: remoteBranch, detail: fetched.detail })}\n`);

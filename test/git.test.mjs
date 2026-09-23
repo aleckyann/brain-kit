@@ -21,6 +21,7 @@ import {
   fetch,
   operationInProgress,
   ignoredInTheWay,
+  upstreamOfBranch,
 } from '../src/git.mjs';
 
 // Every case here builds a REAL temporary git repository via spawnSync with
@@ -962,6 +963,20 @@ function withConfig(root, defaultBranchValue) {
   writeFileSync(join(root, 'brain-kit.config.json'), JSON.stringify({ vault: { default_branch: defaultBranchValue } }));
 }
 
+// The configuration as the remote's default branch carries it: committed
+// on the clone's main and pushed, so origin/main holds it.
+function publishConfig(root, text) {
+  writeFileSync(join(root, 'brain-kit.config.json'), text);
+  ok(git(root, ['add', 'brain-kit.config.json']));
+  ok(git(root, ['commit', '-q', '--allow-empty', '-m', 'configuration']));
+  ok(git(root, ['push', '-q', 'origin', 'HEAD:main']));
+  ok(git(root, ['fetch', '-q', 'origin']));
+}
+
+function publishDefault(root, value) {
+  publishConfig(root, JSON.stringify({ vault: { default_branch: value } }));
+}
+
 function cloneOf(branches = ['main']) {
   const origin = join(makeTempDir('brain-kit-git-ladder-'), 'repo.git');
   ok(spawnSync('git', ['init', '-q', '--bare', '-b', branches[0], origin]), 'bare init');
@@ -976,13 +991,14 @@ function cloneOf(branches = ['main']) {
 
 test('defaultBranch: the configuration names the branch, over the remote HEAD that names another', () => {
   const root = cloneOf(['main', 'trunk']);
-  withConfig(root, 'trunk');
+  publishDefault(root, 'trunk');
   const found = defaultBranch(root);
   assert.equal(found.bare, 'trunk');
   assert.equal(found.ref, 'refs/remotes/origin/trunk');
+  assert.equal(found.sha, git(root, ['rev-parse', 'refs/remotes/origin/trunk']).stdout.trim());
   assert.equal(found.name, 'origin/trunk');
   assert.equal(found.remote, 'origin');
-  assert.equal(found.from, 'brain-kit.config.json vault.default_branch');
+  assert.equal(found.from, 'brain-kit.config.json vault.default_branch at origin/main');
 });
 
 test('defaultBranch: a configured branch nothing publishes yet is still the answer, with no ref to compare against', () => {
@@ -992,6 +1008,8 @@ test('defaultBranch: a configured branch nothing publishes yet is still the answ
   const found = defaultBranch(root);
   assert.equal(found.bare, 'main');
   assert.equal(found.ref, null);
+  assert.equal(found.sha, null);
+  assert.equal(found.from, 'brain-kit.config.json vault.default_branch in the working tree', 'nothing published: the working tree is the only configuration');
   assert.equal(resolveBase(root, 'merge-base').reason, 'merge-base-unavailable');
 });
 
@@ -1001,7 +1019,7 @@ test('defaultBranch: a configured name that is not a branch name has no bare nam
   ok(git(root, ['checkout', '-q', '-b', 'previous']));
   ok(git(root, ['checkout', '-q', 'main']));
   for (const bad of ['--upload-pack=touch x', '-x', 'a..b', 'HEAD', '@{-1}', '']) {
-    withConfig(root, bad);
+    publishDefault(root, bad);
     const found = defaultBranch(root);
     if (bad === '') {
       assert.equal(found.bare, 'main', 'an empty value is no value: the ladder goes on');
@@ -1015,9 +1033,9 @@ test('defaultBranch: a configured name that is not a branch name has no bare nam
 
 test('defaultBranch: an unreadable configuration is no configuration, and a null value is no value', () => {
   const root = cloneOf();
-  writeFileSync(join(root, 'brain-kit.config.json'), '{ not json');
+  publishConfig(root, '{ not json');
   assert.equal(defaultBranch(root).from, 'refs/remotes/origin/HEAD');
-  withConfig(root, null);
+  publishDefault(root, null);
   assert.equal(defaultBranch(root).from, 'refs/remotes/origin/HEAD');
 });
 
@@ -1109,7 +1127,7 @@ test('isClean and dirtyPaths: modified, staged and untracked count, ignored does
   assert.throws(() => dirtyPaths(root), /status/);
 });
 
-test('fetch: a branch the remote has is fetched and proved, a branch it lacks is absent, an unreachable remote failed', () => {
+test('fetch: a branch the remote has is fetched and proved, a branch it lacks is missing (absent only from an empty remote), an unreachable remote failed', () => {
   const root = cloneOf();
   const origin = git(root, ['remote', 'get-url', 'origin']).stdout.trim();
   const other = initRepo('main');
@@ -1125,7 +1143,12 @@ test('fetch: a branch the remote has is fetched and proved, a branch it lacks is
   assert.deepEqual(fetched, { status: 'fetched', sha: tip, ref: 'refs/remotes/origin/main' });
   assert.equal(git(root, ['rev-parse', 'refs/remotes/origin/main']).stdout.trim(), tip);
 
-  assert.deepEqual(fetch(root, 'origin', { branch: 'nothing-here' }), { status: 'absent' });
+  assert.deepEqual(fetch(root, 'origin', { branch: 'nothing-here' }), { status: 'missing', branches: ['main'], head: 'main' },
+    'a remote that publishes branches is not "nothing published"');
+  const empty = join(makeTempDir('brain-kit-git-empty-'), 'empty.git');
+  ok(spawnSync('git', ['init', '-q', '--bare', '-b', 'main', empty]), 'empty bare');
+  ok(git(root, ['remote', 'add', 'empty', empty]));
+  assert.deepEqual(fetch(root, 'empty', { branch: 'main' }), { status: 'absent' }, 'only a remote listing no branch at all is unpublished');
 
   ok(git(root, ['remote', 'set-url', 'origin', join(root, '..', 'gone.git')]));
   const failed = fetch(root, 'origin', { branch: 'main' });
@@ -1138,8 +1161,8 @@ test('fetch: a branch the remote has is fetched and proved, a branch it lacks is
 
 test('defaultBranch: a configured branch that exists only locally is compared against the local branch', () => {
   const root = cloneOf();
+  publishDefault(root, 'trunk');
   ok(git(root, ['branch', 'trunk']));
-  withConfig(root, 'trunk');
   const found = defaultBranch(root);
   assert.equal(found.ref, 'refs/heads/trunk');
   assert.equal(found.name, 'trunk');
@@ -1255,7 +1278,7 @@ test('defaultBranch: a rev-parse that prints a commit but exits non-zero resolve
 
 test('defaultBranch: a check-ref-format that prints the name back but exits non-zero does not make it a branch name', () => {
   const root = cloneOf();
-  withConfig(root, 'trunk');
+  publishDefault(root, 'trunk');
   withGitShim({ 'check-ref-format': 'echo trunk; exit 1' }, () => {
     assert.equal(defaultBranch(root).bare, null);
   });
@@ -1355,5 +1378,122 @@ test('ignoredInTheWay raises when git cannot list the ignored files, rather than
   const head = git(root, ['rev-parse', 'HEAD']).stdout.trim();
   withGitShim({ 'ls-files': 'echo "cannot list" >&2; exit 1' }, () => {
     assert.throws(() => ignoredInTheWay(root, [head]), /ls-files/);
+  });
+});
+
+test('defaultBranch: an agent branch\'s working-tree configuration cannot redirect the default while the remote publishes one', () => {
+  const root = cloneOf(['main', 'release']);
+  ok(git(root, ['checkout', '-q', '-b', 'curator/x']));
+  withConfig(root, 'release');
+  ok(git(root, ['add', 'brain-kit.config.json']));
+  ok(git(root, ['commit', '-q', '-m', 'an agent names another default']));
+  const found = defaultBranch(root);
+  assert.equal(found.bare, 'main');
+  assert.equal(found.from, 'refs/remotes/origin/HEAD');
+});
+
+test('defaultBranch: the configuration is read from a vault nested below the repository\'s top level', () => {
+  const origin = join(makeTempDir('brain-kit-git-nested-'), 'repo.git');
+  ok(spawnSync('git', ['init', '-q', '--bare', '-b', 'main', origin]));
+  const seed = initRepo('main');
+  writeAndCommit(seed, 'vault/brain-kit.config.json', JSON.stringify({ vault: { default_branch: 'trunk' } }), 'nested config');
+  ok(git(seed, ['remote', 'add', 'origin', origin]));
+  ok(git(seed, ['push', '-q', 'origin', 'main', 'main:trunk']));
+  const root = join(makeTempDir('brain-kit-git-nested-clone-'), 'repo');
+  ok(spawnSync('git', ['clone', '-q', origin, root]));
+  const found = defaultBranch(join(root, 'vault'));
+  assert.equal(found.bare, 'trunk');
+  assert.equal(found.from, 'brain-kit.config.json vault.default_branch at origin/main');
+});
+
+test('defaultBranch publishedOnly (the push gate): only what the remote publishes, never a local branch', () => {
+  const root = cloneOf(['main', 'trunk']);
+  publishDefault(root, 'trunk');
+  assert.equal(defaultBranch(root, { publishedOnly: true }).ref, 'refs/remotes/origin/trunk');
+  publishDefault(root, 'unpublished');
+  ok(git(root, ['branch', 'unpublished']));
+  assert.equal(defaultBranch(root).ref, 'refs/heads/unpublished', 'the resolver itself compares against the local branch');
+  assert.equal(defaultBranch(root, { publishedOnly: true }).from, 'refs/remotes/origin/HEAD', 'the gate passes a branch the remote does not hold');
+  publishDefault(root, '-x');
+  assert.equal(defaultBranch(root).bare, null);
+  assert.equal(defaultBranch(root, { publishedOnly: true }).from, 'refs/remotes/origin/HEAD');
+  const local = initRepo('main');
+  writeAndCommit(local, 'index.md', '# Index\n', 'init');
+  assert.equal(defaultBranch(local).from, 'refs/heads/main');
+  assert.equal(defaultBranch(local, { publishedOnly: true }), null);
+});
+
+test('defaultBranch: a named remote is read instead of the one the branch checked out tracks', () => {
+  const root = cloneOf();
+  ok(git(root, ['update-ref', 'refs/remotes/fork/trunk', 'HEAD']));
+  ok(git(root, ['symbolic-ref', 'refs/remotes/fork/HEAD', 'refs/remotes/fork/trunk']));
+  assert.equal(defaultBranch(root).name, 'origin/main');
+  assert.equal(defaultBranch(root, { remote: 'fork' }).name, 'fork/trunk');
+});
+
+test('upstreamOfBranch: "." is a local upstream, and a merge name never outlives the remote it came with', () => {
+  const root = cloneOf();
+  assert.deepEqual(upstreamOfBranch(root, 'main'), { local: false, remote: 'origin', branch: 'main' });
+  ok(git(root, ['config', 'branch.main.remote', '.']));
+  assert.deepEqual(upstreamOfBranch(root, 'main'), { local: true, remote: null, branch: null });
+  ok(git(root, ['config', 'branch.main.remote', '-x']));
+  assert.deepEqual(upstreamOfBranch(root, 'main'), { local: false, remote: null, branch: null });
+  ok(git(root, ['config', '--unset', 'branch.main.remote']));
+  assert.deepEqual(upstreamOfBranch(root, 'main'), { local: false, remote: null, branch: null });
+});
+
+test('ignoredInTheWay names an ignored nested repository, as git lists it, when a commit tracks anything under it', () => {
+  const root = initRepo('main');
+  writeAndCommit(root, 'index.md', '# Index\n', 'init');
+  writeAndCommit(root, 'vendor/x.md', 'tracked\n', 'vendor');
+  const target = git(root, ['rev-parse', 'HEAD']).stdout.trim();
+  ok(git(root, ['rm', '-q', '-r', 'vendor']));
+  ok(git(root, ['commit', '-q', '-m', 'vendor removed']));
+  writeFileSync(join(root, '.git', 'info', 'exclude'), 'vendor/\nother/\n');
+  mkdirSync(join(root, 'vendor'));
+  ok(spawnSync('git', ['init', '-q', join(root, 'vendor')]));
+  writeFileSync(join(root, 'vendor', 'x.md'), 'MY NESTED WORK\n');
+  mkdirSync(join(root, 'other'));
+  ok(spawnSync('git', ['init', '-q', join(root, 'other')]));
+  assert.ok(git(root, ['ls-files', '--others', '--ignored', '--exclude-standard']).stdout.includes('vendor/\n'), 'the listing this test exists for');
+  assert.deepEqual(ignoredInTheWay(root, [target]), ['vendor/']);
+  writeAndCommit(root, 'vendorfile', 'a file whose name starts like the directory\n', 'unrelated');
+  assert.deepEqual(ignoredInTheWay(root, [git(root, ['rev-parse', 'HEAD']).stdout.trim()]), []);
+  // A commit tracking a FILE at the nested repository's path.
+  const other = initRepo('main');
+  writeAndCommit(other, 'vendor', 'a file named like the directory\n', 'vendor as a file');
+  ok(git(root, ['fetch', '-q', other, 'main']));
+  assert.deepEqual(ignoredInTheWay(root, [git(root, ['rev-parse', 'FETCH_HEAD']).stdout.trim()]), ['vendor/']);
+});
+
+test('lint scope: a configured default branch that resolves nowhere is no default branch, said as such', () => {
+  const root = initRepo('work');
+  writeAndCommit(root, 'index.md', '# Index\n', 'init');
+  withConfig(root, 'trunk');
+  writeAndCommit(root, 'notes.md', '# Notes\n', 'work');
+  assert.equal(resolveBase(root, 'auto').reason, 'auto-no-default-branch');
+  assert.equal(resolveBase(root, 'merge-base').reason, 'merge-base-unavailable');
+});
+
+test('defaultBranch: a replacement object cannot choose the configured default branch', () => {
+  const root = cloneOf(['main', 'trunk', 'hostile']);
+  publishDefault(root, 'trunk');
+  const blob = git(root, ['rev-parse', 'refs/remotes/origin/main:brain-kit.config.json']).stdout.trim();
+  writeFileSync(join(root, '..', 'hostile.json'), JSON.stringify({ vault: { default_branch: 'hostile' } }));
+  const replacement = git(root, ['hash-object', '-w', join(root, '..', 'hostile.json')]).stdout.trim();
+  ok(git(root, ['replace', blob, replacement]));
+  assert.match(git(root, ['cat-file', 'blob', `${blob}`]).stdout, /hostile/, 'the replacement this test exists for is in force');
+  assert.equal(defaultBranch(root).bare, 'trunk');
+});
+
+test('fetch: the fetch itself waits for no prompt and gives up on a remote that hangs', () => {
+  const root = cloneOf();
+  withGitShim({ fetch: '[ "$GIT_TERMINAL_PROMPT" = 0 ] || { echo "a prompt was allowed" >&2; exit 1; }; real "$@"; exit $?' }, () => {
+    assert.equal(fetch(root, 'origin', { branch: 'main' }).status, 'fetched');
+  });
+  withGitShim({ fetch: 'exec sleep 3' }, () => {
+    const started = Date.now();
+    assert.equal(fetch(root, 'origin', { branch: 'main', timeout: 1500 }).status, 'failed');
+    assert.ok(Date.now() - started < 2800, 'given up on at the timeout');
   });
 });

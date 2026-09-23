@@ -202,17 +202,34 @@ export function remoteOfBranch(root, branch, { env = process.env } = {}) {
   return usableRemoteName(configured) ? configured : null;
 }
 
-// What `branch` tracks: `{ remote, branch }`, from branch.<name>.remote and
-// branch.<name>.merge, each null when unset or not something git can be
-// handed (a merge reference outside refs/heads/, or not a branch name). A
-// default branch tracking origin/trunk is compared against origin/trunk:
-// comparing it against a same-named origin/main instead answered "level"
-// about a branch it does not follow, while the one it follows was ahead
-// (measured).
+// What `branch` tracks, from branch.<name>.remote and branch.<name>.merge:
+// `{ local, remote, branch }`. `local` is true when the remote is "." (it
+// tracks another branch of this same repository), and then nothing about a
+// remote is answered. Otherwise `remote` is null when unset or not
+// something git can be handed, and `branch` (the merge reference's branch)
+// is null with it, or when it lies outside refs/heads/ or is no branch
+// name: a merge name is only meaningful on the remote it came with (fix
+// round 1: `main` tracking local `trunk` was fast-forwarded onto the
+// remote's `trunk`). A default branch tracking origin/trunk is compared
+// against origin/trunk, not a same-named origin/main.
 export function upstreamOfBranch(root, branch, { env = process.env } = {}) {
-  const merge = configValue(root, `branch.${branch}.merge`, env);
+  const configured = configValue(root, `branch.${branch}.remote`, env);
+  if (configured === '.') return { local: true, remote: null, branch: null };
+  const remote = usableRemoteName(configured) ? configured : null;
+  const merge = remote === null ? null : configValue(root, `branch.${branch}.merge`, env);
   const name = merge !== null && merge.startsWith('refs/heads/') ? merge.slice('refs/heads/'.length) : null;
-  return { remote: remoteOfBranch(root, branch, { env }), branch: name !== null && isBranchName(root, name, { env }) ? name : null };
+  return { local: false, remote, branch: name !== null && isBranchName(root, name, { env }) ? name : null };
+}
+
+// The upstream a default branch is brought level with, as sync and doctor
+// both read it: `{ local: true }` for a default branch tracking a branch
+// of this repository, else `{ local: false, remote, branch }`, from what
+// the default branch tracks and otherwise the resolver's remote and the
+// same-named branch there.
+export function defaultBranchUpstream(root, found, { env = process.env } = {}) {
+  const tracked = upstreamOfBranch(root, found.bare, { env });
+  if (tracked.local) return { local: true, remote: null, branch: null };
+  return { local: false, remote: tracked.remote ?? found.remote, branch: tracked.branch ?? found.bare };
 }
 
 // The commit `ref` resolves to, or null. The status alone is not proof:
@@ -234,17 +251,17 @@ export function isBranchName(root, name, { env = process.env } = {}) {
   return result.status === 0 && result.stdout.replace(/\n$/, '') === name;
 }
 
-// vault.default_branch from the vault's configuration, or null when it is
-// unset, null, empty, or the file cannot be read as JSON at all. Read
-// leniently, by design: whether the configuration is valid is `validate`
-// and `doctor`'s question, and every writing command loads it strictly
-// before this is ever asked. A value that is there but is no branch name
-// is NOT dropped here: defaultBranch reports it, so a person's declared
-// answer is never silently replaced by the ladder's.
-function configuredDefaultBranch(root) {
+// vault.default_branch from a configuration's text, or null when it is
+// unset, null, empty, or the text is not JSON at all. Read leniently, by
+// design: whether the configuration is valid is `validate` and `doctor`'s
+// question, and every writing command loads it strictly before this is ever
+// asked. A value that is there but is no branch name is NOT dropped here:
+// defaultBranch reports it, so a person's declared answer is never silently
+// replaced by the ladder's.
+function defaultBranchIn(text) {
   let config;
   try {
-    config = JSON.parse(readFileSync(join(root, CONFIG_FILENAME), 'utf8'));
+    config = JSON.parse(text);
   } catch {
     return null;
   }
@@ -252,66 +269,107 @@ function configuredDefaultBranch(root) {
   return typeof value === 'string' && value !== '' ? value : null;
 }
 
+function workingTreeDefaultBranch(root) {
+  try {
+    return defaultBranchIn(readFileSync(join(root, CONFIG_FILENAME), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+// vault.default_branch from the configuration AT `commit` (the vault's own
+// path inside it, so a vault nested below the repository's top level reads
+// its own file), or null when that commit has no such file. Read as the
+// blob it is, refusing replacement objects, for the same reason the push
+// gate refuses them: a local `git replace` must not choose the answer.
+function committedDefaultBranch(root, commit, env) {
+  const prefix = ask(root, ['rev-parse', '--show-prefix'], { env });
+  if (prefix.status !== 0) throw new Error(`git rev-parse --show-prefix exited with status ${prefix.status}: ${prefix.stderr.trim()}`);
+  const spec = `${commit}:${prefix.stdout.replace(/\n$/, '')}${CONFIG_FILENAME}`;
+  const blob = ask(root, ['--no-replace-objects', 'cat-file', 'blob', spec], { env });
+  return blob.status === 0 ? defaultBranchIn(blob.stdout) : null;
+}
+
 export const CONFIG_DEFAULT_BRANCH = `${CONFIG_FILENAME} vault.default_branch`;
 
-// THE DEFAULT BRANCH: the one resolver every caller in this engine uses
-// (slice C). Before it there were four copies giving three answers:
-// doctor looked only at origin/HEAD, the push gate walked remote HEAD,
-// main and master per remote, this module and the template hook preferred
-// a local main, and nobody read the configuration. In order:
-//
-//   1. The configuration's vault.default_branch, when set. A person's
-//      declared answer, true before the first push and after it, which no
-//      remote-tracking reference can be.
-//   2. For the remote the current branch tracks (origin when none),
-//      refs/remotes/<remote>/HEAD, counted only when it is a symbolic
-//      reference to a branch of that same remote that resolves to a
-//      commit: pointed at another remote's branch, at a local branch, at
-//      a tag or at nothing, it is skipped.
-//   3. refs/remotes/<remote>/main, then 4. refs/remotes/<remote>/master,
-//      each only when it resolves to a commit. Rungs 2 to 4 are the push
-//      gate's own (src/commands/push-gate.mjs, defaultBranchOf).
-//   5. A local main, then a local master, for a repository whose remote
-//      knows nothing yet (no remote at all, or nothing fetched): a last
-//      resort, after every remote rung, so a stale local branch can never
-//      outrank what the remote publishes.
-//
-// Returns null when nothing answers, or `{ name, bare, ref, remote, from }`:
-// `bare` is the branch name alone (null when the configured value is not a
-// branch name at all); `ref` is the full reference to compare against, the
-// remote-tracking one wherever it exists (null when a configured branch
-// resolves to no commit yet, before its first push); `name` is what a
-// person reads ("origin/main", "main"); `remote` is the remote read; and
-// `from` names the rung that answered.
-export function defaultBranch(root, { env = process.env } = {}) {
-  const remote = trackedRemote(root, { env });
+// Rungs 2 to 4 of the ladder for one remote: what the remote publishes as
+// its default branch, as this repository knows it, or null.
+function publishedDefaultBranch(root, remote, env) {
   const prefix = `refs/remotes/${remote}/`;
-  const configured = configuredDefaultBranch(root);
-  if (configured !== null) {
-    if (!isBranchName(root, configured, { env })) {
-      return { name: configured, bare: null, ref: null, remote, from: CONFIG_DEFAULT_BRANCH };
-    }
-    if (commitOf(root, `${prefix}${configured}`, env) !== null) {
-      return { name: `${remote}/${configured}`, bare: configured, ref: `${prefix}${configured}`, remote, from: CONFIG_DEFAULT_BRANCH };
-    }
-    const ref = commitOf(root, `refs/heads/${configured}`, env) !== null ? `refs/heads/${configured}` : null;
-    return { name: configured, bare: configured, ref, remote, from: CONFIG_DEFAULT_BRANCH };
-  }
   const symref = ask(root, ['symbolic-ref', '-q', `${prefix}HEAD`], { env });
   if (symref.status === 0) {
     const target = symref.stdout.trim();
     const bare = target.slice(prefix.length);
-    if (target.startsWith(prefix) && isBranchName(root, bare, { env }) && commitOf(root, target, env) !== null) {
-      return { name: `${remote}/${bare}`, bare, ref: target, remote, from: `${prefix}HEAD` };
-    }
+    const sha = target.startsWith(prefix) && isBranchName(root, bare, { env }) ? commitOf(root, target, env) : null;
+    if (sha !== null) return { name: `${remote}/${bare}`, bare, ref: target, sha, remote, from: `${prefix}HEAD` };
   }
   for (const candidate of ['main', 'master']) {
     const ref = `${prefix}${candidate}`;
-    if (commitOf(root, ref, env) !== null) return { name: `${remote}/${candidate}`, bare: candidate, ref, remote, from: ref };
+    const sha = commitOf(root, ref, env);
+    if (sha !== null) return { name: `${remote}/${candidate}`, bare: candidate, ref, sha, remote, from: ref };
   }
+  return null;
+}
+
+// THE DEFAULT BRANCH: the one resolver every caller in this engine uses
+// (slice C): sync, lint's scope, doctor and the push gate. Before it there
+// were four copies giving three answers. In order:
+//
+//   1. vault.default_branch, when set, read from the configuration AT the
+//      remote's published default branch (rungs 2 to 4 below) whenever that
+//      resolves, and from the working tree only when it does not (before
+//      the first push). The working tree is the branch checked out, and an
+//      agent's branch must not be able to redirect which branch is the
+//      default (fix round 1: one naming `release` made sync fast-forward
+//      `release` and never look at `main`).
+//   2. For the remote (the one the current branch tracks, origin when none,
+//      or the one the caller names), refs/remotes/<remote>/HEAD, counted
+//      only when it is a symbolic reference to a branch of that same remote
+//      that resolves to a commit: pointed at another remote's branch, at a
+//      local branch, at a tag or at nothing, it is skipped.
+//   3. refs/remotes/<remote>/main, then 4. refs/remotes/<remote>/master,
+//      each only when it resolves to a commit.
+//   5. A local main, then a local master, for a repository whose remote
+//      knows nothing yet: a last resort, after every remote rung, so a stale
+//      local branch can never outrank what the remote publishes.
+//
+// `publishedOnly` (the push gate): only an answer the remote publishes
+// counts, a remote-tracking reference that resolves to a commit. A
+// configured branch the remote does not hold is passed over for rungs 2 to
+// 4, and rung 5 is not tried: the gate reads the patterns a person merged
+// on the remote, and a union of sources can only over-include.
+//
+// Returns null when nothing answers, or `{ name, bare, ref, sha, remote,
+// from }`: `bare` is the branch name alone (null when the configured value
+// is not a branch name at all); `ref` is the full reference to compare
+// against, the remote-tracking one wherever it exists (null when a
+// configured branch resolves to no commit yet); `sha` is the commit it
+// resolves to (null with `ref`); `name` is what a person reads ("origin/main",
+// "main"); `remote` is the remote read; `from` names the rung.
+export function defaultBranch(root, { env = process.env, remote: named = null, publishedOnly = false } = {}) {
+  const remote = named ?? trackedRemote(root, { env });
+  const prefix = `refs/remotes/${remote}/`;
+  const published = publishedDefaultBranch(root, remote, env);
+  const configured = published !== null ? committedDefaultBranch(root, published.sha, env) : workingTreeDefaultBranch(root);
+  const from = published !== null ? `${CONFIG_DEFAULT_BRANCH} at ${published.name}` : `${CONFIG_DEFAULT_BRANCH} in the working tree`;
+  if (configured !== null) {
+    if (!isBranchName(root, configured, { env })) {
+      if (!publishedOnly) return { name: configured, bare: null, ref: null, sha: null, remote, from };
+    } else {
+      const remoteSha = commitOf(root, `${prefix}${configured}`, env);
+      if (remoteSha !== null) return { name: `${remote}/${configured}`, bare: configured, ref: `${prefix}${configured}`, sha: remoteSha, remote, from };
+      if (!publishedOnly) {
+        const localSha = commitOf(root, `refs/heads/${configured}`, env);
+        const ref = localSha !== null ? `refs/heads/${configured}` : null;
+        return { name: configured, bare: configured, ref, sha: localSha, remote, from };
+      }
+    }
+  }
+  if (published !== null || publishedOnly) return published;
   for (const candidate of ['main', 'master']) {
     const ref = `refs/heads/${candidate}`;
-    if (commitOf(root, ref, env) !== null) return { name: candidate, bare: candidate, ref, remote, from: ref };
+    const sha = commitOf(root, ref, env);
+    if (sha !== null) return { name: candidate, bare: candidate, ref, sha, remote, from: ref };
   }
   return null;
 }
@@ -841,41 +899,69 @@ function existsAt(root, path) {
 
 const NETWORK_TIMEOUT_MS = 120000;
 
+// What a remote publishes, asked live: `git ls-remote --symref <remote>`,
+// whose status is 0 whether or not it lists anything, and non-zero when the
+// remote could not be asked. Returns { status: 'listed', heads, head } (heads:
+// a Map of branch name to object id; head: the branch its HEAD names, or
+// null) or { status: 'failed', detail }. A line that is not an object id and
+// a reference is refused, never skipped. No terminal prompt is ever waited
+// for, and a remote that hangs is given up on after `timeout`.
+export function remoteBranches(root, remote, { env = process.env, timeout = NETWORK_TIMEOUT_MS } = {}) {
+  if (!usableRemoteName(remote)) throw new TypeError(`remoteBranches needs a remote name that is not ".", empty or an option (got ${JSON.stringify(remote)})`);
+  const listed = ask(root, ['ls-remote', '--symref', remote], { env: { ...env, GIT_TERMINAL_PROMPT: '0' }, timeout });
+  if (listed.status !== 0) return { status: 'failed', detail: firstLineOf(listed.stderr) || `git ls-remote exited with status ${listed.status}` };
+  const heads = new Map();
+  let head = null;
+  for (const line of listed.stdout.split('\n')) {
+    if (line === '') continue;
+    const symref = /^ref: refs\/heads\/(.+)\tHEAD$/.exec(line);
+    if (symref !== null) {
+      head = symref[1];
+      continue;
+    }
+    const record = /^([0-9a-f]{40}|[0-9a-f]{64})\t(.+)$/.exec(line);
+    if (record === null) return { status: 'failed', detail: `git ls-remote printed a line that is not a reference: ${line}` };
+    if (record[2].startsWith('refs/heads/')) heads.set(record[2].slice('refs/heads/'.length), record[1]);
+  }
+  return { status: 'listed', heads, head };
+}
+
 // Fetch ONE branch of a remote, and prove the fetch reached it.
 //
 // A plain `git fetch <remote>` is the recurring shape of this project: it
 // exits 0 having updated nothing when the remote's fetch refspec is
 // missing or maps somewhere else, and "up to date" read from a stale
 // remote-tracking reference is the 17/08/2026 incident again. So the
-// remote is asked first, live, what its tip is (`git ls-remote
-// --exit-code`, whose status 2 is git's own "no such reference", distinct
-// from a remote that could not be reached); the branch is then fetched
-// with an explicit refspec into refs/remotes/<remote>/<branch>, whatever
-// the configuration maps; and the result counts only when that reference
-// now contains the tip the remote announced.
+// remote is asked first, live, what it publishes (remoteBranches); the
+// branch is then fetched with an explicit refspec into
+// refs/remotes/<remote>/<branch>, whatever the configuration maps, never
+// with tags; and the result counts only when that reference now contains
+// the tip the remote announced.
 //
-// Returns { status: 'fetched', sha, ref }, { status: 'absent' } (the
-// remote was reached and has no such branch: nothing published there
-// yet), { status: 'failed', detail } (the remote could not be asked or
-// the fetch failed), or { status: 'incomplete', announced, ref } (the
-// fetch reported success and the reference does not hold the announced
-// tip). No terminal prompt is ever waited for, and a remote that hangs is
-// given up on after NETWORK_TIMEOUT_MS.
+// A branch the remote does not list is `absent` ONLY when the remote lists
+// no branch at all (nothing published yet). A remote that publishes other
+// branches is `missing`, naming them and its HEAD (fix round 1: a default
+// branch renamed on the forge, a typo in vault.default_branch, and a local
+// master against a remote main all read as "nothing published", exit 0,
+// while the vault fell further behind on every run).
+//
+// Returns { status: 'fetched', sha, ref }, { status: 'absent' },
+// { status: 'missing', branches, head }, { status: 'failed', detail }, or
+// { status: 'incomplete', announced, ref }.
 export function fetch(root, remote, { branch, env = process.env, timeout = NETWORK_TIMEOUT_MS } = {}) {
   if (!usableRemoteName(remote)) throw new TypeError(`fetch needs a remote name that is not ".", empty or an option (got ${JSON.stringify(remote)})`);
   if (!isBranchName(root, branch, { env })) throw new TypeError(`fetch needs the name of the branch to fetch (got ${JSON.stringify(branch)})`);
-  const network = { env: { ...env, GIT_TERMINAL_PROMPT: '0' }, timeout };
-  const wanted = `refs/heads/${branch}`;
-  const listed = ask(root, ['ls-remote', '--exit-code', remote, wanted], network);
-  if (listed.status === 2 && listed.stdout.trim() === '') return { status: 'absent' };
-  if (listed.status !== 0) return { status: 'failed', detail: firstLineOf(listed.stderr) || `git ls-remote exited with status ${listed.status}` };
-  const announced = listed.stdout.split('\n')
-    .map((line) => line.split('\t'))
-    .filter(([sha, ref]) => ref === wanted && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sha))
-    .map(([sha]) => sha)[0];
-  if (announced === undefined) return { status: 'failed', detail: `git ls-remote printed no tip for ${wanted}` };
+  const listed = remoteBranches(root, remote, { env, timeout });
+  if (listed.status !== 'listed') return listed;
+  const announced = listed.heads.get(branch);
+  if (announced === undefined) {
+    if (listed.heads.size === 0) return { status: 'absent' };
+    return { status: 'missing', branches: [...listed.heads.keys()].sort(), head: listed.head };
+  }
 
+  const wanted = `refs/heads/${branch}`;
   const ref = `refs/remotes/${remote}/${branch}`;
+  const network = { env: { ...env, GIT_TERMINAL_PROMPT: '0' }, timeout };
   const fetched = ask(root, ['fetch', '--quiet', '--no-tags', remote, `+${wanted}:${ref}`], network);
   if (fetched.status !== 0) return { status: 'failed', detail: firstLineOf(fetched.stderr) || `git fetch exited with status ${fetched.status}` };
   const sha = commitOf(root, ref, env);
@@ -900,7 +986,8 @@ function firstLineOf(text) {
 // snapshot records ignored paths). `git status` does not list them, so a
 // clean tree is no proof that none is in the way. Paths are compared as
 // bytes and named in the one decoding every scanner shares. Raises, naming
-// the command, when git cannot list either side.
+// the command, when git cannot list either side. An ignored nested
+// repository is named as git lists it, with its trailing slash.
 export function ignoredInTheWay(root, commits, { env = process.env } = {}) {
   const listArgs = ['ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--full-name', '--', ':/'];
   const listed = ask(root, listArgs, { env, encoding: 'buffer' });
@@ -919,6 +1006,14 @@ export function ignoredInTheWay(root, commits, { env = process.env } = {}) {
     for (let at = path.indexOf('/'); at !== -1; at = path.indexOf('/', at + 1)) directories.add(path.slice(0, at));
   }
   const inTheWay = ignored.filter((path) => {
+    // An ignored directory holding a repository of its own is listed once,
+    // with a trailing slash, never file by file (fix round 1: its files
+    // were overwritten). Anything the commits track at or under it is in
+    // the way.
+    if (path.endsWith('/')) {
+      const dir = path.slice(0, -1);
+      return tracked.has(dir) || directories.has(dir);
+    }
     if (tracked.has(path) || directories.has(path)) return true;
     for (let at = path.indexOf('/'); at !== -1; at = path.indexOf('/', at + 1)) {
       if (tracked.has(path.slice(0, at))) return true;

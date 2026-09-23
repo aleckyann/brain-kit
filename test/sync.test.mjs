@@ -15,7 +15,8 @@ import { fileURLToPath } from 'node:url';
 import { runSync } from '../src/commands/sync.mjs';
 import { main } from '../src/cli.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
-import { describeLock } from '../src/guards/lock.mjs';
+import { currentIdentity, describeLock } from '../src/guards/lock.mjs';
+import { GUARD_FILES } from '../src/guards/location.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { CONFIG_FILENAME } from '../src/config.mjs';
 import { CLEAN_ENV, git, makeRepo } from './helpers/git-repo.mjs';
@@ -284,6 +285,7 @@ test('a vault.default_branch that is not a branch name is refused with exit 1 an
   const world = makeWorld();
   writeFileSync(join(world.vault, CONFIG_FILENAME), configText('--upload-pack=touch pwned'));
   git(world.vault, ['commit', '-q', '-am', 'a hostile configuration']);
+  git(world.vault, ['push', '-q', 'origin', 'main']);
   const before = repoState(world.vault);
   const run = await sync(world);
   assert.equal(run.code, EXIT.FAILURE);
@@ -645,4 +647,162 @@ test('a tracked merge reference that is not a branch git can be handed falls bac
     assert.equal(run.code, EXIT.OK, `${merge}: ${run.stderr}`);
     assert.equal(world.sha('main'), tip, merge);
   }
+});
+
+// --- fix round 1 --------------------------------------------------------------
+
+test('an agent branch whose configuration names another default cannot redirect sync: main is still the one brought level', async () => {
+  const world = makeWorld();
+  git(world.elsewhere, ['push', '-q', 'origin', 'main:release']);
+  git(world.vault, ['fetch', '-q', 'origin']);
+  git(world.vault, ['branch', '-q', '--track', 'release', 'origin/release']);
+  git(world.vault, ['checkout', '-q', '-b', 'curator/x']);
+  writeFileSync(join(world.vault, CONFIG_FILENAME), configText('release'));
+  git(world.vault, ['commit', '-q', '-am', 'an agent names another default']);
+  world.publish(1);
+  const tip = world.sha('main', world.elsewhere);
+  const release = world.sha('release');
+  const run = await sync(world);
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.equal(world.sha('main'), tip);
+  assert.equal(world.sha('release'), release);
+  assertUnlocked(world);
+});
+
+function lacks(remote, branch, published, head, command = `git fetch --prune ${remote} && git remote set-head ${remote} --auto`) {
+  return line('sync.remote_lacks_branch', { remote, branch, published, head, file: CONFIG_FILENAME, command });
+}
+
+test('a default renamed on the forge: exit 1 naming what the remote publishes, never "nothing to bring in"', async () => {
+  const world = makeWorld();
+  git(world.remote, ['branch', '-m', 'main', 'trunk']);
+  git(world.remote, ['symbolic-ref', 'HEAD', 'refs/heads/trunk']);
+  git(world.elsewhere, ['fetch', '-q', 'origin']);
+  git(world.elsewhere, ['checkout', '-q', '-B', 'trunk', 'origin/trunk']);
+  world.publish(3, 'trunk');
+  const before = localState(world.vault);
+  const run = await sync(world);
+  assert.equal(run.code, EXIT.FAILURE);
+  assert.equal(run.stdout, '');
+  assert.equal(run.stderr, lacks('origin', 'main', ['trunk'], 'trunk'));
+  assert.deepEqual(localState(world.vault), before);
+  assertUnlocked(world);
+});
+
+test('a typo in vault.default_branch: exit 1 naming the branch looked for and the ones the remote has', async () => {
+  const world = makeWorld({ defaultBranch: 'mian' });
+  world.publish(4);
+  const run = await sync(world);
+  assert.equal(run.code, EXIT.FAILURE);
+  assert.equal(run.stderr, lacks('origin', 'mian', ['main'], 'main'));
+  assertUnlocked(world);
+});
+
+test('a local master against a remote that publishes main: exit 1', async () => {
+  const world = makeWorld();
+  const local = join(world.base, 'local');
+  mkdirSync(local);
+  git(local, ['init', '-q', '-b', 'master']);
+  writeFileSync(join(local, CONFIG_FILENAME), configText());
+  writeFileSync(join(local, 'index.md'), '# Index\n');
+  git(local, ['add', '-A']);
+  git(local, ['commit', '-q', '-m', 'local']);
+  git(local, ['remote', 'add', 'origin', world.remote]);
+  const run = await sync(world, [], { cwd: local });
+  assert.equal(run.code, EXIT.FAILURE);
+  assert.equal(run.stderr, lacks('origin', 'master', ['main'], 'main'));
+});
+
+test('an ignored nested repository the fast-forward would write into: 75 naming it, its files intact', async () => {
+  const world = makeWorld();
+  writeFileSync(join(world.elsewhere, 'vendor.md'), 'x\n');
+  mkdirSync(join(world.elsewhere, 'vendor'));
+  writeFileSync(join(world.elsewhere, 'vendor', 'x.md'), 'published\n');
+  git(world.elsewhere, ['add', '-A']);
+  git(world.elsewhere, ['commit', '-q', '-m', 'vendor']);
+  git(world.elsewhere, ['push', '-q', 'origin', 'main']);
+  writeFileSync(join(world.vault, '.git', 'info', 'exclude'), 'vendor/\n');
+  mkdirSync(join(world.vault, 'vendor'));
+  git(join(world.vault, 'vendor'), ['init', '-q']);
+  writeFileSync(join(world.vault, 'vendor', 'x.md'), 'MY NESTED WORK\n');
+  const before = localState(world.vault);
+  const run = await sync(world);
+  assert.equal(run.code, EXIT.TEMPFAIL);
+  assert.equal(run.stderr, line('sync.ignored_in_the_way', { branch: 'main', upstream: 'origin/main', files: ['vendor/'] }));
+  assert.equal(readFileSync(join(world.vault, 'vendor', 'x.md'), 'utf8'), 'MY NESTED WORK\n');
+  assert.deepEqual(localState(world.vault), before);
+  assertUnlocked(world);
+});
+
+test('a default branch tracking a local branch is refused: exit 1, never fast-forwarded onto a remote branch of that name', async () => {
+  const world = makeWorld();
+  git(world.vault, ['branch', '-q', 'trunk']);
+  git(world.vault, ['branch', '-q', '--set-upstream-to=trunk', 'main']);
+  git(world.elsewhere, ['push', '-q', 'origin', 'main:trunk']);
+  world.publish(2, 'trunk');
+  const before = localState(world.vault);
+  const run = await sync(world);
+  assert.equal(run.code, EXIT.FAILURE);
+  assert.equal(run.stderr, line('sync.local_upstream', { branch: 'main', key: 'branch.main.remote' }));
+  assert.deepEqual(localState(world.vault), before);
+  assertUnlocked(world);
+});
+
+test('a return to a detached commit that lands on another commit is exit 1, never "back on"', async () => {
+  const world = makeWorld();
+  world.publish(1);
+  assert.equal((await sync(world)).code, EXIT.OK);
+  const detachedAt = world.sha('HEAD');
+  git(world.vault, ['checkout', '-q', '--detach', 'HEAD']);
+  world.publish(1);
+  const hooks = join(world.base, 'hooks-redetach');
+  mkdirSync(hooks);
+  writeFileSync(join(hooks, 'post-checkout'), '#!/bin/sh\nif [ -z "$REDETACHED" ] && ! git symbolic-ref -q HEAD >/dev/null; then REDETACHED=1 git checkout -q --detach HEAD~1; fi\nexit 0\n');
+  chmodSync(join(hooks, 'post-checkout'), 0o755);
+  git(world.vault, ['config', 'core.hooksPath', hooks]);
+  const run = await sync(world);
+  assert.equal(run.code, EXIT.FAILURE);
+  const landed = world.sha('HEAD');
+  assert.notEqual(landed, detachedAt);
+  assert.ok(run.stderr.endsWith(line('sync.return_failed', { start: short(detachedAt), current: short(landed) })), run.stderr);
+  assert.doesNotMatch(run.stdout, /Back on/);
+  assertUnlocked(world);
+});
+
+test('the fetch creates no tag, not even one on the history it brings in', async () => {
+  const world = makeWorld();
+  world.publish(1);
+  git(world.elsewhere, ['tag', 'v2']);
+  git(world.elsewhere, ['push', '-q', 'origin', 'v2']);
+  const run = await sync(world);
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.equal(git(world.vault, ['tag', '-l']), '');
+});
+
+test('a reclaim that died and left its marker: exit 1 naming the marker, not 75, and nothing moves', async () => {
+  const world = makeWorld();
+  world.publish(1);
+  const dead = spawnSync(process.execPath, ['-e', '']).pid;
+  const me = currentIdentity();
+  const holder = { pid: dead, host: me.host, command: 'curate', startedAt: '2026-09-23T03:00:00.000Z', machineId: me.machineId, bootId: me.bootId, pidNamespace: me.pidNamespace };
+  writeFileSync(join(world.vault, '.git', GUARD_FILES.LOCK), `${JSON.stringify(holder)}\n`);
+  const marker = join(world.vault, '.git', GUARD_FILES.LOCK_RECLAIM);
+  writeFileSync(marker, `${JSON.stringify({ ...holder, command: 'sync' })}\n`);
+  const before = repoState(world.vault);
+  const run = await sync(world);
+  assert.equal(run.code, EXIT.FAILURE);
+  assert.equal(run.stderr, line('lock.reclaim_died', { marker }));
+  assert.deepEqual(repoState(world.vault), before);
+});
+
+test('a staged rename is a dirty tree: 75 naming both paths, not a git failure', async () => {
+  const world = makeWorld();
+  world.commitLocal(1);
+  git(world.vault, ['push', '-q', 'origin', 'main']);
+  const [note] = git(world.vault, ['ls-files', 'local-*.md']).trim().split('\n');
+  git(world.vault, ['mv', note, 'moved.md']);
+  const run = await sync(world);
+  assert.equal(run.code, EXIT.TEMPFAIL);
+  assert.equal(run.stderr, line('sync.dirty', { files: [note, 'moved.md'] }));
+  assertUnlocked(world);
 });

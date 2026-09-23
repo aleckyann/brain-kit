@@ -48,6 +48,7 @@ import { CONFIG_FILENAME, loadConfig } from '../config.mjs';
 import { decodeBytes } from '../io.mjs';
 import { loadPatterns } from '../leak.mjs';
 import { findVaultRoot } from '../vault.mjs';
+import { defaultBranch } from '../git.mjs';
 import { parseEntries, perScanBudgetMs, preparePersonalScan, scanRecordStream, withoutByteOrderMark } from './scan-blobs.mjs';
 
 // The pattern lists this command knows how to load. `personal` is the
@@ -261,7 +262,10 @@ export async function runPushGate(argv, io, t, { recordsScript = RECORDS_SCRIPT,
 //     published, still reads a pattern its own history declared;
 //   - the configuration on the remote's default branch as this repository
 //     knows it, which is what a person merged. For the named remote that is
-//     the first of refs/remotes/<remote>/HEAD (a branch of that remote),
+//     the one resolver's answer (src/git.mjs, defaultBranch, published
+//     only): vault.default_branch as the configuration on the remote's
+//     default branch declares it, when the remote publishes that branch,
+//     else the first of refs/remotes/<remote>/HEAD (a branch of that remote),
 //     refs/remotes/<remote>/main and refs/remotes/<remote>/master that
 //     resolves to a commit: `git remote add` plus a first push creates
 //     <remote>/main and never <remote>/HEAD, which is how most vaults
@@ -340,7 +344,7 @@ export function prepareConfigScan(io, t, remoteName, input, env = process.env, c
     for (const commit of carried.commits) {
       sources.push({ kind: 'carried', commit: commit.slice(0, 7), read: readConfigAtCommit(commit, configPath) });
     }
-    const branches = defaultBranches(remoteName);
+    const branches = defaultBranches(remoteName, vaultRoot, env);
     for (const branch of branches.resolved) {
       sources.push({ kind: 'default', branch: branch.name, read: readConfigAtCommit(branch.sha, configPath) });
     }
@@ -503,39 +507,30 @@ function hasRemoteTrackingRefs(remote) {
   return !listed.error && listed.status === 0 && listed.stdout.trim() !== '';
 }
 
-const DEFAULT_BRANCH_RUNGS = ['HEAD', 'main', 'master'];
-
-// The first rung of one remote's ladder that resolves to a commit, as
-// { name, sha }, or null. HEAD counts only as a symbolic reference to a
-// branch of that same remote.
-function defaultBranchOf(remote) {
-  const prefix = `refs/remotes/${remote}/`;
-  for (const rung of DEFAULT_BRANCH_RUNGS) {
-    let target = `${prefix}${rung}`;
-    if (rung === 'HEAD') {
-      const symref = gitRead(['symbolic-ref', '-q', target]);
-      if (symref.error || symref.status !== 0) continue;
-      target = symref.stdout.trim();
-      if (!target.startsWith(prefix) || target.length === prefix.length) continue;
-    }
-    const commit = gitRead(['rev-parse', '-q', '--verify', `${target}^{commit}`]);
-    if (commit.error || commit.status !== 0) continue;
-    return { name: target.slice('refs/remotes/'.length), sha: commit.stdout.trim() };
-  }
-  return null;
+// The default branch of one remote, as this repository knows it: the ONE
+// resolver (src/git.mjs, defaultBranch) in its published-only form, so the
+// gate, sync, lint and doctor name the same branch. That is the
+// configuration's vault.default_branch (read from the configuration on the
+// remote's default branch) when the remote publishes it, else the first of
+// refs/remotes/<remote>/HEAD (a branch of that remote), main and master that
+// resolves to a commit. Never a local branch: the gate reads what a person
+// merged on the remote. As { name, sha }, or null.
+function defaultBranchOf(remote, vaultRoot, env) {
+  const found = defaultBranch(vaultRoot, { env, remote, publishedOnly: true });
+  return found === null ? null : { name: found.name, sha: found.sha };
 }
 
 // The default branches this push is judged against: the named remote's
 // when its ladder resolves (its remote-tracking references decide, whether
 // or not the name is still configured), and otherwise every configured
 // remote's.
-function defaultBranches(remoteName) {
+function defaultBranches(remoteName, vaultRoot, env) {
   const listed = gitRead(['remote']);
   const remotes = listed.error || listed.status !== 0 ? [] : listed.stdout.split('\n').filter((name) => name !== '');
   const nameIsRemote = remotes.includes(remoteName);
-  const own = defaultBranchOf(remoteName);
+  const own = defaultBranchOf(remoteName, vaultRoot, env);
   if (own !== null) return { resolved: [own], nameIsRemote, remotes };
-  const resolved = remotes.map(defaultBranchOf).filter((branch) => branch !== null);
+  const resolved = remotes.map((remote) => defaultBranchOf(remote, vaultRoot, env)).filter((branch) => branch !== null);
   return { resolved, nameIsRemote, remotes };
 }
 

@@ -41,7 +41,7 @@ import { TEMPLATE_HOOK } from '../init/skeleton.mjs';
 import { INSTALL_HOOK_COMMAND } from '../init/gate.mjs';
 import { MANIFEST_PATH, readManifest } from '../manifest.mjs';
 import { compareVersions } from '../commands/update.mjs';
-import { currentBranch, defaultBranch, trackedRemote } from '../git.mjs';
+import { defaultBranch, defaultBranchUpstream, remoteBranches, trackedRemote } from '../git.mjs';
 
 export const MINIMUM_NODE_MAJOR = 24;
 export const HOOKS_DIR = '.githooks';
@@ -236,20 +236,26 @@ function gitPresent(ctx) {
   return { id, status: 'ok', messageKey: 'doctor.git_present.ok', params: { version: match[1] } };
 }
 
-// Which branch is the default, answered by the ONE resolver every command
-// uses (src/git.mjs, defaultBranch), so doctor can never call a branch the
-// default that sync, lint or the push gate would not. Two things are
-// reported besides its answer, because each makes that answer weaker than
-// it looks: a configured vault.default_branch that is no branch name, and
-// a <remote>/HEAD that exists but was skipped (naming another remote's
-// branch, or a branch this repository does not hold), since then an older
-// rung answers and may be a branch the remote has since stopped using.
+// Which branch is the default, answered by the ONE resolver (src/git.mjs,
+// defaultBranch) that sync and lint's scope use, and that the push gate
+// uses for each remote's rung (in its published-only form: the gate never
+// takes a local main, and adds every configured remote's answer on a push
+// by url, so on a vault whose remote knows nothing yet doctor can answer a
+// local main where the gate reads no default branch at all). Reported
+// besides its answer, because each makes that answer weaker than it looks:
+// a configured vault.default_branch that is no branch name; a <remote>/HEAD
+// that exists but was skipped (naming another remote's branch, or a branch
+// this repository does not hold); a default branch that tracks a branch of
+// this repository; and, asked live when the remote is configured, a remote
+// that publishes branches but not this one (a default renamed on the forge,
+// a typo, a local master against a remote main), which is what sync refuses
+// with exit 1. A remote that cannot be asked is a warning, never an ok.
 //
 // The remedy for "no default branch known" is the configuration's
-// vault.default_branch, never `git remote set-head --auto`: set-head needs
-// a remote that already publishes a branch, so it fails on every vault
-// before its first push, which is exactly when this is most often seen.
-// The configuration is true before the first push and after it.
+// vault.default_branch, which works before the first push, or `git remote
+// set-head <remote> --auto` once the remote publishes a branch. It never
+// proposes the branch checked out, which on an agent's branch would be the
+// agent's branch.
 export function setHeadCommand(remote) {
   return `git remote set-head ${remote} --auto`;
 }
@@ -279,8 +285,27 @@ function defaultBranchKnown(ctx) {
     }
   }
   if (found === null) {
-    const example = currentBranch(ctx.root, options) ?? 'main';
-    return { id, status: 'warn', messageKey: 'doctor.default_branch_known.unset', params: { file: CONFIG_FILENAME, remote, example } };
+    return { id, status: 'warn', messageKey: 'doctor.default_branch_known.unset', params: { file: CONFIG_FILENAME, remote, command } };
+  }
+  const upstream = defaultBranchUpstream(ctx.root, found, options);
+  if (upstream.local) {
+    const key = `branch.${found.bare}.remote`;
+    return { id, status: 'warn', messageKey: 'doctor.default_branch_known.local_upstream', params: { branch: found.bare, key } };
+  }
+  const remotes = git(ctx, ['remote']);
+  const configured = remotes.status === 0 && remotes.stdout.split('\n').includes(upstream.remote);
+  if (configured) {
+    const listed = remoteBranches(ctx.root, upstream.remote, { env: ctx.env, timeout: PROBE_TIMEOUT_MS });
+    if (listed.status !== 'listed') {
+      return { id, status: 'warn', messageKey: 'doctor.default_branch_known.remote_unverified', params: { branch: found.bare, remote: upstream.remote, detail: listed.detail } };
+    }
+    if (listed.heads.size > 0 && !listed.heads.has(upstream.branch)) {
+      const published = [...listed.heads.keys()].sort();
+      return {
+        id, status: 'warn', messageKey: 'doctor.default_branch_known.remote_lacks_branch',
+        params: { remote: upstream.remote, branch: upstream.branch, published, head: listed.head ?? '-', file: CONFIG_FILENAME, command: setHeadCommand(upstream.remote) },
+      };
+    }
   }
   return { id, status: 'ok', messageKey: 'doctor.default_branch_known.ok', params: { branch: found.bare, from: found.from } };
 }
