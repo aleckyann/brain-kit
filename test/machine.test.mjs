@@ -20,16 +20,20 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
-  chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, symlinkSync, writeFileSync,
+  chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { makeTempDir } from './helpers/tmp.mjs';
 import { KIT_ROOT } from '../src/version.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
 import { createTranslator } from '../src/lang.mjs';
-import { stateDirFor, STATE_FILES } from '../src/state.mjs';
+import { stateDirFor, STATE_FILES, vaultIdFor } from '../src/state.mjs';
+import { acquireLock } from '../src/guards/lock.mjs';
+import { git } from './helpers/git-repo.mjs';
 import { runMachine } from '../src/commands/machine.mjs';
 import { runDoctor } from '../src/commands/doctor.mjs';
+import { validateMachine } from '../src/config.mjs';
 
 const A_ACUTE = String.fromCodePoint(0xc1);
 const E_ACUTE = String.fromCodePoint(0xe9);
@@ -38,18 +42,23 @@ const VAULT_NAME = `Ana's "brain"`;
 const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
 const t = createTranslator('en');
 
-function makeVaultAt(root) {
+// A vault is a repository (init makes it one, and the vault lock lives in
+// it); `repo: false` builds the one kind that is not.
+function makeVaultAt(root, { repo = true } = {}) {
   mkdirSync(root, { recursive: true });
   writeFileSync(join(root, 'brain-kit.config.json'), '{}\n');
   writeFileSync(join(root, 'index.md'), '# Index\n');
+  if (repo) git(root, ['init', '-q', '-b', 'main']);
   return root;
 }
 
 // The machine.json init writes (src/commands/init.mjs, buildMachine), in
-// the state directory derived from the vault's path, with init's modes.
+// the state directory derived from the vault's path, with init's modes. The
+// vault_id is the one init derives, so every vault here has its own and no
+// fixture can hide a comparison of ids.
 function machineFor(root, stateDir, extra = {}) {
   return {
-    vault_id: 'ana-brain-0a1b2c3d',
+    vault_id: vaultIdFor(root),
     canonical_path: realpathSync(root),
     claude_bin: '/opt/example/bin/claude',
     state_dir: stateDir,
@@ -74,17 +83,17 @@ function writeMachine(stateDir, value, { text = null, mode = 0o600 } = {}) {
 
 // A vault with a valid machine.json. `pinned` puts the state directory
 // under BRAIN_KIT_STATE_DIR instead of deriving it from the path.
-function setup({ name = VAULT_NAME, machine = {}, writeFile = true, pinned = false } = {}) {
+function setup({ name = VAULT_NAME, machine = {}, writeFile = true, pinned = false, repo = true } = {}) {
   const base = makeTempDir('brain-kit-machine-');
   const home = join(base, 'home');
   mkdirSync(home, { recursive: true });
-  const root = makeVaultAt(join(base, PARENT_NAME, name));
+  const root = makeVaultAt(join(base, PARENT_NAME, name), { repo });
   const env = { HOME: home, XDG_STATE_HOME: join(base, 'state'), PATH: process.env.PATH };
   if (pinned) env.BRAIN_KIT_STATE_DIR = join(base, 'pinned state');
   const stateDir = stateDirFor(root, env);
   const machineFile = join(stateDir, 'machine.json');
   if (writeFile) writeMachine(stateDir, machineFor(root, stateDir, machine));
-  return { base, home, root, env, stateDir, machineFile };
+  return { base, home, root, env, stateDir, machineFile, vaultId: vaultIdFor(root) };
 }
 
 async function machine(fx, argv, { env = fx.env, cwd = fx.root, deps = {} } = {}) {
@@ -311,9 +320,83 @@ test('set of a value the schema rejects is refused with exit 1 and leaves the fi
     assertUnchanged(fx.machineFile, before);
     onlyMachineJson(fx.stateDir);
   }
-  // A nullable string is still a string when it is not null.
-  const r = await machine(fx, ['set', 'model', '']);
+});
+
+// Values the schema allows but the next run cannot use (src/config.mjs,
+// machineValueErrors): refused by set with the file unchanged, and failed
+// by doctor's machine-valid when they reach the file some other way.
+const RUN_BREAKING = [
+  ['notify_command', '[]'],
+  ['network_check', '[]'],
+  ['network_check', '[""]'],
+  ['notify_command', '[" ", "x"]'],
+  ['claude_bin', ' '],
+  ['transcripts_dir', ''],
+  ['paths.watermark', ''],
+  ['paths.log_dir', '  '],
+  ['path_extra', '["relative/dir"]'],
+  ['path_extra', '["/opt/bin", ""]'],
+  ['model', ''],
+];
+
+test('set refuses every value that would break the next run, and leaves the file byte for byte unchanged', async () => {
+  const fx = setup();
+  const before = snapshot(fx.machineFile);
+  for (const [key, value] of RUN_BREAKING) {
+    const r = await machine(fx, ['set', key, value]);
+    assert.equal(r.code, EXIT.FAILURE, `${key}=${value}: ${r.stderr}`);
+    assert.match(r.stderr, /left as it was/, `${key}=${value}`);
+    assertUnchanged(fx.machineFile, before);
+    onlyMachineJson(fx.stateDir);
+  }
+  // Their usable neighbours pass.
+  for (const [key, value] of [['network_check', '["ping", "-c1", "example.com"]'], ['path_extra', '["/opt/bin", "~/bin", "~"]'], ['model', 'null']]) {
+    const r = await machine(fx, ['set', key, value]);
+    assert.equal(r.code, EXIT.OK, `${key}=${value}: ${r.stderr}`);
+  }
+});
+
+test('doctor machine-valid fails on the same run-breaking values set refuses, so the two never disagree', async () => {
+  for (const [key, value] of RUN_BREAKING) {
+    const fx = setup();
+    const record = machineFor(fx.root, fx.stateDir);
+    const parsed = key === 'path_extra' || key.endsWith('_command') || key === 'network_check' ? JSON.parse(value) : value;
+    if (key.startsWith('paths.')) record.paths[key.slice('paths.'.length)] = parsed;
+    else record[key] = parsed;
+    writeMachine(fx.stateDir, record);
+    const doctor = await stateChecks(fx.root, fx.env);
+    assert.equal(doctor.byId['machine-valid'].status, 'fail', `${key}=${value}: ${JSON.stringify(doctor.byId['machine-valid'])}`);
+    assert.equal(doctor.code, EXIT.FAILURE);
+    const shown = await machine(fx, ['show']);
+    assert.equal(shown.code, EXIT.FAILURE, `${key}=${value}`);
+  }
+});
+
+test('set keep_stream false writes false, and true writes true', async () => {
+  const fx = setup();
+  let r = await machine(fx, ['set', 'keep_stream', 'false']);
   assert.equal(r.code, EXIT.OK, r.stderr);
+  assert.equal(readJson(fx.machineFile).keep_stream, false);
+  r = await machine(fx, ['set', 'keep_stream', 'true']);
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  assert.equal(readJson(fx.machineFile).keep_stream, true);
+  r = await machine(fx, ['set', 'keep_stream', 'false']);
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  assert.equal(readJson(fx.machineFile).keep_stream, false);
+});
+
+test('set refuses an integer beyond the safe range rather than write a rounded one', async () => {
+  const fx = setup();
+  const before = snapshot(fx.machineFile);
+  for (const value of ['9007199254740993', '9007199254740992', '-9007199254740993']) {
+    const r = await machine(fx, ['set', 'log_retention_days', value]);
+    assert.equal(r.code, EXIT.USAGE, `${value}: ${r.stderr}`);
+    assert.match(r.stderr, /whole number/);
+    assertUnchanged(fx.machineFile, before);
+  }
+  const r = await machine(fx, ['set', 'log_retention_days', '9007199254740991']);
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  assert.equal(readJson(fx.machineFile).log_retention_days, 9007199254740991);
 });
 
 test('set of a key the schema does not declare is refused with exit 2 and changes nothing', async () => {
@@ -476,7 +559,7 @@ test('register after a move carries the state to the directory the new path impl
   const file = join(newState, 'machine.json');
   const after = readJson(file);
   assert.equal(after.canonical_path, realpathSync(newRoot));
-  assert.equal(after.vault_id, 'ana-brain-0a1b2c3d');
+  assert.equal(after.vault_id, fx.vaultId);
   assert.equal(after.state_dir, newState);
   assert.deepEqual(after.paths, {
     watermark: join(newState, STATE_FILES.WATERMARK),
@@ -576,7 +659,8 @@ test('register refuses when the target state directory holds another vault\'s ma
   const r = await machine(fx, ['register', '--from', oldRoot], { cwd: newRoot });
   assert.equal(r.code, EXIT.FAILURE);
   assert.ok(r.stderr.includes(otherFile), r.stderr);
-  assert.match(r.stderr, /records the vault at/);
+  assert.match(r.stderr, /already holds the state of vault other-vault/);
+  assert.ok(r.stderr.includes(fx.vaultId), r.stderr);
   // Refused by its own clause, not caught later by the empty-directory one.
   assert.doesNotMatch(r.stderr, /holds files but no machine\.json/);
   assertUnchanged(otherFile, beforeTarget);
@@ -679,13 +763,26 @@ test('register --from after the state already moved leaves both where they are a
   assert.equal(r.code, EXIT.OK, r.stderr);
   const file = join(stateDirFor(newRoot, fx.env), 'machine.json');
   const before = snapshot(file);
-  // Someone recreated a record at the old place; it is not touched.
-  writeMachine(fx.stateDir, machineFor(fx.base, fx.stateDir, { canonical_path: oldRoot }));
+  // Run again with the old state gone: nothing to do, exit 0, not a failure.
+  r = await machine(fx, ['register', '--from', oldRoot], { cwd: newRoot });
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  assert.match(r.stdout, /Nothing to do/);
+  assertUnchanged(file, before);
+  // A record of this vault recreated at the old place: the one at the target
+  // is this vault's own, so nothing is moved and neither is touched.
+  writeMachine(fx.stateDir, machineFor(fx.base, fx.stateDir, { vault_id: fx.vaultId, canonical_path: oldRoot }));
   const beforeOld = snapshot(fx.machineFile);
   r = await machine(fx, ['register', '--from', oldRoot], { cwd: newRoot });
   assert.equal(r.code, EXIT.OK, r.stderr);
   assertUnchanged(file, before);
   assertUnchanged(fx.machineFile, beforeOld);
+  // A record of another vault there: two ids, refused, neither touched.
+  writeMachine(fx.stateDir, machineFor(fx.base, fx.stateDir, { canonical_path: oldRoot }));
+  const beforeOther = snapshot(fx.machineFile);
+  r = await machine(fx, ['register', '--from', oldRoot], { cwd: newRoot });
+  assert.equal(r.code, EXIT.FAILURE, r.stdout);
+  assertUnchanged(file, before);
+  assertUnchanged(fx.machineFile, beforeOther);
 });
 
 test('register --from answers already registered only for a target record doctor calls healthy', async () => {
@@ -694,13 +791,14 @@ test('register --from answers already registered only for a target record doctor
   const newRoot = moveVault(fx);
   const target = stateDirFor(newRoot, fx.env);
   // A record of this vault at the target that the schema rejects: refused, not "already".
-  const file = writeMachine(target, machineFor(newRoot, target, { claude_bin: '' }));
+  const file = writeMachine(target, machineFor(newRoot, target, { vault_id: fx.vaultId, claude_bin: '' }));
   const before = snapshot(file);
   let r = await machine(fx, ['register', '--from', oldRoot], { cwd: newRoot });
   assert.equal(r.code, EXIT.FAILURE, r.stdout);
+  assert.match(r.stderr, /cannot be proved to be this vault's/);
   assertUnchanged(file, before);
   // A valid one at the wrong modes: exit 0, and doctor agrees.
-  writeMachine(target, machineFor(newRoot, target), { mode: 0o644 });
+  writeMachine(target, machineFor(newRoot, target, { vault_id: fx.vaultId }), { mode: 0o644 });
   chmodSync(target, 0o755);
   const content = readFileSync(file);
   r = await machine(fx, ['register', '--from', oldRoot], { cwd: newRoot });
@@ -771,14 +869,14 @@ test('register takes the state when the old path now holds a directory that is n
 
 test('register rewrites a relative canonical_path, never resolving it against the working directory', async () => {
   const fx = setup({ pinned: true, machine: { canonical_path: '.' } });
-  // Run from inside the vault, where "." would resolve to it: a relative
-  // path read that way would answer "already registered" and leave "." in
-  // place, which doctor reads as a vault somewhere else.
+  // Run from inside ANOTHER vault, where "." would resolve to it: a relative
+  // path read that way would call this record that vault's and refuse it.
+  const other = setup({ name: 'someone else' });
   const previous = process.cwd();
-  process.chdir(fx.root);
+  process.chdir(other.root);
   let r;
   try {
-    r = await machine(fx, ['register']);
+    r = await machine(fx, ['register'], { cwd: fx.root });
   } finally {
     process.chdir(previous);
   }
@@ -853,6 +951,296 @@ test('a register whose write fails puts the state back where it was', async () =
   assertUnchanged(fx.machineFile, before);
   onlyMachineJson(fx.stateDir);
   assert.equal(existsSync(target), false);
+});
+
+// --- identity, not path ------------------------------------------------------------
+
+test('register --from refuses a dead vault\'s record at the path this vault moved to, and leaves this vault\'s own state untouched', async () => {
+  // Vault A lived at P and was deleted with its state left behind.
+  const base = makeTempDir('brain-kit-machine-');
+  const env = { HOME: join(base, 'home'), XDG_STATE_HOME: join(base, 'state'), PATH: process.env.PATH };
+  mkdirSync(env.HOME);
+  const place = join(base, `p ${E_ACUTE}`);
+  makeVaultAt(place);
+  const aState = stateDirFor(place, env);
+  const aFile = writeMachine(aState, machineFor(place, aState));
+  writeFileSync(join(aState, STATE_FILES.WATERMARK), '{"day":"2026-09-20","who":"A-dead"}\n');
+  rmSync(place, { recursive: true, force: true });
+  // Vault B lived elsewhere, with its own state, and was moved to P.
+  const bOld = makeVaultAt(join(base, 'bold'));
+  const bState = stateDirFor(bOld, env);
+  const bFile = writeMachine(bState, machineFor(bOld, bState));
+  writeFileSync(join(bState, STATE_FILES.WATERMARK), '{"day":"2026-08-01","who":"B"}\n');
+  renameSync(bOld, place);
+  assert.equal(stateDirFor(place, env), aState);
+  assert.equal(readJson(aFile).canonical_path, realpathSync(place), 'the dead record names the very path B now occupies');
+  const beforeA = snapshot(aFile);
+  const beforeB = snapshot(bFile);
+  const fx = { env, root: place };
+  const r = await machine(fx, ['register', place, '--from', bOld], { cwd: base });
+  assert.equal(r.code, EXIT.FAILURE, r.stdout);
+  assert.ok(r.stderr.includes(aFile) && r.stderr.includes(bFile), r.stderr);
+  assert.ok(r.stderr.includes(vaultIdFor(bOld)), r.stderr);
+  assertUnchanged(aFile, beforeA);
+  assertUnchanged(bFile, beforeB);
+  assert.equal(readFileSync(join(bState, STATE_FILES.WATERMARK), 'utf8'), '{"day":"2026-08-01","who":"B"}\n');
+  assert.equal(readFileSync(join(aState, STATE_FILES.WATERMARK), 'utf8'), '{"day":"2026-09-20","who":"A-dead"}\n');
+});
+
+test('register with a pinned state directory and a link left at the old path rewrites canonical_path to the real path, and doctor gives 3 ok', async () => {
+  for (const withFrom of [false, true]) {
+    const fx = setup({ pinned: true });
+    const oldRoot = fx.root;
+    const newRoot = moveVault(fx);
+    symlinkSync(newRoot, oldRoot);
+    const control = await stateChecks(newRoot, fx.env);
+    assert.equal(control.byId['machine-valid'].status, 'warn');
+    const r = await machine(fx, withFrom ? ['register', '--from', oldRoot] : ['register'], { cwd: newRoot });
+    assert.equal(r.code, EXIT.OK, r.stderr);
+    assert.doesNotMatch(r.stdout, /Nothing to do/);
+    assert.equal(readJson(fx.machineFile).canonical_path, realpathSync(newRoot));
+    const doctor = await stateChecks(newRoot, fx.env);
+    for (const id of ['machine-valid', 'state-dir-resolves', 'state-dir-mode']) {
+      assert.equal(doctor.byId[id].status, 'ok', `${withFrom}: ${JSON.stringify(doctor.byId[id])}`);
+    }
+  }
+});
+
+test('register refuses a source record that is not an object, before reading anything from it', async () => {
+  const fx = setup();
+  writeMachine(fx.stateDir, null, { text: 'null\n' });
+  const before = snapshot(fx.machineFile);
+  const oldRoot = fx.root;
+  const newRoot = moveVault(fx);
+  const r = await machine(fx, ['register', '--from', oldRoot], { cwd: newRoot });
+  assert.equal(r.code, EXIT.FAILURE);
+  assert.match(r.stderr, /not a valid machine file/);
+  assertUnchanged(fx.machineFile, before);
+});
+
+test('register refuses a source record that fails validation even where the rewrite would have repaired it', async () => {
+  // canonical_path is the one field register replaces: a blank one would be
+  // "fixed" by the move, but a record that fails validation is not proved
+  // to be anyone's, and is not moved.
+  const fx = setup({ machine: { canonical_path: ' ' } });
+  const before = snapshot(fx.machineFile);
+  const oldRoot = fx.root;
+  const newRoot = moveVault(fx);
+  const r = await machine(fx, ['register', '--from', oldRoot], { cwd: newRoot });
+  assert.equal(r.code, EXIT.FAILURE);
+  assertUnchanged(fx.machineFile, before);
+  assert.equal(existsSync(stateDirFor(newRoot, fx.env)), false);
+});
+
+test('register validates the record it is about to write, on its own, and moves nothing when it fails', async () => {
+  const fx = setup();
+  const before = snapshot(fx.machineFile);
+  const oldRoot = fx.root;
+  const newRoot = moveVault(fx);
+  const real = realpathSync(newRoot);
+  // A validator that accepts every record except the rewritten one.
+  const validate = (value) => (value?.canonical_path === real ? ['$.canonical_path: rejected by the test'] : validateMachine(value));
+  const r = await machine(fx, ['register', '--from', oldRoot], { cwd: newRoot, deps: { validate } });
+  assert.equal(r.code, EXIT.FAILURE, r.stdout);
+  assert.match(r.stderr, /rejected by the test/);
+  assertUnchanged(fx.machineFile, before);
+  assert.equal(existsSync(stateDirFor(newRoot, fx.env)), false);
+});
+
+test('register --from through a link left at the old path still compares with a record already at the target', async () => {
+  // B moved with a link left behind; the target already holds a record of
+  // another vault (A) that named B's new path. --from must find B's own old
+  // state under the old spelling, compare ids, and refuse.
+  const fx = setup();
+  const oldRoot = fx.root;
+  const newRoot = moveVault(fx);
+  symlinkSync(newRoot, oldRoot);
+  const target = stateDirFor(newRoot, fx.env);
+  const aFile = writeMachine(target, machineFor(newRoot, target, { vault_id: 'vault-a-dead' }));
+  const beforeA = snapshot(aFile);
+  const beforeB = snapshot(fx.machineFile);
+  const r = await machine(fx, ['register', '--from', oldRoot], { cwd: newRoot });
+  assert.equal(r.code, EXIT.FAILURE, r.stdout);
+  assert.match(r.stderr, /vault-a-dead/);
+  assertUnchanged(aFile, beforeA);
+  assertUnchanged(fx.machineFile, beforeB);
+});
+
+test('register --from a path with no state while the target holds a record of another path is a failure, not nothing to do', async () => {
+  const fx = setup();
+  const newRoot = moveVault(fx);
+  const target = stateDirFor(newRoot, fx.env);
+  const file = writeMachine(target, machineFor(fx.base, target, { canonical_path: join(fx.base, 'gone') }));
+  const before = snapshot(file);
+  const r = await machine(fx, ['register', '--from', join(fx.base, 'never')], { cwd: newRoot });
+  assert.equal(r.code, EXIT.FAILURE, r.stdout);
+  assertUnchanged(file, before);
+});
+
+test('register --from a link to the vault moves a record that already names the vault\'s real path from the link\'s state directory', async () => {
+  // State an older version wrote through a link, under the link's own
+  // name: its record already names this vault's real path, but it is not
+  // where the kit looks. It is moved, not answered "already registered".
+  const fx = setup({ writeFile: false });
+  const link = join(fx.base, 'link name');
+  symlinkSync(fx.root, link);
+  const stray = join(fx.env.XDG_STATE_HOME, 'brain-kit', `link name-${createHash('sha256').update(link).digest('hex').slice(0, 8)}`);
+  writeMachine(stray, machineFor(fx.root, stray));
+  const r = await machine(fx, ['register', '--from', link]);
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  assert.equal(existsSync(stray), false);
+  assert.equal(readJson(fx.machineFile).canonical_path, realpathSync(fx.root));
+  const doctor = await stateChecks(fx.root, fx.env);
+  for (const id of ['machine-valid', 'state-dir-resolves', 'state-dir-mode']) assert.equal(doctor.byId[id].status, 'ok', id);
+});
+
+// --- the vault lock ----------------------------------------------------------------
+
+test('set and register exit 75 naming the holder while another writer holds the vault lock, and change nothing; show still reads', async () => {
+  const fx = setup();
+  const lock = acquireLock(fx.root, { command: 'test holder', env: fx.env });
+  try {
+    const before = snapshot(fx.machineFile);
+    let r = await machine(fx, ['set', 'claude_bin', '/opt/example/claude']);
+    assert.equal(r.code, EXIT.TEMPFAIL, r.stderr);
+    assert.match(r.stderr, /test holder/);
+    assertUnchanged(fx.machineFile, before);
+    r = await machine(fx, ['register']);
+    assert.equal(r.code, EXIT.TEMPFAIL, r.stderr);
+    assert.match(r.stderr, /test holder/);
+    r = await machine(fx, ['show']);
+    assert.equal(r.code, EXIT.OK, r.stderr);
+  } finally {
+    lock.release();
+  }
+  // Released by set when it is done: a second writer gets in.
+  let r = await machine(fx, ['set', 'claude_bin', '/opt/example/claude']);
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  r = await machine(fx, ['set', 'model', 'claude-opus-5-5']);
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  const again = acquireLock(fx.root, { command: 'test holder', env: fx.env });
+  again.release();
+});
+
+test('the lock is released when set refuses and when register fails midway', async () => {
+  const fx = setup();
+  let r = await machine(fx, ['set', 'log_retention_days', '0']);
+  assert.equal(r.code, EXIT.FAILURE);
+  acquireLock(fx.root, { command: 'probe', env: fx.env }).release();
+  const oldRoot = fx.root;
+  const newRoot = moveVault(fx);
+  let calls = 0;
+  const rename = (from, to) => {
+    calls += 1;
+    if (calls === 2) throw Object.assign(new Error('ENOSPC: simulated'), { code: 'ENOSPC' });
+    return renameSync(from, to);
+  };
+  await assert.rejects(machine(fx, ['register', '--from', oldRoot], { cwd: newRoot, deps: { rename } }), /ENOSPC/);
+  acquireLock(newRoot, { command: 'probe', env: fx.env }).release();
+  r = await machine(fx, ['register', '--from', oldRoot], { cwd: newRoot });
+  assert.equal(r.code, EXIT.OK, r.stderr);
+});
+
+test('set and register in a vault that is not a repository exit 2 and change nothing', async () => {
+  const fx = setup({ repo: false });
+  const before = snapshot(fx.machineFile);
+  let r = await machine(fx, ['set', 'claude_bin', '/opt/example/claude']);
+  assert.equal(r.code, EXIT.USAGE, r.stderr);
+  assert.match(r.stderr, /not inside a git|not a git|repository/i);
+  r = await machine(fx, ['register']);
+  assert.equal(r.code, EXIT.USAGE, r.stderr);
+  assertUnchanged(fx.machineFile, before);
+});
+
+// --- state directory inside the vault, and a record of another path -------------
+
+test('show and set refuse a state directory inside the vault, as register does', async () => {
+  const fx = setup({ pinned: true });
+  const inside = join(fx.root, '.st');
+  const env = { ...fx.env, BRAIN_KIT_STATE_DIR: inside };
+  const file = writeMachine(inside, machineFor(fx.root, inside));
+  const before = snapshot(file);
+  for (const argv of [['show'], ['set', 'model', 'opus'], ['register']]) {
+    const r = await machine(fx, argv, { env });
+    assert.equal(r.code, EXIT.USAGE, `${argv}: ${r.stderr}`);
+    assert.match(r.stderr, /inside the vault/);
+    assert.equal(r.stdout, '');
+    assertUnchanged(file, before);
+  }
+});
+
+test('show and set refuse a state directory inside the vault\'s real path when the vault is reached through a link', async () => {
+  const fx = setup({ pinned: true });
+  const link = join(fx.base, 'link to vault');
+  symlinkSync(fx.root, link);
+  const inside = join(realpathSync(fx.root), '.st');
+  const env = { ...fx.env, BRAIN_KIT_STATE_DIR: inside };
+  const file = writeMachine(inside, machineFor(fx.root, inside));
+  const before = snapshot(file);
+  for (const argv of [['show'], ['set', 'model', 'opus']]) {
+    const r = await machine(fx, argv, { env, cwd: link });
+    assert.equal(r.code, EXIT.USAGE, `${argv}: ${r.stderr}`);
+    assert.match(r.stderr, /inside the vault/);
+    assertUnchanged(file, before);
+  }
+});
+
+test('show says so when the record names a path the vault is no longer at, and still exits 0', async () => {
+  const fx = setup({ pinned: true });
+  const recorded = readJson(fx.machineFile).canonical_path;
+  const newRoot = moveVault(fx);
+  let r = await machine(fx, ['show'], { cwd: newRoot });
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  assert.ok(r.stderr.includes(recorded) && r.stderr.includes(realpathSync(newRoot)), r.stderr);
+  assert.match(r.stderr, /machine register/);
+  r = await machine(fx, ['register'], { cwd: newRoot });
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  r = await machine(fx, ['show'], { cwd: newRoot });
+  assert.equal(r.stderr, '');
+});
+
+// --- vaults the real init created ------------------------------------------------
+
+// A vault made by `brain-kit init --yes`, through the real launcher, with
+// HOME, git's configuration and the state home all in scratch.
+function initVault() {
+  const base = makeTempDir('brain-kit-machine-init-');
+  const home = join(base, 'home');
+  mkdirSync(home);
+  writeFileSync(join(home, '.gitconfig'), '');
+  const env = {
+    PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(home, '.config'), XDG_STATE_HOME: join(base, 'state'),
+    GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), BRAIN_KIT_LANG: 'en',
+  };
+  const root = join(base, PARENT_NAME, VAULT_NAME);
+  const r = spawnSync(process.execPath, [BIN, 'init', '--yes', '--lang', 'en', root], { cwd: base, env, encoding: 'utf8' });
+  assert.equal(r.status, EXIT.OK, `init: ${r.stdout}\n${r.stderr}`);
+  const stateDir = stateDirFor(root, env);
+  return { base, home, root, env, stateDir, machineFile: join(stateDir, 'machine.json') };
+}
+
+test('show, set and register work on a vault the real init created, and doctor gives 3 ok after each', async () => {
+  const fx = initVault();
+  let r = await machine(fx, ['show']);
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  assert.equal(r.stdout, readFileSync(fx.machineFile, 'utf8'));
+  assert.equal(r.stderr, '');
+  const id = readJson(fx.machineFile).vault_id;
+  r = await machine(fx, ['set', 'notify_command', '["notify-send", "brain-kit"]']);
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  r = await machine(fx, ['set', 'notify_command', '[]']);
+  assert.equal(r.code, EXIT.FAILURE);
+  let doctor = await stateChecks(fx.root, fx.env);
+  for (const check of ['machine-valid', 'state-dir-resolves', 'state-dir-mode']) assert.equal(doctor.byId[check].status, 'ok', check);
+  const oldRoot = fx.root;
+  const newRoot = moveVault(fx);
+  r = await machine(fx, ['register', '--from', oldRoot], { cwd: newRoot });
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  const after = readJson(join(stateDirFor(newRoot, fx.env), 'machine.json'));
+  assert.equal(after.vault_id, id);
+  assert.deepEqual(after.notify_command, ['notify-send', 'brain-kit']);
+  doctor = await stateChecks(newRoot, fx.env);
+  for (const check of ['machine-valid', 'state-dir-resolves', 'state-dir-mode']) assert.equal(doctor.byId[check].status, 'ok', check);
 });
 
 // --- usage and wiring -----------------------------------------------------------

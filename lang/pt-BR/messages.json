@@ -488,13 +488,15 @@
   "machine.register_candidates": "Diretórios de estado cujo vault não está mais onde o machine.json diz:\n{list}",
   "machine.register_from_missing": "brain-kit machine register: não há machine.json em {file}, o diretório de estado que {from} teria nesta máquina. Nada foi movido.",
   "machine.register_source_live": "brain-kit machine register: {file} pertence ao vault em {vault}, que continua lá. Uma cópia de vault não é uma mudança de lugar: dê à cópia um estado próprio com brain-kit init --adopt. Nada foi movido.",
-  "machine.register_target_taken": "brain-kit machine register: {file} já existe e registra o vault em {recorded}, não este. Ele não foi sobrescrito, e nada foi movido.",
   "machine.register_target_unreadable": "brain-kit machine register: {file} já existe e não pode ser lido ({error}), então não dá para provar que é deste vault. Ele não foi sobrescrito, e nada foi movido.",
   "machine.register_target_not_empty": "brain-kit machine register: {dir} já tem arquivos mas nenhum machine.json, então não dá para provar que são deste vault. Nada foi movido.",
-  "machine.register_state_inside_vault": "brain-kit machine register: o diretório de estado {state} fica dentro do vault {dir}, onde seria commitado. Aponte BRAIN_KIT_STATE_DIR ou XDG_STATE_HOME para fora dele. Nada foi escrito.",
-  "machine.register_already": "Este vault já está registrado em {dir}: {file}. O conteúdo não foi reescrito.",
   "machine.register_updated": "Vault registrado em {dir} no arquivo {file}.",
   "machine.register_done": "Vault registrado em {dir}: o estado foi movido de {from} para {to}.",
   "machine.register_stranded": "brain-kit machine register: a escrita do arquivo de máquina falhou depois que o estado foi para {to}, e a volta também falhou. Mova esse diretório de volta para {from} à mão.",
-  "machine.other_vault": "brain-kit machine: {file} registra o vault em {vault}, que continua lá, e não este. O diretório de estado está fixado por BRAIN_KIT_STATE_DIR ou compartilhado; aponte-o para o deste vault. Nada foi escrito."
+  "machine.other_vault": "brain-kit machine: {file} registra o vault em {vault}, que continua lá, e não este. O diretório de estado está fixado por BRAIN_KIT_STATE_DIR ou compartilhado; aponte-o para o deste vault. Nada foi escrito.",
+  "machine.state_inside_vault": "brain-kit machine: o diretório de estado {state} fica dentro do vault {dir}, onde seria commitado. Aponte BRAIN_KIT_STATE_DIR ou XDG_STATE_HOME para fora dele. Nada foi escrito.",
+  "machine.show_path_differs": "brain-kit machine: este registro foi escrito para {recorded}, não para {dir}, onde o vault está agora. Rode brain-kit machine register para registrar a mudança.",
+  "machine.register_target_invalid": "brain-kit machine register: {file} já existe e não é um arquivo de máquina válido ({errors}), então não dá para provar que é deste vault. Ele não foi sobrescrito, e nada foi movido.",
+  "machine.register_target_taken": "brain-kit machine register: {file} já guarda o estado do vault {theirs}, enquanto {source} guarda o estado do vault {ours}. Caminho não é identidade: nenhum dos dois foi tocado, e nada foi movido.",
+  "machine.register_already": "Este vault já está registrado em {dir}: {file}. Nada a fazer."
 }

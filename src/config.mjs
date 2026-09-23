@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { validateSchema } from './schema.mjs';
 import { KIT_ROOT } from './version.mjs';
 import { decodeBytes } from './io.mjs';
@@ -99,8 +99,73 @@ export function machineSchema() {
   return loadSchema('machine.schema.json');
 }
 
+// Values the schema accepts but the next run cannot use. THE ONE CHECK, read
+// by every reader of machine.json through validateMachine (`machine set`
+// before it writes, `machine register`, `doctor`'s machine-valid, init,
+// loadMachine), so the command that writes a value and the check that
+// judges it never disagree. The schema says "a string" or "a list of
+// strings"; what breaks a scheduled round is narrower:
+//   - an empty or blank string where a path or a program is expected
+//     (claude_bin, canonical_path, state_dir, transcripts_dir, every paths
+//     entry): the watermark written nowhere, a binary with no name;
+//   - an empty `model`: null is how the default model is asked for;
+//   - an argument vector with no element, or whose first element is empty
+//     (network_check, notify_command): a check that runs nothing and so
+//     passes, which is the "no network on resume" failure again, or a
+//     program with no name;
+//   - a path_extra entry that is neither absolute nor under `~/`: resolved
+//     against whatever directory a run starts in, it names a different
+//     directory every time.
+const MACHINE_PATH_KEYS = Object.freeze(['canonical_path', 'claude_bin', 'state_dir', 'transcripts_dir']);
+const MACHINE_ARGV_KEYS = Object.freeze(['network_check', 'notify_command']);
+
+function isBlank(value) {
+  return typeof value === 'string' && value.trim() === '';
+}
+
+export function machineValueErrors(machine) {
+  if (machine === null || typeof machine !== 'object' || Array.isArray(machine)) return [];
+  const errors = [];
+  for (const key of MACHINE_PATH_KEYS) {
+    if (isBlank(machine[key])) errors.push(`$.${key}: must not be empty`);
+  }
+  if (isBlank(machine.model)) errors.push('$.model: must not be empty (null asks for the default model)');
+  const paths = machine.paths;
+  if (paths !== null && typeof paths === 'object' && !Array.isArray(paths)) {
+    for (const [key, value] of Object.entries(paths)) {
+      if (isBlank(value)) errors.push(`$.paths.${key}: must not be empty`);
+    }
+  }
+  for (const key of MACHINE_ARGV_KEYS) {
+    const argv = machine[key];
+    if (!Array.isArray(argv)) continue;
+    if (argv.length === 0) errors.push(`$.${key}: must name a program to run (an empty list runs nothing)`);
+    else if (isBlank(argv[0])) errors.push(`$.${key}[0]: must name a program to run`);
+  }
+  if (Array.isArray(machine.path_extra)) {
+    machine.path_extra.forEach((entry, index) => {
+      if (typeof entry !== 'string') return;
+      if (!isAbsolute(entry) && entry !== '~' && !entry.startsWith('~/')) {
+        errors.push(`$.path_extra[${index}]: must be an absolute directory or start with ~/`);
+      }
+    });
+  }
+  return errors;
+}
+
 export function validateMachine(machine) {
-  return validateSchema(withoutRetiredPaths(machine), loadSchema('machine.schema.json'));
+  const current = withoutRetiredPaths(machine);
+  return [...validateSchema(current, loadSchema('machine.schema.json')), ...machineValueErrors(current)];
+}
+
+// Whether a machine.json's canonical_path records the vault whose real path
+// is `realRoot`, in THE form doctor's machine-valid compares and `machine
+// register` writes: an absolute path that, made absolute and normalised but
+// with no symbolic link resolved, is the real path itself. A path that only
+// leads there through a link is not it: doctor warns about it, so register
+// must rewrite it, never answer "already registered".
+export function canonicalPathMatches(recorded, realRoot) {
+  return typeof recorded === 'string' && isAbsolute(recorded) && resolve(recorded) === realRoot;
 }
 
 // Decoded the one way every scanner in this project decodes bytes

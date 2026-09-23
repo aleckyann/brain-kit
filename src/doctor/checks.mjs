@@ -32,7 +32,7 @@ import { basename, delimiter, isAbsolute, join, relative, resolve, sep } from 'n
 import { run } from '../exec.mjs';
 import { EXIT } from '../exit-codes.mjs';
 import { decodeBytes } from '../io.mjs';
-import { CONFIG_FILENAME, MACHINE_FILENAME, findMachineOnlyKeys, validateConfig, validateMachine } from '../config.mjs';
+import { CONFIG_FILENAME, MACHINE_FILENAME, canonicalPathMatches, findMachineOnlyKeys, validateConfig, validateMachine } from '../config.mjs';
 import { stateDirFor } from '../state.mjs';
 import { kitVersion } from '../version.mjs';
 import { localGitVarNames, withoutLocalGitVars } from '../git-env.mjs';
@@ -491,7 +491,7 @@ function machineValid(ctx) {
   }
   const recorded = read.value.canonical_path;
   const actual = ctx.realRoot();
-  if (!isAbsolute(recorded) || resolve(recorded) !== actual) {
+  if (!canonicalPathMatches(recorded, actual)) {
     return { id, status: 'warn', messageKey: 'doctor.machine_valid.canonical_differs', params: { recorded, actual } };
   }
   return { id, status: 'ok', messageKey: 'doctor.machine_valid.ok', params: { file } };
