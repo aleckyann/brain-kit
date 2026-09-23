@@ -9,6 +9,7 @@ import { runPushGate } from './commands/push-gate.mjs';
 import { runInit } from './commands/init.mjs';
 import { runDoctor } from './commands/doctor.mjs';
 import { runUpdate } from './commands/update.mjs';
+import { runSync } from './commands/sync.mjs';
 import { walkVault } from './vault.mjs';
 import { ConfigError } from './config.mjs';
 
@@ -48,6 +49,7 @@ const BUILTIN_COMMANDS = new Map([
   ['validate', (argv, io, t) => runValidate(argv, io, t, walkVault)],
   ['lint', (argv, io, t) => runLint(argv, io, t, walkVault)],
   ['doctor', (argv, io, t) => runDoctor(argv, io, t)],
+  ['sync', (argv, io, t) => runSync(argv, io, t)],
   ['scan-blobs', (argv, io) => runScanBlobs(argv, io)],
   ['push-gate', (argv, io) => runPushGate(argv, io, createTranslator(GATE_LANG, {
     warn: (message) => io.stderr.write(`${message}\n`),

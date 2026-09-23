@@ -393,13 +393,47 @@ test('git-present: the real git passes and names its version', async () => {
 
 // --- default-branch-known ----------------------------------------------------
 
-test('default-branch-known: warns naming the set-head command when origin/HEAD is unset', async () => {
+// Slice C: doctor asks the ONE resolver (src/git.mjs, defaultBranch), so
+// "unknown" means what it means to sync and lint: no configured
+// vault.default_branch, no <remote>/HEAD, main or master, and no local main
+// or master. The remedy is the configuration, which works before the first
+// push; `git remote set-head --auto` fails until a branch is published.
+test('default-branch-known: warns, naming vault.default_branch and never set-head, when nothing names a default branch', async () => {
   const fx = setup({ originHead: null });
+  fixtureGit(fx.root, ['branch', '-m', 'main', 'trunk'], fx.home);
   const { report, code } = await doctor(fx, ['--only', 'default-branch-known']);
   const c = assertCheck(report, 'default-branch-known', 'warn', 'doctor.default_branch_known.unset');
-  assert.equal(c.params.command, 'git remote set-head origin --auto');
-  assert.match(c.message, /git remote set-head origin --auto/);
+  assert.deepEqual(c.params, { file: 'brain-kit.config.json', remote: 'origin', example: 'trunk' });
+  assert.match(c.message, /vault\.default_branch/);
+  assert.doesNotMatch(c.message, /set-head/);
   assert.equal(code, EXIT.OK, 'a warning alone never fails the run');
+});
+
+test('default-branch-known: before the first push, a local main is the answer, read from refs/heads/main', async () => {
+  const fx = setup({ originHead: null });
+  const { report } = await doctor(fx, ['--only', 'default-branch-known']);
+  const c = assertCheck(report, 'default-branch-known', 'ok', 'doctor.default_branch_known.ok');
+  assert.deepEqual(c.params, { branch: 'main', from: 'refs/heads/main' });
+});
+
+test('default-branch-known: vault.default_branch answers before anything is published, and over origin/HEAD after', async () => {
+  const config = baseConfig();
+  config.vault.default_branch = 'trunk';
+  const before = setup({ originHead: null, config });
+  fixtureGit(before.root, ['branch', '-m', 'main', 'work'], before.home);
+  const first = assertCheck((await doctor(before, ['--only', 'default-branch-known'])).report, 'default-branch-known', 'ok', 'doctor.default_branch_known.ok');
+  assert.deepEqual(first.params, { branch: 'trunk', from: 'brain-kit.config.json vault.default_branch' });
+  const after = setup({ config });
+  const second = assertCheck((await doctor(after, ['--only', 'default-branch-known'])).report, 'default-branch-known', 'ok', 'doctor.default_branch_known.ok');
+  assert.equal(second.params.branch, 'trunk');
+});
+
+test('default-branch-known: a vault.default_branch that is not a branch name warns and names it', async () => {
+  const config = baseConfig();
+  config.vault.default_branch = '--upload-pack=x';
+  const fx = setup({ config });
+  const c = assertCheck((await doctor(fx, ['--only', 'default-branch-known'])).report, 'default-branch-known', 'warn', 'doctor.default_branch_known.config_invalid');
+  assert.deepEqual(c.params, { file: 'brain-kit.config.json', name: '--upload-pack=x' });
 });
 
 test('default-branch-known: an origin/HEAD pointing at a branch that does not exist is not known, it warns', async () => {
@@ -412,7 +446,7 @@ test('default-branch-known: passes and names the branch when origin/HEAD resolve
   const fx = setup();
   const { report } = await doctor(fx, ['--only', 'default-branch-known']);
   const c = assertCheck(report, 'default-branch-known', 'ok', 'doctor.default_branch_known.ok');
-  assert.equal(c.params.branch, 'main');
+  assert.deepEqual(c.params, { branch: 'main', from: 'refs/remotes/origin/HEAD' });
 });
 
 // --- hooks-path --------------------------------------------------------------

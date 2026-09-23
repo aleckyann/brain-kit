@@ -12,6 +12,15 @@ import {
   addedLines,
   untrackedPaths,
   publishablePaths,
+  defaultBranch,
+  currentBranch,
+  aheadBehind,
+  isClean,
+  dirtyPaths,
+  trackedRemote,
+  fetch,
+  operationInProgress,
+  ignoredInTheWay,
 } from '../src/git.mjs';
 
 // Every case here builds a REAL temporary git repository via spawnSync with
@@ -803,17 +812,28 @@ test('a local branch named like the remote-tracking default does not make the la
   assert.equal(resolveBase(root, 'merge-base').reason, 'merge-base-same-as-current');
 });
 
-test('a remote HEAD pointed by hand at a local branch still has a bare name to compare; pointed anywhere else, the ladder degrades rather than trust a range it cannot check', () => {
+// Slice C: the one resolver takes the push gate's rule for a remote HEAD.
+// It counts only as a symbolic reference to a branch of that same remote
+// that resolves to a commit; pointed by hand at a local branch or at a
+// tag, it is skipped and the ladder goes on, so no rung ever hands back a
+// name whose bare branch cannot be read. (Before slice C this module
+// accepted a local branch here and degraded on anything else, while the
+// push gate skipped both: two answers to one question.)
+test('a remote HEAD pointed by hand at a local branch or a tag is skipped, and the ladder goes on to a branch it can compare', () => {
   const root = initRepo('main');
   writeAndCommit(root, 'index.md', '# Index\n', 'init');
   ok(git(root, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/heads/main']), 'symref to a local branch');
+  assert.equal(defaultBranch(root).from, 'refs/heads/main', 'read as the local main rung, not as the remote HEAD');
   assert.equal(resolveBase(root, 'merge-base').reason, 'merge-base-same-as-current');
 
   ok(git(root, ['tag', 'anchor']), 'tag');
   ok(git(root, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/tags/anchor']), 'symref to a tag');
   ok(git(root, ['checkout', '-q', '-b', 'feature']), 'feature');
-  assert.equal(resolveBase(root, 'merge-base').reason, 'merge-base-unavailable');
-  assert.equal(resolveBase(root, 'auto').reason, 'auto-no-default-branch');
+  writeAndCommit(root, 'notes.md', '# Notes\n', 'feature work');
+  const base = resolveBase(root, 'merge-base');
+  assert.equal(base.kind, 'merge-base');
+  assert.equal(base.defaultBranch, 'main');
+  assert.deepEqual(changedPaths(root, base), ['notes.md']);
 });
 
 // --- final fix round 2: what a push from this vault could publish ---------
@@ -926,4 +946,414 @@ test('the merge base is computed against the remote-tracking reference itself, n
   const base = resolveBase(root, 'merge-base');
   assert.equal(base.kind, 'merge-base');
   assert.deepEqual(changedPaths(root, base), ['notes.md'], 'the file already on the remote-tracking default branch must not count as changed');
+});
+
+// --- slice C: the one default-branch resolver, and the git loop helpers ------
+//
+// defaultBranch is the ONE answer to "which branch is the default": the
+// configuration's vault.default_branch when set, then, for the remote the
+// current branch tracks (origin when none), refs/remotes/<remote>/HEAD when
+// it names a branch of that remote that resolves to a commit, then
+// <remote>/main, then <remote>/master, and only then a local main or master,
+// for a repository whose remote knows nothing yet. The remote rungs are the
+// push gate's own (src/commands/push-gate.mjs, defaultBranchOf).
+
+function withConfig(root, defaultBranchValue) {
+  writeFileSync(join(root, 'brain-kit.config.json'), JSON.stringify({ vault: { default_branch: defaultBranchValue } }));
+}
+
+function cloneOf(branches = ['main']) {
+  const origin = join(makeTempDir('brain-kit-git-ladder-'), 'repo.git');
+  ok(spawnSync('git', ['init', '-q', '--bare', '-b', branches[0], origin]), 'bare init');
+  const seed = initRepo(branches[0]);
+  writeAndCommit(seed, 'index.md', '# Index\n', 'init');
+  ok(git(seed, ['remote', 'add', 'origin', origin]));
+  for (const branch of branches) ok(git(seed, ['push', '-q', 'origin', `HEAD:refs/heads/${branch}`]));
+  const root = join(makeTempDir('brain-kit-git-ladder-clone-'), 'vault');
+  ok(spawnSync('git', ['clone', '-q', origin, root]), 'clone');
+  return root;
+}
+
+test('defaultBranch: the configuration names the branch, over the remote HEAD that names another', () => {
+  const root = cloneOf(['main', 'trunk']);
+  withConfig(root, 'trunk');
+  const found = defaultBranch(root);
+  assert.equal(found.bare, 'trunk');
+  assert.equal(found.ref, 'refs/remotes/origin/trunk');
+  assert.equal(found.name, 'origin/trunk');
+  assert.equal(found.remote, 'origin');
+  assert.equal(found.from, 'brain-kit.config.json vault.default_branch');
+});
+
+test('defaultBranch: a configured branch nothing publishes yet is still the answer, with no ref to compare against', () => {
+  const root = initRepo('work');
+  writeAndCommit(root, 'index.md', '# Index\n', 'init');
+  withConfig(root, 'main');
+  const found = defaultBranch(root);
+  assert.equal(found.bare, 'main');
+  assert.equal(found.ref, null);
+  assert.equal(resolveBase(root, 'merge-base').reason, 'merge-base-unavailable');
+});
+
+test('defaultBranch: a configured name that is not a branch name has no bare name, and never reaches git as an option', () => {
+  const root = cloneOf();
+  // A previous branch exists, so "@{-1}" is one git would expand.
+  ok(git(root, ['checkout', '-q', '-b', 'previous']));
+  ok(git(root, ['checkout', '-q', 'main']));
+  for (const bad of ['--upload-pack=touch x', '-x', 'a..b', 'HEAD', '@{-1}', '']) {
+    withConfig(root, bad);
+    const found = defaultBranch(root);
+    if (bad === '') {
+      assert.equal(found.bare, 'main', 'an empty value is no value: the ladder goes on');
+      continue;
+    }
+    assert.equal(found.bare, null, bad);
+    assert.equal(found.ref, null, bad);
+    assert.equal(found.name, bad);
+  }
+});
+
+test('defaultBranch: an unreadable configuration is no configuration, and a null value is no value', () => {
+  const root = cloneOf();
+  writeFileSync(join(root, 'brain-kit.config.json'), '{ not json');
+  assert.equal(defaultBranch(root).from, 'refs/remotes/origin/HEAD');
+  withConfig(root, null);
+  assert.equal(defaultBranch(root).from, 'refs/remotes/origin/HEAD');
+});
+
+test('defaultBranch: the remote HEAD, then the remote main, then master, then a local main, in that order', () => {
+  const root = cloneOf(['main', 'master']);
+  assert.equal(defaultBranch(root).from, 'refs/remotes/origin/HEAD');
+  ok(git(root, ['remote', 'set-head', 'origin', '-d']));
+  assert.equal(defaultBranch(root).from, 'refs/remotes/origin/main');
+  assert.equal(defaultBranch(root).ref, 'refs/remotes/origin/main', 'the remote-tracking main, not the local one of the same name');
+  ok(git(root, ['update-ref', '-d', 'refs/remotes/origin/main']));
+  assert.equal(defaultBranch(root).from, 'refs/remotes/origin/master');
+  assert.equal(defaultBranch(root).bare, 'master', 'the remote\'s master comes before a local main');
+  ok(git(root, ['update-ref', '-d', 'refs/remotes/origin/master']));
+  assert.equal(defaultBranch(root).from, 'refs/heads/main');
+  ok(git(root, ['checkout', '-q', '-b', 'work']));
+  ok(git(root, ['branch', '-q', '-D', 'main']));
+  assert.equal(defaultBranch(root), null);
+});
+
+test('defaultBranch: a remote HEAD naming a branch that does not exist, or a branch of another remote, is skipped like the push gate skips it', () => {
+  const root = cloneOf();
+  ok(git(root, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/gone']));
+  assert.equal(defaultBranch(root).from, 'refs/remotes/origin/main');
+  ok(git(root, ['update-ref', 'refs/remotes/upstream/trunk', 'HEAD']));
+  ok(git(root, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/upstream/trunk']));
+  assert.equal(defaultBranch(root).from, 'refs/remotes/origin/main');
+  // A remote HEAD whose branch names a blob resolves to no commit.
+  writeFileSync(join(root, '..', 'blob.txt'), 'not a commit\n');
+  const blob = git(root, ['hash-object', '-w', join(root, '..', 'blob.txt')]).stdout.trim();
+  ok(git(root, ['update-ref', 'refs/remotes/origin/blob', blob]));
+  ok(git(root, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/blob']));
+  assert.equal(defaultBranch(root).from, 'refs/remotes/origin/main');
+});
+
+test('trackedRemote: the current branch\'s remote, origin when there is none, and never "." or a name read as an option', () => {
+  const root = cloneOf();
+  assert.equal(trackedRemote(root), 'origin');
+  ok(git(root, ['remote', 'rename', 'origin', 'upstream']));
+  assert.equal(trackedRemote(root), 'upstream');
+  ok(git(root, ['config', 'branch.main.remote', '.']));
+  assert.equal(trackedRemote(root), 'origin');
+  ok(git(root, ['config', 'branch.main.remote', '-x']));
+  assert.equal(trackedRemote(root), 'origin');
+  ok(git(root, ['checkout', '-q', '--detach']));
+  assert.equal(trackedRemote(root), 'origin');
+});
+
+test('currentBranch: the full branch name, a tag of the same name notwithstanding, and null when detached', () => {
+  const root = initRepo('main');
+  writeAndCommit(root, 'index.md', '# Index\n', 'init');
+  ok(git(root, ['tag', 'main']));
+  ok(git(root, ['checkout', '-q', '-b', 'curator/today']));
+  assert.equal(currentBranch(root), 'curator/today');
+  ok(git(root, ['checkout', '-q', 'main']));
+  assert.equal(currentBranch(root), 'main');
+  ok(git(root, ['checkout', '-q', '--detach']));
+  assert.equal(currentBranch(root), null);
+});
+
+test('aheadBehind: counts both sides of a divergence, and raises on a reference that does not resolve', () => {
+  const root = initRepo('main');
+  writeAndCommit(root, 'index.md', '# Index\n', 'init');
+  ok(git(root, ['branch', 'other']));
+  writeAndCommit(root, 'a.md', 'a\n', 'a');
+  writeAndCommit(root, 'b.md', 'b\n', 'b');
+  ok(git(root, ['checkout', '-q', 'other']));
+  writeAndCommit(root, 'c.md', 'c\n', 'c');
+  assert.deepEqual(aheadBehind(root, 'refs/heads/main', 'refs/heads/other'), { ahead: 2, behind: 1 });
+  assert.deepEqual(aheadBehind(root, 'refs/heads/other', 'refs/heads/main'), { ahead: 1, behind: 2 });
+  assert.deepEqual(aheadBehind(root, 'refs/heads/main', 'refs/heads/main'), { ahead: 0, behind: 0 });
+  assert.throws(() => aheadBehind(root, 'refs/heads/main', 'refs/heads/nothing'), /rev-list/);
+});
+
+test('isClean and dirtyPaths: modified, staged and untracked count, ignored does not, and an unreadable index raises', () => {
+  const root = initRepo('main');
+  writeAndCommit(root, 'index.md', '# Index\n', 'init');
+  writeFileSync(join(root, '.gitignore'), 'ignored.tmp\n');
+  ok(git(root, ['add', '.gitignore']));
+  ok(git(root, ['commit', '-q', '-m', 'ignore']));
+  writeFileSync(join(root, 'ignored.tmp'), 'x\n');
+  assert.equal(isClean(root), true);
+  assert.deepEqual(dirtyPaths(root), []);
+  writeFileSync(join(root, 'index.md'), '# Index\n\nmore\n');
+  mkdirSync(join(root, 'notes'));
+  writeFileSync(join(root, 'notes', 'new file.md'), 'new\n');
+  assert.equal(isClean(root), false);
+  assert.deepEqual(dirtyPaths(root), ['index.md', 'notes/new file.md']);
+  corruptIndex(root);
+  assert.throws(() => dirtyPaths(root), /status/);
+});
+
+test('fetch: a branch the remote has is fetched and proved, a branch it lacks is absent, an unreachable remote failed', () => {
+  const root = cloneOf();
+  const origin = git(root, ['remote', 'get-url', 'origin']).stdout.trim();
+  const other = initRepo('main');
+  writeAndCommit(other, 'index.md', '# Index\n', 'init');
+  ok(git(other, ['remote', 'add', 'origin', origin]));
+  ok(git(other, ['fetch', '-q', 'origin']));
+  ok(git(other, ['reset', '-q', '--hard', 'origin/main']));
+  writeAndCommit(other, 'later.md', 'later\n', 'later');
+  ok(git(other, ['push', '-q', 'origin', 'main']));
+  const tip = git(other, ['rev-parse', 'HEAD']).stdout.trim();
+
+  const fetched = fetch(root, 'origin', { branch: 'main' });
+  assert.deepEqual(fetched, { status: 'fetched', sha: tip, ref: 'refs/remotes/origin/main' });
+  assert.equal(git(root, ['rev-parse', 'refs/remotes/origin/main']).stdout.trim(), tip);
+
+  assert.deepEqual(fetch(root, 'origin', { branch: 'nothing-here' }), { status: 'absent' });
+
+  ok(git(root, ['remote', 'set-url', 'origin', join(root, '..', 'gone.git')]));
+  const failed = fetch(root, 'origin', { branch: 'main' });
+  assert.equal(failed.status, 'failed');
+  assert.match(failed.detail, /^fatal: /, 'git\'s own reason, not a guess made after it');
+
+  assert.throws(() => fetch(root, '--upload-pack=x', { branch: 'main' }), TypeError);
+  assert.throws(() => fetch(root, 'origin', {}), TypeError);
+});
+
+test('defaultBranch: a configured branch that exists only locally is compared against the local branch', () => {
+  const root = cloneOf();
+  ok(git(root, ['branch', 'trunk']));
+  withConfig(root, 'trunk');
+  const found = defaultBranch(root);
+  assert.equal(found.ref, 'refs/heads/trunk');
+  assert.equal(found.name, 'trunk');
+});
+
+test('defaultBranch: a remote HEAD naming a branch whose name would be read as an option is skipped', () => {
+  const root = cloneOf();
+  ok(git(root, ['update-ref', 'refs/remotes/origin/-x', 'HEAD']));
+  ok(git(root, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/-x']));
+  assert.equal(defaultBranch(root).from, 'refs/remotes/origin/main');
+});
+
+// git stood in for by a script first on PATH: `cases` maps a subcommand
+// to a shell body run in its place; `real "$@"` reaches the real git.
+function withGitShim(cases, body) {
+  const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
+  const shims = makeTempDir('brain-kit-git-loop-shim-');
+  const lines = ['#!/bin/sh', `real() { '${realGit}' "$@"; }`];
+  for (const [sub, script] of Object.entries(cases)) lines.push(`if [ "$1" = "${sub}" ]; then ${script}; fi`);
+  lines.push(`exec '${realGit}' "$@"`, '');
+  writeFileSync(join(shims, 'git'), lines.join('\n'), { mode: 0o755 });
+  const path = process.env.PATH;
+  process.env.PATH = `${shims}:${path}`;
+  try {
+    return body();
+  } finally {
+    process.env.PATH = path;
+  }
+}
+
+test('defaultBranch: a rev-parse that exits 0 printing no commit resolves nothing', () => {
+  const root = cloneOf();
+  withGitShim({ 'rev-parse': 'exit 0' }, () => {
+    assert.equal(defaultBranch(root), null);
+  });
+});
+
+test('operationInProgress names each operation git leaves half done, by its marker, and null on a quiet tree', () => {
+  const root = initRepo('main');
+  writeAndCommit(root, 'index.md', '# Index\n', 'init');
+  assert.equal(operationInProgress(root), null);
+  const sha = git(root, ['rev-parse', 'HEAD']).stdout.trim();
+  const markers = [['rebase-merge', 'rebase', true], ['rebase-apply', 'rebase', true], ['MERGE_HEAD', 'merge'], ['CHERRY_PICK_HEAD', 'cherry-pick'], ['REVERT_HEAD', 'revert'], ['BISECT_LOG', 'bisect']];
+  for (const [marker, operation, isDir] of markers) {
+    const path = join(root, '.git', marker);
+    if (isDir) mkdirSync(path);
+    else writeFileSync(path, `${sha}\n`);
+    assert.equal(operationInProgress(root), operation, marker);
+    spawnSync('rm', ['-rf', path]);
+  }
+  assert.equal(operationInProgress(root), null);
+});
+
+test('fetch: a remote branch whose name ends like the wanted one is never mistaken for it', () => {
+  const root = cloneOf();
+  const origin = git(root, ['remote', 'get-url', 'origin']).stdout.trim();
+  const other = initRepo('decoy');
+  writeAndCommit(other, 'decoy.md', 'decoy\n', 'an unrelated history');
+  ok(git(other, ['push', '-q', origin, 'decoy:refs/heads/a/refs/heads/main']));
+  const tip = git(root, ['rev-parse', 'refs/remotes/origin/main']).stdout.trim();
+  assert.deepEqual(fetch(root, 'origin', { branch: 'main' }), { status: 'fetched', sha: tip, ref: 'refs/remotes/origin/main' });
+});
+
+test('fetch: what the remote says is proved, not believed', () => {
+  const root = cloneOf();
+  const tip = git(root, ['rev-parse', 'refs/remotes/origin/main']).stdout.trim();
+  // "no such reference" (status 2) printing a reference anyway.
+  withGitShim({ 'ls-remote': `printf '%s\\trefs/heads/main\\n' ${tip}; exit 2` }, () => {
+    assert.equal(fetch(root, 'origin', { branch: 'main' }).status, 'failed');
+  });
+  // Success printing something that is no object id.
+  withGitShim({ 'ls-remote': "printf 'nonsense\\trefs/heads/main\\n'; exit 0" }, () => {
+    assert.equal(fetch(root, 'origin', { branch: 'main' }).status, 'failed');
+  });
+  // A fetch that fails after the remote answered.
+  withGitShim({ fetch: 'echo "fetch broke" >&2; exit 1' }, () => {
+    assert.deepEqual(fetch(root, 'origin', { branch: 'main' }), { status: 'failed', detail: 'fetch broke' });
+  });
+  // A fetch that says it worked and wrote nothing, with no remote-tracking
+  // reference there at all.
+  // A local branch literally called "null" holds the tip: a missing
+  // reference must never reach git as the text of an absent value.
+  ok(git(root, ['branch', 'null', tip]));
+  ok(git(root, ['update-ref', '-d', 'refs/remotes/origin/main']));
+  withGitShim({ fetch: 'exit 0' }, () => {
+    assert.deepEqual(fetch(root, 'origin', { branch: 'main' }), { status: 'incomplete', announced: tip, ref: 'refs/remotes/origin/main' });
+  });
+});
+
+test('aheadBehind raises on a rev-list that prints counts but exits non-zero', () => {
+  const root = initRepo('main');
+  writeAndCommit(root, 'index.md', '# Index\n', 'init');
+  withGitShim({ 'rev-list': "printf '0\\t0\\n'; exit 128" }, () => {
+    assert.throws(() => aheadBehind(root, 'refs/heads/main', 'refs/heads/main'), /rev-list/);
+  });
+});
+
+test('dirtyPaths raises on a status record it cannot read, rather than dropping it', () => {
+  const root = initRepo('main');
+  writeAndCommit(root, 'index.md', '# Index\n', 'init');
+  withGitShim({ status: "printf 'garbage\\000'; exit 0" }, () => {
+    assert.throws(() => dirtyPaths(root), /unknown shape/);
+  });
+});
+
+test('defaultBranch: a rev-parse that prints a commit but exits non-zero resolves nothing', () => {
+  const root = cloneOf();
+  const sha = git(root, ['rev-parse', 'HEAD']).stdout.trim();
+  withGitShim({ 'rev-parse': `echo ${sha}; exit 1` }, () => {
+    assert.equal(defaultBranch(root), null);
+  });
+});
+
+test('defaultBranch: a check-ref-format that prints the name back but exits non-zero does not make it a branch name', () => {
+  const root = cloneOf();
+  withConfig(root, 'trunk');
+  withGitShim({ 'check-ref-format': 'echo trunk; exit 1' }, () => {
+    assert.equal(defaultBranch(root).bare, null);
+  });
+});
+
+test('fetch: a remote with no fetch refspec configured is still fetched into its remote-tracking reference', () => {
+  const root = cloneOf();
+  const origin = git(root, ['remote', 'get-url', 'origin']).stdout.trim();
+  ok(git(root, ['config', '--unset-all', 'remote.origin.fetch']));
+  const other = join(makeTempDir('brain-kit-git-norefspec-'), 'other');
+  ok(spawnSync('git', ['clone', '-q', origin, other]), 'clone');
+  writeAndCommit(other, 'later.md', 'later\n', 'later');
+  ok(git(other, ['push', '-q', 'origin', 'main']));
+  const tip = git(other, ['rev-parse', 'HEAD']).stdout.trim();
+  assert.deepEqual(fetch(root, 'origin', { branch: 'main' }), { status: 'fetched', sha: tip, ref: 'refs/remotes/origin/main' });
+});
+
+test('fetch: a remote whose branch was rewritten is fetched to the new tip, not refused', () => {
+  const root = cloneOf();
+  const origin = git(root, ['remote', 'get-url', 'origin']).stdout.trim();
+  const other = initRepo('main');
+  writeAndCommit(other, 'rewritten.md', 'a history of its own\n', 'rewritten');
+  ok(git(other, ['push', '-q', '--force', origin, 'main:main']));
+  const tip = git(other, ['rev-parse', 'HEAD']).stdout.trim();
+  assert.deepEqual(fetch(root, 'origin', { branch: 'main' }), { status: 'fetched', sha: tip, ref: 'refs/remotes/origin/main' });
+});
+
+test('fetch: no terminal prompt is ever waited for, and a remote that hangs is given up on', () => {
+  const root = cloneOf();
+  withGitShim({ 'ls-remote': '[ "$GIT_TERMINAL_PROMPT" = 0 ] || { echo "a prompt was allowed" >&2; exit 1; }' }, () => {
+    assert.equal(fetch(root, 'origin', { branch: 'main' }).status, 'fetched');
+  });
+  withGitShim({ 'ls-remote': 'exec sleep 3' }, () => {
+    const started = Date.now();
+    assert.equal(fetch(root, 'origin', { branch: 'main', timeout: 300 }).status, 'failed');
+    assert.ok(Date.now() - started < 2500, 'given up on at the timeout, not when the remote finally answered');
+  });
+});
+
+test('aheadBehind raises on a rev-list that exits 0 printing something that is not two counts', () => {
+  const root = initRepo('main');
+  writeAndCommit(root, 'index.md', '# Index\n', 'init');
+  withGitShim({ 'rev-list': "printf 'nothing\\n'; exit 0" }, () => {
+    assert.throws(() => aheadBehind(root, 'refs/heads/main', 'refs/heads/main'), /rev-list/);
+  });
+});
+
+test('dirtyPaths sees a changed submodule even when the configuration hides submodules', () => {
+  const sub = initRepo('main');
+  writeAndCommit(sub, 'inner.md', 'inner\n', 'inner');
+  const root = initRepo('main');
+  writeAndCommit(root, 'index.md', '# Index\n', 'init');
+  ok(git(root, ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', sub, 'sub']));
+  ok(git(root, ['commit', '-q', '-m', 'add submodule']));
+  writeFileSync(join(root, 'sub', 'inner.md'), 'changed inside\n');
+  ok(git(root, ['config', 'diff.ignoreSubmodules', 'all']));
+  assert.equal(git(root, ['status', '--porcelain']).stdout, '', 'the configuration this test exists for hides it');
+  assert.deepEqual(dirtyPaths(root), ['sub']);
+});
+
+test('ignoredInTheWay names an ignored file a commit tracks, one where it tracks a directory, and one inside a path it tracks as a file', () => {
+  const root = initRepo('main');
+  writeAndCommit(root, 'index.md', '# Index\n', 'init');
+  writeAndCommit(root, 'same.md', 'tracked\n', 'same');
+  writeAndCommit(root, 'dir/inner.md', 'tracked\n', 'dir');
+  writeAndCommit(root, 'file', 'tracked\n', 'file');
+  const target = git(root, ['rev-parse', 'HEAD']).stdout.trim();
+  ok(git(root, ['checkout', '-q', '--orphan', 'bare-branch']));
+  ok(git(root, ['rm', '-q', '-rf', '.']));
+  writeAndCommit(root, 'other.md', 'x\n', 'orphan');
+  writeFileSync(join(root, '.git', 'info', 'exclude'), 'same.md\ndir\nfile/\nunrelated.tmp\n');
+  writeFileSync(join(root, 'same.md'), 'mine\n');
+  writeFileSync(join(root, 'dir'), 'a file where the commit has a directory\n');
+  mkdirSync(join(root, 'file'));
+  writeFileSync(join(root, 'file', 'under.md'), 'under a path the commit tracks as a file\n');
+  writeFileSync(join(root, 'unrelated.tmp'), 'nothing tracks this\n');
+  assert.deepEqual(ignoredInTheWay(root, [target]), ['dir', 'file/under.md', 'same.md']);
+  assert.deepEqual(ignoredInTheWay(root, [git(root, ['rev-parse', 'HEAD']).stdout.trim()]), []);
+  assert.throws(() => ignoredInTheWay(root, ['refs/heads/nothing']), /ls-tree/);
+});
+
+test('ignoredInTheWay reads the whole repository, from a vault nested below its top level', () => {
+  const repo = initRepo('main');
+  writeAndCommit(repo, 'vault/index.md', '# Index\n', 'init');
+  writeAndCommit(repo, 'top.md', 'tracked at the top\n', 'top');
+  const target = git(repo, ['rev-parse', 'HEAD']).stdout.trim();
+  ok(git(repo, ['rm', '-q', 'top.md']));
+  ok(git(repo, ['commit', '-q', '-m', 'top removed']));
+  writeFileSync(join(repo, '.git', 'info', 'exclude'), 'top.md\n');
+  writeFileSync(join(repo, 'top.md'), 'mine\n');
+  assert.deepEqual(ignoredInTheWay(join(repo, 'vault'), [target]), ['top.md']);
+});
+
+test('ignoredInTheWay raises when git cannot list the ignored files, rather than reading none', () => {
+  const root = initRepo('main');
+  writeAndCommit(root, 'index.md', '# Index\n', 'init');
+  const head = git(root, ['rev-parse', 'HEAD']).stdout.trim();
+  withGitShim({ 'ls-files': 'echo "cannot list" >&2; exit 1' }, () => {
+    assert.throws(() => ignoredInTheWay(root, [head]), /ls-files/);
+  });
 });

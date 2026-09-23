@@ -41,11 +41,11 @@ import { TEMPLATE_HOOK } from '../init/skeleton.mjs';
 import { INSTALL_HOOK_COMMAND } from '../init/gate.mjs';
 import { MANIFEST_PATH, readManifest } from '../manifest.mjs';
 import { compareVersions } from '../commands/update.mjs';
+import { currentBranch, defaultBranch, trackedRemote } from '../git.mjs';
 
 export const MINIMUM_NODE_MAJOR = 24;
 export const HOOKS_DIR = '.githooks';
 export const HOOK_FILE = 'pre-push';
-export const SET_HEAD_COMMAND = 'git remote set-head origin --auto';
 export const SET_HOOKS_PATH_COMMAND = `git config core.hooksPath ${HOOKS_DIR}`;
 export const NODE_MODULES_PATTERN = 'node_modules/';
 export const STATE_DIR_MODE = 0o700;
@@ -236,27 +236,53 @@ function gitPresent(ctx) {
   return { id, status: 'ok', messageKey: 'doctor.git_present.ok', params: { version: match[1] } };
 }
 
+// Which branch is the default, answered by the ONE resolver every command
+// uses (src/git.mjs, defaultBranch), so doctor can never call a branch the
+// default that sync, lint or the push gate would not. Two things are
+// reported besides its answer, because each makes that answer weaker than
+// it looks: a configured vault.default_branch that is no branch name, and
+// a <remote>/HEAD that exists but was skipped (naming another remote's
+// branch, or a branch this repository does not hold), since then an older
+// rung answers and may be a branch the remote has since stopped using.
+//
+// The remedy for "no default branch known" is the configuration's
+// vault.default_branch, never `git remote set-head --auto`: set-head needs
+// a remote that already publishes a branch, so it fails on every vault
+// before its first push, which is exactly when this is most often seen.
+// The configuration is true before the first push and after it.
+export function setHeadCommand(remote) {
+  return `git remote set-head ${remote} --auto`;
+}
+
 function defaultBranchKnown(ctx) {
   const id = 'default-branch-known';
-  const command = SET_HEAD_COMMAND;
-  const sym = git(ctx, ['symbolic-ref', '-q', 'refs/remotes/origin/HEAD']);
-  if (sym.status !== 0) {
-    return { id, status: 'warn', messageKey: 'doctor.default_branch_known.unset', params: { command } };
+  const options = { env: ctx.env };
+  const found = defaultBranch(ctx.root, options);
+  if (found !== null && found.bare === null) {
+    return { id, status: 'warn', messageKey: 'doctor.default_branch_known.config_invalid', params: { file: CONFIG_FILENAME, name: found.name } };
   }
-  const target = firstLine(sym.stdout);
-  const match = /^refs\/remotes\/origin\/(\S+)$/.exec(target);
-  if (!match) {
-    return { id, status: 'warn', messageKey: 'doctor.default_branch_known.unrecognised', params: { output: target, command } };
+  const remote = found?.remote ?? trackedRemote(ctx.root, options);
+  const command = setHeadCommand(remote);
+  const prefix = `refs/remotes/${remote}/`;
+  const sym = git(ctx, ['symbolic-ref', '-q', `${prefix}HEAD`]);
+  if (sym.status === 0) {
+    const target = firstLine(sym.stdout);
+    if (!target.startsWith(prefix) || target.length === prefix.length) {
+      return { id, status: 'warn', messageKey: 'doctor.default_branch_known.unrecognised', params: { remote, output: target, command } };
+    }
+    // A symbolic ref names its target whether or not the target exists:
+    // one left pointing at a deleted branch still reads back fine.
+    const branch = target.slice(prefix.length);
+    const verify = git(ctx, ['rev-parse', '--verify', '-q', `${target}^{commit}`]);
+    if (verify.status !== 0 || !/^[0-9a-f]{40,64}$/.test(firstLine(verify.stdout))) {
+      return { id, status: 'warn', messageKey: 'doctor.default_branch_known.dangling', params: { remote, branch, command } };
+    }
   }
-  const branch = match[1];
-  // A symbolic ref names its target whether or not the target exists: an
-  // origin/HEAD left pointing at a deleted branch still reads back fine,
-  // and answers about a branch nothing can be compared against.
-  const verify = git(ctx, ['rev-parse', '--verify', '-q', `${target}^{commit}`]);
-  if (verify.status !== 0 || !/^[0-9a-f]{40,64}$/.test(firstLine(verify.stdout))) {
-    return { id, status: 'warn', messageKey: 'doctor.default_branch_known.dangling', params: { branch, command } };
+  if (found === null) {
+    const example = currentBranch(ctx.root, options) ?? 'main';
+    return { id, status: 'warn', messageKey: 'doctor.default_branch_known.unset', params: { file: CONFIG_FILENAME, remote, example } };
   }
-  return { id, status: 'ok', messageKey: 'doctor.default_branch_known.ok', params: { branch } };
+  return { id, status: 'ok', messageKey: 'doctor.default_branch_known.ok', params: { branch: found.bare, from: found.from } };
 }
 
 // What this proves, and what it does not: that git will run an executable,

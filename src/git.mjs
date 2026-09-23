@@ -59,8 +59,12 @@
 // refs) uses `runOrThrow`, which raises naming the command and the
 // captured error rather than returning empty.
 import { isUtf8 } from 'node:buffer';
+import { readFileSync, statSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
 import { run, runOrThrow } from './exec.mjs';
 import { decodeBytes } from './io.mjs';
+import { CONFIG_FILENAME } from './config.mjs';
+import { localGitVarNames, withoutLocalGitVars } from './git-env.mjs';
 
 // Exported (task 6, src/commands/lint.mjs): the lint command validates a
 // requested --base itself, before ever calling resolveBase, so a bad value
@@ -101,12 +105,37 @@ function gitArgs(...args) {
   return ['--literal-pathspecs', ...args];
 }
 
-function git(root, args) {
-  return run('git', gitArgs(...args), { cwd: root, ...GIT_OPTS });
+// EVERY git call in this module runs with the caller's git environment
+// removed (src/git-env.mjs): with GIT_DIR exported, as dotfiles setups,
+// some CI wrappers and every git hook do, a question asked about the vault
+// would be answered about THAT other repository, and a fetch or a
+// fast-forward would move its references instead. The names git itself
+// lists are asked once per PATH (one extra process per distinct git, not
+// per call) and the environment is stripped afresh on every call, so a
+// PATH or a variable changed since is honoured. GIT_OPTIONAL_LOCKS=0 keeps
+// a read from refreshing an index another live session may be using, and
+// LC_ALL=C keeps git's own messages untranslated where they are carried to
+// a person or matched.
+const localNamesByPath = new Map();
+
+export function gitEnv(env = process.env) {
+  const key = String(env.PATH ?? '');
+  if (!localNamesByPath.has(key)) localNamesByPath.set(key, localGitVarNames(env));
+  return { ...withoutLocalGitVars(env, localNamesByPath.get(key)), GIT_OPTIONAL_LOCKS: '0', LC_ALL: 'C' };
 }
 
-function gitOrThrow(root, args) {
-  return runOrThrow('git', gitArgs(...args), { cwd: root, ...GIT_OPTS });
+function git(root, args, { env = process.env, ...options } = {}) {
+  return run('git', gitArgs(...args), { cwd: root, ...GIT_OPTS, ...options, env: gitEnv(env) });
+}
+
+function gitOrThrow(root, args, { env = process.env, ...options } = {}) {
+  return runOrThrow('git', gitArgs(...args), { cwd: root, ...GIT_OPTS, ...options, env: gitEnv(env) });
+}
+
+// A question about references, configuration or the tree, rather than
+// about paths: no pathspec is ever involved, so no --literal-pathspecs.
+function ask(root, args, { env = process.env, ...options } = {}) {
+  return run('git', args, { cwd: root, ...GIT_OPTS, ...options, env: gitEnv(env) });
 }
 
 export function isGitRepo(root) {
@@ -131,105 +160,167 @@ function hasAnyCommit(root) {
 // The branch HEAD points at, even before the first commit exists: an
 // "unborn" branch still has a symbolic HEAD, and `git symbolic-ref` reads
 // that name without needing a commit to resolve it to. `null` on a
-// detached HEAD, where there is no branch name to give.
-function currentBranchName(root) {
-  const result = git(root, ['symbolic-ref', '--short', 'HEAD']);
-  return result.status === 0 ? result.stdout.trim() : null;
+// detached HEAD, where there is no branch name to give. Read in full and
+// stripped of exactly "refs/heads/", never with --short, which shortens to
+// "heads/main" the moment a tag called "main" exists.
+export function currentBranch(root, { env = process.env } = {}) {
+  const result = ask(root, ['symbolic-ref', '-q', 'HEAD'], { env });
+  if (result.status !== 0) return null;
+  const target = result.stdout.trim();
+  return target.startsWith('refs/heads/') && target.length > 'refs/heads/'.length ? target.slice('refs/heads/'.length) : null;
 }
 
-// The branch a merge-base or an auto choice compares against, as a name
-// git can resolve directly, NOT stripped to a bare branch name. Tried in
-// order:
-//   1. The remote's own notion of its default branch, via the
-//      refs/remotes/origin/HEAD symref, kept QUALIFIED ("origin/main").
-//      Stripping this to "main" was the bug: a real clone (the shape a
-//      continuous-integration checkout produces) commonly carries the
-//      remote-tracking ref but never creates a same-named LOCAL branch at
-//      all, so the stripped name resolves to nothing and the merge-base
-//      call throws on a perfectly good repository.
-//   2. A local branch named "main" or "master".
-//   3. A remote-tracking branch named "origin/main" or "origin/master",
-//      for a clone that fetched those refs without ever pointing
-//      refs/remotes/origin/HEAD at either of them.
-// `null` when none of these resolve, which happens on a repository this
-// reader cannot identify a default branch for at all: a single-branch
-// clone of a branch that is not the default carries none of the three
-// signals above, and there is no local information left to try; asking
-// the remote live is the only way to learn more, and this module never
-// makes a network call.
-// The remote whose notion of a default branch this ladder should read.
-//
-// Fix round 3 (finding F): this ladder and the one in
-// templates/githooks/pre-push are the same three steps written twice,
-// and they had already drifted on exactly this field. The template takes
-// the remote from git itself, which hands a pre-push hook the remote
-// being pushed to as its first argument; this module hardcoded
-// "origin". The TEMPLATE is the one that was right, because a remote
-// called something else is an ordinary thing and neither copy should
-// assume otherwise. This module has no push to read a remote from, so it
-// reads the one this checkout actually tracks -- the current branch's
-// upstream remote -- and falls back to "origin" only when there is no
-// upstream to ask. Both copies now say the same thing: the remote this
-// context names, and "origin" only as a last resort.
-function remoteNameFor(root) {
-  const branch = currentBranchName(root);
-  if (branch !== null) {
-    const configured = git(root, ['config', '--get', `branch.${branch}.remote`]);
-    if (configured.status === 0) {
-      const name = configured.stdout.trim();
-      if (name !== '') return name;
-    }
+// A remote name that can be handed to git as one: not empty, not "." (a
+// branch whose upstream is another LOCAL branch has no remote to ask) and
+// never beginning with a dash, which git would read as an option.
+function usableRemoteName(name) {
+  return typeof name === 'string' && name !== '' && name !== '.' && !name.startsWith('-');
+}
+
+// The value of one git configuration key, or null when it is unset.
+function configValue(root, key, env) {
+  const result = ask(root, ['config', '--get', key], { env });
+  if (result.status !== 0) return null;
+  const value = result.stdout.replace(/\n$/, '');
+  return value === '' ? null : value;
+}
+
+// The remote whose notion of a default branch the ladder reads: the one
+// the current branch tracks, and "origin" only when there is none to ask.
+// (Fix round 3, finding F: the template hook takes the remote git hands
+// it; this module has no push to read one from, so it reads the remote
+// this checkout tracks.)
+export function trackedRemote(root, { env = process.env } = {}) {
+  const branch = currentBranch(root, { env });
+  return (branch === null ? null : remoteOfBranch(root, branch, { env })) ?? 'origin';
+}
+
+// The remote `branch` tracks (branch.<name>.remote), when it is one that
+// can be handed to git; otherwise null.
+export function remoteOfBranch(root, branch, { env = process.env } = {}) {
+  const configured = configValue(root, `branch.${branch}.remote`, env);
+  return usableRemoteName(configured) ? configured : null;
+}
+
+// What `branch` tracks: `{ remote, branch }`, from branch.<name>.remote and
+// branch.<name>.merge, each null when unset or not something git can be
+// handed (a merge reference outside refs/heads/, or not a branch name). A
+// default branch tracking origin/trunk is compared against origin/trunk:
+// comparing it against a same-named origin/main instead answered "level"
+// about a branch it does not follow, while the one it follows was ahead
+// (measured).
+export function upstreamOfBranch(root, branch, { env = process.env } = {}) {
+  const merge = configValue(root, `branch.${branch}.merge`, env);
+  const name = merge !== null && merge.startsWith('refs/heads/') ? merge.slice('refs/heads/'.length) : null;
+  return { remote: remoteOfBranch(root, branch, { env }), branch: name !== null && isBranchName(root, name, { env }) ? name : null };
+}
+
+// The commit `ref` resolves to, or null. The status alone is not proof:
+// a rev-parse that exits 0 printing no object id has not named a commit,
+// so the output must be one.
+function commitOf(root, ref, env) {
+  const result = ask(root, ['rev-parse', '-q', '--verify', `${ref}^{commit}`], { env });
+  const sha = result.stdout.trim();
+  return result.status === 0 && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sha) ? sha : null;
+}
+
+// A name git accepts as a branch name, exactly as written: never beginning
+// with a dash (it would be read as an option wherever it is passed), and
+// one `git check-ref-format --branch` prints back unchanged (it expands
+// "@{-1}" and refuses "HEAD", "a..b" and the rest).
+export function isBranchName(root, name, { env = process.env } = {}) {
+  if (typeof name !== 'string' || name === '' || name.startsWith('-')) return false;
+  const result = ask(root, ['check-ref-format', '--branch', name], { env });
+  return result.status === 0 && result.stdout.replace(/\n$/, '') === name;
+}
+
+// vault.default_branch from the vault's configuration, or null when it is
+// unset, null, empty, or the file cannot be read as JSON at all. Read
+// leniently, by design: whether the configuration is valid is `validate`
+// and `doctor`'s question, and every writing command loads it strictly
+// before this is ever asked. A value that is there but is no branch name
+// is NOT dropped here: defaultBranch reports it, so a person's declared
+// answer is never silently replaced by the ladder's.
+function configuredDefaultBranch(root) {
+  let config;
+  try {
+    config = JSON.parse(readFileSync(join(root, CONFIG_FILENAME), 'utf8'));
+  } catch {
+    return null;
   }
-  return 'origin';
+  const value = config?.vault?.default_branch;
+  return typeof value === 'string' && value !== '' ? value : null;
 }
 
-// Returns `{ name, ref, bare }`, or null: `name` is what a person reads
-// and what this module has always returned ("origin/main", "main"),
-// `ref` is the full reference git is asked about, and `bare` is the
-// branch name alone, with the remote's own name and its slash removed by
-// the rung that KNOWS which remote it read (final fix round 2). The
-// same-branch guard below compares `bare`, and it used to derive it by
-// stripping everything before the first slash of `name`, which is wrong
-// the moment a remote's own name contains a slash: git accepts a remote
-// called "team/up", whose default branch then read as a branch called
-// "up/main", never the branch checked out, and the guard answered "not the
-// same branch" about the same branch, which is the empty range at status
-// zero it exists to refuse. The symbolic reference is read in full, not
-// with --short, because --short shortens to whatever is unambiguous and
-// grows a "remotes/" prefix when a local branch shares the name, which no
-// fixed strip can undo.
-function findDefaultBranch(root) {
-  const remote = remoteNameFor(root);
-  const remotePrefix = `refs/remotes/${remote}/`;
-  const symref = git(root, ['symbolic-ref', `${remotePrefix}HEAD`]);
+export const CONFIG_DEFAULT_BRANCH = `${CONFIG_FILENAME} vault.default_branch`;
+
+// THE DEFAULT BRANCH: the one resolver every caller in this engine uses
+// (slice C). Before it there were four copies giving three answers:
+// doctor looked only at origin/HEAD, the push gate walked remote HEAD,
+// main and master per remote, this module and the template hook preferred
+// a local main, and nobody read the configuration. In order:
+//
+//   1. The configuration's vault.default_branch, when set. A person's
+//      declared answer, true before the first push and after it, which no
+//      remote-tracking reference can be.
+//   2. For the remote the current branch tracks (origin when none),
+//      refs/remotes/<remote>/HEAD, counted only when it is a symbolic
+//      reference to a branch of that same remote that resolves to a
+//      commit: pointed at another remote's branch, at a local branch, at
+//      a tag or at nothing, it is skipped.
+//   3. refs/remotes/<remote>/main, then 4. refs/remotes/<remote>/master,
+//      each only when it resolves to a commit. Rungs 2 to 4 are the push
+//      gate's own (src/commands/push-gate.mjs, defaultBranchOf).
+//   5. A local main, then a local master, for a repository whose remote
+//      knows nothing yet (no remote at all, or nothing fetched): a last
+//      resort, after every remote rung, so a stale local branch can never
+//      outrank what the remote publishes.
+//
+// Returns null when nothing answers, or `{ name, bare, ref, remote, from }`:
+// `bare` is the branch name alone (null when the configured value is not a
+// branch name at all); `ref` is the full reference to compare against, the
+// remote-tracking one wherever it exists (null when a configured branch
+// resolves to no commit yet, before its first push); `name` is what a
+// person reads ("origin/main", "main"); `remote` is the remote read; and
+// `from` names the rung that answered.
+export function defaultBranch(root, { env = process.env } = {}) {
+  const remote = trackedRemote(root, { env });
+  const prefix = `refs/remotes/${remote}/`;
+  const configured = configuredDefaultBranch(root);
+  if (configured !== null) {
+    if (!isBranchName(root, configured, { env })) {
+      return { name: configured, bare: null, ref: null, remote, from: CONFIG_DEFAULT_BRANCH };
+    }
+    if (commitOf(root, `${prefix}${configured}`, env) !== null) {
+      return { name: `${remote}/${configured}`, bare: configured, ref: `${prefix}${configured}`, remote, from: CONFIG_DEFAULT_BRANCH };
+    }
+    const ref = commitOf(root, `refs/heads/${configured}`, env) !== null ? `refs/heads/${configured}` : null;
+    return { name: configured, bare: configured, ref, remote, from: CONFIG_DEFAULT_BRANCH };
+  }
+  const symref = ask(root, ['symbolic-ref', '-q', `${prefix}HEAD`], { env });
   if (symref.status === 0) {
     const target = symref.stdout.trim();
-    if (target.startsWith(remotePrefix)) {
-      const bare = target.slice(remotePrefix.length);
-      return { name: `${remote}/${bare}`, ref: target, bare };
-    }
-    // git itself only ever points this at a branch under the same remote,
-    // but a person can point it at a local branch, and that still has a
-    // bare name to compare. Anything else has none, so the guard cannot
-    // run and the caller degrades rather than trusting a range it cannot
-    // check.
-    if (target.startsWith('refs/heads/')) {
-      const bare = target.slice('refs/heads/'.length);
-      return { name: bare, ref: target, bare };
-    }
-    return { name: target, ref: target, bare: null };
-  }
-  for (const candidate of ['main', 'master']) {
-    if (git(root, ['show-ref', '--verify', '--quiet', `refs/heads/${candidate}`]).status === 0) {
-      return { name: candidate, ref: `refs/heads/${candidate}`, bare: candidate };
+    const bare = target.slice(prefix.length);
+    if (target.startsWith(prefix) && isBranchName(root, bare, { env }) && commitOf(root, target, env) !== null) {
+      return { name: `${remote}/${bare}`, bare, ref: target, remote, from: `${prefix}HEAD` };
     }
   }
   for (const candidate of ['main', 'master']) {
-    if (git(root, ['show-ref', '--verify', '--quiet', `${remotePrefix}${candidate}`]).status === 0) {
-      return { name: `${remote}/${candidate}`, ref: `${remotePrefix}${candidate}`, bare: candidate };
-    }
+    const ref = `${prefix}${candidate}`;
+    if (commitOf(root, ref, env) !== null) return { name: `${remote}/${candidate}`, bare: candidate, ref, remote, from: ref };
+  }
+  for (const candidate of ['main', 'master']) {
+    const ref = `refs/heads/${candidate}`;
+    if (commitOf(root, ref, env) !== null) return { name: candidate, bare: candidate, ref, remote, from: ref };
   }
   return null;
+}
+
+// What resolveBase can compare against: a default branch with a bare name
+// and a reference that resolves, or null.
+function comparableDefaultBranch(root) {
+  const found = defaultBranch(root);
+  return found !== null && found.bare !== null && found.ref !== null ? found : null;
 }
 
 // Whether `defaultBranchRef` and `currentBranch` name the SAME branch,
@@ -243,11 +334,10 @@ function findDefaultBranch(root) {
 // reported with complete confidence, which is precisely the kind of
 // status-zero wrong answer this module exists to catch before a caller
 // believes it.
-// The bare name is the one findDefaultBranch computed from the remote it
-// actually read, never a strip of the qualified name: see that
-// function's own comment for the remote whose name holds a slash, which
-// defeated both the literal "origin/" strip this used to do and the
-// strip-to-the-first-slash that replaced it.
+// The bare name is the one defaultBranch computed from the remote it
+// actually read, never a strip of the qualified name: a remote whose name
+// holds a slash ("team/up") defeated both the literal "origin/" strip this
+// used to do and the strip-to-the-first-slash that replaced it.
 function branchNamesMatch(defaultBranch, currentBranch) {
   if (currentBranch === null) return false;
   return defaultBranch.bare === currentBranch;
@@ -274,18 +364,18 @@ function tryMergeBase(root, ref) {
 // impossible: no default branch identifiable, the default branch turning
 // out to be the branch already checked out, or no common ancestor at all.
 function resolveMergeBase(root, requested, reason) {
-  const defaultBranch = findDefaultBranch(root);
-  if (defaultBranch === null || defaultBranch.bare === null) {
+  const found = comparableDefaultBranch(root);
+  if (found === null) {
     return { kind: 'all', requested, reason: 'merge-base-unavailable' };
   }
-  if (branchNamesMatch(defaultBranch, currentBranchName(root))) {
+  if (branchNamesMatch(found, currentBranch(root))) {
     return { kind: 'all', requested, reason: 'merge-base-same-as-current' };
   }
-  const mergeBaseSha = tryMergeBase(root, defaultBranch.ref);
+  const mergeBaseSha = tryMergeBase(root, found.ref);
   if (mergeBaseSha === null) {
     return { kind: 'all', requested, reason: 'merge-base-unavailable' };
   }
-  return { kind: 'merge-base', requested, reason, defaultBranch: defaultBranch.name, mergeBaseSha };
+  return { kind: 'merge-base', requested, reason, defaultBranch: found.name, mergeBaseSha };
 }
 
 // Resolves a requested base ("all" | "worktree" | "merge-base" | "auto")
@@ -354,20 +444,20 @@ export function resolveBase(root, requested) {
   // auto: union. The merge-base component is included only when it is
   // both identifiable and not degenerate; otherwise the union simply has
   // one fewer term, never a different STRATEGY.
-  const found = findDefaultBranch(root);
-  // A default branch whose bare name could not be read cannot be compared
-  // against the branch checked out, so it is treated as no default branch
-  // at all: the union anchors at HEAD, and says why.
-  const defaultBranch = found !== null && found.bare !== null ? found : null;
-  const current = currentBranchName(root);
-  if (defaultBranch !== null && !branchNamesMatch(defaultBranch, current)) {
-    const mergeBaseSha = tryMergeBase(root, defaultBranch.ref);
+  // A default branch whose bare name could not be read, or that resolves
+  // to no commit yet, cannot be compared against the branch checked out,
+  // so it is treated as no default branch at all: the union anchors at
+  // HEAD, and says why.
+  const found = comparableDefaultBranch(root);
+  const current = currentBranch(root);
+  if (found !== null && !branchNamesMatch(found, current)) {
+    const mergeBaseSha = tryMergeBase(root, found.ref);
     if (mergeBaseSha !== null) {
-      return { kind: 'auto', requested, reason: 'auto-since-merge-base', anchor: mergeBaseSha, defaultBranch: defaultBranch.name };
+      return { kind: 'auto', requested, reason: 'auto-since-merge-base', anchor: mergeBaseSha, defaultBranch: found.name };
     }
     return { kind: 'auto', requested, reason: 'auto-merge-base-unavailable', anchor: 'HEAD' };
   }
-  if (defaultBranch === null) {
+  if (found === null) {
     return { kind: 'auto', requested, reason: 'auto-no-default-branch', anchor: 'HEAD' };
   }
   // Genuinely on the default branch (not merely a checkout tool's
@@ -602,7 +692,7 @@ function splitNulFields(bytes) {
 // command, like every other must-succeed call in this module.
 export function publishablePaths(root) {
   if (!isGitRepo(root)) return null;
-  const options = { cwd: root, ...GIT_OPTS, encoding: 'buffer' };
+  const options = { cwd: root, ...GIT_OPTS, encoding: 'buffer', env: gitEnv() };
   const staged = runOrThrow('git', gitArgs('ls-files', '-z', '--stage'), options).stdout;
   const others = runOrThrow('git', gitArgs('ls-files', '-z', '--others', '--exclude-standard'), options).stdout;
 
@@ -647,4 +737,193 @@ export function untrackedPaths(root) {
   if (!isGitRepo(root)) return [];
   const result = gitOrThrow(root, ['ls-files', '--others', '--exclude-standard', '-z']);
   return result.stdout.split('\0').filter((path) => path.length > 0);
+}
+
+// --- the git loop (slice C): what every writing command asks before it
+// writes. Each helper runs through the stripped environment (gitEnv), and
+// each proves an empty or zero answer before returning it. ---------------
+
+// Any git command, through the stripped environment, for a writing command
+// that has to run one this module has no helper for (a checkout, a merge).
+// Never throws; the caller reads the status.
+export function runGit(root, args, { env = process.env, ...options } = {}) {
+  return ask(root, args, { env, ...options });
+}
+
+// The commit a reference resolves to, or null, with the same proof as the
+// ladder's own rungs: a status of zero AND an object id printed.
+export function resolveCommit(root, ref, { env = process.env } = {}) {
+  return commitOf(root, ref, env);
+}
+
+function refusedAsOption(value, what) {
+  if (typeof value !== 'string' || value === '' || value.startsWith('-')) {
+    throw new TypeError(`${what} must be a non-empty string that does not begin with a dash (got ${JSON.stringify(value)})`);
+  }
+}
+
+// How many commits `a` has that `b` lacks (ahead) and `b` has that `a`
+// lacks (behind): `git rev-list --left-right --count a...b`, the first
+// thing a round learns (docs/incidents.md, 25/08/2026). Raises, naming the
+// command, when git fails or prints anything but two counts: "0 0" read
+// from a command that did not answer is exactly "up to date" said about
+// nothing.
+export function aheadBehind(root, a, b, { env = process.env } = {}) {
+  refusedAsOption(a, 'aheadBehind\'s first reference');
+  refusedAsOption(b, 'aheadBehind\'s second reference');
+  const args = ['rev-list', '--left-right', '--count', `${a}...${b}`];
+  const result = ask(root, args, { env });
+  const counts = /^(\d+)\t(\d+)\n?$/.exec(result.stdout);
+  if (result.status !== 0 || counts === null) {
+    throw new Error(`git ${args.join(' ')} exited with status ${result.status}: ${(result.stderr || result.stdout).trim()}`);
+  }
+  return { ahead: Number(counts[1]), behind: Number(counts[2]) };
+}
+
+// Every path `git status` reports in the working tree: modified, staged,
+// deleted, unmerged, a changed submodule, and untracked (each file on its
+// own, overriding a status.showUntrackedFiles=no in the vault), never an
+// ignored one. Paths are read as bytes and decoded the one way every
+// scanner here decodes them, for naming to a person. Raises, naming the
+// command, when git fails or prints a record it cannot read: a record
+// dropped is a dirty tree read as clean.
+export function dirtyPaths(root, { env = process.env } = {}) {
+  const args = ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=none', '--no-renames'];
+  const result = ask(root, args, { env, encoding: 'buffer' });
+  if (result.status !== 0) {
+    throw new Error(`git ${args.join(' ')} exited with status ${result.status}: ${decodeBytes(Buffer.from(result.stderr)).trim()}`);
+  }
+  const paths = [];
+  for (const record of splitNulFields(result.stdout)) {
+    if (record.length < 4 || record[2] !== 0x20) {
+      throw new Error(`git ${args.join(' ')} printed a record of an unknown shape (hex ${record.toString('hex')})`);
+    }
+    paths.push(decodeBytes(record.subarray(3)));
+  }
+  return [...new Set(paths)].sort();
+}
+
+export function isClean(root, options = {}) {
+  return dirtyPaths(root, options).length === 0;
+}
+
+// The operation a person or a tool left half done in this working tree,
+// by the marker git itself keeps in the tree's git directory, or null. A
+// rebase stopped at `break` or `edit` leaves a tree that `git status`
+// calls clean, and checking out another branch in the middle of it
+// strands the rebase; so does a merge, a cherry-pick or a revert waiting
+// for its commit, and a bisection.
+const OPERATION_MARKERS = Object.freeze([
+  ['rebase-merge', 'rebase'], ['rebase-apply', 'rebase'], ['MERGE_HEAD', 'merge'],
+  ['CHERRY_PICK_HEAD', 'cherry-pick'], ['REVERT_HEAD', 'revert'], ['BISECT_LOG', 'bisect'],
+]);
+
+export function operationInProgress(root, { env = process.env } = {}) {
+  for (const [marker, operation] of OPERATION_MARKERS) {
+    const result = ask(root, ['rev-parse', '--git-path', marker], { env });
+    if (result.status !== 0) throw new Error(`git rev-parse --git-path ${marker} exited with status ${result.status}: ${result.stderr.trim()}`);
+    const path = result.stdout.replace(/\n$/, '');
+    if (path === '') throw new Error(`git rev-parse --git-path ${marker} printed no path`);
+    if (existsAt(root, path)) return operation;
+  }
+  return null;
+}
+
+function existsAt(root, path) {
+  try {
+    statSync(isAbsolute(path) ? path : join(root, path));
+    return true;
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false;
+    throw error;
+  }
+}
+
+const NETWORK_TIMEOUT_MS = 120000;
+
+// Fetch ONE branch of a remote, and prove the fetch reached it.
+//
+// A plain `git fetch <remote>` is the recurring shape of this project: it
+// exits 0 having updated nothing when the remote's fetch refspec is
+// missing or maps somewhere else, and "up to date" read from a stale
+// remote-tracking reference is the 17/08/2026 incident again. So the
+// remote is asked first, live, what its tip is (`git ls-remote
+// --exit-code`, whose status 2 is git's own "no such reference", distinct
+// from a remote that could not be reached); the branch is then fetched
+// with an explicit refspec into refs/remotes/<remote>/<branch>, whatever
+// the configuration maps; and the result counts only when that reference
+// now contains the tip the remote announced.
+//
+// Returns { status: 'fetched', sha, ref }, { status: 'absent' } (the
+// remote was reached and has no such branch: nothing published there
+// yet), { status: 'failed', detail } (the remote could not be asked or
+// the fetch failed), or { status: 'incomplete', announced, ref } (the
+// fetch reported success and the reference does not hold the announced
+// tip). No terminal prompt is ever waited for, and a remote that hangs is
+// given up on after NETWORK_TIMEOUT_MS.
+export function fetch(root, remote, { branch, env = process.env, timeout = NETWORK_TIMEOUT_MS } = {}) {
+  if (!usableRemoteName(remote)) throw new TypeError(`fetch needs a remote name that is not ".", empty or an option (got ${JSON.stringify(remote)})`);
+  if (!isBranchName(root, branch, { env })) throw new TypeError(`fetch needs the name of the branch to fetch (got ${JSON.stringify(branch)})`);
+  const network = { env: { ...env, GIT_TERMINAL_PROMPT: '0' }, timeout };
+  const wanted = `refs/heads/${branch}`;
+  const listed = ask(root, ['ls-remote', '--exit-code', remote, wanted], network);
+  if (listed.status === 2 && listed.stdout.trim() === '') return { status: 'absent' };
+  if (listed.status !== 0) return { status: 'failed', detail: firstLineOf(listed.stderr) || `git ls-remote exited with status ${listed.status}` };
+  const announced = listed.stdout.split('\n')
+    .map((line) => line.split('\t'))
+    .filter(([sha, ref]) => ref === wanted && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sha))
+    .map(([sha]) => sha)[0];
+  if (announced === undefined) return { status: 'failed', detail: `git ls-remote printed no tip for ${wanted}` };
+
+  const ref = `refs/remotes/${remote}/${branch}`;
+  const fetched = ask(root, ['fetch', '--quiet', '--no-tags', remote, `+${wanted}:${ref}`], network);
+  if (fetched.status !== 0) return { status: 'failed', detail: firstLineOf(fetched.stderr) || `git fetch exited with status ${fetched.status}` };
+  const sha = commitOf(root, ref, env);
+  if (sha === null || ask(root, ['merge-base', '--is-ancestor', announced, sha], { env }).status !== 0) {
+    return { status: 'incomplete', announced, ref };
+  }
+  return { status: 'fetched', sha, ref };
+}
+
+function firstLineOf(text) {
+  return String(text ?? '').trim().split(/\r?\n/)[0] ?? '';
+}
+
+// The files git ignores here that moving the working tree to `commits`
+// would overwrite or remove: every ignored, untracked file on disk whose
+// path one of those commits tracks, or that sits where one of them tracks
+// a file as a directory, or the other way round. `git checkout` and `git
+// merge --ff-only` treat an ignored file as expendable and replace it
+// without a word (measured: a fast-forward bringing in draft.md replaced a
+// local, ignored draft.md, exit 0), and an ignored file is exactly where
+// another session keeps a draft (src/guards/snapshot.mjs says why the
+// snapshot records ignored paths). `git status` does not list them, so a
+// clean tree is no proof that none is in the way. Paths are compared as
+// bytes and named in the one decoding every scanner shares. Raises, naming
+// the command, when git cannot list either side.
+export function ignoredInTheWay(root, commits, { env = process.env } = {}) {
+  const listArgs = ['ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--full-name', '--', ':/'];
+  const listed = ask(root, listArgs, { env, encoding: 'buffer' });
+  if (listed.status !== 0) throw new Error(`git ${listArgs.join(' ')} exited with status ${listed.status}: ${decodeBytes(Buffer.from(listed.stderr)).trim()}`);
+  const ignored = splitNulFields(listed.stdout).map((path) => path.toString('latin1'));
+  const tracked = new Set();
+  for (const commit of commits) {
+    refusedAsOption(commit, 'ignoredInTheWay\'s commit');
+    const treeArgs = ['ls-tree', '-r', '-z', '--name-only', '--full-tree', commit];
+    const tree = ask(root, treeArgs, { env, encoding: 'buffer' });
+    if (tree.status !== 0) throw new Error(`git ${treeArgs.join(' ')} exited with status ${tree.status}: ${decodeBytes(Buffer.from(tree.stderr)).trim()}`);
+    for (const path of splitNulFields(tree.stdout)) tracked.add(path.toString('latin1'));
+  }
+  const directories = new Set();
+  for (const path of tracked) {
+    for (let at = path.indexOf('/'); at !== -1; at = path.indexOf('/', at + 1)) directories.add(path.slice(0, at));
+  }
+  const inTheWay = ignored.filter((path) => {
+    if (tracked.has(path) || directories.has(path)) return true;
+    for (let at = path.indexOf('/'); at !== -1; at = path.indexOf('/', at + 1)) {
+      if (tracked.has(path.slice(0, at))) return true;
+    }
+    return false;
+  });
+  return inTheWay.map((path) => decodeBytes(Buffer.from(path, 'latin1'))).sort();
 }
