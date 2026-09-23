@@ -21,17 +21,23 @@
 // Every external program runs through src/exec.mjs's run(), with an
 // argument array and the environment the command was handed (so PATH,
 // HOME and git's own configuration are the caller's, and a test can
-// control all three), and with LC_ALL=C so the output parsed below is
-// never a translation of it.
+// control all three), with LC_ALL=C so the output parsed below is never a
+// translation of it, and with the variables that move git to another
+// repository removed (src/git-env.mjs): with GIT_DIR in the environment,
+// every git question below would otherwise be answered about THAT
+// repository, and a vault whose push runs no hook would read as gated.
 import { accessSync, constants as fsConstants, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { delimiter, isAbsolute, join, resolve } from 'node:path';
+import { basename, delimiter, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { run } from '../exec.mjs';
 import { EXIT } from '../exit-codes.mjs';
 import { decodeBytes } from '../io.mjs';
 import { CONFIG_FILENAME, MACHINE_FILENAME, findMachineOnlyKeys, validateConfig, validateMachine } from '../config.mjs';
 import { stateDirFor } from '../state.mjs';
 import { kitVersion } from '../version.mjs';
+import { localGitVarNames, withoutLocalGitVars } from '../git-env.mjs';
+import { loadPatterns } from '../leak.mjs';
+import { TEMPLATE_HOOK } from '../init/skeleton.mjs';
 
 export const MINIMUM_NODE_MAJOR = 24;
 export const HOOKS_DIR = '.githooks';
@@ -47,17 +53,18 @@ export const MACHINE_FILE_MODE = 0o600;
 // every check below already reads as "no answer".
 const PROBE_TIMEOUT_MS = 15000;
 
-function probe(ctx, command, args, cwd) {
+function probe(ctx, command, args, cwd, input) {
   return run(command, args, {
     cwd: cwd ?? ctx.root,
-    env: { ...ctx.env, LC_ALL: 'C' },
+    input: input ?? '',
+    env: { ...withoutLocalGitVars(ctx.env, ctx.localGitVars()), LC_ALL: 'C' },
     timeout: PROBE_TIMEOUT_MS,
     maxBuffer: 16 * 1024 * 1024,
   });
 }
 
-function git(ctx, args) {
-  return probe(ctx, 'git', args, ctx.root);
+function git(ctx, args, input) {
+  return probe(ctx, 'git', args, ctx.root, input);
 }
 
 function octal(mode) {
@@ -83,6 +90,38 @@ function isExecutableFile(path) {
     return true;
   } catch {
     return false;
+  }
+}
+
+function expandHome(path, env) {
+  if (path === '~') return env.HOME || homedir();
+  if (path.startsWith('~/')) return join(env.HOME || homedir(), path.slice(2));
+  return path;
+}
+
+// The first executable regular file named `name` in `dirs`. An empty PATH
+// entry means "the current directory" to a shell, and a relative entry
+// means "from wherever you are"; both are skipped, since a program that
+// resolves only from wherever doctor happened to be started is not one a
+// hook or a scheduled run can be relied on to find.
+function findExecutable(name, dirs) {
+  for (const dir of dirs) {
+    if (!isAbsolute(dir)) continue;
+    const candidate = join(dir, name);
+    if (isExecutableFile(candidate)) return candidate;
+  }
+  return null;
+}
+
+function pathDirs(env) {
+  return String(env.PATH ?? '').split(delimiter);
+}
+
+function realOrSelf(path) {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
   }
 }
 
@@ -123,13 +162,16 @@ function readJsonFile(file) {
 // path, so that is the derivation every check that reads the state
 // directory uses. The real path is a separate fact, used where the
 // question is about the real path.
-export function buildContext({ root, env = process.env, nodeVersion = process.versions.node, engineVersion = kitVersion() }) {
+export function buildContext({
+  root, env = process.env, nodeVersion = process.versions.node, execPath = process.execPath, engineVersion = kitVersion(),
+}) {
   const memo = new Map();
   const once = (key, compute) => () => {
     if (!memo.has(key)) memo.set(key, compute());
     return memo.get(key);
   };
-  const ctx = { root, env, nodeVersion, engineVersion };
+  const ctx = { root, env, nodeVersion, execPath, engineVersion };
+  ctx.localGitVars = once('localGitVars', () => localGitVarNames(env));
   ctx.realRoot = once('realRoot', () => realpathSync(root));
   ctx.configFile = join(root, CONFIG_FILENAME);
   ctx.config = once('config', () => readJsonFile(ctx.configFile));
@@ -150,6 +192,30 @@ function nodeVersion(ctx) {
   }
   if (Number(match[1]) < MINIMUM_NODE_MAJOR) {
     return { id, status: 'fail', messageKey: 'doctor.node_version.too_old', params: { version, minimum: MINIMUM_NODE_MAJOR } };
+  }
+  // The Node running doctor is not necessarily the one the gate runs: the
+  // pre-push hook calls `node` and `brain-kit` from PATH, and brain-kit's
+  // own launcher finds its node through PATH too. Run as
+  // `node /path/to/brain-kit.mjs doctor`, the answer above is about a Node
+  // no push ever uses, so the one on PATH is asked as well.
+  const bin = findExecutable('node', pathDirs(ctx.env));
+  if (!bin) {
+    return { id, status: 'fail', messageKey: 'doctor.node_version.path_missing', params: { version } };
+  }
+  const r = probe(ctx, bin, ['--version']);
+  if (r.status !== 0) {
+    return { id, status: 'fail', messageKey: 'doctor.node_version.path_failed', params: { bin, status: r.status } };
+  }
+  const onPath = /^v((\d+)\.\d+\.\d+)$/.exec(firstLine(r.stdout));
+  if (!onPath) {
+    return { id, status: 'fail', messageKey: 'doctor.node_version.path_unrecognised', params: { bin, output: firstLine(r.stdout) } };
+  }
+  const pathVersion = onPath[1];
+  if (Number(onPath[2]) < MINIMUM_NODE_MAJOR) {
+    return { id, status: 'fail', messageKey: 'doctor.node_version.path_too_old', params: { bin, pathVersion, minimum: MINIMUM_NODE_MAJOR } };
+  }
+  if (pathVersion !== version.replace(/^v/, '') || realOrSelf(bin) !== realOrSelf(ctx.execPath)) {
+    return { id, status: 'ok', messageKey: 'doctor.node_version.ok_path_differs', params: { version, bin, pathVersion } };
   }
   return { id, status: 'ok', messageKey: 'doctor.node_version.ok', params: { version } };
 }
@@ -221,6 +287,14 @@ function hooksPath(ctx) {
   if (!samePlace(configured, expected)) {
     return { id, status: 'fail', messageKey: 'doctor.hooks_path.elsewhere', params: { value, expected } };
   }
+  // A vault below its repository's top level: git runs the hook, but the
+  // hook runs brain-kit from the top level, finds no vault there, and
+  // refuses every push. Asked only after the directory matched, so a
+  // relative value resolved from the wrong place is still reported as
+  // pointing elsewhere.
+  if (!samePlace(topLevel, ctx.root)) {
+    return { id, status: 'fail', messageKey: 'doctor.hooks_path.not_top_level', params: { dir: ctx.root, top: topLevel } };
+  }
   let stats;
   try {
     stats = statSync(hook);
@@ -236,7 +310,40 @@ function hooksPath(ctx) {
   if (!isExecutableFile(hook)) {
     return { id, status: 'fail', messageKey: 'doctor.hooks_path.hook_not_executable', params: { hook } };
   }
+  // The file runs; whether it is the gate is a question of its bytes. A
+  // hook that differs from the template this engine ships may be a
+  // deliberate edit, an older kit's template, or a gate cut down to
+  // nothing, and doctor cannot tell which: it warns, and names both files.
+  if (!readFileSync(hook).equals(readFileSync(TEMPLATE_HOOK))) {
+    return { id, status: 'warn', messageKey: 'doctor.hooks_path.differs', params: { hook, template: TEMPLATE_HOOK } };
+  }
   return { id, status: 'ok', messageKey: 'doctor.hooks_path.ok', params: { hook } };
+}
+
+// The pre-push hook runs `command -v brain-kit` and refuses the push when
+// there is none: every push is refused, and nothing else here would say
+// why. The brain-kit found is also asked for its version, because a
+// launcher that cannot start (no node on PATH, a half-installed package)
+// is found by `command -v` and still refuses every push.
+function brainKitOnPath(ctx) {
+  const id = 'brain-kit-on-path';
+  const running = ctx.engineVersion;
+  const bin = findExecutable('brain-kit', pathDirs(ctx.env));
+  if (!bin) {
+    return { id, status: 'fail', messageKey: 'doctor.brain_kit_on_path.missing', params: {} };
+  }
+  const r = probe(ctx, bin, ['--version']);
+  if (r.status !== 0) {
+    return { id, status: 'fail', messageKey: 'doctor.brain_kit_on_path.failed', params: { bin, status: r.status } };
+  }
+  const match = /^(\d+\.\d+\.\d+\S*)$/.exec(firstLine(r.stdout));
+  if (!match) {
+    return { id, status: 'fail', messageKey: 'doctor.brain_kit_on_path.unrecognised', params: { bin, output: firstLine(r.stdout) } };
+  }
+  if (match[1] !== running) {
+    return { id, status: 'warn', messageKey: 'doctor.brain_kit_on_path.other_version', params: { bin, version: match[1], running } };
+  }
+  return { id, status: 'ok', messageKey: 'doctor.brain_kit_on_path.ok', params: { bin, version: match[1] } };
 }
 
 function configValid(ctx) {
@@ -253,6 +360,22 @@ function configValid(ctx) {
   const errors = validateConfig(read.value);
   if (errors.length > 0) {
     return { id, status: 'fail', messageKey: 'doctor.config_valid.invalid', params: { file, errors } };
+  }
+  // The schema accepts any non-empty string as a secret pattern; the
+  // scanner compiles each one, and one that does not compile crashes the
+  // secrets rule, so lint fails and the gate refuses every push. Each is
+  // compiled here exactly the way the scanner does, through loadPatterns.
+  const configured = read.value.privacy?.secret_patterns ?? [];
+  const patterns = configured.filter((raw) => {
+    try {
+      loadPatterns({ configPatterns: [raw] });
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  if (patterns.length > 0) {
+    return { id, status: 'fail', messageKey: 'doctor.config_valid.pattern', params: { file, patterns } };
   }
   return { id, status: 'ok', messageKey: 'doctor.config_valid.ok', params: { file } };
 }
@@ -357,54 +480,63 @@ function ghPresent(ctx) {
   return { id, status: 'ok', messageKey: 'doctor.gh_present.ok', params: { version: match[1] } };
 }
 
-function expandHome(path, env) {
-  if (path === '~') return env.HOME || homedir();
-  if (path.startsWith('~/')) return join(env.HOME || homedir(), path.slice(2));
-  return path;
-}
-
 // The machine's path_extra comes first, because that is what it is for:
 // the directories a scheduled run adds to PATH so it finds what a login
-// shell would. An empty PATH entry means "the current directory" to a
-// shell, and a relative entry means "from wherever you are"; both are
-// skipped here, since a claude that resolves only from wherever doctor
-// happened to be started is not one a scheduled run finds.
-function resolveExecutable(bin, extra, env, root) {
+// shell would. A value with a slash in it is a path, resolved from the
+// vault, never from wherever doctor was started.
+function resolveClaude(bin, extra, env, root) {
   const expanded = expandHome(bin, env);
   if (expanded.includes('/')) {
     const candidate = resolve(root, expanded);
     return isExecutableFile(candidate) ? candidate : null;
   }
-  const dirs = [...extra.map((dir) => expandHome(String(dir), env)), ...String(env.PATH ?? '').split(delimiter)];
-  for (const dir of dirs) {
-    if (!isAbsolute(dir)) continue;
-    const candidate = join(dir, expanded);
-    if (isExecutableFile(candidate)) return candidate;
+  return findExecutable(expanded, [...extra.map((dir) => expandHome(String(dir), env)), ...pathDirs(env)]);
+}
+
+// True when the file, or the directory holding it, can be written by
+// anyone but its owner: then what it names is not the person's choice
+// alone.
+function writableByOthers(path) {
+  try {
+    return (statSync(path).mode & 0o022) !== 0;
+  } catch {
+    return true;
   }
-  return null;
 }
 
 function claudePresent(ctx) {
   const id = 'claude-present';
+  const file = ctx.machineFile;
   const read = ctx.machine();
   const machine = read.ok && read.value !== null && typeof read.value === 'object' ? read.value : null;
   const bin = machine?.claude_bin;
   if (typeof bin !== 'string' || bin === '') {
-    return { id, status: 'warn', messageKey: 'doctor.claude_present.unknown', params: { file: ctx.machineFile } };
+    return { id, status: 'warn', messageKey: 'doctor.claude_present.unknown', params: { file } };
+  }
+  // This check EXECUTES the file machine.json names. It never does so for
+  // a machine.json the kit itself would refuse, or one another local user
+  // could have written: that would be running a path someone else chose.
+  if (validateMachine(machine).length > 0) {
+    return { id, status: 'warn', messageKey: 'doctor.claude_present.machine_invalid', params: { file } };
+  }
+  if (writableByOthers(file) || writableByOthers(ctx.stateDir)) {
+    return { id, status: 'warn', messageKey: 'doctor.claude_present.machine_writable', params: { file } };
   }
   const extra = Array.isArray(machine.path_extra) ? machine.path_extra : [];
-  const resolved = resolveExecutable(bin, extra, ctx.env, ctx.root);
+  const resolved = resolveClaude(bin, extra, ctx.env, ctx.root);
   if (!resolved) {
     return { id, status: 'warn', messageKey: 'doctor.claude_present.not_found', params: { bin } };
   }
   // Resolving is not running: a package manager can leave a stub where
   // the binary should be, executable and on PATH, that does nothing but
-  // fail. Asking it for its version is the proof it runs.
+  // fail. Asking it for its version is the proof it runs, and the answer
+  // must be shaped like the Claude CLI's own version line: any program
+  // prints a version, and `git` or `node` named as claude_bin is not claude.
   const r = probe(ctx, resolved, ['--version']);
   if (r.status !== 0) {
     return { id, status: 'warn', messageKey: 'doctor.claude_present.failed', params: { bin: resolved, status: r.status } };
   }
-  const match = /(\d+\.\d+\.\d+)/.exec(firstLine(r.stdout));
+  const match = /^(\d+\.\d+\.\d+\S*) \(Claude Code\)$/.exec(firstLine(r.stdout));
   if (!match) {
     return { id, status: 'warn', messageKey: 'doctor.claude_present.unrecognised', params: { bin: resolved, output: firstLine(r.stdout) } };
   }
@@ -413,20 +545,43 @@ function claudePresent(ctx) {
 
 // Without the quiet flag on purpose: `check-ignore -q` answers only by
 // its status, which is exactly the probe-that-prints-nothing this file
-// refuses to trust. Asked plainly, git prints the path back when it is
-// ignored, and that printed path is the proof. `--no-index` asks the
-// ignore rules alone, whatever the index happens to hold.
+// refuses to trust. Asked with `-v`, git prints back the file and the
+// line that ignore the path, and that is the proof (`-z`, which git
+// accepts only with `--stdin`, keeps a file name with a colon in it
+// parseable); `--no-index` asks the ignore rules alone, whatever the
+// index happens to hold.
+//
+// Where the rule lives matters as much as whether it exists. Only a
+// .gitignore inside the vault travels with it; `.git/info/exclude` and a
+// global excludes file protect this clone alone, and a second clone or a
+// CI checkout meets the false refusal the warning describes.
 function gitignoreNodeModules(ctx) {
   const id = 'gitignore-node-modules';
   const pattern = NODE_MODULES_PATTERN;
-  const r = git(ctx, ['check-ignore', '--no-index', pattern]);
-  if (r.status === 0 && r.stdout.split(/\r?\n/).includes(pattern)) {
-    return { id, status: 'ok', messageKey: 'doctor.gitignore_node_modules.ok', params: { pattern } };
-  }
+  const r = git(ctx, ['check-ignore', '-v', '-z', '--stdin', '--no-index'], `${pattern}\0`);
   if (r.status === 1) {
     return { id, status: 'warn', messageKey: 'doctor.gitignore_node_modules.not_ignored', params: { pattern } };
   }
-  return { id, status: 'warn', messageKey: 'doctor.gitignore_node_modules.unknown', params: { pattern, status: r.status } };
+  // source NUL line NUL rule NUL path NUL
+  const [source, , , path] = r.stdout.split('\0');
+  if (r.status !== 0 || path !== pattern || !source) {
+    return { id, status: 'warn', messageKey: 'doctor.gitignore_node_modules.unknown', params: { pattern, status: r.status } };
+  }
+  const where = relative(ctx.realRoot(), resolve(ctx.realRoot(), source));
+  if (where.startsWith(`..${sep}`) || basename(where) !== '.gitignore') {
+    return { id, status: 'warn', messageKey: 'doctor.gitignore_node_modules.local_only', params: { pattern, source } };
+  }
+  // Ignoring never untracks: files under node_modules/ that were already
+  // committed are still read by the secrets rule, rule or no rule.
+  const tracked = git(ctx, ['--literal-pathspecs', 'ls-files', '-z', '--', 'node_modules']);
+  if (tracked.status !== 0) {
+    return { id, status: 'warn', messageKey: 'doctor.gitignore_node_modules.unknown', params: { pattern, status: tracked.status } };
+  }
+  const count = tracked.stdout.split('\0').filter((name) => name !== '').length;
+  if (count > 0) {
+    return { id, status: 'warn', messageKey: 'doctor.gitignore_node_modules.tracked', params: { pattern, count } };
+  }
+  return { id, status: 'ok', messageKey: 'doctor.gitignore_node_modules.ok', params: { pattern, source } };
 }
 
 // id -> check, in the order the report prints them.
@@ -435,6 +590,7 @@ export const CHECKS = new Map([
   ['git-present', gitPresent],
   ['default-branch-known', defaultBranchKnown],
   ['hooks-path', hooksPath],
+  ['brain-kit-on-path', brainKitOnPath],
   ['config-valid', configValid],
   ['machine-valid', machineValid],
   ['state-dir-resolves', stateDirResolves],

@@ -32,6 +32,8 @@ import { stateDirFor } from '../src/state.mjs';
 import { runDoctor } from '../src/commands/doctor.mjs';
 import { CHECK_IDS, exitCodeFor, runChecks } from '../src/doctor/checks.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
+import { LOCAL_GIT_VARS, localGitVarNames } from '../src/git-env.mjs';
+import { TEMPLATE_HOOK as SHIPPED_HOOK } from '../src/init/skeleton.mjs';
 
 const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
 const TEMPLATE_HOOK = join(KIT_ROOT, 'templates', 'githooks', 'pre-push');
@@ -75,6 +77,18 @@ const SCRIPTS = {
   git: {
     silent: 'exit 0',
   },
+  node: {
+    newer: 'echo v25.0.0',
+    old: 'echo v22.11.0',
+    silent: 'exit 0',
+    broken: 'echo "node: cannot start" >&2\nexit 1',
+  },
+  brainKit: {
+    other: 'echo 9.9.9',
+    junk: 'echo "hello"',
+    silent: 'exit 0',
+    broken: 'echo "brain-kit: cannot start" >&2\nexit 1',
+  },
 };
 
 // Builds a tools directory: `git` is a link to the real one unless told
@@ -83,7 +97,10 @@ const SCRIPTS = {
 // git on PATH, one that answers each subcommand the way a test needs, to
 // reach the clauses the real git never exercises (a status and an output
 // that disagree).
-function makeTools({ git = 'real', gh = 'ok', claude = 'ok' } = {}) {
+// `node` is a link to the Node running the suite and `brain-kit` a link to
+// this checkout's own launcher, which finds that node through PATH exactly
+// as the installed hook's brain-kit would.
+function makeTools({ git = 'real', gh = 'ok', claude = 'ok', node = 'real', brainKit = 'real' } = {}) {
   const dir = join(makeTempDir('brain-kit-doctor-tools-'), 'bin');
   mkdirSync(dir);
   if (git === 'real') symlinkSync(REAL_GIT, join(dir, 'git'));
@@ -91,6 +108,10 @@ function makeTools({ git = 'real', gh = 'ok', claude = 'ok' } = {}) {
   else if (git !== 'absent') writeScript(join(dir, 'git'), SCRIPTS.git[git]);
   if (gh !== 'absent') writeScript(join(dir, 'gh'), SCRIPTS.gh[gh]);
   if (claude !== 'absent') writeScript(join(dir, 'claude'), SCRIPTS.claude[claude]);
+  if (node === 'real') symlinkSync(process.execPath, join(dir, 'node'));
+  else if (node !== 'absent') writeScript(join(dir, 'node'), SCRIPTS.node[node]);
+  if (brainKit === 'real') symlinkSync(BIN, join(dir, 'brain-kit'));
+  else if (brainKit !== 'absent') writeScript(join(dir, 'brain-kit'), SCRIPTS.brainKit[brainKit]);
   return dir;
 }
 
@@ -120,6 +141,7 @@ function baseConfig() {
 // init gives them. Every option breaks exactly one of those.
 function setup({
   gitRepo = true,
+  nested = false,
   hooksPath = '.githooks',
   hook = 'template',
   hookMode = 0o755,
@@ -150,13 +172,16 @@ function setup({
     else if (hook === 'empty') writeFileSync(hookFile, '');
     chmodSync(hookFile, hookMode);
   }
+  // `nested`: the repository's top level is the vault's parent directory,
+  // so the vault sits one level below it.
+  const gitTop = nested ? join(root, '..') : root;
   if (gitRepo) {
-    fixtureGit(root, ['init', '-q', '-b', 'main', '.'], home);
-    if (hooksPath !== null) fixtureGit(root, ['config', 'core.hooksPath', hooksPath], home);
-    fixtureGit(root, ['commit', '-q', '--allow-empty', '-m', 'init'], home);
+    fixtureGit(gitTop, ['init', '-q', '-b', 'main', '.'], home);
+    if (hooksPath !== null) fixtureGit(gitTop, ['config', 'core.hooksPath', hooksPath], home);
+    fixtureGit(gitTop, ['commit', '-q', '--allow-empty', '-m', 'init'], home);
     if (originHead !== null) {
-      fixtureGit(root, ['update-ref', 'refs/remotes/origin/main', 'HEAD'], home);
-      fixtureGit(root, ['symbolic-ref', 'refs/remotes/origin/HEAD', `refs/remotes/origin/${originHead}`], home);
+      fixtureGit(gitTop, ['update-ref', 'refs/remotes/origin/main', 'HEAD'], home);
+      fixtureGit(gitTop, ['symbolic-ref', 'refs/remotes/origin/HEAD', `refs/remotes/origin/${originHead}`], home);
     }
   }
   const toolsDir = makeTools(tools);
@@ -172,7 +197,7 @@ function setup({
   const machineFile = join(stateDir, 'machine.json');
   if (writeMachine) {
     mkdirSync(stateDir, { recursive: true });
-    chmodSync(stateDir, dirMode);
+    chmodSync(stateDir, 0o700);
     const value = {
       vault_id: 'ana-brain',
       canonical_path: realpathSync(root),
@@ -183,8 +208,11 @@ function setup({
     };
     writeFileSync(machineFile, machineText ?? JSON.stringify(value, null, 2));
     chmodSync(machineFile, fileMode);
+    // Last, so a directory mode without the owner's write bit (0577) is
+    // still reached with the file already in it.
+    chmodSync(stateDir, dirMode);
   }
-  return { base, home, root, env, stateDir, machineFile, toolsDir };
+  return { base, home, root, gitTop, env, stateDir, machineFile, toolsDir };
 }
 
 function fakeIo() {
@@ -199,7 +227,7 @@ function fakeIo() {
 
 const t = createTranslator('en');
 
-async function doctor(fixture, argv = [], { nodeVersion = '24.1.0', env = fixture.env, cwd = fixture.root } = {}) {
+async function doctor(fixture, argv = [], { nodeVersion = process.versions.node, env = fixture.env, cwd = fixture.root } = {}) {
   const f = fakeIo();
   const code = await runDoctor(['--json', ...argv, fixture.root], f.io, t, { env, cwd, nodeVersion });
   let report = null;
@@ -235,7 +263,7 @@ test('a ready vault under a path with a space, an accented letter and both quote
 
 test('the check table is exactly the phase 1 set, each named by what it prevents', () => {
   assert.deepEqual(CHECK_IDS, [
-    'node-version', 'git-present', 'default-branch-known', 'hooks-path', 'config-valid', 'machine-valid',
+    'node-version', 'git-present', 'default-branch-known', 'hooks-path', 'brain-kit-on-path', 'config-valid', 'machine-valid',
     'state-dir-resolves', 'state-dir-mode', 'kit-version', 'gh-present', 'claude-present', 'gitignore-node-modules',
   ]);
 });
@@ -250,7 +278,9 @@ test('node-version: fails below 24, passes at 24.0.0 exactly, and fails on a ver
   r = await doctor(fx, ['--only', 'node-version'], { nodeVersion: '23.99.99' });
   assertCheck(r.report, 'node-version', 'fail', 'doctor.node_version.too_old');
   r = await doctor(fx, ['--only', 'node-version'], { nodeVersion: '24.0.0' });
-  assertCheck(r.report, 'node-version', 'ok', 'doctor.node_version.ok');
+  // The node on PATH is the same binary but reports another version than
+  // the one injected here, so it is named.
+  assertCheck(r.report, 'node-version', 'ok', 'doctor.node_version.ok_path_differs');
   assert.equal(r.code, EXIT.OK);
   r = await doctor(fx, ['--only', 'node-version'], { nodeVersion: '' });
   assertCheck(r.report, 'node-version', 'fail', 'doctor.node_version.unreadable');
@@ -260,6 +290,62 @@ test('node-version: fails below 24, passes at 24.0.0 exactly, and fails on a ver
   // something else.
   r = await doctor(fx, ['--only', 'node-version'], { nodeVersion: 'x24.0.0' });
   assertCheck(r.report, 'node-version', 'fail', 'doctor.node_version.unreadable');
+});
+
+test('node-version: the node on PATH is the running one, reported plainly', async () => {
+  const fx = setup();
+  const { report } = await doctor(fx, ['--only', 'node-version']);
+  assertCheck(report, 'node-version', 'ok', 'doctor.node_version.ok');
+});
+
+test('node-version: names the node the hook would find on PATH when it is another Node', async () => {
+  const fx = setup({ tools: { node: 'newer' } });
+  const { report, code } = await doctor(fx, ['--only', 'node-version']);
+  const c = assertCheck(report, 'node-version', 'ok', 'doctor.node_version.ok_path_differs');
+  assert.equal(c.params.bin, join(fx.toolsDir, 'node'));
+  assert.equal(c.params.pathVersion, '25.0.0');
+  assert.equal(code, EXIT.OK);
+});
+
+test('node-version: the same version at another path is still named', async () => {
+  const fx = setup({ tools: { node: 'absent' } });
+  const elsewhere = join(fx.base, 'other node');
+  mkdirSync(elsewhere);
+  writeScript(join(elsewhere, 'node'), `echo v${process.versions.node}`);
+  const env = { ...fx.env, PATH: `${elsewhere}${delimiter}${fx.toolsDir}` };
+  const { report } = await doctor(fx, ['--only', 'node-version'], { env });
+  const c = assertCheck(report, 'node-version', 'ok', 'doctor.node_version.ok_path_differs');
+  assert.equal(c.params.bin, join(elsewhere, 'node'));
+});
+
+test('node-version: fails when the node on PATH is below 24, even if the running one is not', async () => {
+  const fx = setup({ tools: { node: 'old' } });
+  const { report, code } = await doctor(fx, ['--only', 'node-version']);
+  const c = assertCheck(report, 'node-version', 'fail', 'doctor.node_version.path_too_old');
+  assert.equal(c.params.pathVersion, '22.11.0');
+  assert.equal(code, EXIT.FAILURE);
+});
+
+test('node-version: a node on PATH whose answer only contains a version somewhere is not proof', async () => {
+  const fx = setup({ tools: { node: 'absent' } });
+  writeScript(join(fx.toolsDir, 'node'), 'echo "Welcome to v25.0.0"');
+  const { report } = await doctor(fx, ['--only', 'node-version']);
+  assertCheck(report, 'node-version', 'fail', 'doctor.node_version.path_unrecognised');
+});
+
+test('node-version: fails when there is no node on PATH for the hook to run', async () => {
+  const fx = setup({ tools: { node: 'absent' } });
+  const { report } = await doctor(fx, ['--only', 'node-version']);
+  assertCheck(report, 'node-version', 'fail', 'doctor.node_version.path_missing');
+});
+
+test('node-version: a node on PATH that prints nothing, or will not run, is not proof', async () => {
+  let fx = setup({ tools: { node: 'silent' } });
+  let r = await doctor(fx, ['--only', 'node-version']);
+  assertCheck(r.report, 'node-version', 'fail', 'doctor.node_version.path_unrecognised');
+  fx = setup({ tools: { node: 'broken' } });
+  r = await doctor(fx, ['--only', 'node-version']);
+  assertCheck(r.report, 'node-version', 'fail', 'doctor.node_version.path_failed');
 });
 
 test('node-version reads the running Node when nothing is injected', async () => {
@@ -553,7 +639,7 @@ test('state-dir-mode: fails when the state directory is not 0700', async () => {
   assert.equal(code, EXIT.FAILURE);
 });
 
-test('state-dir-mode: fails when the state directory is tighter than 0700 too, since it is not 0700', async () => {
+test('state-dir-mode: fails when the state directory is 0750, open to its group', async () => {
   const fx = setup({ dirMode: 0o750 });
   const { report } = await doctor(fx, ['--only', 'state-dir-mode']);
   assertCheck(report, 'state-dir-mode', 'fail', 'doctor.state_dir_mode.dir_mode');
@@ -765,6 +851,10 @@ test('gitignore-node-modules: passes with node_modules/ ignored, and with the ba
 // through the environment, never through the script's text, because it
 // carries both quote characters.
 
+// A case that git feeds on standard input reads it all first, as the real
+// git does, with the shell's own `read` (PATH holds no `cat`): a script
+// that exits without reading can make the writer see a broken pipe, and
+// the answer would then depend on timing.
 function scriptedGit(cases) {
   const lines = ['case "$1 $2" in'];
   for (const [match, body] of Object.entries(cases)) lines.push(`  "${match}") ${body};;`);
@@ -816,13 +906,13 @@ test('hooks-path: the scripted git answering like the real one passes, so the te
 });
 
 test('gitignore-node-modules: git printing the path back while exiting 1 is not ignored', async () => {
-  const fx = setup({ tools: { git: scriptedGit({ 'check-ignore --no-index': 'echo node_modules/; exit 1' }) } });
+  const fx = setup({ tools: { git: scriptedGit({ 'check-ignore -v': "while IFS= read -r _; do :; done; printf '%s\\000%s\\000%s\\000%s\\000' .gitignore 1 node_modules/ node_modules/; exit 1" }) } });
   const { report } = await doctor(fx, ['--only', 'gitignore-node-modules']);
   assertCheck(report, 'gitignore-node-modules', 'warn', 'doctor.gitignore_node_modules.not_ignored');
 });
 
 test('gitignore-node-modules: git printing the path back with exit 0 passes, so the test above isolates the status', async () => {
-  const fx = setup({ tools: { git: scriptedGit({ 'check-ignore --no-index': 'echo node_modules/; exit 0' }) } });
+  const fx = setup({ tools: { git: scriptedGit({ 'check-ignore -v': "while IFS= read -r _; do :; done; printf '%s\\000%s\\000%s\\000%s\\000' .gitignore 1 node_modules/ node_modules/; exit 0" }) } });
   const { report } = await doctor(fx, ['--only', 'gitignore-node-modules']);
   assertCheck(report, 'gitignore-node-modules', 'ok');
 });
@@ -859,6 +949,294 @@ test('claude-present: a relative PATH entry does not resolve claude, even from t
   const env = { ...fx.env, PATH: `.${delimiter}${delimiter}${fx.toolsDir}` };
   const { report } = await inDirectory(here, () => doctor(fx, ['--only', 'claude-present'], { env }));
   assertCheck(report, 'claude-present', 'warn', 'doctor.claude_present.not_found');
+});
+
+// --- fix round 1 ---------------------------------------------------------------
+
+test('every git probe ignores GIT_DIR: a vault with no hooksPath is not reported gated by another repository\'s', async () => {
+  const fx = setup({ hooksPath: null });
+  // Another repository, configured the way every brain-kit vault is.
+  const other = join(fx.base, 'other repo');
+  mkdirSync(other);
+  fixtureGit(other, ['init', '-q', '-b', 'main', '.'], fx.home);
+  fixtureGit(other, ['config', 'core.hooksPath', '.githooks'], fx.home);
+  const env = { ...fx.env, GIT_DIR: join(other, '.git') };
+  const { report, code } = await doctor(fx, ['--only', 'hooks-path,default-branch-known'], { env });
+  assertCheck(report, 'hooks-path', 'fail', 'doctor.hooks_path.unset');
+  assertCheck(report, 'default-branch-known', 'ok');
+  assert.equal(code, EXIT.FAILURE);
+});
+
+test('localGitVarNames adds what the installed git lists to the fixed list, and keeps the fixed list when git cannot answer', () => {
+  const dir = join(makeTempDir('brain-kit-doctor-gitenv-'), 'bin');
+  mkdirSync(dir);
+  writeScript(join(dir, 'git'), 'printf "GIT_DIR\\nGIT_SOMETHING_NEWER\\nnot-a-variable\\n"');
+  const names = localGitVarNames({ PATH: dir });
+  assert.ok(names.includes('GIT_SOMETHING_NEWER'));
+  assert.ok(!names.includes('not-a-variable'));
+  for (const name of LOCAL_GIT_VARS) assert.ok(names.includes(name), name);
+  const empty = join(makeTempDir('brain-kit-doctor-gitenv-'), 'bin');
+  mkdirSync(empty);
+  assert.deepEqual(localGitVarNames({ PATH: empty }), [...LOCAL_GIT_VARS]);
+});
+
+test('the template doctor compares against is the one init installs', () => {
+  assert.equal(SHIPPED_HOOK, TEMPLATE_HOOK);
+});
+
+test('every git probe ignores GIT_WORK_TREE and GIT_CONFIG_PARAMETERS too', async () => {
+  const fx = setup({ hooksPath: null });
+  const env = { ...fx.env, GIT_CONFIG_PARAMETERS: "'core.hookspath'='.githooks'", GIT_WORK_TREE: fx.base };
+  const { report } = await doctor(fx, ['--only', 'hooks-path'], { env });
+  assertCheck(report, 'hooks-path', 'fail', 'doctor.hooks_path.unset');
+});
+
+test('hooks-path: a vault one level below the top level with core.hooksPath .githooks points elsewhere, and fails the run', async () => {
+  const fx = setup({ nested: true });
+  assert.notEqual(realpathSync(fx.gitTop), realpathSync(fx.root));
+  const { report, code } = await doctor(fx, ['--only', 'hooks-path']);
+  assertCheck(report, 'hooks-path', 'fail', 'doctor.hooks_path.elsewhere');
+  assert.equal(code, EXIT.FAILURE);
+});
+
+test('hooks-path: a nested vault whose hooksPath points into the vault is not a working gate, and says why', async () => {
+  const fx = setup({ nested: true, hooksPath: `${VAULT_NAME}/.githooks` });
+  const { report, code } = await doctor(fx, ['--only', 'hooks-path']);
+  const c = assertCheck(report, 'hooks-path', 'fail', 'doctor.hooks_path.not_top_level');
+  assert.equal(c.params.top, realpathSync(fx.gitTop));
+  assert.match(c.message, /refuses every push/);
+  assert.equal(code, EXIT.FAILURE);
+});
+
+test('hooks-path: warns when the installed hook differs from the template this kit ships', async () => {
+  const fx = setup();
+  writeFileSync(join(fx.root, '.githooks', 'pre-push'), '#!/bin/sh\nexit 0\n');
+  const { report, code } = await doctor(fx, ['--only', 'hooks-path']);
+  const c = assertCheck(report, 'hooks-path', 'warn', 'doctor.hooks_path.differs');
+  assert.equal(c.params.template, TEMPLATE_HOOK);
+  assert.equal(code, EXIT.OK);
+});
+
+test('hooks-path: one byte of difference from the template is a difference', async () => {
+  const fx = setup();
+  writeFileSync(join(fx.root, '.githooks', 'pre-push'), `${readFileSync(TEMPLATE_HOOK, 'utf8')}\n`);
+  const { report } = await doctor(fx, ['--only', 'hooks-path']);
+  assertCheck(report, 'hooks-path', 'warn', 'doctor.hooks_path.differs');
+});
+
+test('brain-kit-on-path: fails when there is no brain-kit on PATH, since the hook then refuses every push', async () => {
+  const fx = setup({ tools: { brainKit: 'absent' } });
+  const { report, code } = await doctor(fx);
+  assertCheck(report, 'brain-kit-on-path', 'fail', 'doctor.brain_kit_on_path.missing');
+  assert.deepEqual(report.checks.filter((c) => c.status === 'fail').map((c) => c.id), ['brain-kit-on-path']);
+  assert.equal(code, EXIT.FAILURE);
+});
+
+test('brain-kit-on-path: a brain-kit that will not run, or answers with no version, fails', async () => {
+  let fx = setup({ tools: { brainKit: 'broken' } });
+  let r = await doctor(fx, ['--only', 'brain-kit-on-path']);
+  assertCheck(r.report, 'brain-kit-on-path', 'fail', 'doctor.brain_kit_on_path.failed');
+  fx = setup({ tools: { brainKit: 'silent' } });
+  r = await doctor(fx, ['--only', 'brain-kit-on-path']);
+  assertCheck(r.report, 'brain-kit-on-path', 'fail', 'doctor.brain_kit_on_path.unrecognised');
+  fx = setup({ tools: { brainKit: 'junk' } });
+  r = await doctor(fx, ['--only', 'brain-kit-on-path']);
+  assertCheck(r.report, 'brain-kit-on-path', 'fail', 'doctor.brain_kit_on_path.unrecognised');
+});
+
+test('brain-kit-on-path: the real launcher on PATH with no node on PATH cannot start, and fails', async () => {
+  const fx = setup({ tools: { node: 'absent' } });
+  const { report } = await doctor(fx, ['--only', 'brain-kit-on-path']);
+  assertCheck(report, 'brain-kit-on-path', 'fail', 'doctor.brain_kit_on_path.failed');
+});
+
+test('brain-kit-on-path: warns when the brain-kit on PATH is another version than the one running', async () => {
+  const fx = setup({ tools: { brainKit: 'other' } });
+  const { report, code } = await doctor(fx, ['--only', 'brain-kit-on-path']);
+  const c = assertCheck(report, 'brain-kit-on-path', 'warn', 'doctor.brain_kit_on_path.other_version');
+  assert.equal(c.params.version, '9.9.9');
+  assert.equal(code, EXIT.OK);
+});
+
+test('brain-kit-on-path: passes with this checkout\'s launcher on PATH, naming it', async () => {
+  const fx = setup();
+  const { report } = await doctor(fx, ['--only', 'brain-kit-on-path']);
+  const c = assertCheck(report, 'brain-kit-on-path', 'ok', 'doctor.brain_kit_on_path.ok');
+  assert.equal(c.params.bin, join(fx.toolsDir, 'brain-kit'));
+  assert.equal(c.params.version, kitVersion());
+});
+
+test('state-dir-mode: a state directory at 0577 is not 0700, even though it is numerically below it', async () => {
+  const fx = setup({ dirMode: 0o577 });
+  const { report, code } = await doctor(fx, ['--only', 'state-dir-mode']);
+  const c = assertCheck(report, 'state-dir-mode', 'fail', 'doctor.state_dir_mode.dir_mode');
+  assert.equal(c.params.mode, '0577');
+  assert.equal(code, EXIT.FAILURE);
+});
+
+test('state-dir-mode: a machine.json at 0577 is not 0600, even though it is numerically below it', async () => {
+  const fx = setup({ fileMode: 0o577 });
+  const { report, code } = await doctor(fx, ['--only', 'state-dir-mode']);
+  const c = assertCheck(report, 'state-dir-mode', 'fail', 'doctor.state_dir_mode.file_mode');
+  assert.equal(c.params.mode, '0577');
+  assert.equal(code, EXIT.FAILURE);
+});
+
+test('claude-present: claude_bin naming git or node answers with a version but is not claude', async () => {
+  for (const name of ['git', 'node']) {
+    const fx = setup({ machine: { claude_bin: name } });
+    const { report } = await doctor(fx, ['--only', 'claude-present']);
+    assertCheck(report, 'claude-present', 'warn', 'doctor.claude_present.unrecognised');
+  }
+});
+
+// A claude stand-in that leaves a mark when it is executed, so a test can
+// prove it was NOT.
+function markingClaude(fx) {
+  const mark = join(fx.base, 'claude-was-run');
+  const bin = join(fx.base, 'marking bin');
+  mkdirSync(bin);
+  writeScript(join(bin, 'claude'), `: > "$CLAUDE_MARK"\necho "1.2.3 (Claude Code)"`);
+  const env = { ...fx.env, CLAUDE_MARK: mark, PATH: `${bin}${delimiter}${fx.toolsDir}` };
+  return { mark, env };
+}
+
+test('claude-present: the marking stand-in is run when machine.json is valid and private, so the tests below mean something', async () => {
+  const fx = setup({ tools: { claude: 'absent' } });
+  const { mark, env } = markingClaude(fx);
+  const { report } = await doctor(fx, ['--only', 'claude-present'], { env });
+  assertCheck(report, 'claude-present', 'ok');
+  assert.equal(existsSync(mark), true);
+});
+
+test('claude-present: never executes claude_bin from a machine.json the kit would refuse', async () => {
+  const fx = setup({ tools: { claude: 'absent' }, machine: { vault_id: 'Not Valid' } });
+  const { mark, env } = markingClaude(fx);
+  const { report } = await doctor(fx, ['--only', 'claude-present'], { env });
+  assertCheck(report, 'claude-present', 'warn', 'doctor.claude_present.machine_invalid');
+  assert.equal(existsSync(mark), false);
+});
+
+test('claude-present: never executes claude_bin when machine.json can be written by group or others', async () => {
+  for (const fileMode of [0o620, 0o602]) {
+    const fx = setup({ tools: { claude: 'absent' }, fileMode });
+    const { mark, env } = markingClaude(fx);
+    const { report } = await doctor(fx, ['--only', 'claude-present'], { env });
+    assertCheck(report, 'claude-present', 'warn', 'doctor.claude_present.machine_writable');
+    assert.equal(existsSync(mark), false);
+  }
+});
+
+test('claude-present: never executes claude_bin when the state directory can be written by group or others', async () => {
+  const fx = setup({ tools: { claude: 'absent' }, dirMode: 0o770 });
+  const { mark, env } = markingClaude(fx);
+  const { report } = await doctor(fx, ['--only', 'claude-present'], { env });
+  assertCheck(report, 'claude-present', 'warn', 'doctor.claude_present.machine_writable');
+  assert.equal(existsSync(mark), false);
+});
+
+test('claude-present: a relative claude_bin with a slash is resolved from the vault, not from the working directory', async () => {
+  const fx = setup({ tools: { claude: 'absent' }, machine: { claude_bin: 'tools/claude' } });
+  mkdirSync(join(fx.root, 'tools'));
+  writeScript(join(fx.root, 'tools', 'claude'), SCRIPTS.claude.ok);
+  const { report } = await doctor(fx, ['--only', 'claude-present']);
+  const c = assertCheck(report, 'claude-present', 'ok', 'doctor.claude_present.ok');
+  assert.equal(c.params.bin, join(fx.root, 'tools', 'claude'));
+});
+
+test('config-valid: a secret pattern that does not compile fails, naming it', async () => {
+  const config = baseConfig();
+  config.privacy.secret_patterns = ['acme-[0-9]{8}', '(unclosed'];
+  const fx = setup({ config });
+  const { report, code } = await doctor(fx, ['--only', 'config-valid']);
+  const c = assertCheck(report, 'config-valid', 'fail', 'doctor.config_valid.pattern');
+  assert.deepEqual(c.params.patterns, ['(unclosed']);
+  assert.match(c.message, /\(unclosed/);
+  assert.equal(code, EXIT.FAILURE);
+});
+
+test('config-valid: secret patterns that all compile pass', async () => {
+  const config = baseConfig();
+  config.privacy.secret_patterns = ['acme-[0-9]{8}'];
+  const fx = setup({ config });
+  const { report } = await doctor(fx, ['--only', 'config-valid']);
+  assertCheck(report, 'config-valid', 'ok');
+});
+
+test('default-branch-known: an origin/HEAD pointing at another remote\'s branch is not origin\'s default', async () => {
+  const fx = setup({ originHead: null });
+  fixtureGit(fx.root, ['update-ref', 'refs/remotes/upstream/main', 'HEAD'], fx.home);
+  fixtureGit(fx.root, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/upstream/main'], fx.home);
+  const { report } = await doctor(fx, ['--only', 'default-branch-known']);
+  assertCheck(report, 'default-branch-known', 'warn', 'doctor.default_branch_known.unrecognised');
+});
+
+test('default-branch-known: an origin/HEAD whose branch names a blob, not a commit, is dangling', async () => {
+  const fx = setup({ originHead: null });
+  writeFileSync(join(fx.base, 'blob.txt'), 'not a commit\n');
+  const blob = fixtureGit(fx.root, ['hash-object', '-w', join(fx.base, 'blob.txt')], fx.home).stdout.trim();
+  fixtureGit(fx.root, ['update-ref', 'refs/remotes/origin/main', blob], fx.home);
+  fixtureGit(fx.root, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'], fx.home);
+  const { report } = await doctor(fx, ['--only', 'default-branch-known']);
+  assertCheck(report, 'default-branch-known', 'warn', 'doctor.default_branch_known.dangling');
+});
+
+test('gitignore-node-modules: ignored only in .git/info/exclude warns that the protection does not travel', async () => {
+  const fx = setup({ gitignore: '' });
+  writeFileSync(join(fx.root, '.git', 'info', 'exclude'), 'node_modules/\n');
+  const { report, code } = await doctor(fx, ['--only', 'gitignore-node-modules']);
+  const c = assertCheck(report, 'gitignore-node-modules', 'warn', 'doctor.gitignore_node_modules.local_only');
+  assert.equal(c.params.source, '.git/info/exclude');
+  assert.equal(code, EXIT.OK);
+});
+
+test('gitignore-node-modules: a global excludes file named .gitignore, outside the vault, does not travel either', async () => {
+  const fx = setup({ gitignore: '' });
+  const global = join(fx.home, '.gitignore');
+  writeFileSync(global, 'node_modules/\n');
+  writeFileSync(fx.env.GIT_CONFIG_GLOBAL, `[core]\n\texcludesFile = ${global}\n`);
+  const { report } = await doctor(fx, ['--only', 'gitignore-node-modules']);
+  assertCheck(report, 'gitignore-node-modules', 'warn', 'doctor.gitignore_node_modules.local_only');
+});
+
+test('gitignore-node-modules: a valid-looking answer from a git that exits 2 is not proof', async () => {
+  const fx = setup({ tools: { git: scriptedGit({ 'check-ignore -v': "while IFS= read -r _; do :; done; printf '%s\\000%s\\000%s\\000%s\\000' .gitignore 1 node_modules/ node_modules/; exit 2" }) } });
+  const { report } = await doctor(fx, ['--only', 'gitignore-node-modules']);
+  assertCheck(report, 'gitignore-node-modules', 'warn', 'doctor.gitignore_node_modules.unknown');
+});
+
+test('gitignore-node-modules: node_modules/ in .gitignore with files under it already committed still warns, since ignoring does not untrack', async () => {
+  const fx = setup({ gitignore: '' });
+  mkdirSync(join(fx.root, 'node_modules', 'pkg'), { recursive: true });
+  writeFileSync(join(fx.root, 'node_modules', 'pkg', 'index.js'), 'x\n');
+  fixtureGit(fx.root, ['add', 'node_modules'], fx.home);
+  fixtureGit(fx.root, ['commit', '-q', '-m', 'deps'], fx.home);
+  writeFileSync(join(fx.root, '.gitignore'), 'node_modules/\n');
+  const { report, code } = await doctor(fx, ['--only', 'gitignore-node-modules']);
+  const c = assertCheck(report, 'gitignore-node-modules', 'warn', 'doctor.gitignore_node_modules.tracked');
+  assert.equal(c.params.count, 1);
+  assert.equal(code, EXIT.OK);
+});
+
+test('gitignore-node-modules: a git that cannot list the index is not proof nothing is tracked', async () => {
+  const fx = setup({ tools: { git: scriptedGit({
+    'check-ignore -v': "while IFS= read -r _; do :; done; printf '%s\\000%s\\000%s\\000%s\\000' .gitignore 1 node_modules/ node_modules/; exit 0",
+    '--literal-pathspecs ls-files': 'exit 128',
+  }) } });
+  const { report } = await doctor(fx, ['--only', 'gitignore-node-modules']);
+  assertCheck(report, 'gitignore-node-modules', 'warn', 'doctor.gitignore_node_modules.unknown');
+});
+
+test('gitignore-node-modules: an answer naming another path, or no source, is not proof', async () => {
+  let fx = setup({ tools: { git: scriptedGit({ 'check-ignore -v': "while IFS= read -r _; do :; done; printf '%s\\000%s\\000%s\\000%s\\000' .gitignore 1 node_modules/ elsewhere/; exit 0" }) } });
+  let r = await doctor(fx, ['--only', 'gitignore-node-modules']);
+  assertCheck(r.report, 'gitignore-node-modules', 'warn', 'doctor.gitignore_node_modules.unknown');
+  fx = setup({ tools: { git: scriptedGit({ 'check-ignore -v': "while IFS= read -r _; do :; done; printf '%s\\000%s\\000%s\\000%s\\000' '' 1 node_modules/ node_modules/; exit 0" }) } });
+  r = await doctor(fx, ['--only', 'gitignore-node-modules']);
+  assertCheck(r.report, 'gitignore-node-modules', 'warn', 'doctor.gitignore_node_modules.unknown');
+  fx = setup({ tools: { git: scriptedGit({ 'check-ignore -v': "while IFS= read -r _; do :; done; printf '%s\\000%s\\000%s\\000%s\\000' .gitignore 1 node_modules/ node_modules/; exit 0" }) } });
+  r = await doctor(fx, ['--only', 'gitignore-node-modules']);
+  assertCheck(r.report, 'gitignore-node-modules', 'ok', 'doctor.gitignore_node_modules.ok');
 });
 
 // --- the recurring shape -----------------------------------------------------
@@ -993,7 +1371,7 @@ test('the human report names every check, its status and message, and a summary 
   assert.ok(out.includes(fx.root));
   for (const id of CHECK_IDS) assert.match(out, new RegExp(`\\b${id}\\b`));
   assert.match(out, /warn\s+gh-present/);
-  assert.match(out, /11 ok, 1 warn, 0 fail/);
+  assert.match(out, /12 ok, 1 warn, 0 fail/);
 });
 
 test('the Portuguese pack renders the report', async () => {
