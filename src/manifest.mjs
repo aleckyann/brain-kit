@@ -19,8 +19,18 @@ import { SUPPORTED_LANGS } from './lang.mjs';
 //
 // `lang` is the language the vault was installed or adopted in: the
 // skeleton init wrote from, or the language adopt inferred the
-// configuration in. Optional, so a manifest written before it existed
-// still reads.
+// configuration in. It is fixed from then on: `update` refuses to refresh
+// managed files when the configuration's `lang` no longer matches it,
+// since refreshing them from the other language's skeleton would rewrite
+// every untouched contract file into text whose links point at folders
+// the vault does not have. Optional, so a manifest written before it
+// existed still reads.
+//
+// `sha256` is the hash of the file's bytes with every CRLF read as LF, so
+// a checkout that converts line endings still reads as untouched. init
+// writes LF, where the two are the same bytes. update compares managed
+// files only; a seeded file's hash (every file adopt records) is never
+// compared with anything.
 //
 // readManifest THROWS on every way the file can fail to be a real
 // manifest: missing, unreadable, empty, not JSON, or not this shape,

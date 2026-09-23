@@ -64,6 +64,16 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   it. The manifest records the vault's language at its top level (optional, so an older
   manifest still reads). `validate` now refuses a `privacy.confidential_field` that names no
   declared boolean extension, since a misspelt one silently switched the privacy rule off.
+- `brain-kit update [dir] [--check | --accept <path>]` refreshes the files the kit manages
+  (the root contract files and the hook) by checksum: one you have not edited is replaced
+  with this kit's version; one you edited is never overwritten, and a newer version is
+  written beside it as `<name>.brain-kit-new`; your notes are never touched. `--accept`
+  records that you have dealt with an offered version, or that you removed a managed file on
+  purpose. Line endings are compared as LF and kept as each file has them. It refuses,
+  writing nothing, a manifest it cannot read or write safely, a kit older than the
+  configuration's `kit_version`, and a `lang` that is not the language the vault was made
+  in (the language the manifest records); after a run it sets `kit_version` to the running
+  kit's. A new vault's `.gitignore` ignores offered and temporary files.
 - The default output language of every command now follows the locale (`LC_ALL`, then
   `LC_MESSAGES`, then `LANG`; a value starting with `pt` is Portuguese) and falls back to
   English; it used to be Portuguese unless `BRAIN_KIT_LANG` said otherwise. `BRAIN_KIT_LANG`

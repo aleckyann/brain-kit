@@ -254,7 +254,7 @@ export function writeVault(target, { lang, stamp, files, ledger = [] }) {
   chmodSync(hook, 0o755);
   entries.push({ path: HOOK_PATH, sha256: sha256Of(readFileSync(hook)), class: 'managed' });
 
-  const manifest = { files: entries };
+  const manifest = { lang, files: entries };
   writeNew(ledger, join(target, MANIFEST_PATH), serializeManifest(manifest));
   return manifest;
 }

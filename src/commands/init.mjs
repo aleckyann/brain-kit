@@ -226,6 +226,10 @@ function gitignoreText(t) {
     '*.swp',
     '*~',
     '',
+    `# ${t('init.gitignore_update')}`,
+    '*.brain-kit-new',
+    '.*.brain-kit-tmp-*',
+    '',
   ].join('\n');
 }
 

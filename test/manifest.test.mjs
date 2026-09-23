@@ -106,9 +106,14 @@ test('lang is optional at the top level, and must be a supported language when p
   for (const lang of ['en', 'pt-BR']) {
     const root = rootWith(JSON.stringify({ lang, ...sample() }));
     assert.equal(readManifest(root).lang, lang);
+    // and writeManifest writes it, reading back exactly.
+    const written = makeTempDir('brain-kit-manifest-');
+    writeManifest(written, { lang, ...sample() });
+    assert.deepEqual(readManifest(written), { lang, ...sample() });
   }
   assert.equal(readManifest(rootWith(JSON.stringify(sample()))).lang, undefined, 'a manifest without lang still reads');
-  for (const bad of ['fr', '', null, 1]) {
+  for (const bad of ['fr', '', null, 1, ['en']]) {
     assert.throws(() => readManifest(rootWith(JSON.stringify({ lang: bad, ...sample() }))), /\$\.lang: must be one of en, pt-BR|\$\.lang: must be one of pt-BR, en/, String(bad));
+    assert.throws(() => writeManifest(makeTempDir('brain-kit-manifest-'), { lang: bad, ...sample() }), ManifestError, String(bad));
   }
 });
