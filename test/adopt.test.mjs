@@ -1363,11 +1363,14 @@ test('the ruling on inferConfig: an ignored folder holding a note leaves no trac
   const file = join(copy.base, 'answers.json');
   writeFileSync(file, `${JSON.stringify(ANSWERS['pt-BR'], null, 2)}\n`);
   const r = brainKit(['init', '--adopt', copy.vault, '--from-answers', file], { env, cwd: copy.cwd });
-  // The lint that follows adopt still walks the filesystem and finds the
-  // ignored note's marker outside every confidential directory: a verdict
-  // on the terminal, never written anywhere (see the sweep in the fix
-  // report). The adoption itself is written.
-  assert.equal(r.status, EXIT.FAILURE, r.stdout + r.stderr);
+  // The validate and lint that follow adopt read what git publishes
+  // (task 6 of slice 1C, src/file-set.mjs), so the ignored note's marker,
+  // outside every confidential directory, is never read and fails
+  // nothing. It used to: both checks walked the folder, and this run
+  // exited 1 over a note that never leaves the machine. Each says it left
+  // the two ignored files unread, and neither names them.
+  assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
+  assert.equal((r.stdout.match(/2 arquivo\(s\) da pasta que o git n.o publicaria/g) ?? []).length, 2, r.stdout);
   const configText = readFileSync(join(copy.vault, CONFIG_FILENAME), 'utf8');
   const manifestText = readFileSync(join(copy.vault, MANIFEST_PATH), 'utf8');
   const inferences = r.stdout.split('\n').filter((line) => line.startsWith('  - ')).join('\n');
@@ -1377,9 +1380,9 @@ test('the ruling on inferConfig: an ignored folder holding a note leaves no trac
     assert.ok(!manifestText.includes(trace), `${trace} is in the manifest`);
     assert.ok(!inferences.includes(trace), `${trace} was printed as an inference`);
   }
-  // Without the marker, the ignored note draws only warnings, which do not
-  // refuse a push.
-  writeFileSync(join(copy.vault, 'privado', 'carla-dias-diagnostico.md'), note('diagnostico', 'situacao: grave\n'));
+  // And the push gate, which runs both checks on every push, lets the
+  // branch out with the ignored note still carrying its marker: one note
+  // git ignores no longer refuses every push.
   commitAll(copy.vault, 'adopt brain-kit', ['brain-kit.config.json', '.brain-kit/manifest.json', '.githooks/pre-push'], { ...env });
   const bare = join(copy.base, 'origin.git');
   assert.equal(spawnSync('git', ['init', '-q', '--bare', bare]).status, 0);

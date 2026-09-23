@@ -924,7 +924,11 @@ const linkStyle = {
 //   doubled as a break-every-link-into-here switch, because one walk fed
 //   both the ignore filter and the existence set. It is still worth
 //   saying, because a link into skipped territory is a link this tool
-//   cannot vouch for, but it is a different sentence.
+//   cannot vouch for, but it is a different sentence. Inside a git
+//   repository a file git would not publish is unwalked the same way
+//   (src/file-set.mjs), and the same sentence names that reason too: the
+//   link works on the owner's disk and breaks for everyone the push
+//   reaches.
 
 const linkTargetExists = {
   id: 'link-target-exists',

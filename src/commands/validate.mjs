@@ -31,6 +31,7 @@ import { extname, join, resolve } from 'node:path';
 import { EXIT } from '../exit-codes.mjs';
 import { CONFIG_FILENAME, loadConfig } from '../config.mjs';
 import { findVaultRoot } from '../vault.mjs';
+import { fileSetMessage, listPublishable, noteFileSet } from '../file-set.mjs';
 import { decodeBytes } from '../io.mjs';
 import { MAX_SCAN_BYTES } from '../leak.mjs';
 import { createTranslator, REFERENCE_LANG } from '../lang.mjs';
@@ -423,8 +424,9 @@ function renderVerdict(t, { must, should, house, unexpected, stale, hasBlocking,
   return t('validate.verdict_blocking');
 }
 
-function renderReport(t, { must, should, house, unexpected, stale, onlyProblems, hasBlocking, failOn }) {
+function renderReport(t, { must, should, house, unexpected, stale, onlyProblems, hasBlocking, failOn, fileSetLine }) {
   const lines = [];
+  if (fileSetLine !== null) lines.push(fileSetLine, '');
   lines.push(...renderDefectSection(t, unexpected));
   lines.push(...renderGroup(t, 'must', must, onlyProblems));
   lines.push(...renderGroup(t, 'should', should, onlyProblems));
@@ -443,7 +445,14 @@ function renderReport(t, { must, should, house, unexpected, stale, onlyProblems,
 // hand-built `combined`, including a shape no real rule can currently
 // produce (the unexpected-level case), without spawning the real binary
 // or making either ruler misbehave first.
-export function buildReport(combined, stale, { onlyProblems = false, t, failOn = FAIL_ON_DEFAULT }) {
+//
+// `fileSet` (task 6 of slice 1C) is which set this run judged, git's list
+// of what the vault publishes or the folder walk (src/file-set.mjs), with
+// `noteCount` the markdown notes in it. The text report opens with one
+// line saying so, and the JSON carries it as `fileSet`. Optional, so a
+// test of the partition alone need not invent one; runValidate always
+// passes it.
+export function buildReport(combined, stale, { onlyProblems = false, t, failOn = FAIL_ON_DEFAULT, fileSet = null, noteCount = 0 }) {
   const { must, should, house, unexpected } = partitionFindings(combined);
   // The SAME predicate drives the exit code and the verdict line,
   // computed from the PARTITIONED buckets (fix round 2), not from raw
@@ -463,7 +472,11 @@ export function buildReport(combined, stale, { onlyProblems = false, t, failOn =
   const warnings = should.filter((f) => f.warning).length;
   const counts = { must: must.length, should: should.length, house: house.length, unexpected: unexpected.length, warnings };
   const json = { version: JSON_VERSION, findings: combined, stale, counts, parserLimits: PARSER_LIMITS, rulers: RULERS, failOn, blocking: hasBlocking };
-  const text = renderReport(t, { must, should, house, unexpected, stale, onlyProblems, hasBlocking, failOn });
+  if (fileSet !== null) {
+    json.fileSet = { source: fileSet.source, reason: fileSet.reason ?? null, notes: noteCount, unpublished: fileSet.unpublished };
+  }
+  const fileSetLine = fileSet === null ? null : fileSetMessage(t, fileSet, noteCount);
+  const text = renderReport(t, { must, should, house, unexpected, stale, onlyProblems, hasBlocking, failOn, fileSetLine });
   return { text, json, exitCode: hasBlocking ? EXIT.FAILURE : EXIT.OK };
 }
 
@@ -528,7 +541,22 @@ export async function runValidate(argv, io, t, walkVault) {
   // views handed to both rulers below come from this ONE result, never
   // a second walk, so the two rulers can never disagree about what the
   // vault contains (src/vault.mjs's own header, defect 4).
-  const all = walkVault(root, config, { all: true });
+  //
+  // Task 6 of slice 1C: inside a git repository that ONE set is the walk's
+  // files git publishes (src/file-set.mjs), so a note git ignores never
+  // fails the run that the adopter's push gate makes on every push. The
+  // walk is still made once, and git is asked once. When git cannot
+  // produce its list, this command refuses rather than judge the folder
+  // in its place: a set nobody enumerated is not the one the gate is
+  // asking about, and a silent fallback is how the secrets rule once came
+  // to read one.
+  const walked = walkVault(root, config, { all: true });
+  const fileSet = noteFileSet(walked, listPublishable(root));
+  if (fileSet.failure) {
+    io.stderr.write(`${reportT('validate.file_set_failed', { status: fileSet.failure.status })}\n`);
+    return EXIT.FAILURE;
+  }
+  const all = fileSet.files;
   const files = all.filter(isMarkdown);
   const context = { root, config, all: new Set(all), readFile: makeReadFile(root) };
 
@@ -541,6 +569,8 @@ export async function runValidate(argv, io, t, walkVault) {
     onlyProblems: parsed.onlyProblems,
     t: reportT,
     failOn: config?.validate?.fail_on ?? FAIL_ON_DEFAULT,
+    fileSet,
+    noteCount: files.length,
   });
 
   if (parsed.json) {

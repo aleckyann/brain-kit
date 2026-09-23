@@ -432,6 +432,124 @@ test('readEntries returns undefined when the block does not open with an entry m
   assert.deepEqual(readEntries(withMarker, 'sources'), [{ resource: '/docs/example.md' }]);
 });
 
+// --- readEntries: a list of inline mappings, the format's own 5.2 shape ------
+//
+// The Open Knowledge Format's section 5.2 writes `verified` as a block list
+// whose entries are inline mappings. The reader used to split each entry on
+// its first colon like a block field, so the format's own example came back
+// as one key named "{ by" per entry. The first test holds that example
+// VERBATIM, copied from the canonical SPEC.md, beside the block form of the
+// same two events.
+
+const SPEC_5_2_VERIFIED = [
+  'verified:',
+  '  - { by: human:ahormati, at: 2026-06-25T09:00:00Z }',
+  '  - { by: process:finance-nightly, at: 2026-06-26T02:00:00Z }',
+].join('\n');
+
+const SPEC_5_2_VERIFIED_BLOCK = [
+  'verified:',
+  '  - by: human:ahormati',
+  '    at: 2026-06-25T09:00:00Z',
+  '  - by: process:finance-nightly',
+  '    at: 2026-06-26T02:00:00Z',
+].join('\n');
+
+const SPEC_5_2_EVENTS = [
+  { by: 'human:ahormati', at: '2026-06-25T09:00:00Z' },
+  { by: 'process:finance-nightly', at: '2026-06-26T02:00:00Z' },
+];
+
+test('readEntries reads the format\x27s own section 5.2 example, a list of inline mappings, exactly as it reads the block form of the same events', () => {
+  assert.deepEqual(readEntries(SPEC_5_2_VERIFIED, 'verified'), SPEC_5_2_EVENTS);
+  assert.deepEqual(readEntries(SPEC_5_2_VERIFIED_BLOCK, 'verified'), SPEC_5_2_EVENTS);
+});
+
+test('readEntries reads an inline entry with quoted values, a comma inside a quote, a trailing comment, and an empty mapping, and mixes inline and block entries in one list', () => {
+  const frontmatter = [
+    'verified:',
+    '  - { by: "human:ana", at: \x272026-06-25T09:00:00Z\x27, note: "checked, twice" } # the owner',
+    '  - {}',
+    '  - by: process:nightly',
+    '    at: 2026-06-26T02:00:00Z',
+  ].join('\n');
+  assert.deepEqual(readEntries(frontmatter, 'verified'), [
+    { by: 'human:ana', at: '2026-06-25T09:00:00Z', note: 'checked, twice' },
+    {},
+    { by: 'process:nightly', at: '2026-06-26T02:00:00Z' },
+  ]);
+});
+
+test('readEntries declines, for the whole field, every inline entry it cannot read whole, rather than returning a key nobody wrote', () => {
+  const shapes = {
+    'a brace that never closes on its line': '  - { by: human:ana,\n      at: 2026-06-25T09:00:00Z }',
+    'a nested mapping as a value': '  - { by: { name: ana }, at: 2026-06-25T09:00:00Z }',
+    'a nested list as a value': '  - { by: [human:ana], at: 2026-06-25T09:00:00Z }',
+    'text after the closing brace': '  - { by: human:ana } at: 2026-06-25T09:00:00Z',
+    'a comment with no space before it': '  - { by: human:ana }# note',
+    'field lines under an inline entry': '  - { by: human:ana }\n    at: 2026-06-25T09:00:00Z',
+    'a pair with no colon': '  - { human-ana }',
+  };
+  for (const [name, entry] of Object.entries(shapes)) {
+    const frontmatter = `verified:\n  - { by: human:ok, at: 2026-06-24T09:00:00Z }\n${entry}`;
+    assert.equal(readEntries(frontmatter, 'verified'), undefined, name);
+  }
+  // Control: the first entry alone, which every shape above extends, reads.
+  assert.deepEqual(readEntries('verified:\n  - { by: human:ok, at: 2026-06-24T09:00:00Z }', 'verified'), [{ by: 'human:ok', at: '2026-06-24T09:00:00Z' }]);
+});
+
+test('readEntries declines a block entry line that is not a field, instead of splitting it on its first colon', () => {
+  // A brace opening a continuation line used to come back as a key "{a";
+  // a colon not followed by whitespace is not a YAML key separator, and
+  // "- https://example.com" used to come back as a key "https".
+  assert.equal(readEntries('sources:\n  - resource: /a.md\n    { a: 1 }', 'sources'), undefined);
+  assert.equal(readEntries('sources:\n  - resource: /a.md\n    [a: 1]', 'sources'), undefined);
+  assert.equal(readEntries('sources:\n  - https://example.com/page', 'sources'), undefined);
+  // Controls: a field whose VALUE holds colons, a field with an empty
+  // value, and a field whose value is an inline mapping are read as before.
+  assert.deepEqual(readEntries('sources:\n  - resource: https://example.com/page\n    author: human:ana', 'sources'), [{ resource: 'https://example.com/page', author: 'human:ana' }]);
+  assert.deepEqual(readEntries('sources:\n  - resource: /a.md\n    title:', 'sources'), [{ resource: '/a.md', title: '' }]);
+  assert.deepEqual(readEntries('sources:\n  - resource: /a.md\n    usage_window: { from: 2026-06-01T00:00:00Z, to: 2026-06-30T00:00:00Z }', 'sources'), [{ resource: '/a.md', usage_window: '{ from: 2026-06-01T00:00:00Z, to: 2026-06-30T00:00:00Z }' }]);
+});
+
+test('readEntries reads a field with nested lines under it as undefined, never folding them into the entry, and keeps reading the entry\x27s other fields', () => {
+  // A nested "by:" under an event's own "note:" used to replace the event's
+  // "by", and a nested list's items used to become entries of their own.
+  const nestedMapping = 'verified:\n  - by: human:ana\n    note:\n      by: process:other\n    at: 2026-06-25T09:00:00Z';
+  const events = readEntries(nestedMapping, 'verified');
+  assert.equal(events.length, 1);
+  assert.equal(events[0].by, 'human:ana');
+  assert.equal(events[0].at, '2026-06-25T09:00:00Z');
+  assert.ok(Object.hasOwn(events[0], 'note') && events[0].note === undefined, 'the nested field is present and unreadable');
+
+  const nestedList = 'sources:\n  - resource: /a.md\n    tags:\n      - x\n      - y\n  - resource: /b.md';
+  const sources = readEntries(nestedList, 'sources');
+  assert.equal(sources.length, 2);
+  assert.equal(sources[0].resource, '/a.md');
+  assert.ok(Object.hasOwn(sources[0], 'tags') && sources[0].tags === undefined);
+  assert.deepEqual(sources[1], { resource: '/b.md' });
+
+  const folded = readEntries('sources:\n  - resource: /a.md\n    title: a long title\n      folded onto a second line', 'sources');
+  assert.equal(folded[0].resource, '/a.md');
+  assert.ok(Object.hasOwn(folded[0], 'title') && folded[0].title === undefined);
+});
+
+test('readEntries reads fields that start on the line after a bare marker, and declines a field indented less than the first one or a line back at the markers', () => {
+  assert.deepEqual(readEntries('sources:\n  -\n    resource: /a.md\n    id: a', 'sources'), [{ resource: '/a.md', id: 'a' }]);
+  assert.deepEqual(readEntries('sources:\n  - resource: /a.md\n    id: a', 'sources'), [{ resource: '/a.md', id: 'a' }]);
+  assert.equal(readEntries('sources:\n  - resource: /a.md\n   id: a', 'sources'), undefined);
+  assert.equal(readEntries('sources:\n  - resource: /a.md\n  id: a', 'sources'), undefined);
+  assert.equal(readEntries('sources:\n    - resource: /a.md\n  - resource: /b.md', 'sources'), undefined);
+  // A bare marker whose next line is back at the markers is not an entry
+  // with that line as its field.
+  assert.equal(readEntries('sources:\n  -\n  resource: /a.md', 'sources'), undefined);
+});
+
+test('readEntries reads a bare marker with nothing under it as an empty entry, beside the entries around it', () => {
+  assert.deepEqual(readEntries('sources:\n  -\n  - resource: /a.md', 'sources'), [{}, { resource: '/a.md' }]);
+  assert.deepEqual(readEntries('sources:\n  - resource: /a.md\n  -', 'sources'), [{ resource: '/a.md' }, {}]);
+});
+
 // --- escaped quotes inside an inline mapping or list value -------------------
 
 // A backslash before a quote is not treated as an escape (PARSER_LIMITS).

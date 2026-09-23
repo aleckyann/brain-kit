@@ -59,10 +59,11 @@ import { existsSync, lstatSync, statSync } from 'node:fs';
 import { join, posix, resolve } from 'node:path';
 import { EXIT } from '../exit-codes.mjs';
 import { CONFIG_FILENAME, loadConfig } from '../config.mjs';
-import { findVaultRoot, hasDotSegment, isUnderPath } from '../vault.mjs';
+import { findVaultRoot, isUnderPath } from '../vault.mjs';
+import { fileSetMessage, listPublishable, noteFileSet } from '../file-set.mjs';
 import { createTranslator, REFERENCE_LANG } from '../lang.mjs';
 import { LINT_RULES, runLintRules, severityFor } from '../rules/lint.mjs';
-import { KNOWN_BASES, addedLines, changedPaths, publishablePaths, resolveBase } from '../git.mjs';
+import { KNOWN_BASES, addedLines, changedPaths, resolveBase } from '../git.mjs';
 import { isMarkdown, makeReadFile, makeScanFile } from './validate.mjs';
 
 const ROOT_INDEX = 'index.md';
@@ -216,18 +217,10 @@ function makeWorkingTreeCheck(root) {
   };
 }
 
-// Asks git once, and turns a failure into a value rather than an escape:
-// a listing git could not produce is reported by the rule as a defect,
-// never allowed to abort the other seven rules. Neither git's own message
-// nor the command line is kept, only the exit status, so no absolute path
-// can ride out on it.
-function listPublishable(root) {
-  try {
-    return { listed: publishablePaths(root) };
-  } catch (error) {
-    return { failure: { status: error.status ?? null } };
-  }
-}
+// The listing itself is src/file-set.mjs's listPublishable (task 6 of
+// slice 1C): asked once per run, a failure turned into a value, and the
+// same answer the note rules' own set is drawn from, so the secrets rule
+// and the other seven can never read two different lists of one vault.
 
 // Builds the set from the listing (or its failure) and the one walk this
 // run made. Exported so the rule's own tests can build the context this
@@ -253,6 +246,7 @@ export function buildSecretScan(root, config, { listing, walked }) {
   }
   if (listing.listed === null) {
     scan.source = 'walk';
+    scan.reason = listing.reason ?? 'outside-repo';
     for (const path of walked) {
       if (isExcluded(path)) scan.excluded.push(path);
       else scan.files.push(path);
@@ -466,7 +460,13 @@ function renderVerdict(t, { errors, warnings, defects, skippedIds, linesRestrict
 // counting it as an ordinary "error" would fail the run for the WRONG
 // reason and let the true error count silently include a result this
 // tool itself does not vouch for.
-export function buildReport(findings, { t, base, fileCount, skippedIds, restrictedTo = [], ignoredPaths = [], secretScan = null }) {
+//
+// `fileSet` (task 6 of slice 1C) is the set the note rules read, git's
+// list or the folder walk (src/file-set.mjs). The text report says which,
+// right under the scope line, and the JSON carries it as `fileSet`.
+// Optional, so a test of the grouping alone need not invent one; runLint
+// always passes it.
+export function buildReport(findings, { t, base, fileCount, skippedIds, restrictedTo = [], ignoredPaths = [], secretScan = null, fileSet = null }) {
   const defects = findings.filter((f) => f.defect === true);
   const errors = findings.filter((f) => f.defect !== true && f.severity === 'error');
   const warnings = findings.filter((f) => f.defect !== true && f.severity === 'warn');
@@ -494,6 +494,8 @@ export function buildReport(findings, { t, base, fileCount, skippedIds, restrict
     skipped: skippedIds,
     restrictedTo,
     ignoredPaths,
+    // What the note rules read (null when the caller did not say).
+    fileSet: fileSet === null ? null : { source: fileSet.source, reason: fileSet.reason ?? null, notes: fileCount, unpublished: fileSet.unpublished },
     // What the secrets rule read, or that it did not run at all: the same
     // facts the text report's own secrets lines state, for a consumer
     // that reads this instead.
@@ -515,6 +517,7 @@ export function buildReport(findings, { t, base, fileCount, skippedIds, restrict
 
   const lines = [];
   lines.push(scopeMessage(t, base));
+  if (fileSet !== null) lines.push(fileSetMessage(t, fileSet, fileCount));
   // The secrets rule's own reach, printed whenever that rule RAN and never
   // when it did not (final fix round 2: it used to be printed always, so
   // a vault with `lint.secrets: "off"` was told every file is scanned
@@ -529,6 +532,7 @@ export function buildReport(findings, { t, base, fileCount, skippedIds, restrict
   const secretsRead = secretScan !== null && secretScan.failure === null;
   if (secretsRead) {
     if (secretScan.source === 'git') lines.push(t('lint.secrets_reach_git', { count: secretScan.files.length }));
+    else if (secretScan.reason === 'vault-not-listed') lines.push(t('lint.secrets_reach_walk_vault_not_listed', { count: secretScan.files.length }));
     else lines.push(t('lint.secrets_reach_walk', { count: secretScan.files.length }));
   }
   // `validate.ignore_paths`, said out loud whenever it is in force, and
@@ -669,16 +673,24 @@ export async function runLint(argv, io, t, walkVault) {
   // before anything is read, so a run that does not use it pays nothing
   // for its set, and the one walk below asks for dot-entries only when
   // that set is going to be the walk's (outside a git repository).
+  //
+  // Task 6 of slice 1C: git's list is asked for on EVERY run now, once,
+  // because the seven rules that read notes judge it too (src/file-set.mjs):
+  // inside a repository they read the walk's files git publishes, so a
+  // note git ignores never fails the run the adopter's push gate makes on
+  // every push. The secrets rule and the note rules read the same listing,
+  // so the two can never disagree about what this vault publishes.
   const restrictedConfig = buildRestrictedConfig(config, parsed.ruleIds);
   const secretsRule = LINT_RULES.find((rule) => rule.scansEveryFile === true);
   const secretsRuns = severityFor(secretsRule, restrictedConfig) !== 'off';
-  const listing = secretsRuns ? listPublishable(root) : null;
-  const walkDotEntries = listing !== null && listing.listed === null;
+  const listing = listPublishable(root);
+  const walkDotEntries = secretsRuns && listing.listed === null;
   const walked = walkVault(root, config, { all: true, dotEntries: walkDotEntries });
-  // One walk, two views: the validator's own walk is exactly this one
-  // with every dot-path dropped (src/vault.mjs, hasDotSegment), so the
-  // seven rules that read notes see what they always saw.
-  const all = walked.filter((path) => !hasDotSegment(path));
+  // One walk, two views: the note rules' set is this walk with every
+  // dot-path dropped, narrowed to what git publishes inside a repository;
+  // the secrets rule's set is buildSecretScan's.
+  const fileSet = noteFileSet(walked, listing);
+  const all = fileSet.files;
   const files = all.filter(isMarkdown);
   const secretScan = secretsRuns ? buildSecretScan(root, config, { listing, walked }) : null;
 
@@ -748,6 +760,25 @@ export async function runLint(argv, io, t, walkVault) {
   };
 
   const findings = runLintRules(files, context, scope);
+  // A listing git could not produce leaves the note rules reading the walk
+  // (src/file-set.mjs), which can hold files git ignores. That is a run
+  // this tool cannot vouch for, so it is a defect, and the run is degraded
+  // whether or not the secrets rule (which reports the same failure for
+  // its own set) ran at all.
+  if (fileSet.failure) {
+    findings.push({
+      ruler: 'lint',
+      id: 'file-set',
+      check: 'publishable-list-failed',
+      severity: 'error',
+      defect: true,
+      file: null,
+      line: null,
+      absence: false,
+      messageKey: 'lint.tool_defect.note_set_list_failed',
+      params: { status: fileSet.failure.status },
+    });
+  }
 
   const { text, json, exitCode } = buildReport(findings, {
     t: reportT,
@@ -757,6 +788,7 @@ export async function runLint(argv, io, t, walkVault) {
     restrictedTo: parsed.ruleIds,
     ignoredPaths: Array.isArray(config?.validate?.ignore_paths) ? config.validate.ignore_paths : [],
     secretScan,
+    fileSet,
   });
 
   if (parsed.json) {

@@ -125,6 +125,17 @@ Nothing below is on npm yet. It runs from a clone of the repository.
 - `machine.json` no longer names a lock or a snapshot path (`paths.lock` and
   `paths.snapshot` are gone from the schema and from what `init` writes); an older file
   carrying them still reads, and the two keys are ignored.
+- Inside a git repository, `validate` and every `lint` rule read what git publishes
+  (tracked files, plus untracked files git does not ignore), the list the `secrets` rule
+  already read, so a note git ignores no longer fails them and no longer refuses every push
+  through the adopter's gate. Outside a repository they read the folder, as before, and
+  each run says which of the two it read. A vault inside a repository that ignores it whole
+  is read from the folder, since that repository's list does not describe it; when git
+  cannot produce its list, `validate` exits 1 without judging anything and `lint` is
+  degraded.
+- The frontmatter reader reads a `verified` (or `sources`) list whose entries are inline
+  mappings, the form the format's own section 5.2 uses, so a conformant note written that
+  way no longer reports its `by` and `at` missing.
 
 ## 0.0.1 (published on npm on 18/09/2026)
 

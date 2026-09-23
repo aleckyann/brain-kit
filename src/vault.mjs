@@ -263,8 +263,11 @@ export function walkVault(root, config = {}, { all = false, dotEntries = false }
 // - 'unwalked'  the path is a real file on disk that this walk did not
 //               return: it is under validate.ignore_paths, or under a
 //               dot-entry or node_modules, or it is a symlink pointing
-//               outside the vault. It EXISTS, and a consumer must say so
-//               in those words rather than claim it is missing.
+//               outside the vault, or (inside a git repository, where
+//               the set a command hands down is the walk narrowed to
+//               what git publishes, src/file-set.mjs) git would not
+//               publish it. It EXISTS, and a consumer must say so in
+//               those words rather than claim it is missing.
 // - 'absent'    nothing is there.
 // - 'outside'   the path climbs out of the vault, so it is not a vault
 //               path at all and is never stat'd.

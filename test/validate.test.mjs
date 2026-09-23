@@ -44,6 +44,8 @@ import { walkVault } from '../src/vault.mjs';
 import { MAX_SCAN_BYTES } from '../src/leak.mjs';
 import { runValidate, buildReport, partitionFindings, isMarkdown, makeReadFile, makeScanFile, computeStale } from '../src/commands/validate.mjs';
 import { makeVault } from './helpers/vault-fixture.mjs';
+import { git as repoGit } from './helpers/git-repo.mjs';
+import { listPublishable, noteFileSet } from '../src/file-set.mjs';
 
 const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
 
@@ -1242,4 +1244,153 @@ test('makeScanFile\'s own ceiling is the one both gates share, and a file that c
   const root = makeVault({ files: { 'index.md': '# Index\n' } });
   assert.equal(makeScanFile(root)('index.md').maxBytes, MAX_SCAN_BYTES);
   assert.throws(() => makeScanFile(root)('missing.md'), (err) => err.code === 'ENOENT');
+});
+
+// --- task 6 of slice 1C: inside a repository, what git publishes ------------
+//
+// The adopter's push gate runs validate on every push. It used to judge
+// the folder walk whatever git said, so one note git ignores (a local
+// draft, never pushed) failed it and refused every push. Inside a
+// repository the set is now the walk's files git publishes
+// (src/file-set.mjs); outside one it is still the walk. Each test pairs
+// the ignored note with the same note somewhere it must still be read.
+
+const IGNORED_DRAFT = '---\nconfidential: true\n---\n# A local draft\n'; // no type: a must finding wherever it is read
+
+function publishedVault(extraFiles = {}, config = { lang: 'en' }) {
+  return makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': CLEAN_PERSON, ...extraFiles }, config });
+}
+
+function initRepo(root) {
+  repoGit(root, ['init', '-q', '-b', 'main']);
+  repoGit(root, ['add', '-A']);
+  repoGit(root, ['commit', '-q', '-m', 'initial']);
+}
+
+test('inside a repository, a note git ignores fails nothing, and the run says it read git\'s list and left one file unread', () => {
+  const root = publishedVault({ '.gitignore': 'drafts/\n', 'drafts/local.md': IGNORED_DRAFT });
+  initRepo(root);
+  const result = run([root]);
+  assert.equal(result.status, EXIT.OK, result.stdout);
+  assert.doesNotMatch(result.stdout, /drafts\//);
+  assert.match(result.stdout, /^Read 3 note\(s\) from git's list of what this vault publishes: .*; 1 file\(s\) in the folder that git would not publish/);
+  const json = JSON.parse(run([root, '--json']).stdout);
+  assert.deepEqual(json.fileSet, { source: 'git', reason: null, notes: 3, unpublished: 1 });
+});
+
+test('the same ignored note fails the run outside a repository, where the walk is the set, and the run says so', () => {
+  const root = publishedVault({ '.gitignore': 'drafts/\n', 'drafts/local.md': IGNORED_DRAFT });
+  const result = run([root]);
+  assert.equal(result.status, EXIT.FAILURE, result.stdout);
+  assert.match(result.stdout, /drafts\/local\.md {2}type-required/);
+  assert.match(result.stdout, /^Read 4 note\(s\) from the folder walk: this is not a git repository/);
+  assert.deepEqual(JSON.parse(run([root, '--json']).stdout).fileSet, { source: 'walk', reason: 'outside-repo', notes: 4, unpublished: 0 });
+});
+
+test('inside a repository, an untracked note git does not ignore is published, so it is read and fails the run', () => {
+  const root = publishedVault();
+  initRepo(root);
+  writeFileSync(join(root, 'people', 'new.md'), IGNORED_DRAFT);
+  const result = run([root]);
+  assert.equal(result.status, EXIT.FAILURE, result.stdout);
+  assert.match(result.stdout, /people\/new\.md {2}type-required/);
+  assert.match(result.stdout, /^Read 4 note\(s\) from git's list of what this vault publishes: every file it tracks, plus every untracked file it does not ignore\.$/m);
+});
+
+test('a vault inside a repository that ignores it whole is judged by its walk, since git\'s list does not describe it, and the run says so', () => {
+  // A home directory kept under git with everything ignored, or a tree
+  // extracted into an ignored directory: git lists nothing and exits 0,
+  // and a set drawn from that list would judge nothing and pass.
+  const outer = makeTempDir('brain-kit-validate-outer-');
+  repoGit(outer, ['init', '-q', '-b', 'main']);
+  writeFileSync(join(outer, '.gitignore'), '*\n');
+  const root = publishedVault({ 'drafts/local.md': IGNORED_DRAFT });
+  const inner = join(outer, 'vault');
+  fs.cpSync(root, inner, { recursive: true });
+  const result = run([inner]);
+  assert.equal(result.status, EXIT.FAILURE, result.stdout);
+  assert.match(result.stdout, /drafts\/local\.md {2}type-required/);
+  assert.match(result.stdout, /^Read 4 note\(s\) from the folder walk: this vault sits inside a git repository whose list .* does not carry the vault's own index\.md/);
+});
+
+test('when git cannot list what the vault publishes, validate judges nothing, exits 1 and says why, rather than judge the folder in its place', () => {
+  const root = publishedVault({ '.gitignore': 'drafts/\n', 'drafts/local.md': IGNORED_DRAFT });
+  initRepo(root);
+  writeFileSync(join(root, '.git', 'index'), 'not an index');
+  const result = run([root]);
+  assert.equal(result.status, EXIT.FAILURE);
+  assert.equal(result.stdout, '');
+  assert.match(result.stderr, /git could not list the files this vault publishes \(git exited \d+\), so validate judged nothing/);
+});
+
+test('a published note linking to a file git ignores is told the target exists but is not published, never that it is missing', () => {
+  const linking = CLEAN_PERSON.replace('# Ana\n', '# Ana\n\n[the scan](../attachments/scan.pdf)\n');
+  const root = publishedVault({ 'people/ana.md': linking, '.gitignore': 'attachments/\n', 'attachments/scan.pdf': 'x' });
+  initRepo(root);
+  const result = run([root]);
+  assert.equal(result.status, EXIT.FAILURE, result.stdout);
+  assert.match(result.stdout, /people\/ana\.md:\d+ {2}link-target-exists {2}link target "\.\.\/attachments\/scan\.pdf" exists on disk .* or git would not publish it/);
+  // Outside a repository the same link resolves.
+  const outside = publishedVault({ 'people/ana.md': linking, 'attachments/scan.pdf': 'x' });
+  assert.equal(run([outside]).status, EXIT.OK);
+});
+
+test('noteFileSet: git\'s list narrows the walk and never widens it; the walk alone outside a repository; a failed listing carries the walk and the failure', () => {
+  const walked = ['.env', 'index.md', 'people/a.md', 'drafts/b.md', 'attachments/x.pdf'];
+  const listed = { files: ['.env', 'index.md', 'people/a.md', 'attachments/x.pdf', 'people/not-walked.md'], gitlinks: [], embedded: [], undecodable: [] };
+  assert.deepEqual(noteFileSet(walked, { listed }), { source: 'git', files: ['index.md', 'people/a.md', 'attachments/x.pdf'], unpublished: 1 });
+  assert.deepEqual(noteFileSet(walked, { listed: null, reason: 'outside-repo' }), { source: 'walk', reason: 'outside-repo', files: ['index.md', 'people/a.md', 'drafts/b.md', 'attachments/x.pdf'], unpublished: 0 });
+  assert.deepEqual(noteFileSet(walked, { failure: { status: 128 } }), { source: 'walk', reason: 'listing-failed', failure: { status: 128 }, files: ['index.md', 'people/a.md', 'drafts/b.md', 'attachments/x.pdf'], unpublished: 0 });
+});
+
+test('listPublishable: a list without the vault\'s own index.md is not a list of this vault; outside a repository and a failure are said apart', () => {
+  const listed = (files) => () => ({ files, gitlinks: [], embedded: [], undecodable: [] });
+  assert.deepEqual(listPublishable('/x', { list: listed(['index.md', 'a.md']) }).listed.files, ['index.md', 'a.md']);
+  assert.deepEqual(listPublishable('/x', { list: listed(['a.md', 'sub/index.md']) }), { listed: null, reason: 'vault-not-listed' });
+  assert.deepEqual(listPublishable('/x', { list: listed([]) }), { listed: null, reason: 'vault-not-listed' });
+  assert.deepEqual(listPublishable('/x', { list: () => null }), { listed: null, reason: 'outside-repo' });
+  const failing = () => { throw Object.assign(new Error('git ls-files failed'), { status: 128 }); };
+  assert.deepEqual(listPublishable('/x', { list: failing }), { failure: { status: 128 } });
+});
+
+// --- task 6 of slice 1C: the format's own section 5.2 example ---------------
+//
+// Section 5.2 of the Open Knowledge Format writes `verified` as a list of
+// inline mappings. The reader used to misread each entry, so validate
+// reported every conformant note written that way with its `by` and `at`
+// missing. The example is copied VERBATIM from the canonical SPEC.md,
+// beside the block form of the same events; neither yields a finding.
+
+test('a note carrying the specification\'s own section 5.2 example, verbatim, and one carrying the block form of it, both pass with no finding', () => {
+  const head = [
+    '---',
+    'type: note',
+    'description: a note verified the way section 5.2 writes it',
+    'generated: { by: reference_agent/gemini-2.5-pro, at: 2026-06-20T22:53:05Z }',
+  ];
+  const inline = [
+    ...head,
+    'verified:',
+    '  - { by: human:ahormati, at: 2026-06-25T09:00:00Z }',
+    '  - { by: process:finance-nightly, at: 2026-06-26T02:00:00Z }',
+    '---',
+    '# Inline',
+    '',
+  ].join('\n');
+  const block = [
+    ...head,
+    'verified:',
+    '  - by: human:ahormati',
+    '    at: 2026-06-25T09:00:00Z',
+    '  - by: process:finance-nightly',
+    '    at: 2026-06-26T02:00:00Z',
+    '---',
+    '# Block',
+    '',
+  ].join('\n');
+  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': CLEAN_PERSON, 'notes/inline.md': inline, 'notes/block.md': block }, config: { lang: 'en' } });
+  const result = run([root, '--json']);
+  const json = JSON.parse(result.stdout);
+  assert.deepEqual(json.findings, [], result.stdout);
+  assert.equal(result.status, EXIT.OK);
 });

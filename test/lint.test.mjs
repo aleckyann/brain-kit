@@ -18,7 +18,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, cpSync, mkdirSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
@@ -1472,4 +1472,70 @@ test('a configured pattern saved in another encoding still matches: the configur
   const result = run(['--base', 'all', root]);
   assert.equal(result.status, EXIT.FAILURE, `${result.stdout}${result.stderr}`);
   assert.deepEqual(secretLines(result.stdout), ['people/ana.md:5']);
+});
+
+// --- task 6 of slice 1C: the note rules read what git publishes -------------
+//
+// Every rule but `secrets` used to walk the folder inside a repository, so
+// a note git ignores failed them, and since the adopter's push gate runs
+// lint on every push, one ignored note refused every push. They now read
+// the walk's files git publishes (src/file-set.mjs), the same listing the
+// secrets rule reads; outside a repository, the walk as before.
+
+const CONFIDENTIAL_DRAFT = '---\nconfidential: true\n---\n# A local draft\n';
+
+test('inside a repository, an ignored note that would fail the privacy rule fails nothing, and the run says it read git\'s list', () => {
+  const root = makeGitVault({ files: { ...cleanFiles(), '.gitignore': 'drafts/\n' }, config: NO_DOUBLE_COUNT_CONFIG });
+  mkdirSync(join(root, 'drafts'));
+  writeFileSync(join(root, 'drafts', 'local.md'), CONFIDENTIAL_DRAFT);
+  const result = run(['--base', 'all', root]);
+  assert.equal(result.status, EXIT.OK, result.stdout);
+  assert.doesNotMatch(result.stdout, /drafts\//);
+  assert.match(result.stdout, /^Read 3 note\(s\) from git's list of what this vault publishes: .*; 1 file\(s\) in the folder that git would not publish/m);
+  assert.deepEqual(JSON.parse(run(['--base', 'all', root, '--json']).stdout).fileSet, { source: 'git', reason: null, notes: 3, unpublished: 1 });
+  // The same with the secrets rule not running: git's list is asked for
+  // on every run, not only when the secrets rule needs it.
+  const privacyOnly = run(['--base', 'all', '--rule', 'privacy', root]);
+  assert.equal(privacyOnly.status, EXIT.OK, privacyOnly.stdout);
+  assert.match(privacyOnly.stdout, /^Read 3 note\(s\) from git's list/m);
+});
+
+test('the same note fails the privacy rule outside a repository, and inside one once git would publish it', () => {
+  const outside = makeVault({ files: { ...cleanFiles(), '.gitignore': 'drafts/\n', 'drafts/local.md': CONFIDENTIAL_DRAFT }, config: NO_DOUBLE_COUNT_CONFIG });
+  const walked = run(['--base', 'all', outside]);
+  assert.equal(walked.status, EXIT.FAILURE, walked.stdout);
+  assert.match(walked.stdout, /drafts\/local\.md:2 {2}privacy/);
+  assert.match(walked.stdout, /^Read 4 note\(s\) from the folder walk: this is not a git repository/m);
+
+  const root = makeGitVault({ files: cleanFiles(), config: NO_DOUBLE_COUNT_CONFIG });
+  mkdirSync(join(root, 'drafts'));
+  writeFileSync(join(root, 'drafts', 'local.md'), CONFIDENTIAL_DRAFT); // untracked, not ignored: git would add it
+  const published = run(['--base', 'all', root]);
+  assert.equal(published.status, EXIT.FAILURE, published.stdout);
+  assert.match(published.stdout, /drafts\/local\.md:2 {2}privacy/);
+});
+
+test('when git cannot list what the vault publishes and the secrets rule does not run, the note rules still report from the walk, and the run is degraded, never clean', () => {
+  const root = makeGitVault({ files: { ...cleanFiles(), 'people/ghost.md': GHOST }, config: NO_DOUBLE_COUNT_CONFIG });
+  writeFileSync(join(root, '.git', 'index'), 'not an index');
+  const result = run(['--base', 'all', '--rule', 'orphans', root]);
+  assert.equal(result.status, EXIT.DEGRADED, `${result.stdout}${result.stderr}`);
+  assert.match(result.stdout, /\(no file\) {2}file-set {2}git could not list the files this vault publishes \(git exited \d+\), so the note rules read the folder walk in its place/);
+  assert.match(result.stdout, /people\/ghost\.md {2}orphans/);
+  assert.match(result.stdout, /^Read 4 note\(s\) from the folder walk, which can include files git ignores/m);
+});
+
+test('a vault inside a repository that ignores it whole is read from its walk by every rule, the secrets rule included, and the run says why', () => {
+  const outer = makeTempDir('brain-kit-lint-outer-');
+  assert.equal(spawnSync('git', ['init', '-q', '-b', 'main', outer]).status, 0);
+  writeFileSync(join(outer, '.gitignore'), '*\n');
+  const inner = join(outer, 'vault');
+  const source = makeVault({ files: { ...cleanFiles(), 'drafts/local.md': CONFIDENTIAL_DRAFT, '.env': `${SECRET_LINE}\n` }, config: NO_DOUBLE_COUNT_CONFIG });
+  cpSync(source, inner, { recursive: true });
+  const result = run(['--base', 'all', inner]);
+  assert.equal(result.status, EXIT.FAILURE, result.stdout);
+  assert.match(result.stdout, /drafts\/local\.md:2 {2}privacy/);
+  assert.match(result.stdout, /^\.env:1 {2}secrets/m);
+  assert.match(result.stdout, /^Read 4 note\(s\) from the folder walk: this vault sits inside a git repository/m);
+  assert.match(result.stdout, /The secrets rule is never narrowed by the scope above: git's list of what this repository publishes does not carry this vault's own index\.md/);
 });

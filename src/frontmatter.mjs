@@ -473,9 +473,26 @@ function readBlockList(lines, keyLineIndex) {
 // requiring one level here would reject the only shape this function
 // exists to read.
 //
+// An entry may also be ONE inline mapping on its marker's own line
+// ("- { by: human:ana, at: 2026-06-25T09:00:00Z }"), which is how the
+// format's own section 5.2 writes `verified`. It used to be split on its
+// first colon like a block field, so the example came back as one key
+// named "{ by" and every conformant note written that way was reported
+// with its `by` and `at` missing. Such an entry is read by the same
+// inline reader readMapping uses, and only when it is the whole entry:
+// the brace closes on that line, nothing follows it but a comment, no
+// field line continues it, and none of its values is itself a mapping or
+// a list. Anything else is a shape this reader does not guess at, and the
+// whole field is undefined (PARSER_LIMITS).
+//
+// Inside an entry, a line indented deeper than the entry's fields belongs
+// to the field above it (see readBlockEntry): that one field reads as
+// undefined, and the entry's other fields are still read.
+//
 // null means the key is absent. undefined means it is present but is not
-// this shape at all: an inline value on the key's own line, or a block
-// whose first line is not an entry marker.
+// this shape at all: an inline value on the key's own line, a block
+// whose first line is not an entry marker, a line that is not a field, or
+// an inline entry outside the one form described above.
 export function readEntries(frontmatter, key) {
   const lines = (frontmatter ?? '').split('\n');
   const found = findKeyLine(lines, key);
@@ -485,34 +502,105 @@ export function readEntries(frontmatter, key) {
   const block = collectBlock(lines, found.index);
   if (block.length === 0) return [];
 
+  // Each line keeps its indentation, because indentation is what says
+  // whether a line is a new entry, a field of the current entry, or
+  // something nested under one of its fields. The entries' own markers sit
+  // at the block's first indentation; a marker deeper than that is an item
+  // of a list nested inside an entry, never an entry of this list.
+  const markerIndent = indentOf(block[0]);
   const rawEntries = [];
   let current = null;
   for (const line of block) {
-    const trimmed = line.slice(indentOf(line));
-    if (isEntryMarker(trimmed)) {
+    const indent = indentOf(line);
+    const trimmed = line.slice(indent);
+    if (indent === markerIndent && isEntryMarker(trimmed)) {
+      const afterDash = afterMarker(trimmed);
       current = [];
       rawEntries.push(current);
-      const afterDash = afterMarker(trimmed).trim();
-      if (afterDash !== '') current.push(afterDash);
-    } else if (current) {
-      current.push(trimmed);
+      if (afterDash.trim() !== '') current.push({ indent: indent + trimmed.length - afterDash.length, text: afterDash.trim() });
+    } else if (current && indent > markerIndent) {
+      current.push({ indent, text: trimmed });
     } else {
-      return undefined; // a continuation line before any entry marker was seen
+      return undefined; // a line before any entry marker, or back at (or left of) the markers without being one
     }
   }
 
   const entries = [];
   for (const rawLines of rawEntries) {
-    const entry = {};
-    for (const line of rawLines) {
-      const pair = splitFirstColon(line);
-      if (!pair) return undefined;
-      const [entryKey, entryValue] = pair;
-      entry[entryKey] = unquote(entryValue);
+    if (rawLines.length > 0 && rawLines[0].text.startsWith('{')) {
+      if (rawLines.length > 1) return undefined; // an inline entry continued by further lines: neither form
+      const inline = readInlineEntry(rawLines[0].text);
+      if (inline === undefined) return undefined;
+      entries.push(inline);
+      continue;
     }
+    const entry = readBlockEntry(rawLines);
+    if (entry === undefined) return undefined;
     entries.push(entry);
   }
   return entries;
+}
+
+// One entry written as fields, one per line, all at the indentation of
+// its first field. A line indented deeper than that belongs to the field
+// above it: a nested mapping or list, or a plain value folded onto a
+// further line. This reader does not read either, so that one FIELD is
+// undefined (present, in a shape this reader cannot see), and the entry's
+// other fields are still read. It used to fold the nested lines into the
+// entry as fields of its own, so a nested "by:" under an event's "note:"
+// replaced the event's own "by". A line indented less than the first
+// field, but still inside the entry, is no shape at all, and the whole
+// list is undefined.
+function readBlockEntry(rawLines) {
+  const entry = {};
+  if (rawLines.length === 0) return entry;
+  const fieldIndent = rawLines[0].indent;
+  let lastKey = null;
+  for (const { indent, text } of rawLines) {
+    // Never on the first line, which sets fieldIndent, so lastKey is
+    // always the field just above.
+    if (indent > fieldIndent) {
+      entry[lastKey] = undefined;
+      continue;
+    }
+    if (indent < fieldIndent) return undefined;
+    const pair = entryFieldPair(text);
+    if (!pair) return undefined;
+    const [entryKey, entryValue] = pair;
+    entry[entryKey] = unquote(entryValue);
+    lastKey = entryKey;
+  }
+  return entry;
+}
+
+// One "field: value" line of a block entry, split on its first colon, or
+// null when the line is not a field at all. Two shapes used to be split
+// anyway and handed back as a key nobody wrote: a line opening with a
+// brace or a bracket (an inline collection where a field was expected,
+// read as a key named "{a"), and a line whose first colon is not followed
+// by whitespace or the end of the line, which in YAML is not a key
+// separator ("- https://example.com" read as a key "https"). Both now
+// decline the whole field, the same answer every other shape this reader
+// cannot see gets.
+function entryFieldPair(line) {
+  if (line.startsWith('{') || line.startsWith('[')) return null;
+  const colon = line.indexOf(':');
+  if (colon === -1 || !/^(?:[ \t]|$)/.test(line.slice(colon + 1))) return null;
+  return splitFirstColon(line);
+}
+
+// One list entry written as an inline mapping, the text after its "- "
+// marker. Read only when the mapping is the whole entry: what follows the
+// closing brace may be a YAML comment (a "#" after whitespace) and nothing
+// else, since text after it is not part of the mapping and reading past it
+// would hand back a value the entry does not hold. readInlineMapping
+// already declines a nested value, and reads only up to the closing
+// brace. A brace that never closes (close is -1) leaves the whole text as
+// the tail, which opens with the brace itself and so never passes.
+function readInlineEntry(text) {
+  const close = findMatchingClose(text, '{', '}');
+  if (!/^(?:[ \t]+#.*)?$/.test(text.slice(close + 1))) return undefined;
+  return readInlineMapping(text);
 }
 
 // --- frontmatterKeyLine -----------------------------------------------------
@@ -570,4 +658,6 @@ export const PARSER_LIMITS = Object.freeze([
   'A backslash before a quote inside an inline mapping or list is not an escape: an even count of quote characters still finds the closing brace or bracket and reads the value whole, backslash included; an odd count never finds it, and readMapping or readList returns undefined instead of a truncated value.',
   'A plain value folded across indented continuation lines, with no "|" or ">" marker, is not joined back together, whether the key line is left empty or already carries the first line of the value: readScalar returns undefined either way instead of an empty string or a truncated first line.',
   'A hash preceded by a space inside an UNQUOTED scalar value starts a YAML comment: readScalar strips it and returns the shortened value, correct per the format, which can still surprise a value meant to hold a literal "#" unquoted.',
+  'A field of a readEntries entry with lines indented deeper than the entry\'s fields under it (a nested mapping or list, or a folded value) is not read: that field is undefined in the entry, and the entry\'s other fields are still read.',
+  'readEntries reads a list entry written as one inline mapping only when it closes on its own line with nothing after it but a comment, holds no nested value and has no field lines under it; any other inline entry, and an inline list of mappings on the key line, returns undefined for the whole field.',
 ]);
