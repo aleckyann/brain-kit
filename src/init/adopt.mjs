@@ -11,7 +11,7 @@ import { DAYS_IN_MONTH, isLeapYear, isValidCalendarDate, isValidIsoDate } from '
 import { stripCode } from '../markdown.mjs';
 import { DEFAULT_CONFIDENTIAL_FIELD, LINT_RULES, findFirstTableHeader } from '../rules/lint.mjs';
 import { isMarkdown, makeReadFile } from '../commands/validate.mjs';
-import { MANIFEST_PATH, serializeManifest, sha256Of } from '../manifest.mjs';
+import { MANIFEST_PATH, serializeManifest } from '../manifest.mjs';
 import { writeNew } from './skeleton.mjs';
 
 // `brain-kit init --adopt`: an EXISTING vault brought under the kit by
@@ -25,9 +25,9 @@ import { writeNew } from './skeleton.mjs';
 //                       is a decision made for them);
 //   buildAdoptionManifest / writeAdoption
 //                       the manifest (every existing file git would
-//                       publish, `seeded`, so `update` never touches one
-//                       of them) and the two files adopt writes into the
-//                       vault.
+//                       publish, `seeded` and without a hash, so `update`
+//                       never touches one of them) and the two files adopt
+//                       writes into the vault.
 //
 // The one rule this module is built around: adopt never creates, edits,
 // renames or deletes a content file. The only paths this module writes
@@ -480,29 +480,28 @@ export function inferConfig(root, { lang }) {
 // the manifest's top level as init records the language it installed.
 //
 // WHAT IS LISTED. Adopt tells the person to commit this manifest, so it
-// must never name a file they kept out of git: a path and a hash in it
-// are published with it, and an unsalted sha256 of a short secret (a
-// `.env` holding one password) is recovered by a dictionary. Inside a
-// repository the list is what git tracks plus what it would add, `git
-// ls-files --cached --others --exclude-standard` run from the vault root
-// (paths relative to it, and only below it), the same set the linter's
-// `secrets` rule reads (src/git.mjs, publishablePaths); an ignored file is
-// never read and never named. Of those, only a regular file, or a link to
-// a regular file inside the vault, is recorded, as the walk records them:
-// a tracked file deleted from the working tree, a submodule, a link out of
-// the vault are not files of this vault. Outside a repository nothing is
-// ignored, and the vault is walked: every file, dot-entries included,
-// `.git` never.
+// must never name a file they kept out of git. The list is what git
+// tracks plus what it would add, `git ls-files --cached --others
+// --exclude-standard` run from the vault root (paths relative to it, and
+// only below it), the same set the linter's `secrets` rule reads
+// (src/git.mjs, publishablePaths); an ignored file is never named. Of
+// those, only a regular file, or a link to a regular file inside the
+// vault, is recorded, as the walk records them: a tracked file deleted
+// from the working tree, a submodule, a link out of the vault or to a
+// directory are not files of this vault.
 //
-// A vault that looks like a repository (a `.git` in it or above it) whose
-// git cannot answer is a refusal, never a walk: the walk would read every
-// file the person ignored.
+// NO HASH. A seeded entry carries none (src/manifest.mjs): update never
+// reads one, and a hash in a committed manifest publishes a digest of the
+// person's content. So adopt never reads a file to record it.
+//
+// ONLY IN A REPOSITORY. A vault is a repository by definition (the kit
+// works only through pull requests), and there the ignore rules are asked
+// of git rather than reimplemented. The command refuses a directory that
+// is not in one before anything is written (adoptRepositoryState); this
+// function throws on one as a second line, never walks it.
 export function buildAdoptionManifest(root, { lang, env = process.env }) {
   const files = adoptionPaths(root, env).filter((path) => path !== CONFIG_FILENAME && path !== MANIFEST_PATH);
-  return {
-    lang,
-    files: files.map((path) => ({ path, sha256: sha256Of(readFileSync(join(root, ...path.split('/')))), class: 'seeded' })),
-  };
+  return { lang, files: files.map((path) => ({ path, class: 'seeded' })) };
 }
 
 function insideGitWorkTree(dir) {
@@ -512,13 +511,26 @@ function insideGitWorkTree(dir) {
   }
 }
 
+function adoptGitEnv(env) {
+  return { ...withoutLocalGitVars(env, localGitVarNames(env)), GIT_OPTIONAL_LOCKS: '0' };
+}
+
+// 'repository' when git says `root` is inside a working tree; 'none' when
+// it is not and no `.git` sits in it or above it, the case adopt refuses
+// with the way to make it one; 'broken' when something looks like a
+// repository and git cannot answer, with git's own words in `detail`.
+export function adoptRepositoryState(root, env = process.env) {
+  const inside = run('git', ['rev-parse', '--is-inside-work-tree'], { cwd: root, env: adoptGitEnv(env) });
+  if (inside.status === 0 && inside.stdout.trim() === 'true') return { state: 'repository' };
+  if (insideGitWorkTree(root)) return { state: 'broken', detail: inside.stderr.trim() || `exit ${inside.status}` };
+  return { state: 'none' };
+}
+
 function adoptionPaths(root, env) {
-  const gitEnv = { ...withoutLocalGitVars(env, localGitVarNames(env)), GIT_OPTIONAL_LOCKS: '0' };
-  const inside = run('git', ['rev-parse', '--is-inside-work-tree'], { cwd: root, env: gitEnv });
-  if (inside.status !== 0 || inside.stdout.trim() !== 'true') {
-    if (insideGitWorkTree(root)) throw new Error(`git could not read the repository this vault is in (${inside.stderr.trim() || `exit ${inside.status}`})`);
-    return walkVault(root, {}, { all: true, dotEntries: true });
-  }
+  const gitEnv = adoptGitEnv(env);
+  const repository = adoptRepositoryState(root, env);
+  if (repository.state === 'broken') throw new Error(`git could not read the repository this vault is in (${repository.detail})`);
+  if (repository.state !== 'repository') throw new Error('this vault is not in a git repository');
   const listed = run('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { cwd: root, env: gitEnv, encoding: 'buffer', maxBuffer: 256 * 1024 * 1024 });
   if (listed.status !== 0) throw new Error(`git ls-files failed: ${String(listed.stderr).trim()}`);
   const rootReal = realpathSync(root);

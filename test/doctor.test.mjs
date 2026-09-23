@@ -172,7 +172,7 @@ function setup({
   if (manifest !== null) {
     mkdirSync(join(root, '.brain-kit'));
     const text = manifest === 'valid'
-      ? JSON.stringify({ lang: config.lang, files: [{ path: 'index.md', sha256: 'a'.repeat(64), class: 'seeded' }] }, null, 2)
+      ? JSON.stringify({ lang: config.lang, files: [{ path: 'index.md', class: 'seeded' }, { path: '.githooks/pre-push', sha256: 'a'.repeat(64), class: 'managed' }] }, null, 2)
       : manifest;
     writeFileSync(join(root, '.brain-kit', 'manifest.json'), text);
   }
@@ -488,8 +488,20 @@ test('manifest-valid: fails when the manifest is missing, and when it cannot be 
   assertCheck(r.report, 'manifest-valid', 'fail', 'doctor.manifest_valid.unreadable');
 });
 
+test('manifest-valid: accepts the shape init and adopt write (no hash on a seeded entry) and an older one with seeded hashes, and fails a managed entry with none', async () => {
+  let fx = setup();
+  let r = await doctor(fx, ['--only', 'manifest-valid']);
+  assertCheck(r.report, 'manifest-valid', 'ok', 'doctor.manifest_valid.ok');
+  fx = setup({ manifest: JSON.stringify({ lang: 'en', files: [{ path: 'index.md', sha256: 'b'.repeat(64), class: 'seeded' }] }) });
+  r = await doctor(fx, ['--only', 'manifest-valid']);
+  assertCheck(r.report, 'manifest-valid', 'ok', 'doctor.manifest_valid.ok');
+  fx = setup({ manifest: JSON.stringify({ lang: 'en', files: [{ path: '.githooks/pre-push', class: 'managed' }] }) });
+  r = await doctor(fx, ['--only', 'manifest-valid']);
+  assertCheck(r.report, 'manifest-valid', 'fail', 'doctor.manifest_valid.unreadable');
+});
+
 test('manifest-valid: warns when the manifest language differs from the configuration\'s, or the engine is older than kit_version', async () => {
-  const other = JSON.stringify({ lang: 'pt-BR', files: [{ path: 'index.md', sha256: 'a'.repeat(64), class: 'seeded' }] });
+  const other = JSON.stringify({ lang: 'pt-BR', files: [{ path: 'index.md', class: 'seeded' }] });
   let fx = setup({ manifest: other });
   let r = await doctor(fx, ['--only', 'manifest-valid']);
   const c = assertCheck(r.report, 'manifest-valid', 'warn', 'doctor.manifest_valid.lang_differs');

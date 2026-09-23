@@ -197,16 +197,22 @@ for (const c of CASES) {
     assert.deepEqual(config, completeDefaults(inferConfig(join(FIXTURES, c.fixture), { lang: c.lang }).config, ANSWERS[c.lang], { kitVersion: kitVersion() }));
 
     // The manifest: every file that was there, each seeded, and the gate,
-    // managed; each hash the bytes on disk; nothing under .git.
+    // managed; nothing under .git.
     const manifest = readManifest(copy.vault);
     const existing = before.filter((line) => / file /.test(line)).map((line) => line.split(' ')[0]).filter((path) => !path.startsWith('.git/'));
     assert.deepEqual(manifest.files.map((f) => f.path).sort(), [...existing, '.githooks/pre-push'].sort());
     assert.ok(manifest.files.length >= 20);
     assert.ok(manifest.files.some((f) => f.path === '.gitignore'), 'a dot-file the vault already has is recorded as the person\'s');
     assert.equal(manifest.lang, c.lang, 'the manifest records the language adopt inferred in');
+    // Only the kit's own file carries a hash; a seeded entry carries none,
+    // so the committed manifest publishes no digest of the person's notes.
     for (const entry of manifest.files) {
-      assert.equal(entry.class, entry.path === '.githooks/pre-push' ? 'managed' : 'seeded', entry.path);
-      assert.equal(entry.sha256, createHash('sha256').update(readFileSync(join(copy.vault, entry.path))).digest('hex'), entry.path);
+      if (entry.path === '.githooks/pre-push') {
+        assert.equal(entry.class, 'managed');
+        assert.equal(entry.sha256, createHash('sha256').update(readFileSync(join(copy.vault, entry.path))).digest('hex'), entry.path);
+      } else {
+        assert.deepEqual(entry, { path: entry.path, class: 'seeded' }, entry.path);
+      }
     }
 
     // machine.json, outside the vault, private.
@@ -305,7 +311,7 @@ test('a vault marking confidentiality in another language keeps its spelling: th
 // vault, with the language's default confidential directories put back,
 // fails lint with one privacy error per note marked outside them.
 test('without the reconciled confidential directories, the adopted vault fails its first lint once per marked note', () => {
-  const copy = freshCopy('pt-BR', { repository: false });
+  const copy = freshCopy('pt-BR');
   const r = adopt(copy, ANSWERS['pt-BR']);
   assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
   const configPath = join(copy.vault, CONFIG_FILENAME);
@@ -484,7 +490,7 @@ test('a directory with no index.md is refused with exit 2 and nothing written', 
 });
 
 test('with no directory given, adopt reads the one it runs in, and an empty one is refused with exit 2 and nothing written', () => {
-  const copy = freshCopy('en', { repository: false });
+  const copy = freshCopy('en');
   const before = snapshot(copy.cwd);
   const r = brainKit(['init', '--adopt', '--yes', '--lang', 'en'], { env: testEnv(copy.state), cwd: copy.cwd });
   assert.equal(r.status, EXIT.USAGE, r.stdout + r.stderr);
@@ -498,13 +504,13 @@ test('with no directory given, adopt reads the one it runs in, and an empty one 
 });
 
 test('an index.md that is a directory, or a link out of the vault, is not a root index adopt can read', () => {
-  const asDir = freshCopy('en', { repository: false });
+  const asDir = freshCopy('en');
   rmSync(join(asDir.vault, 'index.md'));
   mkdirSync(join(asDir.vault, 'index.md'));
   const beforeDir = snapshot(asDir.vault);
   assertRefused(adopt(asDir, ANSWERS.en), asDir, beforeDir, /no index\.md at its root/);
 
-  const asLink = freshCopy('en', { repository: false });
+  const asLink = freshCopy('en');
   const outside = join(asLink.base, 'outside-index.md');
   writeFileSync(outside, readFileSync(join(asLink.vault, 'index.md')));
   rmSync(join(asLink.vault, 'index.md'));
@@ -542,7 +548,7 @@ test('a directory already adopted, by its configuration or by its manifest alone
 });
 
 test('a vault inside another vault is refused with exit 2 and nothing written', () => {
-  const copy = freshCopy('en', { repository: false });
+  const copy = freshCopy('en');
   writeFileSync(join(copy.vault, CONFIG_FILENAME), '{}\n');
   const inner = { ...copy, vault: join(copy.vault, 'people') };
   writeFileSync(join(inner.vault, 'index.md'), '# People\n');
@@ -555,7 +561,7 @@ test('a vault inside another vault is refused with exit 2 and nothing written', 
 });
 
 test('a file, or a path that does not exist, is refused with exit 2 and nothing written', () => {
-  const copy = freshCopy('en', { repository: false });
+  const copy = freshCopy('en');
   const before = snapshot(copy.vault);
   for (const target of [join(copy.vault, 'AGENTS.md'), join(copy.vault, 'nowhere')]) {
     const r = adopt({ ...copy, vault: target }, ANSWERS.en);
@@ -604,11 +610,11 @@ test('with stdin not a terminal and no answers, adopt names the first missing an
 });
 
 test('a .brain-kit directory the vault already has keeps what is in it, recorded as the person\'s', () => {
-  const copy = freshCopy('en', { repository: false });
+  const copy = freshCopy('en');
   mkdirSync(join(copy.vault, '.brain-kit', 'prompts'), { recursive: true });
   writeFileSync(join(copy.vault, '.brain-kit', 'prompts', 'curate.md'), '# Their own prompt\n');
   const before = snapshot(copy.vault);
-  assert.equal(adopt(copy, ANSWERS.en).status, EXIT.FAILURE, 'the fixture holds two house findings');
+  assert.equal(adopt(copy, ANSWERS.en, ['--no-hook']).status, EXIT.FAILURE, 'the fixture holds two house findings');
   const after = snapshot(copy.vault);
   assert.deepEqual(before.filter((line) => !after.includes(line)), []);
   assert.deepEqual(after.filter((line) => !before.includes(line)).map((line) => line.split(' ')[0]), ['.brain-kit/manifest.json', 'brain-kit.config.json']);
@@ -666,13 +672,13 @@ test('a configuration that appears while the questions are answered is refused j
 // error, and its bytes are never replaced.
 test('writeAdoption never replaces a file already there, the configuration or the manifest', () => {
   for (const existing of [CONFIG_FILENAME, MANIFEST_PATH]) {
-    const copy = freshCopy('en', { repository: false });
+    const copy = freshCopy('en');
     mkdirSync(join(copy.vault, '.brain-kit'), { recursive: true });
     writeFileSync(join(copy.vault, existing), 'theirs\n');
     const before = snapshot(copy.vault);
     const ledger = [];
     assert.throws(
-      () => writeAdoption(copy.vault, { ledger, configText: '{}\n', manifest: { files: [{ path: 'index.md', sha256: 'a'.repeat(64), class: 'seeded' }] } }),
+      () => writeAdoption(copy.vault, { ledger, configText: '{}\n', manifest: { files: [{ path: 'index.md', class: 'seeded' }] } }),
       /EEXIST/,
     );
     assert.equal(readFileSync(join(copy.vault, existing), 'utf8'), 'theirs\n');
@@ -683,7 +689,7 @@ test('writeAdoption never replaces a file already there, the configuration or th
 });
 
 test('writeAdoption refuses a manifest it could not read back before writing anything', () => {
-  const copy = freshCopy('en', { repository: false });
+  const copy = freshCopy('en');
   const before = snapshot(copy.vault);
   const ledger = [];
   assert.throws(() => writeAdoption(copy.vault, { ledger, configText: '{}\n', manifest: { files: [] } }), /invalid manifest/);
@@ -692,7 +698,7 @@ test('writeAdoption refuses a manifest it could not read back before writing any
 });
 
 test('a directory adopt cannot list is refused with exit 2 and nothing written', { skip: IS_ROOT && 'root ignores permissions' }, () => {
-  const copy = freshCopy('en', { repository: false });
+  const copy = freshCopy('en');
   const before = snapshot(copy.vault);
   const mode = statSync(copy.vault).mode & 0o7777;
   // Searchable but not listable: index.md can still be stat'd by name.
@@ -707,7 +713,7 @@ test('a directory adopt cannot list is refused with exit 2 and nothing written',
 });
 
 test('a folder inside the vault adopt cannot read is refused with exit 2 and nothing written', { skip: IS_ROOT && 'root ignores permissions' }, () => {
-  const copy = freshCopy('en', { repository: false });
+  const copy = freshCopy('en');
   const locked = join(copy.vault, 'decisions');
   const mode = statSync(locked).mode & 0o7777;
   const before = snapshot(copy.vault);
@@ -722,7 +728,7 @@ test('a folder inside the vault adopt cannot read is refused with exit 2 and not
 });
 
 test('a configuration that is a dangling symbolic link is still a configuration, and refused', () => {
-  const copy = freshCopy('en', { repository: false });
+  const copy = freshCopy('en');
   symlinkSync(join(copy.base, 'nowhere.json'), join(copy.vault, CONFIG_FILENAME));
   const before = snapshot(copy.vault);
   assertRefused(adopt(copy, ANSWERS.en), copy, before, /is already adopted/);
@@ -733,7 +739,7 @@ test('a configuration that is a dangling symbolic link is still a configuration,
 // going to refuse.
 test('on a terminal, a directory with no root index.md file is refused before a single question is asked', { timeout: 20000 }, async () => {
   for (const shape of ['absent', 'directory']) {
-    const copy = freshCopy('en', { repository: false });
+    const copy = freshCopy('en');
     rmSync(join(copy.vault, 'index.md'));
     if (shape === 'directory') mkdirSync(join(copy.vault, 'index.md'));
     const before = snapshot(copy.vault);
@@ -788,7 +794,7 @@ test('the checks after adopt run with git\'s optional locks off, and the setting
 // never read as success.
 test('adopt exits with the worse of the two checks, never better', async () => {
   for (const [validate, lint, expected] of [[EXIT.OK, EXIT.OK, EXIT.OK], [EXIT.FAILURE, EXIT.OK, EXIT.FAILURE], [EXIT.OK, EXIT.DEGRADED, EXIT.DEGRADED]]) {
-    const copy = freshCopy('en', { repository: false });
+    const copy = freshCopy('en');
     const file = join(copy.base, 'answers.json');
     writeFileSync(file, JSON.stringify(ANSWERS.en));
     const code = await runInit(['--adopt', copy.vault, '--from-answers', file], { stdin: null, stdout: collector(), stderr: collector() }, createTranslator('en'), {
@@ -825,7 +831,7 @@ test('a .brain-kit that is a symbolic link, to a folder of the vault or outside 
 // at a key position of the configuration, which refuses those names
 // anywhere; it is left out, said so, and the rest of the vault adopted.
 function reservedVault() {
-  return tinyVault({
+  return repositoryOf(tinyVault({
     'cars/one.md': note('model', 'fuel: gas\n'),
     'cars/two.md': note('model', 'fuel: gas\n'),
     'cars/three.md': note('car', 'fuel: diesel\n'),
@@ -833,7 +839,16 @@ function reservedVault() {
     'paths/walk.md': note('trail'),
     'paths/climb.md': note('trail'),
     'state_dir/one.md': note('log-entry'),
-  });
+  }));
+}
+
+// A vault adopt can take on is a repository: `root`, committed as it is.
+function repositoryOf(root) {
+  for (const args of [['init', '-q'], ['add', '-A'], ['-c', 'maintenance.auto=false', 'commit', '-q', '-m', 'notes']]) {
+    const r = git(root, args);
+    assert.equal(r.status, 0, r.stderr);
+  }
+  return root;
 }
 
 test('a note type or a first-level folder named like a machine-only setting is left out where it would collide, said so, and the rest adopted', () => {
@@ -882,23 +897,28 @@ test('an inferred configuration the kit refuses stops adopt with exit 1 before a
 
 // I3: a file adopt reads only to checksum it (an attachment) is as much a
 // refusal as an unreadable note: never recorded with the hash of nothing.
-test('an unreadable file that is not a note, tracked or ignored, is refused with exit 2 and never checksummed', { skip: IS_ROOT && 'root ignores permissions' }, () => {
+// A seeded entry carries no hash, so adopt never reads a file that is not
+// a note: one it cannot read is recorded by its path (git would publish
+// it), and an ignored one is not recorded at all.
+test('an unreadable file that is not a note is never read: recorded by path when git would publish it, left out when ignored', { skip: IS_ROOT && 'root ignores permissions' }, () => {
   for (const rel of ['projects/plan.pdf', 'private-scans/scan.pdf']) {
-    const copy = freshCopy('en', { repository: false });
+    const copy = freshCopy('en');
     appendFileSync(join(copy.vault, '.gitignore'), 'private-scans/\n');
     mkdirSync(join(copy.vault, rel.split('/')[0]), { recursive: true });
     const target = join(copy.vault, rel);
     writeFileSync(target, '%PDF-1.4 fictional\n');
     const mode = statSync(target).mode & 0o7777;
-    const before = snapshot(copy.vault);
     chmodSync(target, 0o000);
     let r;
     try {
-      r = adopt(copy, ANSWERS.en);
+      r = adopt(copy, ANSWERS.en, ['--no-hook']);
     } finally {
       chmodSync(target, mode);
     }
-    assertRefused(r, copy, before, /cannot be read \(EACCES\)/);
+    assert.equal(r.status, EXIT.FAILURE, `the fixture's two house findings, nothing else:\n${r.stdout}${r.stderr}`);
+    const entry = readManifest(copy.vault).files.find((f) => f.path === rel);
+    if (rel.startsWith('private-scans/')) assert.equal(entry, undefined);
+    else assert.deepEqual(entry, { path: rel, class: 'seeded' });
   }
 });
 
@@ -1053,14 +1073,39 @@ test('C1: adopt records only what git would publish, and neither an ignored file
   assert.ok(!remoteManifest.includes('.env"') && !remoteManifest.includes('privado') && !remoteManifest.includes(ENV_HASH), remoteManifest);
   const published = git(bare, ['log', '--all', '-p', '--format=%H %s']).stdout;
   for (const secret of ['diagnostico', 'hunter2', ENV_HASH]) assert.ok(!published.includes(secret), `${secret} reached the remote`);
+  // Ruling 2: no seeded file's hash reaches the remote. The one hash in the
+  // published manifest is the kit's own hook.
+  const entries = JSON.parse(remoteManifest).files;
+  assert.deepEqual(entries.filter((f) => Object.hasOwn(f, 'sha256')).map((f) => f.path), ['.githooks/pre-push']);
+  for (const entry of entries.filter((f) => f.class === 'seeded' && existsSync(join(copy.vault, f.path)))) {
+    const digest = createHash('sha256').update(readFileSync(join(copy.vault, entry.path))).digest('hex');
+    assert.ok(!published.includes(digest), `the hash of ${entry.path} reached the remote`);
+  }
 });
 
-test('C1: outside a repository nothing is ignored, and the vault is walked, dot-files included', () => {
-  const copy = freshCopy('pt-BR', { repository: false });
-  appendFileSync(join(copy.vault, '.gitignore'), '.env\n');
-  writeFileSync(join(copy.vault, '.env'), 'DB_PASSWORD=hunter2\n');
-  assert.equal(adopt(copy, ANSWERS['pt-BR']).status, EXIT.OK);
-  assert.ok(readManifest(copy.vault).files.some((f) => f.path === '.env'));
+test('ruling 1: a folder that is not yet a repository is refused with exit 2 and nothing written, told to write .gitignore and run git init', () => {
+  for (const lang of ['en', 'pt-BR']) {
+    const copy = freshCopy('pt-BR', { repository: false });
+    appendFileSync(join(copy.vault, '.gitignore'), '.env\nprivado/\n');
+    writeFileSync(join(copy.vault, '.env'), 'DB_PASSWORD=hunter2\n');
+    const before = snapshot(copy.vault);
+    const r = adopt(copy, ANSWERS[lang]);
+    assertRefused(r, copy, before, /git init/);
+    assert.match(r.stderr, /\.gitignore/);
+    // Refused before the answers are read, so in the language the run
+    // speaks (BRAIN_KIT_LANG=en here), whatever the vault's will be.
+    assert.ok(r.stderr.includes(createTranslator('en')('init.adopt_not_repository', { dir: realpathSync(copy.vault) })), r.stderr);
+  }
+});
+
+test('ruling 1: the refusal comes before a single question is asked, and again just before writing', async () => {
+  const copy = freshCopy('en', { repository: false });
+  const before = snapshot(copy.vault);
+  const r = spawnSync(process.execPath, [BIN, 'init', '--adopt', copy.vault, '--lang', 'en'], {
+    encoding: 'utf8', env: testEnv(copy.state), cwd: copy.cwd, input: '', timeout: 10000,
+  });
+  assertRefused(r, copy, before, /is not in a git repository/);
+  assert.doesNotMatch(r.stderr, /no answer for/);
 });
 
 test('C1: of what git lists, a tracked file deleted from the working tree and a link out of the vault are not recorded', () => {
@@ -1242,4 +1287,25 @@ test('C1 and I1: with GIT_DIR exported for another repository, adopt lists the v
   assert.ok(!paths.includes('segredo-alheio.txt') && paths.includes('index.md'), paths.join(', '));
   assert.ok(!paths.includes('.env'), 'the vault ignores its .env, whatever another repository tracks');
   assert.equal(git(copy.vault, ['config', '--local', 'core.hooksPath']).stdout.trim(), '.githooks');
+});
+
+test('ruling 1: a repository that disappears while the questions are answered is refused before anything is written', { timeout: 20000 }, async () => {
+  const copy = freshCopy('en');
+  const stdin = new PassThrough();
+  stdin.isTTY = true;
+  const stdout = collector();
+  const stderr = collector();
+  const pending = runInit(['--adopt', copy.vault], { stdin, stdout, stderr }, createTranslator('en'), { walkVault, env: testEnv(copy.state), cwd: copy.cwd });
+  stdin.write('en\n');
+  for (let i = 0; i < 200 && !stdout.text.includes('First name'); i++) await new Promise((r) => setTimeout(r, 5));
+  assert.match(stdout.text, /First name/);
+  rmSync(join(copy.vault, '.git'), { recursive: true });
+  const before = snapshot(copy.vault);
+  for (const line of ['Ana Souza', 'asouza', 'Field Notes', '', 'y', 'UTC']) stdin.write(`${line}\n`);
+  stdin.end();
+  const code = await pending;
+  assert.equal(code, EXIT.USAGE, stdout.text + stderr.text);
+  assert.match(stderr.text, /not in a git repository/);
+  assert.deepEqual(snapshot(copy.vault), before);
+  assert.equal(existsSync(copy.state), false);
 });

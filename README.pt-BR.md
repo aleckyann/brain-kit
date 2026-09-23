@@ -54,10 +54,12 @@ git, e o `machine.json` num diretório de estado fora do vault. Ele faz uma perg
 vez, aceita `--yes` ou `--from-answers <arquivo>` no lugar, e nunca faz o primeiro commit
 a menos que isso seja pedido.
 
-O `init --adopt` traz um vault existente para o kit. Ele deduz a configuração das notas e
-mostra cada dedução, escreve a configuração e um manifesto que registra como seus os
-arquivos que o git publicaria (um arquivo que o git ignora nunca é registrado), e instala o
-gate de push. Um hook seu, ou um `core.hooksPath` apontando para outro lugar, fica
+O `init --adopt` traz um vault existente para o kit. O vault precisa já ser um repositório
+git (escreva o `.gitignore` dele e depois rode `git init`); uma pasta que não é um é
+recusada sem nada escrito. Ele deduz a configuração das notas e mostra cada dedução,
+escreve a configuração e um manifesto que registra como seus, só pelo caminho, os arquivos
+que o git publicaria (um arquivo que o git ignora nunca é registrado, e nenhum hash do seu
+conteúdo é guardado), e instala o gate de push. Um hook seu, ou um `core.hooksPath` apontando para outro lugar, fica
 exatamente como está, e o adopt mostra a linha que acrescenta o gate a ele. `--no-hook`
 pula o gate. Ele nunca muda uma nota e nunca faz commit.
 

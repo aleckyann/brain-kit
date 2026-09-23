@@ -52,10 +52,12 @@ skeleton, the configuration, a `.gitignore`, the push gate (`.githooks/pre-push`
 takes `--yes` or `--from-answers <file>` instead, and never makes the first commit unless
 told to.
 
-`init --adopt` brings an existing vault under the kit. It infers the configuration from
-the notes and prints every inference, writes the configuration and a manifest that records
-the files git would publish as yours (a file git ignores is never recorded), and installs
-the push gate. A hook of your own, or a `core.hooksPath` pointing elsewhere, is left
+`init --adopt` brings an existing vault under the kit. The vault must already be a git
+repository (write its `.gitignore`, then `git init`); a folder that is not one is refused
+with nothing written. It infers the configuration from the notes and prints every
+inference, writes the configuration and a manifest that records the files git would
+publish as yours, by path only (a file git ignores is never recorded, and no hash of your
+content is stored), and installs the push gate. A hook of your own, or a `core.hooksPath` pointing elsewhere, is left
 exactly as it is, and adopt prints the one line that adds the gate to it. `--no-hook` skips
 the gate. It never changes a note and never commits.
 

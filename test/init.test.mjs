@@ -222,8 +222,8 @@ for (const lang of ['en', 'pt-BR']) {
     assert.ok(stamped >= 15, `expected at least 15 stamped notes, found ${stamped}`);
 
     // The manifest: the hook, .gitignore and the root contract files
-    // managed, every other skeleton file seeded, each hash the bytes on
-    // disk NOW. The configuration is the person's, and not recorded.
+    // managed, each hash the bytes on disk NOW, and every other skeleton
+    // file seeded, with no hash. The configuration is the person's, and not recorded.
     const manifest = readManifest(vault);
     const byPath = new Map(manifest.files.map((f) => [f.path, f]));
     assert.equal(manifest.files.length, skeletonFiles(lang).length + 2);
@@ -234,9 +234,12 @@ for (const lang of ['en', 'pt-BR']) {
     for (const file of skeletonFiles(lang)) {
       if (!ROOT_CONTRACT_FILES.includes(file)) assert.equal(byPath.get(file)?.class, 'seeded', file);
     }
+    // A managed file carries the hash of its bytes; a seeded one none.
     for (const entry of manifest.files) {
-      assert.equal(entry.sha256, createHash('sha256').update(readFileSync(join(vault, entry.path))).digest('hex'), entry.path);
+      if (entry.class === 'managed') assert.equal(entry.sha256, createHash('sha256').update(readFileSync(join(vault, entry.path))).digest('hex'), entry.path);
+      else assert.equal(Object.hasOwn(entry, 'sha256'), false, entry.path);
     }
+    assert.doesNotMatch(readFileSync(join(vault, '.brain-kit', 'manifest.json'), 'utf8'), /"class": "seeded"[^}]*sha256|sha256[^}]*"class": "seeded"/);
 
     // The hook, byte for byte, executable; the repository, pointed at it;
     // and no commit, because the first commit is the person's.

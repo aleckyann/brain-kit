@@ -286,7 +286,7 @@ export function writeVault(target, { lang, stamp, files, ledger = [] }) {
   const entries = [];
   for (const { rel, bytes, class: cls } of prepared) {
     writeNew(ledger, join(target, rel), bytes);
-    entries.push({ path: rel, sha256: sha256Of(bytes), class: cls });
+    entries.push(cls === 'managed' ? { path: rel, sha256: sha256Of(bytes), class: cls } : { path: rel, class: cls });
   }
   // .gitignore is the kit's (managed), so `update` can carry a rule this
   // kit adds into a vault that has not edited it; the configuration is

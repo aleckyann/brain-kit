@@ -1,6 +1,7 @@
 // .brain-kit/manifest.json: the record `init` leaves of every file it
 // wrote and whose it is ('managed' by the kit, or 'seeded' for the person
-// to own), with the sha256 each had when it was written. `update` reads
+// to own), with the sha256 each managed file had when it was written (a
+// seeded file carries none: see src/manifest.mjs). `update` reads
 // it to tell an untouched file from an edited one, so a manifest that
 // reads as "nothing here" when it is really missing or broken would let
 // `update` decide every file is untouched, or that there is nothing to
@@ -20,7 +21,7 @@ function sample() {
   return {
     files: [
       { path: '.githooks/pre-push', sha256: SHA_A, class: 'managed' },
-      { path: 'people/index.md', sha256: SHA_B, class: 'seeded' },
+      { path: 'people/index.md', class: 'seeded' },
     ],
   };
 }
@@ -81,8 +82,10 @@ const INVALID = [
   ['an absolute path', { files: [{ path: '/etc/passwd', sha256: SHA_A, class: 'managed' }] }],
   ['a path that climbs out', { files: [{ path: 'people/../../x.md', sha256: SHA_A, class: 'seeded' }] }],
   ['a Windows separator', { files: [{ path: 'people\\x.md', sha256: SHA_A, class: 'seeded' }] }],
-  ['a sha256 that is too short', { files: [{ path: 'a.md', sha256: 'abc', class: 'seeded' }] }],
-  ['a sha256 in upper case', { files: [{ path: 'a.md', sha256: SHA_A.toUpperCase(), class: 'seeded' }] }],
+  ['a sha256 that is too short', { files: [{ path: 'a.md', sha256: 'abc', class: 'managed' }] }],
+  ['a sha256 in upper case', { files: [{ path: 'a.md', sha256: SHA_A.toUpperCase(), class: 'managed' }] }],
+  ['a managed entry with no sha256', { files: [{ path: 'a.md', class: 'managed' }] }],
+  ['a managed entry whose sha256 is not a string', { files: [{ path: 'a.md', sha256: 1, class: 'managed' }] }],
   ['an unknown class', { files: [{ path: 'a.md', sha256: SHA_A, class: 'owned' }] }],
   ['no class', { files: [{ path: 'a.md', sha256: SHA_A }] }],
   ['the same path twice', { files: [sample().files[1], { ...sample().files[1], class: 'managed' }] }],
@@ -115,5 +118,27 @@ test('lang is optional at the top level, and must be a supported language when p
   for (const bad of ['fr', '', null, 1, ['en']]) {
     assert.throws(() => readManifest(rootWith(JSON.stringify({ lang: bad, ...sample() }))), /\$\.lang: must be one of en, pt-BR|\$\.lang: must be one of pt-BR, en/, String(bad));
     assert.throws(() => writeManifest(makeTempDir('brain-kit-manifest-'), { lang: bad, ...sample() }), ManifestError, String(bad));
+  }
+});
+
+// Ruled at the close of slice 1D: a seeded entry carries NO hash. The
+// manifest is committed, and update never reads a seeded hash.
+test('writeManifest refuses a seeded entry that carries a sha256, valid or not, and writes nothing', () => {
+  for (const sha256 of [SHA_B, 'abc', null]) {
+    const root = makeTempDir('brain-kit-manifest-');
+    assert.throws(() => writeManifest(root, { files: [{ path: 'a.md', sha256, class: 'seeded' }] }), /a seeded file carries no hash/);
+    assert.equal(existsSync(join(root, MANIFEST_PATH)), false);
+  }
+});
+
+test('an older manifest whose seeded entries carry a sha256 still reads, and the field is dropped, never handed on', () => {
+  for (const sha256 of [SHA_B, 'ABC', 7]) {
+    const root = rootWith(JSON.stringify({ files: [{ path: '.githooks/pre-push', sha256: SHA_A, class: 'managed' }, { path: 'a.md', sha256, class: 'seeded' }] }));
+    const read = readManifest(root);
+    assert.deepEqual(read.files, [{ path: '.githooks/pre-push', sha256: SHA_A, class: 'managed' }, { path: 'a.md', class: 'seeded' }]);
+    // and what reads writes back without it.
+    const again = makeTempDir('brain-kit-manifest-');
+    writeManifest(again, read);
+    assert.doesNotMatch(readFileSync(join(again, MANIFEST_PATH), 'utf8'), new RegExp(`"sha256": ${JSON.stringify(sha256)}`));
   }
 });

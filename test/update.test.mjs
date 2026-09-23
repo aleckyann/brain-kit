@@ -1346,3 +1346,23 @@ test('installGate refuses a vault whose manifest it cannot read, and writes noth
   assert.deepEqual(snapshot(v.vault), before);
   assert.notEqual(gitIn(v.vault, ['config', 'core.hooksPath']).status, 0);
 });
+
+// Ruled at the close of slice 1D: a seeded entry carries no hash. A vault
+// init made before the rule has one on every seeded entry; update still
+// reads it, and the next manifest it writes leaves them out.
+test('a manifest from before the rule, with seeded hashes, is still read, and the refresh that rewrites it drops them', () => {
+  const v = initVault();
+  const file = join(v.vault, MANIFEST_PATH);
+  const manifest = JSON.parse(readFileSync(file, 'utf8'));
+  for (const entry of manifest.files) {
+    if (entry.class === 'seeded') entry.sha256 = sha(readFileSync(join(v.vault, entry.path)));
+  }
+  writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`);
+  makeOlder(v.vault, 'AGENTS.md');
+  const r = update(v);
+  assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
+  const after = JSON.parse(readFileSync(file, 'utf8'));
+  assert.ok(after.files.filter((f) => f.class === 'seeded').length > 10);
+  assert.deepEqual(after.files.filter((f) => f.class === 'seeded' && Object.hasOwn(f, 'sha256')), []);
+  assert.ok(after.files.filter((f) => f.class === 'managed').every((f) => /^[0-9a-f]{64}$/.test(f.sha256)));
+});

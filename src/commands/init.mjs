@@ -10,7 +10,9 @@ import { run } from '../exec.mjs';
 import { localGitVarNames, withoutLocalGitVars } from '../git-env.mjs';
 import { INSTALL_HOOK_COMMAND, installGate } from '../init/gate.mjs';
 import { completeDefaults } from '../init/config.mjs';
-import { buildAdoptionManifest, inferConfig, inspectAdoptTarget, readDefaults, writeAdoption } from '../init/adopt.mjs';
+import {
+  adoptRepositoryState, buildAdoptionManifest, inferConfig, inspectAdoptTarget, readDefaults, writeAdoption,
+} from '../init/adopt.mjs';
 import {
   ANSWER_KEYS, QUESTIONS, askInteractively, defaultAnswers, defaultLang, describeAnswer, invalidAnswer, readAnswersFile, resolveClaudeBin,
 } from '../init/answers.mjs';
@@ -237,9 +239,19 @@ function buildMachine(canonical, stateDir, env) {
 // second pass just before writing is the same code as the first. The check
 // on the target is inspectTarget for a new vault, inspectAdoptTarget for
 // an existing one.
-function refuseLocations(io, t, target, stateDir, machinePath, adopt) {
+function refuseLocations(io, t, target, stateDir, machinePath, adopt, env) {
   const refusal = adopt ? inspectAdoptTarget(target) : inspectTarget(target);
   if (refusal !== null) return refuseTarget(io, t, refusal, { adopt, machinePath });
+  // A vault is a repository: the kit works only through pull requests, and
+  // what adopt records is asked of git (see src/init/adopt.mjs). A folder
+  // that is not in one is refused with the way to make it one, the
+  // .gitignore first, so nothing the person keeps out of git is ever
+  // committed or named. A repository git cannot read is refused later, by
+  // the listing, with git's own words.
+  if (adopt && adoptRepositoryState(target, env).state === 'none') {
+    io.stderr.write(`${t('init.adopt_not_repository', { dir: target })}\n`);
+    return EXIT.USAGE;
+  }
   if (isInside(stateDir, target)) {
     io.stderr.write(`${t('init.state_inside_vault', { state: stateDir, dir: target })}\n`);
     return EXIT.USAGE;
@@ -313,11 +325,11 @@ export async function runInit(argv, io, t, {
   // symbolic link into the vault is seen to be inside it.
   const stateDir = canonicalOf(resolve(cwd, stateDirFor(target, env)));
   const machinePath = join(stateDir, MACHINE_FILENAME);
-  const first = refuseLocations(io, t, target, stateDir, machinePath, parsed.adopt);
+  const first = refuseLocations(io, t, target, stateDir, machinePath, parsed.adopt, env);
   if (first !== null) return first;
 
-  // adopt works without git: outside a repository it walks the vault, and
-  // the gate says it cannot be installed there.
+  // adopt needs git too, and has already asked it whether the vault is a
+  // repository.
   if (!parsed.adopt) {
     const gitCheck = run('git', ['--version']);
     if (gitCheck.status !== 0) {
@@ -407,7 +419,7 @@ export async function runInit(argv, io, t, {
   }
 
   // Second pass, just before writing: see the header.
-  const second = refuseLocations(io, t, target, stateDir, machinePath, parsed.adopt);
+  const second = refuseLocations(io, t, target, stateDir, machinePath, parsed.adopt, env);
   if (second !== null) return second;
 
   // Nested inside another repository is allowed (an empty directory in a

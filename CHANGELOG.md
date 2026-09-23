@@ -60,10 +60,11 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   configuration from the notes (collections and domains, per-type enums, table headings,
   the log, the stale policy, the confidentiality field and the directories that hold marked
   notes, plain dates) and prints every inference; then it writes only the configuration and
-  a manifest recording every existing file as the person's, plus `machine.json` outside the
-  vault. Inside a repository the manifest lists only what git would publish (tracked files,
-  and untracked files that are not ignored), so a file the person ignored is never named or
-  hashed in it; outside one, every file is listed. Then it installs the push gate, unless a
+  a manifest recording every existing file as the person's, by path, plus `machine.json` outside the
+  vault. The vault must be a git repository: a folder that is not one is refused, with
+  nothing written, and told to write its `.gitignore` and run `git init` first. The manifest
+  lists only what git would publish (tracked files, and untracked files that are not
+  ignored), so a file the person ignored is never named in it. Then it installs the push gate, unless a
   hook of the person's own, a `core.hooksPath` pointing elsewhere or hooks in `.git/hooks`
   are already there: those are left exactly as they are, and it prints the one line that
   adds the gate to that hook. `--no-hook` skips the gate and says so. It never changes a
@@ -79,7 +80,10 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   with this kit's version; one you edited is never overwritten, and a newer version is
   written beside it as `<name>.brain-kit-new`; your notes are never touched. `--accept`
   records that you have dealt with an offered version, or that you removed a managed file on
-  purpose. Line endings are compared as LF and kept as each file has them. It refuses,
+  purpose. A seeded entry of the manifest (a note the person owns, from `init` or `adopt`)
+  carries no hash, since `update` never reads one and the manifest is committed; a managed
+  entry must carry one. A manifest with seeded hashes, written before, still reads, and the
+  hashes are dropped the next time it is written. Line endings are compared as LF and kept as each file has them. It refuses,
   writing nothing, a manifest it cannot read or write safely, a kit older than the
   configuration's `kit_version`, and a `lang` that is not the language the vault was made
   in (the language the manifest records); after a run it sets `kit_version` to the running

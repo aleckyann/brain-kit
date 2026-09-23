@@ -3,9 +3,9 @@ import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { SUPPORTED_LANGS } from './lang.mjs';
 
-// .brain-kit/manifest.json: every file `init` (and later `adopt`) wrote
-// into a vault, whose it is, and the sha256 of its bytes at the moment
-// it was written.
+// .brain-kit/manifest.json: every file `init` wrote into a vault, or
+// `adopt` found there, and whose it is; for a file the kit manages, the
+// sha256 of its bytes at the moment it was written.
 //
 //   managed  the kit owns it: `update` may replace it, but only when its
 //            bytes still hash to what is recorded here, so a person's
@@ -13,9 +13,19 @@ import { SUPPORTED_LANGS } from './lang.mjs';
 //   seeded   the kit only started it: from the moment of init it is the
 //            person's note, and `update` never touches it.
 //
-// Shape: { lang?, files: [{ path, sha256, class }] }, `path` vault-relative
+// Shape: { lang?, files: [{ path, sha256?, class }] }, `path` vault-relative
 // with forward slashes. Nothing else is allowed, at either level, so a
 // field a later version adds has to be added here on purpose.
+//
+// `sha256` is REQUIRED on a managed entry and ABSENT on a seeded one
+// (ruled at the close of slice 1D). update compares managed files only, so
+// a seeded hash was never read by anything, and the manifest is committed:
+// a hash stored there only published a digest of the person's content (an
+// unsalted sha256 of a short secret is recovered by a dictionary), for
+// files the kit will never touch. A manifest written before this rule
+// still reads: readManifest accepts a seeded entry's sha256, whatever it
+// holds, and drops it, so the next time the manifest is written (update,
+// installGate) it is gone. writeManifest and serializeManifest refuse one.
 //
 // `lang` is the language the vault was installed or adopted in: the
 // skeleton init wrote from, or the language adopt inferred the
@@ -29,8 +39,7 @@ import { SUPPORTED_LANGS } from './lang.mjs';
 // `sha256` is the hash of the file's bytes with every CRLF read as LF, so
 // a checkout that converts line endings still reads as untouched. init
 // writes LF, where the two are the same bytes. update compares managed
-// files only; a seeded file's hash (every file adopt records) is never
-// compared with anything.
+// files only.
 //
 // readManifest THROWS on every way the file can fail to be a real
 // manifest: missing, unreadable, empty, not JSON, or not this shape,
@@ -71,7 +80,10 @@ function isVaultRelative(path) {
   return path.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
 }
 
-export function manifestErrors(manifest) {
+// `legacy`: accept (and leave for the caller to drop) a seeded entry's
+// sha256, as a manifest written before the rule above has one. Only the
+// reader passes it.
+export function manifestErrors(manifest, { legacy = false } = {}) {
   const errors = [];
   if (!isPlainObject(manifest)) return ['$: must be an object'];
   for (const key of Object.keys(manifest)) {
@@ -98,8 +110,12 @@ export function manifestErrors(manifest) {
     if (!isVaultRelative(entry.path)) errors.push(`${at}.path: must be a vault-relative path with forward slashes`);
     else if (seen.has(entry.path)) errors.push(`${at}.path: "${entry.path}" is listed twice`);
     else seen.add(entry.path);
-    if (typeof entry.sha256 !== 'string' || !SHA256.test(entry.sha256)) errors.push(`${at}.sha256: must be 64 lowercase hex characters`);
     if (!MANIFEST_CLASSES.includes(entry.class)) errors.push(`${at}.class: must be one of ${MANIFEST_CLASSES.join(', ')}`);
+    else if (entry.class === 'managed') {
+      if (typeof entry.sha256 !== 'string' || !SHA256.test(entry.sha256)) errors.push(`${at}.sha256: a managed file must carry 64 lowercase hex characters`);
+    } else if (Object.hasOwn(entry, 'sha256') && !legacy) {
+      errors.push(`${at}.sha256: a seeded file carries no hash`);
+    }
   });
   return errors;
 }
@@ -119,9 +135,18 @@ export function readManifest(root) {
   } catch (error) {
     throw new ManifestError(`${file} is not JSON: ${error.message}`);
   }
-  const errors = manifestErrors(manifest);
+  const errors = manifestErrors(manifest, { legacy: true });
   if (errors.length > 0) throw new ManifestError(`${file} is not a valid manifest:\n  ${errors.join('\n  ')}`);
-  return manifest;
+  // A seeded hash an older manifest carries is ignored: dropped here, so
+  // no caller reads it and the next write leaves it out.
+  return {
+    ...manifest,
+    files: manifest.files.map((entry) => {
+      if (entry.class !== 'seeded' || !Object.hasOwn(entry, 'sha256')) return entry;
+      const { sha256, ...rest } = entry;
+      return rest;
+    }),
+  };
 }
 
 // The manifest's text, after the same check readManifest applies, so a
