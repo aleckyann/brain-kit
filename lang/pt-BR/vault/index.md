@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Segundo cérebro
 
-A porta de entrada deste cofre. Um agente lê esta página primeiro e segue os links a partir daqui, uma nota por vez, em vez de carregar tudo.
+A porta de entrada deste vault. Um agente lê esta página primeiro e segue os links a partir daqui, uma nota por vez, em vez de carregar tudo.
 
 ## Áreas
 
@@ -20,7 +20,7 @@ A porta de entrada deste cofre. Um agente lê esta página primeiro e segue os l
 - [Anexos](anexos/index.md): arquivos para os quais as notas apontam.
 - [Modelos](templates/index.md): um modelo por coleção, copiado quando uma nota nova é criada.
 
-## Como este cofre funciona
+## Como este vault funciona
 
 - [AGENTS.md](AGENTS.md): o contrato que todo agente que trabalha aqui segue.
 - [CLAUDE.md](CLAUDE.md): o ponteiro que o Claude Code lê primeiro.

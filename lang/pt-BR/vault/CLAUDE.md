@@ -9,6 +9,6 @@ generated:
 
 # Claude Code
 
-Leia [AGENTS.md](AGENTS.md) antes de qualquer outra coisa e siga-o. Tudo o que um agente precisa saber sobre este cofre começa lá.
+Leia [AGENTS.md](AGENTS.md) antes de qualquer outra coisa e siga-o. Tudo o que um agente precisa saber sobre este vault começa lá.
 
 @AGENTS.md

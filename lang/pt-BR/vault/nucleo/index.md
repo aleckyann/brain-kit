@@ -1,6 +1,6 @@
 # Núcleo
 
-Quem é o dono e como este cofre pensa. Leia estas notas antes de aconselhar sobre qualquer coisa que importe.
+Quem é o dono e como este vault pensa. Leia estas notas antes de aconselhar sobre qualquer coisa que importe.
 
 - [Identidade](identidade.md): quem é o dono, o que ele faz e o que está tentando construir.
 - [Valores](valores.md): do que o dono abre mão e do que não abre.

@@ -1,7 +1,7 @@
 ---
 type: guide
 title: Convenções
-description: Como as notas deste cofre são nomeadas, datadas, linkadas e organizadas, para que todo agente e toda pessoa as escrevam do mesmo jeito.
+description: Como as notas deste vault são nomeadas, datadas, linkadas e organizadas, para que todo agente e toda pessoa as escrevam do mesmo jeito.
 generated:
   by: process:brain-kit-init
   at: 2026-09-22T00:00:00+00:00

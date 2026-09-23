@@ -1,7 +1,7 @@
 ---
 type: guide
 title: Segurança e dados pessoais
-description: Como este cofre trata dados sobre terceiros, como removê-los a pedido e o que fazer se um segredo entrar.
+description: Como este vault trata dados sobre terceiros, como removê-los a pedido e o que fazer se um segredo entrar.
 generated:
   by: process:brain-kit-init
   at: 2026-09-22T00:00:00+00:00
