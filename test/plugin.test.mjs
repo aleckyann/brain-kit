@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
+import { makeTempDir } from './helpers/tmp.mjs';
 
 const read = (p) => JSON.parse(readFileSync(join(KIT_ROOT, p), 'utf8'));
 const pkg = read('package.json');
@@ -47,8 +48,13 @@ test('run-hook.cmd is executable and routes to the engine as a silent no-op', ()
   // (the first line is the cmd.exe half), so spawn it through a shell as
   // Claude Code would. Check both bash and the plain POSIX sh some machines
   // point /bin/sh at (e.g. dash), since the wrapper relies on no bash-only syntax.
+  // Since slice E the hook finds a vault from the payload's cwd, else
+  // CLAUDE_PROJECT_DIR, else its own directory: run it from a directory
+  // that is no vault, with no CLAUDE_PROJECT_DIR inherited from the runner.
+  const { CLAUDE_PROJECT_DIR: _ignored, ...env } = process.env;
+  const cwd = makeTempDir('brain-kit-plugin-');
   for (const shell of ['bash', 'sh']) {
-    const r = spawnSync(shell, [wrapper, 'stop'], { input: '{"stop_hook_active":false}', encoding: 'utf8' });
+    const r = spawnSync(shell, [wrapper, 'stop'], { input: '{"stop_hook_active":false}', encoding: 'utf8', env, cwd });
     assert.equal(r.status, 0, `${shell}: ${r.stderr}`);
     assert.equal(r.stdout, '', `${shell}: unexpected stdout`);
   }

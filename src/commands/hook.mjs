@@ -1,6 +1,7 @@
 import { EXIT } from '../exit-codes.mjs';
 import { readStdin } from '../io.mjs';
 import { runSessionStart } from '../hooks/session-start.mjs';
+import { runStop } from '../hooks/stop.mjs';
 
 export const HOOK_EVENTS = Object.freeze(['stop', 'session-start']);
 
@@ -8,9 +9,6 @@ export const HOOK_EVENTS = Object.freeze(['stop', 'session-start']);
 // with the event JSON on standard input. A hook ALWAYS exits 0: its verdict
 // travels in the JSON it prints, never in its exit code. Only a call naming
 // no known event, which Claude Code never makes, is a usage error.
-//
-// The Stop hook is still a deliberate no-op here: consume the event JSON,
-// print nothing, exit 0.
 export async function runHook(argv, io, t, { env = process.env, now = () => new Date() } = {}) {
   const [event] = argv;
   if (!HOOK_EVENTS.includes(event)) {
@@ -18,10 +16,8 @@ export async function runHook(argv, io, t, { env = process.env, now = () => new 
     return EXIT.USAGE;
   }
   const input = await readStdin(io.stdin);
-  if (event === 'session-start') {
-    const { stdout, stderr } = runSessionStart(input, env, now());
-    if (stdout !== '') io.stdout.write(stdout);
-    if (stderr !== '') io.stderr.write(stderr);
-  }
+  const { stdout, stderr } = event === 'session-start' ? runSessionStart(input, env, now()) : runStop(input, env);
+  if (stdout !== '') io.stdout.write(stdout);
+  if (stderr !== '') io.stderr.write(stderr);
   return EXIT.OK;
 }
