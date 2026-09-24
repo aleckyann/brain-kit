@@ -119,3 +119,58 @@ test('brain-kit prompt --check exits 0 on the shipped packs', () => {
 test('plugin.json no longer describes the plugin as phase 0', () => {
   assert.doesNotMatch(read('.claude-plugin/plugin.json').description, /Phase 0/);
 });
+
+// --- eval cases (phase 1 slice E, task 5) --------------------------------
+
+const EVALS_DIR = join(KIT_ROOT, 'evals');
+const EVAL_LANGS = ['pt-BR', 'en'];
+const PROMPT_KEYS = new Set(['schema_version', 'name', 'description', 'tags', 'plugins', 'runs', 'expected_outcome', 'model', 'max_turns', 'timeout_seconds', 'allowed_tools', 'artifact_publish', 'growthbook_overrides', 'append_system_prompt', 'env']);
+
+function evalFile(skill, lang, ...parts) {
+  return readFileSync(join(EVALS_DIR, `${skill}-${lang}`, ...parts), 'utf8');
+}
+
+test('evals/ holds exactly one case per skill and language', () => {
+  const expected = SKILL_NAMES.flatMap((skill) => EVAL_LANGS.map((lang) => `${skill}-${lang}`)).sort();
+  const dirs = readdirSync(EVALS_DIR, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort();
+  assert.deepEqual(dirs, expected);
+});
+
+test('every eval case has prompt.md with the agreed frontmatter and both graders', () => {
+  for (const skill of SKILL_NAMES) {
+    for (const lang of EVAL_LANGS) {
+      const where = `${skill}-${lang}`;
+      const { fields, body } = frontmatterOf(evalFile(skill, lang, 'prompt.md'));
+      for (const key of Object.keys(fields)) assert.ok(PROMPT_KEYS.has(key), `${where}: unknown prompt.md key ${key}`);
+      assert.equal(fields.max_turns, '6', where);
+      assert.equal(fields.runs, '1', where);
+      assert.equal(fields.allowed_tools, '[Read, Glob, Grep, Skill]', where);
+      assert.equal(fields.tags, `[${skill}, ${lang}]`, where);
+      assert.notEqual(body.trim(), '', `${where}: empty prompt`);
+
+      const tool = frontmatterOf(evalFile(skill, lang, 'graders', 'skill.md')).fields;
+      assert.deepEqual(tool, { type: 'tool_used', tool: 'Skill', weight: '1' }, where);
+
+      const criteria = frontmatterOf(evalFile(skill, lang, 'graders', 'criteria.md'));
+      assert.deepEqual(criteria.fields, { type: 'llm', weight: '1' }, where);
+      assert.notEqual(criteria.body.trim(), '', `${where}: empty criteria`);
+    }
+  }
+});
+
+test('no eval prompt names its own skill, and no eval file keeps the blank template marker', () => {
+  for (const skill of SKILL_NAMES) {
+    const word = new RegExp(`(^|[^\\w-])${skill.replace(/-/g, '\\-')}($|[^\\w-])`, 'i');
+    for (const lang of EVAL_LANGS) {
+      const { body } = frontmatterOf(evalFile(skill, lang, 'prompt.md'));
+      assert.doesNotMatch(body, word, `${skill}-${lang}: the prompt names the skill`);
+      for (const file of [['prompt.md'], ['graders', 'skill.md'], ['graders', 'criteria.md']]) {
+        assert.doesNotMatch(frontmatterOf(evalFile(skill, lang, ...file)).body, /TODO:/, `${skill}-${lang}/${file.join('/')}`);
+      }
+    }
+  }
+});
+
+test('evals stay out of the npm package', () => {
+  assert.ok(!pkg.files.some((entry) => entry.startsWith('evals')));
+});
