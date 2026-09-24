@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runCurate } from '../src/commands/curate.mjs';
 import { acquireLock } from '../src/guards/lock.mjs';
@@ -205,6 +205,12 @@ test('an API or login error from the model is 69; another model failure is 1 nam
   assert.equal(r.status, EXIT.FAILURE, r.stderr);
   assert.equal(w.lastRun().reasonCode, 'isolation');
 
+  for (const marker of ['Error 401 from the service', 'failed authentication']) {
+    w.scenario({ stream: undefined, stderr: `${marker}\n`, exitCode: 1 });
+    assert.equal(w.curate().status, EXIT.UNAVAILABLE, marker);
+    assert.doesNotMatch(w.lastRun().reason, /from the service|failed auth/, 'only the marker is reported, never the CLI\'s text');
+  }
+
   w.scenario({ stderr: 'something broke\n', exitCode: 1 });
   r = w.curate();
   assert.equal(r.status, EXIT.FAILURE, r.stderr);
@@ -227,14 +233,24 @@ test('a model that exits 0 without reading the listed transcript exits 4 and the
   assert.equal(w.watermark(), null);
 });
 
-test('exit 0 with no BRAIN_KIT_SOURCES line does not advance the mark', () => {
+test('a model run that otherwise succeeded but leaves a required source open is exit 4, notified, naming the source (review I1)', () => {
   const w = makeCurateWorld();
   w.scenario({ rewrite: { finalText: 'Round done.' } });
   const r = w.curate();
-  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.equal(r.status, EXIT.SOURCE_UNREAD, r.stderr);
   assert.equal(w.watermark(), null);
-  assert.equal(w.lastRun().sources.transcripts.advanced, false);
+  const last = w.lastRun();
+  assert.equal(last.sources.transcripts.advanced, false);
+  assert.equal(last.reasonCode, 'source_not_advanced');
+  assert.match(last.reason, /transcripts \(no_sources_line\)/);
   assert.match(r.stderr, /did not move \(no_sources_line\)/);
+  assert.equal(w.notifications().at(-1).at(-1), last.reason);
+
+  w.scenario({ rewrite: { finalText: 'Round done.\nBRAIN_KIT_SOURCES: transcripts=failed' } });
+  const r2 = w.curate();
+  assert.equal(r2.status, EXIT.SOURCE_UNREAD, r2.stderr);
+  assert.match(w.lastRun().reason, /transcripts \(reported_failed\)/);
+  assert.equal(w.watermark(), null);
 });
 
 test('a lock held by a live process exits 75 naming it, and the round does nothing', () => {
@@ -258,6 +274,8 @@ test('a dirty tree postpones the round with 75, naming the file, before anything
   const r = w.curate();
   assert.equal(r.status, EXIT.TEMPFAIL, r.stderr);
   assert.match(r.stderr, /draft\.md/);
+  assert.equal(w.lastRun().reasonCode, 'dirty_tree');
+  assert.match(w.lastRun().reason, /draft\.md \(\d{4}-/, 'the round\'s own reason names the file');
   assert.equal(traces(w).fetched, false);
   assert.equal(traces(w).model, false);
 });
@@ -274,6 +292,19 @@ test('a diverged default branch fails the round with 1 and sync\'s message: a pe
   assert.equal(w.lastRun().reasonCode, 'sync_diverged');
   assert.equal(w.notifications().length, 1);
   assert.equal(traces(w).model, false);
+});
+
+test('a mark equal to today is in the future: exit 1 naming watermark reopen; a mark at yesterday is up to date (review I4)', () => {
+  const w = makeCurateWorld();
+  writeFileSync(join(w.state, 'watermark.json'), JSON.stringify({ sources: { transcripts: utcDay(0) } }));
+  const r = w.curate();
+  assert.equal(r.status, EXIT.FAILURE, r.stderr);
+  assert.equal(w.lastRun().reasonCode, 'watermark_future');
+  assert.match(r.stderr, new RegExp(`brain-kit watermark reopen transcripts ${utcDay(-1)}`));
+  writeFileSync(join(w.state, 'watermark.json'), JSON.stringify({ sources: { transcripts: utcDay(-1) } }));
+  const r2 = w.curate();
+  assert.equal(r2.status, EXIT.OK, r2.stderr);
+  assert.equal(w.lastRun().reasonCode, 'up_to_date');
 });
 
 test('a mark later than yesterday exits 1 naming watermark reopen', () => {
@@ -511,30 +542,35 @@ test('the parameters block renders in the vault\'s language', () => {
   assert.doesNotMatch(prompt, /\{[a-z_]+\}/);
 });
 
-test('a SIGTERM to curate while the model runs kills the model\'s whole process group before the lock is released, and exits 1', async () => {
-  const { spawn } = await import('node:child_process');
-  const w = makeCurateWorld();
-  const pidFile = join(w.base, 'fake-claude.pid');
-  // The fake writes its own pid (the parent of this action), then sleeps.
-  w.scenario({ actions: [{ run: [process.execPath, '-e', `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.ppid))`] }], delayMs: 60000 });
-  assert.equal(w.machine.claude_bin, FAKE);
-  const child = spawn(process.execPath, [BIN, 'curate'], { cwd: w.vault, env: w.env, stdio: 'ignore' });
-  const exited = new Promise((resolve) => child.on('exit', (code) => resolve(code)));
-  const until = Date.now() + 30000;
-  while (!existsSync(w.files.stdinFile) && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
-  while (!existsSync(pidFile) && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
-  const fakePid = Number(readFileSync(pidFile, 'utf8'));
-  child.kill('SIGTERM');
-  const code = await exited;
-  assert.equal(code, EXIT.FAILURE);
-  let alive = true;
-  try { process.kill(fakePid, 0); } catch { alive = false; }
-  if (alive) process.kill(fakePid, 'SIGKILL');
-  assert.equal(alive, false, 'the model died with the round');
-  assert.equal(w.lastRun().reasonCode, 'interrupted');
-  assert.deepEqual(w.roundFiles(), [], 'the lock is released');
-  assert.equal(w.watermark(), null);
-});
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT']) {
+  test(`a ${signal} to curate while the model runs kills the model's whole process group before the lock is released, writes last-run, notifies and exits 1`, async () => {
+    const { spawn } = await import('node:child_process');
+    const w = makeCurateWorld();
+    const pidFile = join(w.base, 'fake-claude.pid');
+    // The fake writes its own pid (the parent of this action), then sleeps.
+    w.scenario({ actions: [{ run: [process.execPath, '-e', `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.ppid))`] }], delayMs: 60000 });
+    assert.equal(w.machine.claude_bin, FAKE);
+    const child = spawn(process.execPath, [BIN, 'curate'], { cwd: w.vault, env: w.env, stdio: 'ignore' });
+    const exited = new Promise((resolve) => child.on('exit', (code, sig) => resolve({ code, sig })));
+    const until = Date.now() + 30000;
+    while (!existsSync(w.files.stdinFile) && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
+    while (!existsSync(pidFile) && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
+    const fakePid = Number(readFileSync(pidFile, 'utf8'));
+    child.kill(signal);
+    const { code, sig } = await exited;
+    assert.deepEqual({ code, sig }, { code: EXIT.FAILURE, sig: null });
+    let alive = true;
+    try { process.kill(fakePid, 0); } catch { alive = false; }
+    if (alive) process.kill(fakePid, 'SIGKILL');
+    assert.equal(alive, false, 'the model died with the round');
+    const last = w.lastRun();
+    assert.equal(last.reasonCode, 'interrupted');
+    assert.ok(last.reason.includes(signal), 'the reason names the signal');
+    assert.deepEqual(w.roundFiles(), [], 'the lock is released');
+    assert.equal(w.watermark(), null);
+    assert.equal(w.notifications().length, 1);
+  });
+}
 
 test('a path proposed twice is compared with the latest proposal that named it', () => {
   const w = makeCurateWorld();
@@ -626,4 +662,116 @@ test('a day whose only transcript cannot be opened is not an empty day: the roun
   } finally {
     chmodSync(w.transcript, 0o600);
   }
+});
+
+test('a CLI killed by a signal after printing a successful stream is a failed round, and the mark does not move (review I5)', () => {
+  const w = makeCurateWorld();
+  w.scenario({ killSelf: 'SIGKILL' });
+  const r = w.curate();
+  assert.equal(r.status, EXIT.FAILURE, r.stderr);
+  assert.equal(w.lastRun().reasonCode, 'model_failed');
+  assert.match(w.lastRun().reason, /SIGKILL/);
+  assert.equal(w.watermark(), null);
+});
+
+test('a result whose subtype is not success is a failed round even when is_error is false (review M1)', () => {
+  const w = makeCurateWorld();
+  w.scenario({ stream: join(STREAMS, 'max-turns.jsonl'), rewrite: { toolUses: [{ name: 'Read', input: { file_path: w.transcript } }], finalText: 'x\nBRAIN_KIT_SOURCES: transcripts=ok', replace: [['"is_error":true', '"is_error":false']] }, exitCode: 0 });
+  const r = w.curate();
+  assert.equal(r.status, EXIT.FAILURE, r.stderr);
+  assert.match(w.lastRun().reason, /error_max_turns/);
+  assert.equal(w.watermark(), null);
+});
+
+// Review I6: the model edits the tracked pre-push hook, runs propose (whose
+// push would run the hook, outside every allowlist) and writes the hook
+// back byte for byte. Now propose, joined to the round, refuses while a
+// protected path differs from HEAD, so the hook never runs.
+function hookWorld() {
+  const w = makeCurateWorld();
+  w.write('.githooks/pre-push', '#!/bin/sh\nexit 0\n');
+  chmodSync(join(w.vault, '.githooks/pre-push'), 0o755);
+  git(w.vault, ['add', '-A']);
+  git(w.vault, ['commit', '-q', '-m', 'hook']);
+  git(w.vault, ['push', '-q', 'origin', 'main']);
+  git(w.vault, ['config', 'core.hooksPath', '.githooks']);
+  return w;
+}
+
+test('a round whose model edits the pre-push hook and proposes: propose refuses, the hook never runs, and the round exits non-zero', () => {
+  const w = hookWorld();
+  const hook = join(w.vault, '.githooks/pre-push');
+  const saved = join(w.base, 'pre-push.orig');
+  const marker = join(w.base, 'ran-outside-the-allowlist');
+  w.scenario({
+    actions: [
+      { run: ['sh', '-c', `cp "${hook}" "${saved}" && sed -i '2i touch "${marker}"' "${hook}"`] },
+      { write: { path: 'notes/m.md', content: note('Meeting') } },
+      w.proposeAction('notes/m.md'),
+      { run: ['sh', '-c', `cat "${saved}" > "${hook}"`] },
+    ],
+  });
+  const r = w.curate();
+  assert.notEqual(r.status, EXIT.OK, r.stderr);
+  assert.equal(existsSync(marker), false, 'the edited hook never ran');
+  const runs = readFileSync(w.files.recordFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  const propose = runs.find((run) => run.argv.includes('propose'));
+  assert.equal(propose.status, EXIT.USAGE);
+  assert.match(propose.stderr, /\.githooks\/pre-push/);
+  assert.deepEqual(w.ghCalls(), [], 'nothing was pushed or opened');
+  assert.equal(w.watermark(), null);
+
+  // Without the revert, the hook itself is what the round reports as left.
+  const w2 = hookWorld();
+  const hook2 = join(w2.vault, '.githooks/pre-push');
+  w2.scenario({
+    actions: [
+      { run: ['sh', '-c', `sed -i '2i echo changed' "${hook2}"`] },
+      { write: { path: 'notes/m.md', content: note('Meeting') } },
+      w2.proposeAction('notes/m.md'),
+    ],
+  });
+  const r2 = w2.curate();
+  assert.equal(r2.status, EXIT.FAILURE, r2.stderr);
+  assert.ok(w2.lastRun().leftovers.includes('.githooks/pre-push'));
+  assert.match(w2.lastRun().reason, /\.githooks\/pre-push/);
+});
+
+test('curate.enabled false: exit 0 saying so, nothing run or advanced, last-run reason disabled', () => {
+  const w = makeCurateWorld({ config: (c) => { c.curate.enabled = false; } });
+  const r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.match(r.stdout, /disabled/);
+  assert.equal(w.lastRun().reasonCode, 'disabled');
+  assert.equal(traces(w).cli, false);
+  assert.equal(traces(w).model, false);
+  assert.equal(w.watermark(), null);
+  assert.deepEqual(w.notifications(), []);
+});
+
+test('every round removes its own log files older than machine.log_retention_days, and nothing else', () => {
+  const w = makeCurateWorld();
+  w.setMachine({ log_retention_days: 5 });
+  const logs = join(w.state, 'logs');
+  mkdirSync(logs, { recursive: true });
+  const old = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+  const recent = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+  const files = {
+    'curate-2026-01-01.log': old,
+    'curate-2026-01-01T00-00-00-000Z.stream.jsonl': old,
+    'curate-2026-09-01.log': recent,
+    'notes-of-mine.txt': old,
+    'other-2026-01-01.log': old,
+  };
+  for (const [name, when] of Object.entries(files)) {
+    writeFileSync(join(logs, name), 'x\n');
+    utimesSync(join(logs, name), when, when);
+  }
+  writeFileSync(join(w.state, 'watermark.json'), JSON.stringify({ sources: { transcripts: utcDay(-1) } }));
+  const r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  const left = readdirSync(logs);
+  assert.equal(left.includes('curate-2026-01-01.log'), false);
+  assert.equal(left.includes('curate-2026-01-01T00-00-00-000Z.stream.jsonl'), false);
+  for (const kept of ['curate-2026-09-01.log', 'notes-of-mine.txt', 'other-2026-01-01.log']) assert.ok(left.includes(kept), kept);
 });

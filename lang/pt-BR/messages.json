@@ -803,5 +803,8 @@
   "prompt.check_prompt_outside": "o curate.prompt do vault em {file} aponta para {path}, fora do vault; a rodada se recusa a rodá-lo.",
   "curate.days_remaining": "brain-kit curate: esta rodada lê até {last}; faltam mais {count} dia(s), e a próxima rodada continua dali.",
   "curate.params.remaining": "Há mais {count} dia(s) em aberto, mais recentes, deixados para a próxima rodada; esta rodada cura só os dias acima.",
-  "curate.sync_diverged": "brain-kit curate: o branch padrão divergiu do remoto (veja a mensagem acima); uma pessoa precisa reconciliar os dois, e nada foi curado."
+  "curate.sync_diverged": "brain-kit curate: o branch padrão divergiu do remoto (veja a mensagem acima); uma pessoa precisa reconciliar os dois, e nada foi curado.",
+  "propose.round_protected_paths": "brain-kit propose: recusado dentro de uma rodada de curadoria, porque arquivos que a rodada nunca pode alterar diferem do HEAD: {paths}. Nada foi commitado nem enviado; uma pessoa precisa olhar essas mudanças.",
+  "curate.source_not_advanced": "brain-kit curate: a rodada rodou, mas o dia continua aberto para {sources}: o modelo não informou a fonte como lida (a última linha dele precisa ser BRAIN_KIT_SOURCES). A próxima rodada lê de novo.",
+  "curate.disabled": "brain-kit curate: a curadoria está desativada em {file} (curate.enabled é false); nada foi lido, rodado nem avançado."
 }

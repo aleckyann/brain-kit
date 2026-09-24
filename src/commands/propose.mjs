@@ -159,6 +159,7 @@ import {
 } from '../git.mjs';
 import { runValidate } from './validate.mjs';
 import { runLint } from './lint.mjs';
+import { PROTECTED_PATHS } from '../curate/tools.mjs';
 
 const ROOT_INDEX = 'index.md';
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -439,6 +440,16 @@ async function proposeUnderLock({ root, cwd, config, parsed, io, t, env, now, wa
   if (!parsed.dry) checkEarlierProposals(root, io, t, env, proposals, gitConfig.pr_command);
 
   const dirty = dirtyPathBytes(root, { env });
+  // Joined to a round, a change to anything the model must never write
+  // (src/curate/tools.mjs, PROTECTED_PATHS: hooks, CI, settings, the kit's
+  // configuration) refuses the whole proposal, whether or not it is named:
+  // the push this run makes would run a changed hook outside every
+  // allowlist (review of task 6, finding I6). Defense in depth behind the
+  // round's deny rules.
+  if (round !== null) {
+    const touched = protectedChanges(dirty);
+    if (touched.length > 0) throw new Refusal(EXIT.USAGE, t('propose.round_protected_paths', { paths: touched }));
+  }
   if (dirty.length === 0) {
     io.stdout.write(`${t('propose.nothing_to_propose')}\n`);
     return EXIT.OK;
@@ -509,6 +520,12 @@ async function proposeUnderLock({ root, cwd, config, parsed, io, t, env, now, wa
   const code = openPullRequest(root, io, t, env, { program, base, branch, title, bodyFile, scratch, count: names.length, origin, createCommand });
   if (round !== null && !recordRound(root, io, t, env, round, { opened: code === EXIT.OK, remote, branch, commit, paths: names })) return EXIT.DEGRADED;
   return code;
+}
+
+// The decoded paths among `dirty` (tracked or untracked, never ignored)
+// that are a protected path or lie under one.
+function protectedChanges(dirty) {
+  return dirty.map((path) => decodeBytes(path)).filter((name) => PROTECTED_PATHS.some((p) => name === p || name.startsWith(`${p}/`)));
 }
 
 // The round record as it is now: undefined when there is none, null when

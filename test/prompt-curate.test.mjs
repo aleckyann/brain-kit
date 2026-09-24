@@ -18,7 +18,7 @@ import { EXIT } from '../src/exit-codes.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { loadConfig } from '../src/config.mjs';
 import { CURATE_RULES, renderCuratePrompt, runPrompt, vaultClock } from '../src/commands/prompt.mjs';
-import { KIT_SUBCOMMANDS, allowedTools, disallowedTools, kitCommand } from '../src/curate/tools.mjs';
+import { KIT_SUBCOMMANDS, PROTECTED_PATHS, allowedTools, disallowedTools, kitCommand } from '../src/curate/tools.mjs';
 
 const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
 const LANGS = ['pt-BR', 'en'];
@@ -96,7 +96,7 @@ test('kitCommand() is the kit\'s own bin/brain-kit.mjs, double quoted and absolu
 test('allowedTools() is exactly the list task 6 names, each subcommand bare and behind node, then the extras', () => {
   const kit = kitCommand();
   assert.deepEqual(allowedTools(), [
-    'Read', 'Glob', 'Grep', 'Edit', 'Write',
+    'Read', 'Glob', 'Grep', 'Edit(./**)', 'Write(./**)',
     `Bash(${kit} validate:*)`, `Bash(node ${kit} validate:*)`,
     `Bash(${kit} lint:*)`, `Bash(node ${kit} lint:*)`,
     `Bash(${kit} propose:*)`, `Bash(node ${kit} propose:*)`,
@@ -105,9 +105,15 @@ test('allowedTools() is exactly the list task 6 names, each subcommand bare and 
 });
 
 test('disallowedTools() is exactly the list task 6 names, then the extras, and never carries Bash(node:*)', () => {
+  assert.deepEqual(PROTECTED_PATHS, ['.githooks', '.git', '.github', '.claude', '.brain-kit', 'brain-kit.config.json', '.gitignore', '.gitattributes', '.gitmodules']);
+  const protectedRules = PROTECTED_PATHS.flatMap((p) => [`Edit(./${p})`, `Edit(./${p}/**)`, `Write(./${p})`, `Write(./${p}/**)`]);
   assert.deepEqual(disallowedTools(), [
     'Bash(git push:*)', 'Bash(git commit:*)', 'Bash(gh:*)', 'Bash(curl:*)', 'Bash(wget:*)', 'Bash(rm:*)', 'WebFetch', 'WebSearch',
+    ...protectedRules,
   ]);
+  assert.ok(disallowedTools().includes('Edit(./.githooks/**)'));
+  assert.ok(disallowedTools().includes('Write(./brain-kit.config.json)'));
+  assert.ok(!allowedTools().includes('Edit') && !allowedTools().includes('Write'), 'Edit and Write are never granted without a path');
   assert.deepEqual(disallowedTools(['Bash(scp:*)']).slice(-1), ['Bash(scp:*)']);
   assert.ok(!disallowedTools().includes('Bash(node:*)'));
 });

@@ -20,7 +20,7 @@ test('a 401 in seconds is exit 69, never 0: in the log, in last-run with no turn
   assert.equal(last.numTurns, null);
   assert.equal(last.costUsd, null);
   assert.equal(typeof last.durationMs, 'number');
-  assert.match(last.reason, /API Error: 401/);
+  assert.match(last.reason, /API Error, 401, authentication/);
   assert.match(w.logText(), /"exit":69/);
   assert.equal(w.watermark(), null);
   const [call] = w.notifications();

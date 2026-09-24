@@ -27,7 +27,8 @@
 //     },
 //     "stderr": "...",
 //     "exitCode": 0,
-//     "delayMs": 0                          after the stream, before exiting
+//     "delayMs": 0,                         after the stream, before exiting
+//     "killSelf": "SIGKILL"                 after the stream is written, die by this signal
 //   }
 //
 // It validates its argument vector the way Claude Code 2.1.281 did when
@@ -127,8 +128,13 @@ function buildStream() {
 }
 
 const lines = buildStream();
-if (lines.length > 0) process.stdout.write(`${lines.join('\n')}\n`);
 if (scenario.stderr) process.stderr.write(scenario.stderr);
+if (scenario.killSelf) {
+  process.stdout.write(lines.length > 0 ? `${lines.join('\n')}\n` : '', () => process.kill(process.pid, scenario.killSelf));
+  setTimeout(() => {}, 60000);
+} else if (lines.length > 0) {
+  process.stdout.write(`${lines.join('\n')}\n`);
+}
 
 // exitCode, not exit(): exit() can cut a pipe write short on some systems.
 process.exitCode = scenario.exitCode ?? 0;

@@ -21,7 +21,31 @@ import { KIT_ROOT } from '../version.mjs';
 
 export const KIT_SUBCOMMANDS = Object.freeze(['validate', 'lint', 'propose']);
 
-const BASE_ALLOWED = Object.freeze(['Read', 'Glob', 'Grep', 'Edit', 'Write']);
+// Edit and Write are granted inside the vault only. Measured by the
+// controller on 24/09/2026 against Claude Code 2.1.281: `Edit(./**)` and
+// `Write(./**)` (paths relative to the round's working directory, the
+// vault root) let the model write in the vault and denied a write outside
+// it, and a path deny rule such as `Edit(./.githooks/**)` wins over them.
+// Bare `Edit`/`Write` would reach any file the user can write.
+const BASE_ALLOWED = Object.freeze(['Read', 'Glob', 'Grep', 'Edit(./**)', 'Write(./**)']);
+
+// What the model must never write, even inside the vault: what runs code
+// (hooks, git's own configuration, CI, Claude Code settings), what decides
+// the kit's own behaviour, and what decides what git sees. Review of task 6,
+// finding I6: the model edited the tracked pre-push hook, ran `propose`
+// (whose push ran the hook, outside every allowlist) and wrote the hook
+// back byte for byte, leaving no trace. `propose`, joined to a round,
+// also refuses when any of these differs from HEAD (defense in depth).
+export const PROTECTED_PATHS = Object.freeze([
+  '.githooks', '.git', '.github', '.claude', '.brain-kit', 'brain-kit.config.json', '.gitignore', '.gitattributes', '.gitmodules',
+]);
+
+// Both forms for every protected path, the path itself and everything
+// under it, for Edit and for Write: a rule for a directory that happens to
+// be a file (or the reverse) still holds.
+function protectedRules() {
+  return PROTECTED_PATHS.flatMap((path) => [`Edit(./${path})`, `Edit(./${path}/**)`, `Write(./${path})`, `Write(./${path}/**)`]);
+}
 
 const BASE_DISALLOWED = Object.freeze([
   'Bash(git push:*)',
@@ -50,5 +74,5 @@ export function allowedTools(extra = []) {
 
 // `extra` is the vault's `curate.disallowed_tools_extra`, appended as given.
 export function disallowedTools(extra = []) {
-  return [...BASE_DISALLOWED, ...extra];
+  return [...BASE_DISALLOWED, ...protectedRules(), ...extra];
 }

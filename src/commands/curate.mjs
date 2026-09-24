@@ -44,7 +44,7 @@
 // `deps` carries the environment, the working directory, the clock, the
 // network wait's timing and a step observer, for the tests. Production
 // passes nothing.
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { delimiter, join, resolve, sep } from 'node:path';
@@ -89,6 +89,17 @@ const FALLBACK_MAX_TURNS = 100;
 const FALLBACK_BUDGET_USD = 5;
 const NOTIFY_TIMEOUT_MS = 30000;
 const API_ERROR = /API Error|\b401\b|authentication/i;
+const API_MARKERS = Object.freeze([/API Error/i, /\b401\b/, /authentication/i]);
+
+// Every signal that would end curate is caught and handled the same way:
+// the model's process group is killed, last-run names the signal, the lock
+// is released, notify runs, exit 1. The model runs detached (its own
+// session), so a terminal's hangup no longer reaches it: without this, a
+// SIGHUP or SIGQUIT left the model running with the round's token after
+// the round and its lock were gone (review findings I2, I3). A SIGKILL of
+// curate cannot be handled: the model then keeps running, and the lock is
+// reclaimed as stale only once the model has exited.
+const FORWARDED_SIGNALS = Object.freeze(['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT']);
 
 // The sources this version can read, by the id the configuration names
 // them with. A configured id missing here is refused when required and
@@ -160,9 +171,11 @@ function sourcesOf(config) {
 function computeWindow(stateDir, sources, now, tz) {
   const mark = readWatermark(stateDir);
   const yesterday = addDays(localDay(now, tz), -1);
+  // windowFor's own verdict on each source's mark, never a second
+  // comparison here that could disagree with it (review finding I4).
   for (const source of sources) {
     const day = mark.sources[source.id];
-    if (day !== undefined && day > yesterday) return { future: { source: source.id, day, yesterday } };
+    if (day !== undefined && windowFor(day, now, tz).future) return { future: { source: source.id, day, yesterday } };
   }
   let earliest = null;
   for (const source of sources) {
@@ -429,16 +442,14 @@ export async function runCurate(argv, io, t, deps = {}) {
   }
   recordFile = roundRecordPath(root, lock.token, env);
   log('start', { root, check: parsed.check });
-  process.on('SIGINT', onSignal);
-  process.on('SIGTERM', onSignal);
+  for (const signal of FORWARDED_SIGNALS) process.on(signal, onSignal);
 
   try {
     await roundUnderLock();
   } catch (error) {
     fail(EXIT.FAILURE, 'internal_error', t('curate.internal_error', { detail: error instanceof Error ? error.message : String(error) }));
   } finally {
-    process.removeListener('SIGINT', onSignal);
-    process.removeListener('SIGTERM', onSignal);
+    for (const signal of FORWARDED_SIGNALS) process.removeListener(signal, onSignal);
     if (recordFile !== null) {
       if (!keepRecord) rmSync(recordFile, { force: true });
       rmSync(`${recordFile}.lock`, { force: true });
@@ -474,7 +485,16 @@ export async function runCurate(argv, io, t, deps = {}) {
     // A diverged base is exit 1, not 75: retrying cannot fix it, a person
     // must reconcile the two histories (controller ruling, fix round 1).
     if (outcome.diverged) return fail(EXIT.FAILURE, 'sync_diverged', t('curate.sync_diverged', {}));
-    if (synced === EXIT.TEMPFAIL) return fail(EXIT.TEMPFAIL, 'sync_postponed', t('curate.sync_postponed', {}));
+    if (synced === EXIT.TEMPFAIL) {
+      // Sync postpones first on a dirty tree; the round's own reason names
+      // the files, as step 8 would (review finding M6).
+      const early = checkDirtyTree(root, null, { env });
+      if (!early.ok) {
+        const files = early.files.map((f) => `${f.path} (${f.mtime ?? '-'})`).join(', ');
+        return fail(EXIT.TEMPFAIL, 'dirty_tree', t('curate.dirty', { files }));
+      }
+      return fail(EXIT.TEMPFAIL, 'sync_postponed', t('curate.sync_postponed', {}));
+    }
     if (synced !== EXIT.OK) return fail(EXIT.FAILURE, 'sync_failed', t('curate.sync_failed', {}));
 
     // 6. The configuration, as synced, and the prompt it names.
@@ -485,6 +505,14 @@ export async function runCurate(argv, io, t, deps = {}) {
     } catch (error) {
       if (!(error instanceof ConfigError)) throw error;
       return fail(EXIT.USAGE, 'config_invalid', t('curate.config_invalid', { detail: error.message }));
+    }
+    // Disabled in the configuration: a normal state, said, never a failure,
+    // and nothing is read, run or advanced.
+    if (config.curate?.enabled === false) {
+      run.exit = EXIT.OK;
+      run.reasonCode = 'disabled';
+      run.reason = t('curate.disabled', { file: CONFIG_FILENAME });
+      return EXIT.OK;
     }
     const outside = promptOutsideVault(root, config);
     const promptSetting = `${CONFIG_FILENAME} curate.prompt`;
@@ -633,7 +661,12 @@ export async function runCurate(argv, io, t, deps = {}) {
       if (isHook) hooks += 1;
       if (event.subtype === 'init' && init === null) init = event;
       if (!isHook && event.subtype !== 'init') return;
-      const checked = checkIsolation({ init, hookEvents: hooks });
+      let checked = checkIsolation({ init, hookEvents: hooks });
+      // A hook before the init event is a hook, not a missing init.
+      if (isHook && init === null) {
+        const details = checked.details.filter((d) => d.code !== 'no_init');
+        checked = { ok: false, problems: details.map((d) => d.code), details };
+      }
       if (!checked.ok) {
         isolationAbort = checked;
         controller.abort('isolation');
@@ -705,7 +738,11 @@ export async function runCurate(argv, io, t, deps = {}) {
     run.leftovers = dirtyPaths(root, { env });
 
     // 16. The exit, first match wins.
-    const modelOk = out.exitCode === 0 && !out.timedOut && out.aborted === null && out.spawnError === null && result !== null && !result.isError;
+    // Success is the CLI's own exit 0 with no signal (review finding I5: a
+    // CLI killed by a signal nobody in the round sent is never a success)
+    // and a result that is a success, not an error in disguise.
+    const modelOk = out.exitCode === 0 && out.signal === null && !out.timedOut && out.aborted === null && out.spawnError === null
+      && result !== null && !result.isError && result.subtype === 'success';
     const unread = unreadRequired(evidence, required.filter((id) => Object.hasOwn(SOURCES, id)));
     let exit;
     if (isolationFailed) {
@@ -713,11 +750,16 @@ export async function runCurate(argv, io, t, deps = {}) {
     } else if (interrupted) {
       exit = fail(EXIT.FAILURE, 'interrupted', t('curate.interrupted', { signal: interrupted }));
     } else if (out.timedOut) {
-      exit = fail(EXIT.FAILURE, 'timed_out', t('curate.model_timed_out', { minutes: Math.round((deps.roundTimeoutMs ?? ROUND_TIMEOUT_MS) / 60000) }));
+      exit = fail(EXIT.FAILURE, 'timed_out', t('curate.model_timed_out', { minutes: Math.ceil((deps.roundTimeoutMs ?? ROUND_TIMEOUT_MS) / 60000) }));
     } else if (!modelOk) {
       const subtype = result?.subtype ?? '-';
-      const detail = lastLine(out.stderrTail) || (out.spawnError ?? '-');
       const api = API_ERROR.test(out.stderrTail) || (result?.isError === true && API_ERROR.test(result.text ?? ''));
+      // On an API or login error only the markers found are reported, never
+      // the CLI's own text (review finding M5); otherwise its last stderr line.
+      const apiText = `${out.stderrTail}\n${result?.isError === true ? result.text ?? '' : ''}`;
+      const detail = api
+        ? API_MARKERS.map((re) => re.exec(apiText)?.[0]).filter(Boolean).join(', ')
+        : lastLine(out.stderrTail) || (out.spawnError ?? '-');
       if (api) exit = fail(EXIT.UNAVAILABLE, 'model_unavailable', t('curate.model_unavailable', { subtype, detail }));
       else exit = fail(EXIT.FAILURE, 'model_failed', t('curate.model_failed', { subtype, code: String(out.exitCode ?? out.signal ?? '-'), detail }));
     } else if (unread.length > 0) {
@@ -740,13 +782,21 @@ export async function runCurate(argv, io, t, deps = {}) {
 
     // 17. The watermark, only on 0 or 3.
     onStep('watermark');
+    const stuck = [];
     if (exit === EXIT.OK || exit === EXIT.DEGRADED) {
       for (const source of active) {
         const moved = advanceWatermark(stateDir, source.id, lastDay, { modelExit: modelOk ? 0 : 1, evidence: evidence[source.id], sourcesLine, timezone: tz, now });
         run.sources[source.id].advanced = moved.advanced;
         log('watermark', { source: source.id, day: lastDay, ...moved });
         if (!moved.advanced) io.stderr.write(`${t('curate.not_advanced', { source: source.id, reason: moved.reason })}\n`);
+        if (!moved.advanced && moved.reason !== 'not_later' && required.includes(source.id)) stuck.push(`${source.id} (${moved.reason})`);
       }
+    }
+    // A round that otherwise succeeded but left a required source's day
+    // open (no BRAIN_KIT_SOURCES line, the source reported failed or
+    // empty with files) is never exit 0 (review finding I1): 4, notified.
+    if (exit === EXIT.OK && stuck.length > 0) {
+      exit = fail(EXIT.SOURCE_UNREAD, 'source_not_advanced', t('curate.source_not_advanced', { sources: stuck.join(', ') }));
     }
     return exit;
   }
@@ -771,8 +821,35 @@ function lastLine(text) {
 // Step 18: last-run.json, the log's last line, the lock, the notification.
 // The model's process group is already dead: runModel kills it before it
 // resolves, so no child of the round outlives the lock.
+// The round's own files in logs/ (its dated log and a kept stream), and
+// nothing else, older than machine.log_retention_days (30 by default).
+const OWN_LOG_FILE = /^curate-(?:\d{4}-\d{2}-\d{2}\.log|[0-9TZ-]+\.stream\.jsonl)$/;
+const DEFAULT_LOG_RETENTION_DAYS = 30;
+
+function pruneLogs(stateDir, machine, now = Date.now()) {
+  const days = Number.isInteger(machine?.log_retention_days) && machine.log_retention_days > 0 ? machine.log_retention_days : DEFAULT_LOG_RETENTION_DAYS;
+  const dir = join(stateDir, STATE_FILES.LOG_DIR);
+  let names;
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return;
+  }
+  const limit = now - days * 24 * 60 * 60 * 1000;
+  for (const name of names) {
+    if (!OWN_LOG_FILE.test(name)) continue;
+    try {
+      const st = lstatSync(join(dir, name));
+      if (st.isFile() && st.mtimeMs < limit) rmSync(join(dir, name), { force: true });
+    } catch {
+      // A file that went away or cannot be read is left to the next round.
+    }
+  }
+}
+
 function finishRound({ run, io, log, stateDir, machine, env, started, lock, writeLastRun, check }) {
   run.durationMs = Date.now() - started;
+  pruneLogs(stateDir, machine);
   const exit = run.exit ?? EXIT.FAILURE;
   if (run.reason) (exit === EXIT.OK ? io.stdout : io.stderr).write(`${run.reason}\n`);
   if (writeLastRun) {
@@ -797,6 +874,10 @@ function finishRound({ run, io, log, stateDir, machine, env, started, lock, writ
 function dryRun({ root, stateDir, machine, claudeBin, io, t, env, now }) {
   io.stdout.write(`${t('curate.dry_header', {})}\n`);
   const config = loadConfig(root);
+  if (config.curate?.enabled === false) {
+    io.stdout.write(`${t('curate.disabled', { file: CONFIG_FILENAME })}\n`);
+    return EXIT.OK;
+  }
   const tz = config.vault?.timezone;
   const { active, unknownRequired, unknownBestEffort } = sourcesOf(config);
   let computed;

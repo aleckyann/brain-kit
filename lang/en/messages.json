@@ -803,5 +803,8 @@
   "prompt.check_prompt_outside": "the vault's curate.prompt in {file} points at {path}, outside the vault; a round refuses to run it.",
   "curate.days_remaining": "brain-kit curate: this round reads through {last}; {count} more day(s) remain, and the next round continues from there.",
   "curate.params.remaining": "{count} newer open day(s) are left for the next round; this round curates only the days above.",
-  "curate.sync_diverged": "brain-kit curate: the default branch has diverged from its remote (see the message above); a person must reconcile them, and nothing was curated."
+  "curate.sync_diverged": "brain-kit curate: the default branch has diverged from its remote (see the message above); a person must reconcile them, and nothing was curated.",
+  "propose.round_protected_paths": "brain-kit propose: refused inside a curation round, because files the round must never change differ from HEAD: {paths}. Nothing was committed or pushed; a person must look at these changes.",
+  "curate.source_not_advanced": "brain-kit curate: the round ran, but the day stays open for {sources}: the model did not report the source as read (its last line must be BRAIN_KIT_SOURCES). The next round reads it again.",
+  "curate.disabled": "brain-kit curate: curation is disabled in {file} (curate.enabled is false); nothing was read, run or advanced."
 }
