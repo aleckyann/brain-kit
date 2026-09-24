@@ -182,6 +182,59 @@ Nothing below is on npm yet. It runs from a clone of the repository.
 - The plugin no longer declares a `vault_dir` option: nothing reads it, since the vault is
   always found from the working directory.
 
+### Phase 2: the scheduled curator
+
+- `brain-kit curate [dir] [--dry] [--check] [--keep-stream]` runs one curator round in a
+  fixed, tested order: the machine file, the vault lock, a timed wait for the network,
+  sync, and only then the configuration and prompt as synced, the window from the
+  watermark, a clean tree, the round's own snapshot, a check that the Claude Code CLI is a
+  real program, the sources, and the model. Afterwards it checks what the model read,
+  brings the files it proposed back to the default branch when they are exactly what was
+  pushed, writes `last-run.json` and a log that never holds content, and runs
+  `machine.notify_command` on any non-zero exit. Every way a round can fail has its own
+  exit code: 1 failed, 2 bad setting, 3 proposed but the pull request is not open, 4 a
+  required source not read, 69 no network or model unavailable, 75 postponed. `--dry`
+  shows what a round would do and writes nothing; `--check` runs every step up to the
+  model.
+- The transcripts source selects Claude Code sessions by the timestamps of their messages,
+  not by file modification time, from the projects `sources.transcripts.include_projects`
+  lists; drops the curator's own runs by their first user message only; caps by recency;
+  and gives the model each file's size and the line to start reading from.
+- A generic, domain-neutral curate prompt in both language packs, written from scratch,
+  which a vault may override with `.brain-kit/prompts/curate.md` (never outside the vault).
+  `brain-kit prompt curate` prints it and `prompt --check` verifies it.
+- The watermark: per source, the last day swept. A round reads the open days oldest first,
+  at most seven at a time, and advances a source only on exit 0 or 3, with every offered
+  file read and the model's `BRAIN_KIT_SOURCES` line reporting it; a day is never closed
+  unread. `brain-kit watermark show|set|reopen|assume-covered [dir]` shows it and moves it
+  by hand, taking the vault lock to write.
+- `brain-kit schedule install|uninstall|status [dir] [--platform systemd|launchd|cron] [--dry]`
+  installs the round in daytime windows only (07:00 to 22:59; 09:30, 14:00 and 20:00 by
+  default), named `brain-kit-curate-<vault_id>` by what it does, with no dependency on a
+  network target, missed windows not caught up where the platform allows it, and a `PATH`
+  that survives the CLI moving between its two usual directories. systemd user units are
+  the reference; launchd and cron are rendered too. `status` says whether the entry is
+  installed, current and enabled, and prints the next fire times and the last round as
+  DD/MM/YYYY HH:MM.
+- Isolation: every round runs the model with `--setting-sources ''`,
+  `--strict-mcp-config`, `--permission-mode dontAsk` and `--permission-prompts none`, so
+  none of the person's settings, hooks, allow rules or MCP servers reach it (a plain
+  headless run was measured inheriting all of them), with an allowlist of the kit's own
+  `validate`, `lint` and `propose` and a denylist for publishing, the network and the
+  kit's protected files. The round stops the model before it does any work when the CLI's
+  first event reports anything else. The model runs in its own process group, killed as a
+  whole on timeout or interruption, and the `propose` it runs joins the lock the round
+  holds.
+- `brain-kit doctor` checks the curator: `claude-real` (not a launcher stub, a real
+  version), `claude-isolation-flags` (the installed CLI lists every flag a round passes),
+  `include-projects`, `watermark` (days behind per source; more than three warns),
+  `last-run` (a round that exited 0 in under 20 seconds without a model turn is a dead
+  round), `schedule` (installed, current, enabled, next fire times) and `notify`. Each
+  names the command that fixes what it finds.
+- `docs/scheduling.md` (the round step by step, the windows, the watermark, the exit codes
+  and what to do for each, `last-run.json` and the logs) and `docs/security.md` (what
+  isolates the model and the measurements behind it).
+
 ## 0.0.1 (published on npm on 18/09/2026)
 
 Phase 0: package skeleton, CLI router with exit codes, language packs (pt-BR reference, en),

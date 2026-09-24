@@ -153,10 +153,18 @@ test('systemd install writes under XDG_CONFIG_HOME, enables the timer, and statu
   assert.deepEqual(s.stdout.split('\n'), [
     world.t('schedule.status_active', { name: world.name, platform: 'systemd' }),
     world.t('schedule.status_next', { times: '24/09/2026 14:00, 24/09/2026 20:00, 25/09/2026 09:30' }),
-    world.t('schedule.status_last_run', { summary: 'status=ok, exit_code=0, finished_at=2026-09-24T09:31:10-03:00' }),
+    world.t('schedule.status_last_run', { summary: `status=ok, exit_code=0, finished_at=${shownLocal('2026-09-24T09:31:10-03:00')}` }),
     '',
   ]);
 });
+
+// DD/MM/YYYY HH:MM on this machine's clock, computed apart from the code
+// under test.
+function shownLocal(iso) {
+  const d = new Date(iso);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 
 test('the next fire times start strictly after now and roll over the days as far as they need to', () => {
   const at = (h, m) => new Date(2026, 8, 24, h, m);

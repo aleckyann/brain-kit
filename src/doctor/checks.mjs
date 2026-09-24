@@ -1,5 +1,5 @@
-// The phase 1 checks of `brain-kit doctor`: is this machine, and this
-// vault, ready for the kit to run here?
+// The checks of `brain-kit doctor`: is this machine, and this vault, ready
+// for the kit to run here, and is the scheduled curator really running?
 //
 // Each check is named by what it prevents, and returns one result:
 // { id, status, messageKey, params }, where status is 'ok', 'warn' or
@@ -26,14 +26,14 @@
 // repository removed (src/git-env.mjs): with GIT_DIR in the environment,
 // every git question below would otherwise be answered about THAT
 // repository, and a vault whose push runs no hook would read as gated.
-import { accessSync, constants as fsConstants, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { accessSync, constants as fsConstants, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, delimiter, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { run } from '../exec.mjs';
 import { EXIT } from '../exit-codes.mjs';
 import { decodeBytes } from '../io.mjs';
 import { CONFIG_FILENAME, MACHINE_FILENAME, canonicalPathMatches, findMachineOnlyKeys, validateConfig, validateMachine } from '../config.mjs';
-import { stateDirFor } from '../state.mjs';
+import { STATE_FILES, stateDirFor } from '../state.mjs';
 import { kitVersion } from '../version.mjs';
 import { localGitVarNames, withoutLocalGitVars } from '../git-env.mjs';
 import { loadPatterns } from '../leak.mjs';
@@ -42,6 +42,15 @@ import { INSTALL_HOOK_COMMAND } from '../init/gate.mjs';
 import { MANIFEST_PATH, readManifest } from '../manifest.mjs';
 import { compareVersions } from '../commands/update.mjs';
 import { defaultBranch, defaultBranchUpstream, remoteBranches, trackedRemote } from '../git.mjs';
+import { checkCli } from '../guards/cli.mjs';
+import { buildArgv } from '../harness/claude-code.mjs';
+import { addDays, daysBetween, localDay, readWatermark, WatermarkError } from '../guards/watermark.mjs';
+// A cycle on purpose: schedule.mjs imports resolveClaude and expandHome
+// from this file, and this file asks schedule's own `status`. Neither
+// module uses the other's exports while it loads, only inside functions,
+// so either may be imported first (test/doctor.test.mjs loads each
+// on its own in a fresh process to hold that).
+import { runScheduleSync } from '../commands/schedule.mjs';
 
 export const MINIMUM_NODE_MAJOR = 24;
 export const HOOKS_DIR = '.githooks';
@@ -166,14 +175,14 @@ function readJsonFile(file) {
 // directory uses. The real path is a separate fact, used where the
 // question is about the real path.
 export function buildContext({
-  root, env = process.env, nodeVersion = process.versions.node, execPath = process.execPath, engineVersion = kitVersion(),
+  root, env = process.env, nodeVersion = process.versions.node, execPath = process.execPath, engineVersion = kitVersion(), now = new Date(),
 }) {
   const memo = new Map();
   const once = (key, compute) => () => {
     if (!memo.has(key)) memo.set(key, compute());
     return memo.get(key);
   };
-  const ctx = { root, env, nodeVersion, execPath, engineVersion };
+  const ctx = { root, env, nodeVersion, execPath, engineVersion, now };
   ctx.localGitVars = once('localGitVars', () => localGitVarNames(env));
   ctx.realRoot = once('realRoot', () => realpathSync(root));
   ctx.configFile = join(root, CONFIG_FILENAME);
@@ -679,6 +688,400 @@ function gitignoreNodeModules(ctx) {
   return { id, status: 'ok', messageKey: 'doctor.gitignore_node_modules.ok', params: { pattern, source } };
 }
 
+// --- the scheduled curator's checks (phase 2) --------------------------------
+//
+// Each one answers a question an unattended round would otherwise answer
+// by dying, or worse, by exiting 0 having done nothing (docs/incidents.md,
+// 13/09/2026 and 21/08/2026). Each names the command that fixes what it
+// finds. With curate.enabled false they have nothing to prove and say so;
+// with a configuration doctor cannot read (config-valid says why) they
+// cannot ask, and warn.
+
+export const WATERMARK_BEHIND_WARN_DAYS = 3;
+// A round that exits 0 in less than this, with no model turn, is dead: the
+// 21/08/2026 round died on an expired token in six seconds and its service
+// read green.
+export const DEAD_ROUND_MS = 20000;
+// Exits that say "not now" rather than "broken": degraded (3), network or
+// model unavailable (69), postponed (75).
+const SOFT_EXITS = Object.freeze([EXIT.DEGRADED, EXIT.UNAVAILABLE, EXIT.TEMPFAIL]);
+// A round that ended before the model, legitimately fast.
+const NO_MODEL_REASONS = Object.freeze(['up_to_date', 'nothing_to_curate']);
+const DEFAULT_TRANSCRIPTS_DIR = '~/.claude/projects';
+const INCLUDE_PROJECTS_KEY = 'sources.transcripts.include_projects';
+const CURATE_COMMAND = 'brain-kit curate';
+const SCHEDULE_INSTALL_COMMAND = 'brain-kit schedule install';
+const SCHEDULE_UNINSTALL_COMMAND = 'brain-kit schedule uninstall';
+const SET_CLAUDE_COMMAND = 'brain-kit machine set claude_bin <path>';
+const SET_TRANSCRIPTS_COMMAND = 'brain-kit machine set transcripts_dir <dir>';
+const SET_NOTIFY_COMMAND = 'brain-kit machine set notify_command \'["<program>", "<argument>"]\'';
+const UPDATE_CLAUDE_COMMAND = 'claude update';
+
+function isObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isDirectory(path) {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+// DD/MM/YYYY HH:MM on the machine's clock, for a person; '-' when the
+// value is not an instant. `schedule status` shows last-run's times the
+// same way.
+export function shownInstant(iso) {
+  const at = typeof iso === 'string' ? new Date(iso) : null;
+  if (at === null || Number.isNaN(at.getTime())) return '-';
+  return `${pad2(at.getDate())}/${pad2(at.getMonth() + 1)}/${at.getFullYear()} ${pad2(at.getHours())}:${pad2(at.getMinutes())}`;
+}
+
+function shownDay(day) {
+  const [y, m, d] = day.split('-');
+  return `${d}/${m}/${y}`;
+}
+
+// { config } | { disabled: true, config } | { result } when the
+// configuration cannot be read.
+function curateInputs(ctx, id) {
+  const read = ctx.config();
+  if (!read.ok || !isObject(read.value)) {
+    return { result: { id, status: 'warn', messageKey: 'doctor.curate.config_unknown', params: { file: ctx.configFile } } };
+  }
+  const config = read.value;
+  if (config.curate?.enabled === false) return { disabled: true, config };
+  return { config };
+}
+
+function curateDisabled(ctx, id) {
+  return { id, status: 'ok', messageKey: 'doctor.curate.disabled', params: { file: ctx.configFile } };
+}
+
+function machineObject(ctx) {
+  const read = ctx.machine();
+  return read.ok && isObject(read.value) ? read.value : null;
+}
+
+// The claude this machine's rounds would run, when doctor may run it:
+// the same refusals as claude-present (never a path from a machine file
+// the kit would refuse, or one another user could have written), then the
+// same resolution the schedule and the round use.
+function claudeToRun(ctx, id) {
+  const file = ctx.machineFile;
+  const machine = machineObject(ctx);
+  const bin = machine?.claude_bin;
+  if (typeof bin !== 'string' || bin === '') {
+    return { result: { id, status: 'warn', messageKey: 'doctor.claude_present.unknown', params: { file } } };
+  }
+  if (validateMachine(machine).length > 0) {
+    return { result: { id, status: 'warn', messageKey: 'doctor.claude_present.machine_invalid', params: { file } } };
+  }
+  if (writableByOthers(file) || writableByOthers(ctx.stateDir)) {
+    return { result: { id, status: 'warn', messageKey: 'doctor.claude_present.machine_writable', params: { file } } };
+  }
+  const extra = Array.isArray(machine.path_extra) ? machine.path_extra : [];
+  const resolved = resolveClaude(bin, extra, ctx.env, ctx.root);
+  if (!resolved) {
+    return { result: { id, status: 'fail', messageKey: 'doctor.claude_real.not_found', params: { bin, command: SET_CLAUDE_COMMAND } } };
+  }
+  return { bin: resolved };
+}
+
+// docs/incidents.md, 14/09/2026: a reinstall left a launcher of about 500
+// bytes where the CLI should be, and --version printed error text. The
+// round's own guard (src/guards/cli.mjs) is what is asked here, so doctor
+// and the round cannot disagree on what a real CLI is.
+function claudeReal(ctx) {
+  const id = 'claude-real';
+  const inputs = curateInputs(ctx, id);
+  if (inputs.result) return inputs.result;
+  if (inputs.disabled) return curateDisabled(ctx, id);
+  const target = claudeToRun(ctx, id);
+  if (target.result) return target.result;
+  const bin = target.bin;
+  const cli = checkCli(bin, { env: { ...withoutLocalGitVars(ctx.env, ctx.localGitVars()), LC_ALL: 'C' }, timeoutMs: PROBE_TIMEOUT_MS });
+  if (cli.problem === 'missing') {
+    return { id, status: 'fail', messageKey: 'doctor.claude_real.not_found', params: { bin, command: SET_CLAUDE_COMMAND } };
+  }
+  if (cli.problem === 'stub') {
+    return { id, status: 'fail', messageKey: 'doctor.claude_real.stub', params: { bin, bytes: cli.params.bytes } };
+  }
+  if (!cli.ok) {
+    return { id, status: 'fail', messageKey: 'doctor.claude_real.version', params: { bin, output: cli.params.output } };
+  }
+  return { id, status: 'ok', messageKey: 'doctor.claude_real.ok', params: { bin, version: cli.version } };
+}
+
+// Every option buildArgv can put on a round's command line, derived from
+// buildArgv itself so this list cannot fall behind it.
+export function roundFlags() {
+  return buildArgv({ model: 'm', maxTurns: 1, budgetUsd: 1, allowed: ['Read'], disallowed: ['WebFetch'] })
+    .filter((arg) => /^--?[A-Za-z]/.test(arg));
+}
+
+function listsFlag(help, flag) {
+  const escaped = flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[\\s,\\[(])${escaped}(?=$|[\\s,=<\\[\\])])`, 'm').test(help);
+}
+
+// The isolation of a round is a set of flags (src/harness/claude-code.mjs);
+// a CLI that does not know one of them either refuses the whole command
+// line or, worse, a later version drops a flag and the round runs with the
+// person's own settings. The installed CLI's own --help is asked for every
+// flag the round uses.
+function claudeIsolationFlags(ctx) {
+  const id = 'claude-isolation-flags';
+  const inputs = curateInputs(ctx, id);
+  if (inputs.result) return inputs.result;
+  if (inputs.disabled) return curateDisabled(ctx, id);
+  const target = claudeToRun(ctx, id);
+  if (target.result) return target.result;
+  const bin = target.bin;
+  const r = probe(ctx, bin, ['--help']);
+  if (r.status !== 0) {
+    return { id, status: 'fail', messageKey: 'doctor.claude_isolation_flags.failed', params: { bin, status: r.status } };
+  }
+  const flags = roundFlags();
+  const missing = flags.filter((flag) => !listsFlag(r.stdout, flag));
+  if (missing.length > 0) {
+    return { id, status: 'fail', messageKey: 'doctor.claude_isolation_flags.missing', params: { bin, missing, command: UPDATE_CLAUDE_COMMAND } };
+  }
+  return { id, status: 'ok', messageKey: 'doctor.claude_isolation_flags.ok', params: { bin, count: flags.length } };
+}
+
+// The transcripts source reads only the projects the configuration lists
+// (src/sources/transcripts-claude-code.mjs): an empty list, or one naming
+// directories that are not there, makes every round refuse or read less
+// than the person thinks. A listed project that cannot be read makes the
+// round exit 4; one that is missing is a warning in the round, and here.
+function includeProjects(ctx) {
+  const id = 'include-projects';
+  const inputs = curateInputs(ctx, id);
+  if (inputs.result) return inputs.result;
+  if (inputs.disabled) return curateDisabled(ctx, id);
+  const { config } = inputs;
+  const file = ctx.configFile;
+  const key = INCLUDE_PROJECTS_KEY;
+  const sources = [...(config.curate?.sources?.required ?? []), ...(config.curate?.sources?.best_effort ?? [])];
+  if (!sources.includes('transcripts')) {
+    return { id, status: 'ok', messageKey: 'doctor.include_projects.not_used', params: { file } };
+  }
+  const listed = config.sources?.transcripts?.include_projects;
+  const projects = [...new Set(Array.isArray(listed) ? listed.filter((p) => typeof p === 'string' && p !== '') : [])];
+  const configured = machineObject(ctx)?.transcripts_dir;
+  const root = expandHome(typeof configured === 'string' && configured !== '' ? configured : DEFAULT_TRANSCRIPTS_DIR, ctx.env);
+  if (projects.length === 0) {
+    return { id, status: 'fail', messageKey: 'doctor.include_projects.empty', params: { file, key, root } };
+  }
+  if (!isDirectory(root)) {
+    return { id, status: 'fail', messageKey: 'doctor.include_projects.root_missing', params: { root, command: SET_TRANSCRIPTS_COMMAND } };
+  }
+  let names;
+  try {
+    names = new Set(readdirSync(root));
+  } catch (error) {
+    return { id, status: 'fail', messageKey: 'doctor.include_projects.root_unreadable', params: { root, error: error.code ?? error.message } };
+  }
+  const missing = [];
+  const unreadable = [];
+  for (const project of projects) {
+    const dir = join(root, project);
+    if (!names.has(project) || !isDirectory(dir)) {
+      missing.push(project);
+      continue;
+    }
+    try {
+      readdirSync(dir);
+    } catch {
+      unreadable.push(project);
+    }
+  }
+  if (unreadable.length > 0) {
+    return { id, status: 'fail', messageKey: 'doctor.include_projects.unreadable', params: { projects: unreadable, root } };
+  }
+  if (missing.length === projects.length) {
+    return { id, status: 'fail', messageKey: 'doctor.include_projects.all_missing', params: { projects: missing, root, file, key } };
+  }
+  if (missing.length > 0) {
+    return { id, status: 'warn', messageKey: 'doctor.include_projects.some_missing', params: { projects: missing, root, file, key } };
+  }
+  return { id, status: 'ok', messageKey: 'doctor.include_projects.ok', params: { count: projects.length, root } };
+}
+
+// Per source: the last day a round swept, and how far behind yesterday it
+// is. Rounds catch up oldest first, a few days at a time, so a mark more
+// than WATERMARK_BEHIND_WARN_DAYS behind says rounds are not closing days.
+function watermarkCheck(ctx) {
+  const id = 'watermark';
+  const inputs = curateInputs(ctx, id);
+  if (inputs.result) return inputs.result;
+  if (inputs.disabled) return curateDisabled(ctx, id);
+  const { config } = inputs;
+  const timezone = config.vault?.timezone;
+  let yesterday;
+  try {
+    yesterday = addDays(localDay(ctx.now, timezone), -1);
+  } catch {
+    return { id, status: 'warn', messageKey: 'doctor.watermark.bad_timezone', params: { timezone: String(timezone), file: ctx.configFile } };
+  }
+  let mark;
+  try {
+    mark = readWatermark(ctx.stateDir);
+  } catch (error) {
+    if (!(error instanceof WatermarkError)) throw error;
+    return { id, status: 'fail', messageKey: 'doctor.watermark.unreadable', params: { file: error.file, detail: error.detail } };
+  }
+  const required = Array.isArray(config.curate?.sources?.required) ? config.curate.sources.required : [];
+  const ids = [...new Set([...required, ...Object.keys(mark.sources)])].sort();
+  const future = ids.filter((source) => mark.sources[source] !== undefined && mark.sources[source] > yesterday);
+  if (future.length > 0) {
+    const source = future[0];
+    const command = `brain-kit watermark reopen ${source} ${yesterday}`;
+    return { id, status: 'fail', messageKey: 'doctor.watermark.future', params: { source, day: shownDay(mark.sources[source]), command } };
+  }
+  const unset = ids.filter((source) => mark.sources[source] === undefined);
+  const marks = ids.filter((source) => mark.sources[source] !== undefined)
+    .map((source) => `${source} ${shownDay(mark.sources[source])} (${daysBetween(mark.sources[source], yesterday)})`);
+  const behind = ids.filter((source) => mark.sources[source] !== undefined && daysBetween(mark.sources[source], yesterday) > WATERMARK_BEHIND_WARN_DAYS);
+  if (behind.length > 0) {
+    return { id, status: 'warn', messageKey: 'doctor.watermark.behind', params: { sources: behind, marks, limit: WATERMARK_BEHIND_WARN_DAYS, command: CURATE_COMMAND } };
+  }
+  if (ids.length === 0 || unset.length > 0) {
+    return { id, status: 'warn', messageKey: 'doctor.watermark.unset', params: { sources: unset.length > 0 ? unset : ['-'], command: CURATE_COMMAND } };
+  }
+  return { id, status: 'ok', messageKey: 'doctor.watermark.ok', params: { marks } };
+}
+
+// The last round, as last-run.json records it (src/commands/curate.mjs,
+// step 18). A green round that took seconds and never gave the model a
+// turn is dead, whatever its exit code says (docs/incidents.md, 21/08/2026).
+function lastRunCheck(ctx) {
+  const id = 'last-run';
+  const inputs = curateInputs(ctx, id);
+  if (inputs.result) return inputs.result;
+  if (inputs.disabled) return curateDisabled(ctx, id);
+  const file = join(ctx.stateDir, STATE_FILES.LAST_RUN);
+  const logs = join(ctx.stateDir, STATE_FILES.LOG_DIR);
+  const read = readJsonFile(file);
+  if (!read.ok && read.missing) {
+    return { id, status: 'warn', messageKey: 'doctor.last_run.none', params: { file, command: CURATE_COMMAND } };
+  }
+  if (!read.ok) {
+    return { id, status: 'fail', messageKey: 'doctor.last_run.unreadable', params: { file, error: read.error } };
+  }
+  const run = read.value;
+  if (!isObject(run) || !Number.isInteger(run.exit)) {
+    return { id, status: 'fail', messageKey: 'doctor.last_run.no_exit', params: { file } };
+  }
+  const at = shownInstant(run.at);
+  const exit = run.exit;
+  const seconds = Number.isFinite(run.durationMs) ? Math.round(run.durationMs / 1000) : '-';
+  const reason = typeof run.reason === 'string' && run.reason !== '' ? run.reason : '-';
+  const turns = Number.isInteger(run.numTurns) ? run.numTurns : 0;
+  const cost = typeof run.costUsd === 'number' && Number.isFinite(run.costUsd) ? run.costUsd : '-';
+  if (exit === EXIT.OK) {
+    const modelRound = !NO_MODEL_REASONS.includes(run.reasonCode);
+    if (modelRound && Number.isFinite(run.durationMs) && run.durationMs < DEAD_ROUND_MS && turns === 0) {
+      return { id, status: 'fail', messageKey: 'doctor.last_run.dead', params: { at, seconds, logs, command: `${CURATE_COMMAND} --keep-stream` } };
+    }
+    return { id, status: 'ok', messageKey: 'doctor.last_run.ok', params: { at, seconds, turns, cost, reason } };
+  }
+  if (SOFT_EXITS.includes(exit)) {
+    return { id, status: 'warn', messageKey: 'doctor.last_run.soft', params: { at, exit, seconds, reason, logs } };
+  }
+  return { id, status: 'fail', messageKey: 'doctor.last_run.failed', params: { at, exit, seconds, reason, logs } };
+}
+
+// `brain-kit schedule status`, asked in process with a translator that
+// records what status said instead of saying it: the check answers from
+// the same code, never from a second reading of the scheduler.
+function scheduleCheck(ctx) {
+  const id = 'schedule';
+  const inputs = curateInputs(ctx, id);
+  if (inputs.result) return inputs.result;
+  const said = [];
+  const record = (key, params = {}) => {
+    said.push({ key, params });
+    return key;
+  };
+  const quiet = { write: () => {} };
+  let code;
+  try {
+    code = runScheduleSync(['status', ctx.root], { stdout: quiet, stderr: quiet }, record, { env: ctx.env, cwd: ctx.root, now: ctx.now });
+  } catch (error) {
+    return { id, status: 'warn', messageKey: 'doctor.schedule.unknown', params: { error: error.message } };
+  }
+  const saidKey = (key) => said.find((entry) => entry.key === key) ?? null;
+  const active = saidKey('schedule.status_active');
+  const outdated = saidKey('schedule.status_outdated');
+  const inactive = saidKey('schedule.status_inactive');
+  const installed = active ?? outdated ?? inactive;
+  if (inputs.disabled) {
+    if (installed === null) return curateDisabled(ctx, id);
+    const { name, platform } = installed.params;
+    return { id, status: 'warn', messageKey: 'doctor.schedule.disabled_installed', params: { name, platform, file: ctx.configFile, command: SCHEDULE_UNINSTALL_COMMAND } };
+  }
+  if (active !== null && code === EXIT.OK) {
+    const { name, platform } = active.params;
+    const times = saidKey('schedule.status_next')?.params.times ?? [];
+    return { id, status: 'ok', messageKey: 'doctor.schedule.ok', params: { name, platform, times } };
+  }
+  if (inactive !== null) {
+    const { name, platform, detail } = inactive.params;
+    return { id, status: 'fail', messageKey: 'doctor.schedule.inactive', params: { name, platform, detail, command: SCHEDULE_INSTALL_COMMAND } };
+  }
+  if (outdated !== null) {
+    const { name, platform } = outdated.params;
+    return { id, status: 'warn', messageKey: 'doctor.schedule.outdated', params: { name, platform, command: SCHEDULE_INSTALL_COMMAND } };
+  }
+  const elsewhere = saidKey('schedule.found_elsewhere');
+  if (elsewhere !== null) {
+    const { name, platform, platforms } = elsewhere.params;
+    return { id, status: 'warn', messageKey: 'doctor.schedule.elsewhere', params: { name, platform, platforms } };
+  }
+  const absent = saidKey('schedule.status_not_installed');
+  if (absent !== null) {
+    const { name, platform } = absent.params;
+    return { id, status: 'warn', messageKey: 'doctor.schedule.not_installed', params: { name, platform, command: SCHEDULE_INSTALL_COMMAND } };
+  }
+  // Status refused before it could look (claude not found, an overnight
+  // window, a vault that moved...): its own first complaint, in its own
+  // words, which already name what to change.
+  const first = said[0];
+  if (first !== undefined) return { id, status: 'fail', messageKey: first.key, params: first.params };
+  return { id, status: 'fail', messageKey: 'doctor.schedule.unknown', params: { error: String(code) } };
+}
+
+// Where a failed round is announced. Without a notify command a failure
+// is only in the log and last-run.json, which nobody reads until the
+// vault has gone quiet for days (docs/incidents.md, 13/09/2026). The
+// command is found, never run: running it would send a notification.
+function notifyCheck(ctx) {
+  const id = 'notify';
+  const inputs = curateInputs(ctx, id);
+  if (inputs.result) return inputs.result;
+  if (inputs.disabled) return curateDisabled(ctx, id);
+  const machine = machineObject(ctx);
+  const logs = join(ctx.stateDir, STATE_FILES.LOG_DIR);
+  const argv = machine?.notify_command;
+  if (!Array.isArray(argv) || argv.length === 0 || typeof argv[0] !== 'string' || argv[0] === '') {
+    return { id, status: 'warn', messageKey: 'doctor.notify.unset', params: { logs, command: SET_NOTIFY_COMMAND } };
+  }
+  const program = argv[0];
+  const extra = Array.isArray(machine.path_extra) ? machine.path_extra : [];
+  const resolved = resolveClaude(program, extra, ctx.env, ctx.root);
+  if (!resolved) {
+    return { id, status: 'warn', messageKey: 'doctor.notify.not_found', params: { program, logs, command: SET_NOTIFY_COMMAND } };
+  }
+  return { id, status: 'ok', messageKey: 'doctor.notify.ok', params: { program: resolved } };
+}
+
 // id -> check, in the order the report prints them.
 export const CHECKS = new Map([
   ['node-version', nodeVersion],
@@ -695,6 +1098,13 @@ export const CHECKS = new Map([
   ['gh-present', ghPresent],
   ['claude-present', claudePresent],
   ['gitignore-node-modules', gitignoreNodeModules],
+  ['claude-real', claudeReal],
+  ['claude-isolation-flags', claudeIsolationFlags],
+  ['include-projects', includeProjects],
+  ['watermark', watermarkCheck],
+  ['last-run', lastRunCheck],
+  ['schedule', scheduleCheck],
+  ['notify', notifyCheck],
 ]);
 
 export const CHECK_IDS = Object.freeze([...CHECKS.keys()]);

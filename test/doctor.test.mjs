@@ -22,7 +22,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
-  chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync,
+  chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { delimiter, join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -31,7 +31,8 @@ import { KIT_ROOT, kitVersion } from '../src/version.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { stateDirFor } from '../src/state.mjs';
 import { runDoctor } from '../src/commands/doctor.mjs';
-import { CHECK_IDS, exitCodeFor, runChecks } from '../src/doctor/checks.mjs';
+import { CHECK_IDS, exitCodeFor, roundFlags, runChecks } from '../src/doctor/checks.mjs';
+import { runScheduleSync } from '../src/commands/schedule.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
 import { LOCAL_GIT_VARS, localGitVarNames } from '../src/git-env.mjs';
 import { TEMPLATE_HOOK as SHIPPED_HOOK } from '../src/init/skeleton.mjs';
@@ -63,6 +64,17 @@ function writeScript(path, body) {
   return path;
 }
 
+// A claude stand-in that is a real CLI to every check: `--version` answers
+// in the Claude CLI's own shape, `--help` lists the flags `help` names (by
+// default every flag a round passes, from buildArgv itself), and the file
+// is padded past the 2 KB stub fingerprint.
+function claudeScript({ help = roundFlags(), pad = 2400, helpExit = 0, version = 'echo "1.2.3 (Claude Code)"', before = '' } = {}) {
+  const lines = help.map((flag) => `'  ${flag} <value>'`).join(' ');
+  const body = `${before}case "$1" in\n  --help) printf '%s\\n' 'Usage: claude [options]' ${lines}; exit ${helpExit} ;;\n  *) ${version} ;;\nesac`;
+  return `${body}\n# ${'x'.repeat(pad)}`;
+}
+const CLAUDE_OK = claudeScript();
+
 // The stand-ins. `silent` is the recurring shape: status 0, no output.
 const SCRIPTS = {
   gh: {
@@ -71,7 +83,9 @@ const SCRIPTS = {
     broken: 'echo "gh: something went wrong" >&2\nexit 3',
   },
   claude: {
-    ok: 'echo "1.2.3 (Claude Code)"',
+    // Above the 2 KB stub threshold (src/guards/cli.mjs), and answering
+    // --help with every flag a round passes, so the curator's checks pass.
+    ok: CLAUDE_OK,
     silent: 'exit 0',
     broken: 'echo "stub: postinstall never ran" >&2\nexit 1',
   },
@@ -101,7 +115,7 @@ const SCRIPTS = {
 // `node` is a link to the Node running the suite and `brain-kit` a link to
 // this checkout's own launcher, which finds that node through PATH exactly
 // as the installed hook's brain-kit would.
-function makeTools({ git = 'real', gh = 'ok', claude = 'ok', node = 'real', brainKit = 'real' } = {}) {
+function makeTools({ git = 'real', gh = 'ok', claude = 'ok', node = 'real', brainKit = 'real', systemctl = 'ok' } = {}) {
   const dir = join(makeTempDir('brain-kit-doctor-tools-'), 'bin');
   mkdirSync(dir);
   if (git === 'real') symlinkSync(REAL_GIT, join(dir, 'git'));
@@ -113,6 +127,10 @@ function makeTools({ git = 'real', gh = 'ok', claude = 'ok', node = 'real', brai
   else if (node !== 'absent') writeScript(join(dir, 'node'), SCRIPTS.node[node]);
   if (brainKit === 'real') symlinkSync(BIN, join(dir, 'brain-kit'));
   else if (brainKit !== 'absent') writeScript(join(dir, 'brain-kit'), SCRIPTS.brainKit[brainKit]);
+  // A user systemd that answers every question with success, logging what
+  // it was asked; and the program machine.json's notify_command names.
+  if (systemctl !== 'absent') writeScript(join(dir, 'systemctl'), `echo "$*" >> "${join(dir, 'systemctl.log')}"\n${systemctl === 'inactive' ? 'case "$2" in is-active) echo inactive; exit 3 ;; esac\n' : ''}exit 0`);
+  writeScript(join(dir, 'notify'), 'exit 0');
   return dir;
 }
 
@@ -157,6 +175,7 @@ function setup({
   fileMode = 0o600,
   tools = {},
   manifest = 'valid',
+  curator = true,
 } = {}) {
   const base = makeTempDir('brain-kit-doctor-');
   const home = join(base, 'home');
@@ -216,15 +235,45 @@ function setup({
       claude_bin: 'claude',
       state_dir: stateDir,
       paths: { watermark: 'watermark.json', last_run: 'last-run.json', log_dir: 'logs' },
+      notify_command: ['notify', 'brain-kit'],
       ...machine,
     };
     writeFileSync(machineFile, machineText ?? JSON.stringify(value, null, 2));
     chmodSync(machineFile, fileMode);
+    if (curator) readyCurator({ root, home, env, stateDir });
     // Last, so a directory mode without the owner's write bit (0577) is
     // still reached with the file already in it.
     chmodSync(stateDir, dirMode);
   }
   return { base, home, root, gitTop, env, stateDir, machineFile, toolsDir };
+}
+
+// Yesterday as a YYYY-MM-DD day in UTC, the fixture configuration's zone.
+function utcDay(offsetDays, now = new Date()) {
+  return new Date(now.getTime() + offsetDays * 86400000).toISOString().slice(0, 10);
+}
+
+// A scheduled curator in working order: the configured project under the
+// default transcripts directory, a mark at yesterday, a last round that
+// ran the model for two minutes, and the timer installed through the
+// kit's own `schedule install` (against the systemctl stand-in).
+function readyCurator({ root, home, env, stateDir }) {
+  mkdirSync(join(home, '.claude', 'projects', '-home-ana-brain'), { recursive: true });
+  writeFileSync(join(stateDir, 'watermark.json'), JSON.stringify({ sources: { transcripts: utcDay(-1) } }));
+  writeFileSync(join(stateDir, 'last-run.json'), JSON.stringify(lastRun()));
+  const sink = { write: () => {} };
+  try {
+    runScheduleSync(['install', root, '--platform', 'systemd'], { stdout: sink, stderr: sink }, createTranslator('en'), { env });
+  } catch {
+    // A fixture whose configuration or machine file is broken on purpose
+    // has no schedule to install; the checks under test say why.
+  }
+}
+
+function lastRun(overrides = {}) {
+  return {
+    at: new Date().toISOString(), durationMs: 120000, exit: 0, reasonCode: 'proposed', reason: 'Proposed 2 file(s) on brain-kit/curate-x.', numTurns: 12, costUsd: 0.42, ...overrides,
+  };
 }
 
 function fakeIo() {
@@ -239,9 +288,9 @@ function fakeIo() {
 
 const t = createTranslator('en');
 
-async function doctor(fixture, argv = [], { nodeVersion = process.versions.node, env = fixture.env, cwd = fixture.root } = {}) {
+async function doctor(fixture, argv = [], { nodeVersion = process.versions.node, env = fixture.env, cwd = fixture.root, now } = {}) {
   const f = fakeIo();
-  const code = await runDoctor(['--json', ...argv, fixture.root], f.io, t, { env, cwd, nodeVersion });
+  const code = await runDoctor(['--json', ...argv, fixture.root], f.io, t, { env, cwd, nodeVersion, ...(now ? { now } : {}) });
   let report = null;
   if (f.stdout()) report = JSON.parse(f.stdout());
   return { code, report, stdout: f.stdout(), stderr: f.stderr() };
@@ -273,10 +322,11 @@ test('a ready vault under a path with a space, an accented letter and both quote
   assert.deepEqual(report.counts, { ok: CHECK_IDS.length, warn: 0, fail: 0 });
 });
 
-test('the check table is exactly the phase 1 set, each named by what it prevents', () => {
+test('the check table is exactly the phase 1 and phase 2 set, each named by what it prevents', () => {
   assert.deepEqual(CHECK_IDS, [
     'node-version', 'git-present', 'default-branch-known', 'hooks-path', 'brain-kit-on-path', 'config-valid', 'manifest-valid', 'machine-valid',
     'state-dir-resolves', 'state-dir-mode', 'kit-version', 'gh-present', 'claude-present', 'gitignore-node-modules',
+    'claude-real', 'claude-isolation-flags', 'include-projects', 'watermark', 'last-run', 'schedule', 'notify',
   ]);
 });
 
@@ -1544,7 +1594,7 @@ test('the human report names every check, its status and message, and a summary 
   assert.ok(out.includes(fx.root));
   for (const id of CHECK_IDS) assert.match(out, new RegExp(`\\b${id}\\b`));
   assert.match(out, /warn\s+gh-present/);
-  assert.match(out, /13 ok, 1 warn, 0 fail/);
+  assert.match(out, new RegExp(`${CHECK_IDS.length - 1} ok, 1 warn, 0 fail`));
 });
 
 test('the Portuguese pack renders the report', async () => {
@@ -1572,4 +1622,446 @@ test('the real binary runs doctor --json against a vault in the hard path and ex
 test('doctor is listed in the CLI usage', () => {
   const r = spawnSync(process.execPath, [BIN, '--help'], { encoding: 'utf8', env: { ...process.env, BRAIN_KIT_LANG: 'en' } });
   assert.match(r.stdout, /doctor \[dir\] \[--json\] \[--only <id,\.\.\.>\]/);
+});
+
+// --- the scheduled curator (phase 2) -----------------------------------------
+
+const CURATOR_IDS = ['claude-real', 'claude-isolation-flags', 'include-projects', 'watermark', 'last-run', 'schedule', 'notify'];
+
+// A fixture whose claude stand-in is replaced by `script`.
+function withClaude(fx, script) {
+  writeScript(join(fx.toolsDir, 'claude'), script);
+  return fx;
+}
+
+function editJson(file, edit) {
+  const value = JSON.parse(readFileSync(file, 'utf8'));
+  edit(value);
+  writeFileSync(file, JSON.stringify(value, null, 2));
+}
+
+function configWith(edit) {
+  const config = baseConfig();
+  edit(config);
+  return config;
+}
+
+test('curator: roundFlags is every option buildArgv puts on a round, the four isolation flags among them', () => {
+  assert.deepEqual(roundFlags(), [
+    '-p', '--verbose', '--output-format', '--permission-mode', '--permission-prompts', '--setting-sources', '--strict-mcp-config',
+    '--no-session-persistence', '--model', '--max-turns', '--max-budget-usd', '--allowedTools', '--disallowedTools',
+  ]);
+});
+
+test('curator: with curate.enabled false every curator check says so and passes, and an installed timer is still named', async () => {
+  const fx = setup({ config: configWith((c) => { c.curate.enabled = false; }), tools: { claude: 'absent' } });
+  let r = await doctor(fx, ['--only', CURATOR_IDS.join(',')]);
+  for (const id of CURATOR_IDS) assertCheck(r.report, id, 'ok', 'doctor.curate.disabled');
+  assert.equal(r.code, EXIT.OK);
+  // Enabled long enough to install, then disabled again: the timer still
+  // starts rounds, and doctor says so.
+  const ready = setup();
+  editJson(join(ready.root, 'brain-kit.config.json'), (c) => { c.curate.enabled = false; });
+  r = await doctor(ready, ['--only', 'schedule']);
+  const c = assertCheck(r.report, 'schedule', 'warn', 'doctor.schedule.disabled_installed');
+  assert.equal(c.params.command, 'brain-kit schedule uninstall');
+});
+
+test('curator: a configuration doctor cannot read leaves every curator check unable to ask, a warning each', async () => {
+  const fx = setup({ configText: '{ not json' });
+  const { report } = await doctor(fx, ['--only', CURATOR_IDS.join(',')]);
+  for (const id of CURATOR_IDS) assertCheck(report, id, 'warn', 'doctor.curate.config_unknown');
+});
+
+// --- claude-real -------------------------------------------------------------
+
+test('claude-real: passes for a CLI above the stub size that answers its version', async () => {
+  const fx = setup();
+  const { report } = await doctor(fx, ['--only', 'claude-real']);
+  const c = assertCheck(report, 'claude-real', 'ok', 'doctor.claude_real.ok');
+  assert.equal(c.params.version, '1.2.3');
+  assert.equal(c.params.bin, join(fx.toolsDir, 'claude'));
+});
+
+test('claude-real: a launcher under 2 KB is the 14/09/2026 stub, and fails even when it answers a version', async () => {
+  const fx = withClaude(setup(), claudeScript({ pad: 0 }));
+  const { report, code } = await doctor(fx, ['--only', 'claude-real']);
+  const c = assertCheck(report, 'claude-real', 'fail', 'doctor.claude_real.stub');
+  assert.ok(c.params.bytes < 2048, JSON.stringify(c.params));
+  assert.equal(code, EXIT.FAILURE);
+});
+
+test('claude-real: a CLI whose --version prints error text, or fails, is not usable', async () => {
+  let fx = withClaude(setup(), claudeScript({ version: 'echo "Error: native binary not installed"' }));
+  let r = await doctor(fx, ['--only', 'claude-real']);
+  const c = assertCheck(r.report, 'claude-real', 'fail', 'doctor.claude_real.version');
+  assert.match(c.params.output, /native binary not installed/);
+  fx = withClaude(setup(), claudeScript({ version: 'echo "1.2.3 (Claude Code)"; exit 1' }));
+  r = await doctor(fx, ['--only', 'claude-real']);
+  assertCheck(r.report, 'claude-real', 'fail', 'doctor.claude_real.version');
+});
+
+test('claude-real: no claude to run fails and names the machine set command', async () => {
+  const fx = setup({ tools: { claude: 'absent' } });
+  const { report } = await doctor(fx, ['--only', 'claude-real']);
+  const c = assertCheck(report, 'claude-real', 'fail', 'doctor.claude_real.not_found');
+  assert.equal(c.params.command, 'brain-kit machine set claude_bin <path>');
+});
+
+test('claude-real and claude-isolation-flags never execute claude_bin from a machine file others can write, or the kit would refuse', async () => {
+  for (const options of [{ fileMode: 0o666 }, { machine: { vault_id: 'Not Valid' } }]) {
+    const fx = setup({ tools: { claude: 'absent' }, ...options });
+    const mark = join(fx.base, 'claude-was-run');
+    writeScript(join(fx.toolsDir, 'claude'), claudeScript({ before: `: > "${mark}"\n` }));
+    const { report } = await doctor(fx, ['--only', 'claude-real,claude-isolation-flags']);
+    for (const id of ['claude-real', 'claude-isolation-flags']) assert.equal(check(report, id).status, 'warn', JSON.stringify(check(report, id)));
+    assert.equal(existsSync(mark), false, JSON.stringify(options));
+  }
+});
+
+// --- claude-isolation-flags --------------------------------------------------
+
+test('claude-isolation-flags: a CLI whose --help lacks one flag a round passes fails, naming it and the update command', async () => {
+  const fx = withClaude(setup(), claudeScript({ help: roundFlags().filter((f) => f !== '--setting-sources') }));
+  const { report, code } = await doctor(fx, ['--only', 'claude-isolation-flags']);
+  const c = assertCheck(report, 'claude-isolation-flags', 'fail', 'doctor.claude_isolation_flags.missing');
+  assert.deepEqual(c.params.missing, ['--setting-sources']);
+  assert.equal(c.params.command, 'claude update');
+  assert.equal(code, EXIT.FAILURE);
+});
+
+test('claude-isolation-flags: a longer flag that starts like one a round passes does not count as it', async () => {
+  const help = [...roundFlags().filter((f) => f !== '--setting-sources' && f !== '-p'), '--setting-sources-extra', '-print'];
+  const fx = withClaude(setup(), claudeScript({ help }));
+  const { report } = await doctor(fx, ['--only', 'claude-isolation-flags']);
+  const c = assertCheck(report, 'claude-isolation-flags', 'fail', 'doctor.claude_isolation_flags.missing');
+  assert.deepEqual(c.params.missing, ['-p', '--setting-sources']);
+});
+
+test('claude-isolation-flags: a flag glued to other text is not listed', async () => {
+  const help = [...roundFlags().filter((f) => f !== '-p'), '(implies-p)'];
+  const fx = withClaude(setup(), claudeScript({ help }));
+  const { report } = await doctor(fx, ['--only', 'claude-isolation-flags']);
+  const c = assertCheck(report, 'claude-isolation-flags', 'fail', 'doctor.claude_isolation_flags.missing');
+  assert.deepEqual(c.params.missing, ['-p']);
+});
+
+test('claude-isolation-flags: flags written the way the CLI prints them, short form first or with a value, are found', async () => {
+  const lines = ['-p, --print', '--allowedTools, --allowed-tools <tools...>', '--model=<model>', ...roundFlags().filter((f) => !['-p', '--allowedTools', '--model'].includes(f))];
+  const fx = withClaude(setup(), claudeScript({ help: lines }));
+  const { report } = await doctor(fx, ['--only', 'claude-isolation-flags']);
+  const c = assertCheck(report, 'claude-isolation-flags', 'ok', 'doctor.claude_isolation_flags.ok');
+  assert.equal(c.params.count, roundFlags().length);
+});
+
+test('claude-isolation-flags: a --help that fails, or exits 0 printing nothing, is never ok', async () => {
+  let fx = withClaude(setup(), claudeScript({ helpExit: 2 }));
+  let r = await doctor(fx, ['--only', 'claude-isolation-flags']);
+  assertCheck(r.report, 'claude-isolation-flags', 'fail', 'doctor.claude_isolation_flags.failed');
+  fx = withClaude(setup(), claudeScript({ help: [], before: 'if [ "$1" = --help ]; then exit 0; fi\n' }));
+  r = await doctor(fx, ['--only', 'claude-isolation-flags']);
+  const c = assertCheck(r.report, 'claude-isolation-flags', 'fail', 'doctor.claude_isolation_flags.missing');
+  assert.deepEqual(c.params.missing, roundFlags());
+});
+
+// --- include-projects --------------------------------------------------------
+
+test('include-projects: passes when every listed project is under the default transcripts directory', async () => {
+  const fx = setup();
+  const { report } = await doctor(fx, ['--only', 'include-projects']);
+  const c = assertCheck(report, 'include-projects', 'ok', 'doctor.include_projects.ok');
+  assert.equal(c.params.root, join(fx.home, '.claude', 'projects'));
+  assert.equal(c.params.count, 1);
+});
+
+test('include-projects: an empty list fails, since a round then reads nothing and refuses', async () => {
+  const fx = setup({ config: configWith((c) => { c.sources.transcripts.include_projects = []; }) });
+  const { report, code } = await doctor(fx, ['--only', 'include-projects']);
+  const c = assertCheck(report, 'include-projects', 'fail', 'doctor.include_projects.empty');
+  assert.equal(c.params.key, 'sources.transcripts.include_projects');
+  assert.equal(code, EXIT.FAILURE);
+});
+
+test('include-projects: a transcripts directory that does not exist fails and names machine set transcripts_dir', async () => {
+  const fx = setup({ machine: { transcripts_dir: '~/nowhere' } });
+  const { report } = await doctor(fx, ['--only', 'include-projects']);
+  const c = assertCheck(report, 'include-projects', 'fail', 'doctor.include_projects.root_missing');
+  assert.equal(c.params.root, join(fx.home, 'nowhere'));
+  assert.equal(c.params.command, 'brain-kit machine set transcripts_dir <dir>');
+});
+
+test('include-projects: transcripts_dir with ~ is read from HOME', async () => {
+  const fx = setup({ machine: { transcripts_dir: '~/sessions' } });
+  mkdirSync(join(fx.home, 'sessions', '-home-ana-brain'), { recursive: true });
+  const { report } = await doctor(fx, ['--only', 'include-projects']);
+  const c = assertCheck(report, 'include-projects', 'ok', 'doctor.include_projects.ok');
+  assert.equal(c.params.root, join(fx.home, 'sessions'));
+});
+
+test('include-projects: every listed project missing fails; some missing warns, naming only those', async () => {
+  let fx = setup({ config: configWith((c) => { c.sources.transcripts.include_projects = ['-home-ana-other']; }) });
+  let r = await doctor(fx, ['--only', 'include-projects']);
+  assertCheck(r.report, 'include-projects', 'fail', 'doctor.include_projects.all_missing');
+  fx = setup({ config: configWith((c) => { c.sources.transcripts.include_projects = ['-home-ana-brain', '-home-ana-other']; }) });
+  r = await doctor(fx, ['--only', 'include-projects']);
+  const c = assertCheck(r.report, 'include-projects', 'warn', 'doctor.include_projects.some_missing');
+  assert.deepEqual(c.params.projects, ['-home-ana-other']);
+  assert.equal(r.code, EXIT.OK);
+});
+
+test('include-projects: a listed project that cannot be read fails, since the round exits 4 on it', { skip: process.getuid?.() === 0 ? 'root reads any directory' : false }, async () => {
+  const fx = setup({ config: configWith((c) => { c.sources.transcripts.include_projects = ['-home-ana-brain', '-home-ana-locked']; }) });
+  const locked = join(fx.home, '.claude', 'projects', '-home-ana-locked');
+  mkdirSync(locked);
+  chmodSync(locked, 0o000);
+  try {
+    const { report } = await doctor(fx, ['--only', 'include-projects']);
+    const c = assertCheck(report, 'include-projects', 'fail', 'doctor.include_projects.unreadable');
+    assert.deepEqual(c.params.projects, ['-home-ana-locked']);
+  } finally {
+    chmodSync(locked, 0o700);
+  }
+});
+
+test('include-projects: with transcripts in no curate source there is nothing to check', async () => {
+  const fx = setup({
+    config: configWith((c) => {
+      c.curate.sources.required = [];
+      c.curate.sources.best_effort = ['calendar'];
+      c.sources.transcripts.include_projects = [];
+    }),
+  });
+  const { report } = await doctor(fx, ['--only', 'include-projects']);
+  assertCheck(report, 'include-projects', 'ok', 'doctor.include_projects.not_used');
+});
+
+// --- watermark ---------------------------------------------------------------
+
+function markAt(fx, day) {
+  writeFileSync(join(fx.stateDir, 'watermark.json'), JSON.stringify({ sources: { transcripts: day } }));
+}
+
+test('watermark: a mark at yesterday passes and shows the day as DD/MM/YYYY with 0 days behind', async () => {
+  const fx = setup();
+  const now = new Date('2026-09-24T15:00:00Z');
+  markAt(fx, '2026-09-23');
+  const { report } = await doctor(fx, ['--only', 'watermark'], { now });
+  const c = assertCheck(report, 'watermark', 'ok', 'doctor.watermark.ok');
+  assert.deepEqual(c.params.marks, ['transcripts 23/09/2026 (0)']);
+});
+
+test('watermark: three days behind still passes; four days behind warns and names curate', async () => {
+  const fx = setup();
+  const now = new Date('2026-09-24T15:00:00Z');
+  markAt(fx, '2026-09-20');
+  let r = await doctor(fx, ['--only', 'watermark'], { now });
+  assertCheck(r.report, 'watermark', 'ok', 'doctor.watermark.ok');
+  markAt(fx, '2026-09-19');
+  r = await doctor(fx, ['--only', 'watermark'], { now });
+  const c = assertCheck(r.report, 'watermark', 'warn', 'doctor.watermark.behind');
+  assert.deepEqual(c.params.sources, ['transcripts']);
+  assert.deepEqual(c.params.marks, ['transcripts 19/09/2026 (4)']);
+  assert.equal(c.params.command, 'brain-kit curate');
+});
+
+test('watermark: yesterday is counted in the vault time zone, not in UTC', async () => {
+  const fx = setup({ config: configWith((c) => { c.vault.timezone = 'America/Argentina/Buenos_Aires'; }) });
+  // 02:00 UTC on 24/09 is still 23/09 at UTC-3, so yesterday there is 22/09.
+  const now = new Date('2026-09-24T02:00:00Z');
+  markAt(fx, '2026-09-22');
+  const { report } = await doctor(fx, ['--only', 'watermark'], { now });
+  const c = assertCheck(report, 'watermark', 'ok', 'doctor.watermark.ok');
+  assert.deepEqual(c.params.marks, ['transcripts 22/09/2026 (0)']);
+});
+
+test('watermark: a mark on a day that has not ended fails and names the reopen command', async () => {
+  const fx = setup();
+  const now = new Date('2026-09-24T15:00:00Z');
+  markAt(fx, '2026-09-24');
+  const { report, code } = await doctor(fx, ['--only', 'watermark'], { now });
+  const c = assertCheck(report, 'watermark', 'fail', 'doctor.watermark.future');
+  assert.equal(c.params.command, 'brain-kit watermark reopen transcripts 2026-09-23');
+  assert.equal(code, EXIT.FAILURE);
+});
+
+test('watermark: no mark yet warns; a mark file that cannot be read fails', async () => {
+  const fx = setup();
+  rmSync(join(fx.stateDir, 'watermark.json'));
+  let r = await doctor(fx, ['--only', 'watermark']);
+  const c = assertCheck(r.report, 'watermark', 'warn', 'doctor.watermark.unset');
+  assert.deepEqual(c.params.sources, ['transcripts']);
+  writeFileSync(join(fx.stateDir, 'watermark.json'), '{ nope');
+  r = await doctor(fx, ['--only', 'watermark']);
+  assertCheck(r.report, 'watermark', 'fail', 'doctor.watermark.unreadable');
+});
+
+test('watermark: a source the mark holds but the configuration no longer requires is still reported', async () => {
+  const fx = setup();
+  const now = new Date('2026-09-24T15:00:00Z');
+  writeFileSync(join(fx.stateDir, 'watermark.json'), JSON.stringify({ sources: { transcripts: '2026-09-23', calendar: '2026-09-10' } }));
+  const { report } = await doctor(fx, ['--only', 'watermark'], { now });
+  const c = assertCheck(report, 'watermark', 'warn', 'doctor.watermark.behind');
+  assert.deepEqual(c.params.sources, ['calendar']);
+});
+
+// --- last-run ----------------------------------------------------------------
+
+function writeLastRun(fx, value) {
+  writeFileSync(join(fx.stateDir, 'last-run.json'), typeof value === 'string' ? value : JSON.stringify(value));
+}
+
+test('last-run: a round that ran the model passes, with its time as DD/MM/YYYY HH:MM, duration, turns and cost', async () => {
+  const fx = setup();
+  const { report } = await doctor(fx, ['--only', 'last-run']);
+  const c = assertCheck(report, 'last-run', 'ok', 'doctor.last_run.ok');
+  assert.match(c.params.at, /^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/);
+  assert.equal(c.params.seconds, 120);
+  assert.equal(c.params.turns, 12);
+  assert.equal(c.params.cost, 0.42);
+});
+
+test('last-run: exit 0 in under 20 seconds with no model turn is the dead round of 21/08/2026, and fails', async () => {
+  const fx = setup();
+  for (const run of [
+    lastRun({ durationMs: 6000, numTurns: 0, reasonCode: 'nothing_proposed' }),
+    lastRun({ durationMs: 19999, numTurns: null, costUsd: null, reasonCode: 'proposed' }),
+    lastRun({ durationMs: 6000, numTurns: 0, reasonCode: undefined }),
+  ]) {
+    writeLastRun(fx, run);
+    const { report, code } = await doctor(fx, ['--only', 'last-run']);
+    const c = assertCheck(report, 'last-run', 'fail', 'doctor.last_run.dead');
+    assert.equal(c.params.command, 'brain-kit curate --keep-stream');
+    assert.equal(code, EXIT.FAILURE);
+  }
+});
+
+test('last-run: at 20 seconds, with a model turn, or ended before the model on purpose, a fast round is not dead', async () => {
+  const fx = setup();
+  for (const run of [
+    lastRun({ durationMs: 20000, numTurns: 0 }),
+    lastRun({ durationMs: 6000, numTurns: 1 }),
+    lastRun({ durationMs: 300, numTurns: null, reasonCode: 'up_to_date' }),
+    lastRun({ durationMs: 900, numTurns: null, reasonCode: 'nothing_to_curate' }),
+  ]) {
+    writeLastRun(fx, run);
+    const { report } = await doctor(fx, ['--only', 'last-run']);
+    assertCheck(report, 'last-run', 'ok', 'doctor.last_run.ok');
+  }
+});
+
+test('last-run: a postponed, degraded or unavailable round warns; any other non-zero exit fails, with its reason', async () => {
+  const fx = setup();
+  for (const exit of [EXIT.DEGRADED, EXIT.UNAVAILABLE, EXIT.TEMPFAIL]) {
+    writeLastRun(fx, lastRun({ exit, reason: 'the reason' }));
+    const { report } = await doctor(fx, ['--only', 'last-run']);
+    const c = assertCheck(report, 'last-run', 'warn', 'doctor.last_run.soft');
+    assert.equal(c.params.exit, exit);
+  }
+  for (const exit of [EXIT.FAILURE, EXIT.USAGE, EXIT.SOURCE_UNREAD]) {
+    writeLastRun(fx, lastRun({ exit, reason: 'transcripts (0/1) was not read.' }));
+    const { report, code } = await doctor(fx, ['--only', 'last-run']);
+    const c = assertCheck(report, 'last-run', 'fail', 'doctor.last_run.failed');
+    assert.equal(c.params.reason, 'transcripts (0/1) was not read.');
+    assert.equal(c.params.logs, join(fx.stateDir, 'logs'));
+    assert.equal(code, EXIT.FAILURE);
+  }
+});
+
+test('last-run: no record yet warns and names curate; a record that cannot be read, or holds no exit, fails', async () => {
+  const fx = setup();
+  rmSync(join(fx.stateDir, 'last-run.json'));
+  let r = await doctor(fx, ['--only', 'last-run']);
+  const c = assertCheck(r.report, 'last-run', 'warn', 'doctor.last_run.none');
+  assert.equal(c.params.command, 'brain-kit curate');
+  writeLastRun(fx, '{ nope');
+  r = await doctor(fx, ['--only', 'last-run']);
+  assertCheck(r.report, 'last-run', 'fail', 'doctor.last_run.unreadable');
+  writeLastRun(fx, { at: new Date().toISOString(), exit: '0' });
+  r = await doctor(fx, ['--only', 'last-run']);
+  assertCheck(r.report, 'last-run', 'fail', 'doctor.last_run.no_exit');
+});
+
+// --- schedule ----------------------------------------------------------------
+
+function unitDir(fx) {
+  return join(fx.home, '.config', 'systemd', 'user');
+}
+
+test('schedule: an installed, current and enabled timer passes with its next three fire times', async () => {
+  const fx = setup();
+  const now = new Date(2026, 8, 24, 15, 0);
+  const { report } = await doctor(fx, ['--only', 'schedule'], { now });
+  const c = assertCheck(report, 'schedule', 'ok', 'doctor.schedule.ok');
+  assert.equal(c.params.platform, 'systemd');
+  assert.equal(c.params.name, 'brain-kit-curate-ana-brain');
+  assert.deepEqual(c.params.times, ['24/09/2026 20:00', '25/09/2026 09:30', '25/09/2026 14:00']);
+});
+
+test('schedule: nothing installed warns and names schedule install', async () => {
+  const fx = setup();
+  rmSync(unitDir(fx), { recursive: true });
+  const { report, code } = await doctor(fx, ['--only', 'schedule']);
+  const c = assertCheck(report, 'schedule', 'warn', 'doctor.schedule.not_installed');
+  assert.equal(c.params.command, 'brain-kit schedule install');
+  assert.equal(code, EXIT.OK);
+});
+
+test('schedule: installed but not active fails, since no round starts', async () => {
+  const fx = setup({ tools: { systemctl: 'inactive' } });
+  const { report, code } = await doctor(fx, ['--only', 'schedule']);
+  const c = assertCheck(report, 'schedule', 'fail', 'doctor.schedule.inactive');
+  assert.match(c.params.detail, /inactive/);
+  assert.equal(code, EXIT.FAILURE);
+});
+
+test('schedule: a timer that differs from what install would write now warns', async () => {
+  const fx = setup();
+  const timer = join(unitDir(fx), 'brain-kit-curate-ana-brain.timer');
+  writeFileSync(timer, readFileSync(timer, 'utf8').replace('OnCalendar=*-*-* 14:00:00', 'OnCalendar=*-*-* 15:00:00'));
+  const { report } = await doctor(fx, ['--only', 'schedule']);
+  assertCheck(report, 'schedule', 'warn', 'doctor.schedule.outdated');
+});
+
+test('schedule: when status itself refuses, the check fails with status\'s own message', async () => {
+  const fx = setup({ tools: { claude: 'absent' } });
+  const { report } = await doctor(fx, ['--only', 'schedule']);
+  const c = assertCheck(report, 'schedule', 'fail', 'schedule.claude_not_found');
+  assert.equal(c.params.bin, 'claude');
+});
+
+// --- notify ------------------------------------------------------------------
+
+test('notify: a notify_command that resolves passes, and doctor never runs it', async () => {
+  const fx = setup();
+  const mark = join(fx.base, 'notified');
+  writeScript(join(fx.toolsDir, 'notify'), `: > "${mark}"`);
+  const { report } = await doctor(fx, ['--only', 'notify']);
+  const c = assertCheck(report, 'notify', 'ok', 'doctor.notify.ok');
+  assert.equal(c.params.program, join(fx.toolsDir, 'notify'));
+  assert.equal(existsSync(mark), false);
+});
+
+test('notify: none configured warns that failures are only in the log; one that does not resolve warns too', async () => {
+  let fx = setup({ machine: { notify_command: undefined } });
+  let r = await doctor(fx, ['--only', 'notify']);
+  let c = assertCheck(r.report, 'notify', 'warn', 'doctor.notify.unset');
+  assert.equal(c.params.logs, join(fx.stateDir, 'logs'));
+  assert.match(c.params.command, /^brain-kit machine set notify_command /);
+  fx = setup({ machine: { notify_command: [] } });
+  r = await doctor(fx, ['--only', 'notify']);
+  assertCheck(r.report, 'notify', 'warn', 'doctor.notify.unset');
+  fx = setup({ machine: { notify_command: ['no-such-notifier', 'x'] } });
+  r = await doctor(fx, ['--only', 'notify']);
+  c = assertCheck(r.report, 'notify', 'warn', 'doctor.notify.not_found');
+  assert.equal(c.params.program, 'no-such-notifier');
+});
+
+// --- load order --------------------------------------------------------------
+
+test('checks.mjs, schedule.mjs and curate.mjs import each other in a cycle and load whichever comes first', () => {
+  for (const file of ['src/doctor/checks.mjs', 'src/commands/schedule.mjs', 'src/commands/curate.mjs', 'src/commands/doctor.mjs']) {
+    const url = new URL(`../${file}`, import.meta.url).href;
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(url)});`], { encoding: 'utf8' });
+    assert.equal(r.status, 0, `${file}: ${r.stderr}`);
+  }
 });

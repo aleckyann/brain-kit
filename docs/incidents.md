@@ -5,10 +5,14 @@ known date. This file keeps the incident next to the rule so nobody removes a gu
 for looking paranoid. Entries are grouped by theme and dated DD/MM/YYYY.
 Names of people, companies and tools were removed on purpose.
 
-Seventy three lessons were extracted from the original vault. Seventy two entries
-follow: the four day curation outage of September 2026 produced two lessons about
-the same incident and is written up once, under 13/09/2026. Where a lesson carries
-no date of its own, the entry says "Undated" and explains why.
+Seventy three lessons were extracted from the original vault, written up as seventy
+two entries: the four day curation outage of September 2026 produced two lessons about
+the same incident and is written up once, under 13/09/2026. Three entries were added
+since, each dated: the leak gate that blocked its own release tag (18/09/2026), the
+selection of transcripts by modification time (24/09/2026), and the settings a headless
+run inherits (24/09/2026), which the kit's own build produced. Seventy five entries
+follow. Where a lesson carries no date of its own, the entry says "Undated" and explains
+why.
 
 ## Format and links
 
@@ -416,7 +420,8 @@ investigating why the curator stopped, compare the sizes of the recent logs befo
 anything else.
 **Where it lives in brain-kit.** `src/guards/dirty-tree.mjs` (exit 75, file list
 with modification times, notify), `src/guards/watermark.mjs`, `brain-kit schedule`
-with daytime windows, `brain-kit doctor` check `notify`,
+with daytime windows, `brain-kit doctor` checks `notify` and `last-run`,
+[scheduling.md](scheduling.md) ("compare the sizes of the recent logs first"),
 `test/incidents/2026-09-13-dirty-tree-silent.test.mjs` (Phase 2).
 
 ### 29/07/2026: the exit code came from a date substitution
@@ -426,7 +431,9 @@ that had already reset it.
 **Rule.** Capture the return code immediately after the call, before any command
 substitution. A failure that announces itself as a success is worse than the
 failure.
-**Where it lives in brain-kit.** `src/guards/exit-propagation.mjs`,
+**Where it lives in brain-kit.** `src/harness/claude-code.mjs` (the exit code is the
+child's own, read from its `close` event and from nowhere else), `src/commands/curate.mjs`
+(the exit mapping of step 16, where a timed out run is never 0),
 `test/incidents/2026-07-29-exit-code.test.mjs` (Phase 2).
 
 ### 11/08/2026: the self-trace filter ate the day's work
@@ -438,7 +445,9 @@ sessions of the previous day disappeared; the night looked calm.
 JSON parser. When in doubt, the transcript stays in: including too much costs
 context, discarding too much costs the day. Every scheduled actor that produces
 transcripts needs a signature known to the filter, and each signature needs a test.
-**Where it lives in brain-kit.** `src/guards/self-trace.mjs`,
+**Where it lives in brain-kit.** `src/sources/transcripts-claude-code.mjs` (the
+self-trace filter: the first user message with text, parsed as JSON, starting with
+`curate.signature` or one of `curate.extra_signatures`),
 `test/incidents/2026-08-11-self-trace-filter.test.mjs` (Phase 2).
 
 ### 11/08/2026: the cap threw away exactly the work of the day
@@ -446,9 +455,12 @@ transcripts needs a signature known to the filter, and each signature needs a te
 path. The locale ignored punctuation, unrelated projects sorted first alphabetically,
 and the transcripts from the vault itself, which are the actual work of the day, were
 the first to be cut (PR #30).
-**Rule.** Sort candidates by modification time, newest first. When the cap bites, the
-oldest falls off, and the log says how many were dropped.
-**Where it lives in brain-kit.** `src/guards/recency-cap.mjs`,
+**Rule.** Sort candidates by recency, newest first, never by name. When the cap bites,
+the oldest falls off, and the log says how many were dropped. The original fix sorted by
+modification time; the kit sorts by the last message inside the window instead, for the
+reason in the 24/09/2026 entry below.
+**Where it lives in brain-kit.** `src/sources/transcripts-claude-code.mjs` (the cap,
+`curate.caps.transcripts`, and `dropped.byCap` in the log),
 `test/incidents/2026-08-11-recency-cap.test.mjs` (Phase 2).
 
 ### 24/09/2026: selection by modification time turned an old session into a new fact
@@ -475,7 +487,8 @@ nothing, and calendar and document sources vanished without an error.
 network came up with the time the process started. The wait for the network has to
 happen inside the round.
 **Where it lives in brain-kit.** `src/guards/network.mjs` (timed wait inside
-`curate`, before anything else), `brain-kit doctor` (Phase 2 and Phase 3).
+`curate`, right after the lock and before sync), `brain-kit doctor` (Phase 2 and
+Phase 3).
 
 ### 29/08/2026: the network guard returned in 0.02 seconds and waited for nothing
 **What happened.** For three nights the network guard called a network manager check
@@ -508,8 +521,8 @@ vault died with "Could not resolve hostname", because the round had been trigger
 resume. Curation then ran from a stale base, and nobody noticed.
 **Rule.** The network wait comes before the base update, and the test asserts the
 order of the steps.
-**Where it lives in brain-kit.** `brain-kit curate` (fixed, tested order: sentinel,
-lock, network, sync, config), `test/incidents/2026-09-14-order-network-sync.test.mjs`
+**Where it lives in brain-kit.** `brain-kit curate` (fixed, tested order: machine
+file, lock, network, sync, config), `test/incidents/2026-09-14-order-network-sync.test.mjs`
 (Phase 2).
 
 ### Undated: updating the base from inside the round rewrites the running script
@@ -528,7 +541,9 @@ from one binary directory to another. The next day's round died with exit 127 af
 **Rule.** The scheduler unit's `PATH` lists both possible directories for the binary,
 so the routine survives the next migration.
 **Where it lives in brain-kit.** `brain-kit schedule install` (`path_extra` in the
-machine file), `brain-kit doctor` check `claude` (Phase 2).
+machine file, then the directory of `claude_bin`, on the unit's `PATH`), `brain-kit
+doctor` checks `claude-present` and `claude-real`,
+`test/incidents/2026-08-27-binary-moved.test.mjs` (Phase 2).
 
 ### 21/08/2026: an expired token, six seconds, and a green service
 **What happened.** The round died with an authentication error 6 seconds after
@@ -538,8 +553,11 @@ the redirection block rather than to the process.
 **Rule.** Propagate the exit code of the real process, never the wrapper's. A green
 service lasting seconds, with a peak around 700 MB, is a dead round: read the log and
 look for the failure marker before believing the status.
-**Where it lives in brain-kit.** `src/guards/exit-propagation.mjs`,
-`brain-kit doctor`, `last-run.json` with duration and cost (Phase 2).
+**Where it lives in brain-kit.** `src/harness/claude-code.mjs` (the real process's
+exit code), `src/commands/curate.mjs` (an API or login error is exit 69, never 0),
+`last-run.json` with duration, turns and cost, `brain-kit doctor` check `last-run` (a
+round that exits 0 in under 20 seconds without a model turn is reported as dead),
+`test/incidents/2026-08-21-expired-token.test.mjs` (Phase 2).
 
 ### 14/09/2026: the CLI binary was a 500 byte stub for two days
 **What happened.** At 15:49 on 14/09/2026 a reinstall did not run its post install
@@ -550,8 +568,8 @@ later, completed only because the high water mark had not advanced.
 installed. Fingerprint: a launcher of about 500 bytes is a stub, about 213 MB is the
 real thing, and `--version` returns error text instead of a number. It can be fixed
 offline by running the package's own install script.
-**Where it lives in brain-kit.** `src/guards/cli-stub.mjs`, `brain-kit doctor` check
-`claude real`, `test/incidents/2026-09-14-cli-stub.test.mjs` (Phase 2).
+**Where it lives in brain-kit.** `src/guards/cli.mjs`, `brain-kit doctor` check
+`claude-real`, `test/incidents/2026-09-14-cli-stub.test.mjs` (Phase 2).
 
 ### 15/09/2026: fixing one failure mode revealed the next
 **What happened.** On 15 and 16/09/2026 the rounds aborted on the dirty tree guard
@@ -572,7 +590,8 @@ fired at midnight. It fired at resume: 08:46 on 14/09, 08:36 on 15/09 and 07:13 
 connected, never overnight with catch up. And the routine's name should say what it
 does, not what time it used to run.
 **Where it lives in brain-kit.** `brain-kit schedule install` (daytime windows, names
-by function), `docs/scheduling.md` (Phase 2).
+by function), [scheduling.md](scheduling.md),
+`test/incidents/2026-09-14-nightly-never-ran.test.mjs` (Phase 2).
 
 ### 17/09/2026: the high water mark, and why it lags by one day on purpose
 **What happened.** A machine suspended for several days only gets one catch up fire
@@ -583,7 +602,9 @@ pull request already merged, which is the expected state and not a missing round
 from there. It advances only on exit 0, so a round that dies halfway leaves the day
 open. A mark at D-1 with today's pull request merged is expected behaviour.
 **Where it lives in brain-kit.** `src/guards/watermark.mjs`,
-`brain-kit watermark show|set|reopen|import|assume-covered` (Phase 2).
+`brain-kit watermark show|set|reopen|assume-covered`, `brain-kit doctor` check
+`watermark` (Phase 2). `watermark import`, which carries marks over from the original
+vault, comes with the migration (Phase 5).
 
 ### 20/08/2026: the round closed a day it had never read
 **What happened.** The round recorded that the connectors had not come up, declared
@@ -616,6 +637,30 @@ variables in the target script, and if one is missing, fail right there and exec
 nothing else.
 **Where it lives in brain-kit.** `test/` harness preconditions for `curate`
 (Phase 2).
+
+### 24/09/2026: a headless run inherited the person's own settings
+**What happened.** While the kit's scheduled curator was being designed, a spike ran the
+model headless with an allowlist and a denylist on the command line and measured what it
+did. A plain headless run loaded the person's own Claude Code settings: their permission
+mode (`auto`, which approves actions on its own), their hooks, their allow rules and every
+MCP server they had configured. Under that, a command in the denylist ran, and so did one
+in neither list, with exit 0 and no denial reported. Turning off permission prompts did not
+help. Denying everything no rule allows (`dontAsk`) was still bypassed: a hook of the
+person's rewrote a command before it ran, and an allow rule of theirs permitted the
+rewritten form, so a denied command ran anyway. Loading only the project's settings still
+ran a hook from the project's own settings file, in a folder never trusted, and every
+vault the kit creates carries such a file enabling the kit's plugin.
+**Rule.** An unattended model runs with no settings file loaded at all and no MCP server
+but the ones passed, denying everything its own rules do not allow, and the run proves
+it: the permission mode, hooks and servers the CLI reports in its first event are checked
+before the model does any work, and a mismatch stops it. What held was `--setting-sources
+''` (the empty string), `--strict-mcp-config`, `--permission-mode dontAsk` and
+`--permission-prompts none`, together; the login keeps working, because it is not a
+settings file.
+**Where it lives in brain-kit.** `src/harness/claude-code.mjs` (the flags on every
+round), `src/guards/isolation.mjs` (the check of the first event), `brain-kit doctor`
+check `claude-isolation-flags`, [security.md](security.md),
+`test/incidents/2026-09-24-inherited-settings.test.mjs` (Phase 2).
 
 ## Connectors
 
@@ -793,7 +838,7 @@ machine.
 **Rule.** Before assuming authorship of the dirt, look at each file's modification
 time and mark the inherited ones. A hook installed at user scope needs a vault
 sentinel, otherwise it holds every unrelated repository hostage.
-**Where it lives in brain-kit.** `src/guards/vault-sentinel.mjs`, `brain-kit hook
+**Where it lives in brain-kit.** `src/vault.mjs` (the vault sentinel), `brain-kit hook
 stop` (fail open before the sentinel, fail closed after; inherited files marked),
 `test/incidents/2026-09-14-foreign-repo.test.mjs` (Phase 1).
 
@@ -986,8 +1031,10 @@ incident date.
 **Rule.** A large transcript is sampled from the end and then in slices, never read
 whole. Video recordings and full transcriptions are never downloaded. Cost and privacy
 are rules in the prompt, not left to the model's good sense.
-**Where it lives in brain-kit.** `src/sources/transcripts.mjs` (sampling from the end),
-`src/guards/recency-cap.mjs`, `src/guards/budget.mjs` (Phase 2).
+**Where it lives in brain-kit.** `src/sources/transcripts-claude-code.mjs` (the plan
+gives each transcript's size and the line to start reading from, near its end, and caps
+how many are offered), the curate prompt, `--max-turns` and `--max-budget-usd` on every
+round (`curate.max_turns`, `curate.budget_usd`) (Phase 2).
 
 ### Undated: a colleague's medical appointment was in the calendar window
 **What happened.** While calibrating the prompt against real calendar data, a

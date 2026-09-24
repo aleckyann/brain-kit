@@ -3,9 +3,10 @@
 > Under construction. Phase 1 is complete: the validator, the linter, the push gates,
 > `init`, `init --adopt`, `update`, `doctor`, the pull request loop (`sync`, `propose`,
 > `verify`) and the Claude Code plugin (hooks, skills, a read-only subagent) work today,
-> from a clone of this repository. The scheduled curator and the morning briefing are
-> still to come, and the package on npm is still the Phase 0 skeleton. Follow the
-> repository for the first usable release.
+> from a clone of this repository. Phase 2, the scheduled curator (`curate`, `watermark`,
+> `schedule`), is built and in review. The morning briefing is still to come, and the
+> package on npm is still the Phase 0 skeleton. Follow the repository for the first usable
+> release.
 
 A second brain in plain markdown, in the Open Knowledge Format (OKF) v0.2, kept by an
 AI agent that reads it through an index, feeds it every day from your own work (session
@@ -16,9 +17,9 @@ brain-kit is one repository that is meant to be, at the same time:
 
 - an npm package, `second-brain-kit`, with a single executable, `brain-kit`. Today it
   creates a vault or adopts an existing one, installs its push gate, keeps the kit's own
-  files current, checks the machine with `doctor`, validates and lints a vault, and runs
-  the pull request loop (`sync`, `propose`, `verify`); the scheduled curator, the briefing
-  pre-flight and the scheduler templates are still to come;
+  files current, checks the machine with `doctor`, validates and lints a vault, runs the
+  pull request loop (`sync`, `propose`, `verify`), and runs the scheduled curator
+  (`curate`, `watermark`, `schedule`); the briefing pre-flight is still to come;
 - a Claude Code plugin (seven skills, the Stop and SessionStart hooks, a read-only
   subagent) that calls the same engine;
 - a plugin marketplace of one, so that `claude plugin marketplace add aleckyann/brain-kit`
@@ -49,6 +50,9 @@ node brain-kit/bin/brain-kit.mjs lint path/to/vault
 node brain-kit/bin/brain-kit.mjs sync path/to/vault
 node brain-kit/bin/brain-kit.mjs propose "summary" --only notes/changed.md
 node brain-kit/bin/brain-kit.mjs verify --pr 12
+node brain-kit/bin/brain-kit.mjs curate path/to/vault
+node brain-kit/bin/brain-kit.mjs watermark show path/to/vault
+node brain-kit/bin/brain-kit.mjs schedule install path/to/vault
 ```
 
 `init` makes a new vault in an empty or new directory, in English or Portuguese: the
@@ -76,7 +80,12 @@ the same care for a hook of your own.
 `doctor` reports, check by check, whether this machine and this vault are ready: Node and
 git, the gate and `core.hooksPath`, `brain-kit` on PATH, the configuration, the manifest,
 `machine.json` and its state directory, the kit version, `gh`, `claude`, and
-`node_modules/` in `.gitignore`. Each failure names the command that fixes it.
+`node_modules/` in `.gitignore`; and for the scheduled curator, whether `claude` is the
+real CLI and knows every flag that isolates a round, the projects its transcripts come
+from, how far behind each source's watermark is, the last round (a round that exits 0 in
+seconds without a model turn is reported as dead), the timer and its next fire times, and
+whether a failed round reaches you or only the log. Each failure names the command that
+fixes it.
 
 `validate` checks the vault against OKF v0.2 and reports two rulers apart: the format's
 own conformance, and the vault's house rules, which are stricter on purpose. A vault can
@@ -111,6 +120,31 @@ the commit in place and says what to run. `verify` is the owner's command after 
 it stamps `verified` on the notes the merged pull request changed and commits with the
 owner's own identity. `machine` shows and edits the machine-local `machine.json`.
 
+## The scheduled curator
+
+`curate` runs one round: it reads the Claude Code sessions of the projects your
+configuration lists, selected by the time of their messages, and gives them to a model
+that can act only through the kit's own `validate`, `lint` and `propose`. The round ends
+with a pull request against your vault. The model runs isolated from your own Claude Code
+settings: no settings file of yours or of the project is loaded, no hook and no MCP server,
+and everything its own rules do not allow is denied. The round checks the isolation
+from the CLI's first event and stops the model if it does not hold. The steps run in one
+fixed, tested order (lock, network, sync, then the configuration as synced), and every way
+a round can fail ends with a non-zero exit, a reason in `last-run.json` and the log, and
+your notify command. `--dry` shows what a round would do and `--check` runs every step up
+to the model.
+
+`watermark` shows and moves the last day each source was swept. A round reads the days
+after it, oldest first, and moves it only when every file it was offered was read and the
+model reported the source; no day is ever closed unread. `schedule install|uninstall|status`
+installs the round in daytime windows (09:30, 14:00 and 20:00 by default), named by what it
+does, with no dependency on a network target: systemd user timers are the reference, and
+launchd and cron are rendered too.
+
+[docs/scheduling.md](docs/scheduling.md) explains the round step by step, the windows, the
+watermark, the exit codes and what to do for each. [docs/security.md](docs/security.md)
+explains what isolates the model and the measurements behind it.
+
 ## The Claude Code plugin
 
 Load it from a clone with `claude --plugin-dir path/to/brain-kit`, or install it from the
@@ -134,7 +168,7 @@ marketplace. Inside a vault:
 |---|---|---|
 | 0 | Skeleton, exit codes, language packs, config schemas, anti-leak gate, CI, docs | done, 0.0.1 on npm |
 | 1 | Validator, lint, propose (PR loop), Stop hook, init, doctor, skills | done |
-| 2 | Scheduled curator over local transcripts, scheduler templates | planned |
+| 2 | Scheduled curator over local transcripts, scheduler templates | in review |
 | 3 | Calendar and meeting-notes sources (best effort by design) | planned |
 | 4 | Morning briefing | planned |
 | 5 | Migration of the original vault onto the kit | planned |
@@ -177,8 +211,10 @@ Read [docs/rationale.md](docs/rationale.md) for the reasoning and
 ## Requirements (target)
 
 Node.js >= 24, git, the GitHub CLI (`gh`) logged in, and Claude Code. Linux is the
-reference platform for scheduling (systemd user timers); macOS (launchd) and cron are
-planned; Windows is out of scope for scheduling.
+reference platform for scheduling (systemd user timers, which need
+`loginctl enable-linger` to run while you are logged out); macOS (launchd) and cron entries
+are rendered and tested without being installed by the test suite; Windows is out of scope
+for scheduling.
 
 ## License
 

@@ -59,7 +59,7 @@ import { findVaultRoot } from '../vault.mjs';
 import { STATE_FILES, stateDirFor } from '../state.mjs';
 import { KIT_ROOT } from '../version.mjs';
 import { run } from '../exec.mjs';
-import { expandHome, resolveClaude } from '../doctor/checks.mjs';
+import { expandHome, resolveClaude, shownInstant } from '../doctor/checks.mjs';
 
 const ROOT_INDEX = 'index.md';
 const ACTIONS = Object.freeze(['install', 'uninstall', 'status']);
@@ -75,6 +75,7 @@ export const CRON_LINE_LIMIT = 900;
 const PINNED_MARKERS = Object.freeze(['/_npx/', '/.nvm/versions/', '/fnm/node-versions/', '/.fnm/', '/.asdf/installs/', '/mise/installs/', '/.volta/tools/image/']);
 const CRON_ENV_LINE = /^\s*(CRON_TZ|TZ|SHELL)\s*=/;
 const TEMPLATES = join(KIT_ROOT, 'templates', 'schedule');
+const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
 
 function parseArgs(argv) {
   const result = { action: undefined, dir: undefined, platform: null, dry: false, help: false };
@@ -213,6 +214,12 @@ export function nextFireTimes(windows, now, count = 3) {
 }
 
 export async function runSchedule(argv, io, t, deps = {}) {
+  return runScheduleSync(argv, io, t, deps);
+}
+
+// The command itself, which never waits on anything: `doctor`'s `schedule`
+// check calls it directly to ask `status` the same question, the same way.
+export function runScheduleSync(argv, io, t, deps = {}) {
   const env = deps.env ?? process.env;
   const cwd = deps.cwd ?? process.cwd();
   const os = deps.platform ?? process.platform;
@@ -628,9 +635,11 @@ function lastRunSummary(t, file) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     return t('schedule.status_last_run_unreadable', { file, detail: typeof value });
   }
+  // A timestamp is shown to a person as DD/MM/YYYY HH:MM on the machine's
+  // clock, the clock the windows fire on; every other scalar as it is.
   const summary = Object.entries(value)
     .filter(([, v]) => v === null || ['string', 'number', 'boolean'].includes(typeof v))
-    .map(([k, v]) => `${k}=${v}`)
+    .map(([k, v]) => `${k}=${typeof v === 'string' && ISO_INSTANT.test(v) ? shownInstant(v) : v}`)
     .join(', ');
   return t('schedule.status_last_run', { summary });
 }

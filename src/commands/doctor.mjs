@@ -1,4 +1,4 @@
-// The `doctor` command: runs the phase 1 checks (src/doctor/checks.mjs)
+// The `doctor` command: runs the checks in src/doctor/checks.mjs
 // against the vault found from [dir] or the working directory, and
 // reports each one.
 //
@@ -110,7 +110,9 @@ export async function runDoctor(argv, io, t, deps = {}) {
     return EXIT.USAGE;
   }
 
-  const ctx = buildContext({ root, env, ...(deps.nodeVersion !== undefined ? { nodeVersion: deps.nodeVersion } : {}) });
+  const ctx = buildContext({
+    root, env, ...(deps.nodeVersion !== undefined ? { nodeVersion: deps.nodeVersion } : {}), ...(deps.now !== undefined ? { now: deps.now } : {}),
+  });
   const results = runChecks(ctx, ids);
   const exitCode = exitCodeFor(results);
   const counts = { ok: 0, warn: 0, fail: 0 };

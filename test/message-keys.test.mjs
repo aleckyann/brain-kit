@@ -171,6 +171,10 @@ function allSites() {
     ...extractRuleMessageSites(readSrc('src/guards/location.mjs'), 'src/guards/location.mjs'),
     ...extractRuleMessageSites(readSrc('src/guards/lock.mjs'), 'src/guards/lock.mjs'),
     ...extractRuleMessageSites(readSrc('src/guards/snapshot.mjs'), 'src/guards/snapshot.mjs'),
+    // Phase 2's guards whose results carry { messageKey, params } for the
+    // round (and doctor) to render.
+    ...extractRuleMessageSites(readSrc('src/guards/cli.mjs'), 'src/guards/cli.mjs'),
+    ...extractRuleMessageSites(readSrc('src/guards/isolation.mjs'), 'src/guards/isolation.mjs'),
   ];
   const direct = [
     ...extractTranslatorCallSites(readSrc('src/cli.mjs'), 'src/cli.mjs'),

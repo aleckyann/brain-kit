@@ -3,9 +3,10 @@
 > Em construção. A fase 1 está concluída: o validador, o linter, os gates de push, o
 > `init`, o `init --adopt`, o `update`, o `doctor`, o loop de pull request (`sync`,
 > `propose`, `verify`) e o plugin do Claude Code (hooks, skills, um subagente somente
-> leitura) já funcionam hoje, a partir de um clone deste repositório. O curador agendado e
-> o briefing matinal ainda estão por vir, e o pacote no npm ainda é o esqueleto da fase 0.
-> Acompanhe o repositório para a primeira versão usável.
+> leitura) já funcionam hoje, a partir de um clone deste repositório. A fase 2, o curador
+> agendado (`curate`, `watermark`, `schedule`), está construída e em revisão. O briefing
+> matinal ainda está por vir, e o pacote no npm ainda é o esqueleto da fase 0. Acompanhe o
+> repositório para a primeira versão usável.
 
 Um segundo cérebro em markdown puro, no Open Knowledge Format (OKF) v0.2, mantido por um
 agente de IA que o lê por um índice, o alimenta todo dia a partir do seu próprio trabalho
@@ -17,8 +18,8 @@ O brain-kit é um repositório que pretende ser, ao mesmo tempo:
 - um pacote npm, `second-brain-kit`, com um único executável, `brain-kit`. Hoje ele
   cria um vault ou adota um existente, instala o gate de push dele, mantém atualizados os
   arquivos do próprio kit, confere a máquina com o `doctor`, valida e aplica lint a um
-  vault, e roda o loop de pull request (`sync`, `propose`, `verify`); o curador agendado, o
-  pré-voo do briefing e os templates de agendamento ainda estão por vir;
+  vault, roda o loop de pull request (`sync`, `propose`, `verify`) e roda o curador
+  agendado (`curate`, `watermark`, `schedule`); o pré-voo do briefing ainda está por vir;
 - um plugin do Claude Code (sete skills, os hooks Stop e SessionStart, um subagente
   somente leitura) que chama o mesmo motor;
 - um marketplace de um plugin só, para que `claude plugin marketplace add aleckyann/brain-kit`
@@ -50,6 +51,9 @@ node brain-kit/bin/brain-kit.mjs lint caminho/do/vault
 node brain-kit/bin/brain-kit.mjs sync caminho/do/vault
 node brain-kit/bin/brain-kit.mjs propose "resumo" --only notas/alterada.md
 node brain-kit/bin/brain-kit.mjs verify --pr 12
+node brain-kit/bin/brain-kit.mjs curate caminho/do/vault
+node brain-kit/bin/brain-kit.mjs watermark show caminho/do/vault
+node brain-kit/bin/brain-kit.mjs schedule install caminho/do/vault
 ```
 
 O `init` cria um vault novo num diretório vazio ou novo, em inglês ou português: o
@@ -78,7 +82,12 @@ o tem, com o mesmo cuidado com um hook seu.
 O `doctor` informa, verificação por verificação, se esta máquina e este vault estão
 prontos: Node e git, o gate e o `core.hooksPath`, o `brain-kit` no PATH, a configuração, o
 manifesto, o `machine.json` e o diretório de estado dele, a versão do kit, o `gh`, o
-`claude`, e o `node_modules/` no `.gitignore`. Cada falha nomeia o comando que a corrige.
+`claude`, e o `node_modules/` no `.gitignore`; e, para o curador agendado, se o `claude` é
+a CLI de verdade e conhece todas as flags que isolam uma rodada, os projetos de onde vêm os
+transcripts, quantos dias de atraso tem a marca d'água de cada fonte, a última rodada (uma
+rodada que sai com 0 em segundos sem nenhum turno do modelo é apontada como morta), o timer
+e os próximos disparos, e se uma rodada que falha chega até você ou fica só no log. Cada
+falha nomeia o comando que a corrige.
 
 O `validate` confere o vault contra o OKF v0.2 e reporta duas réguas separadas: a
 conformidade do próprio formato e as regras da casa do vault, que são mais estritas de
@@ -113,6 +122,32 @@ diz o que rodar. O `verify` é o comando do dono depois do merge: carimba `verif
 notas que o pull request mergeado alterou e faz o commit com a identidade do próprio dono.
 O `machine` mostra e edita o `machine.json` local da máquina.
 
+## O curador agendado
+
+O `curate` roda uma rodada: lê as sessões do Claude Code dos projetos que a sua
+configuração lista, escolhidas pelo horário das mensagens, e as entrega a um modelo que só
+consegue agir pelos próprios `validate`, `lint` e `propose` do kit. A rodada termina num
+pull request contra o seu vault. O modelo roda isolado das suas próprias configurações do
+Claude Code: nenhum arquivo de configuração seu ou do projeto é carregado, nenhum hook e
+nenhum servidor MCP, e tudo o que as regras da própria rodada não permitem é negado. A
+rodada confere o isolamento pelo primeiro evento da CLI e para o modelo se ele não se
+confirmar. Os passos rodam numa ordem fixa e testada (lock, rede, sync, e só então a
+configuração já sincronizada), e toda forma de uma rodada falhar termina com uma saída
+diferente de zero, um motivo no `last-run.json` e no log, e o seu comando de notificação. O
+`--dry` mostra o que uma rodada faria e o `--check` roda todos os passos até o modelo.
+
+O `watermark` mostra e move o último dia varrido de cada fonte. Uma rodada lê os dias
+seguintes, os mais antigos primeiro, e só move a marca quando todo arquivo oferecido foi
+lido e o modelo informou a fonte; nenhum dia é fechado sem ter sido lido. O
+`schedule install|uninstall|status` instala a rodada em janelas diurnas (09:30, 14:00 e
+20:00 por padrão), com um nome que diz o que ela faz e sem depender de nenhum alvo de rede:
+os timers de usuário do systemd são a referência, e launchd e cron também são gerados.
+
+O [docs/scheduling.md](docs/scheduling.md) explica a rodada passo a passo, as janelas, a
+marca d'água, os códigos de saída e o que fazer em cada um. O
+[docs/security.md](docs/security.md) explica o que isola o modelo e as medições por trás
+disso.
+
 ## O plugin do Claude Code
 
 Carregue a partir de um clone com `claude --plugin-dir caminho/do/brain-kit`, ou instale
@@ -136,7 +171,7 @@ A pasta `evals/` traz um caso de `claude plugin eval` por skill e idioma; veja
 |---|---|---|
 | 0 | Esqueleto, códigos de saída, packs de idioma, schemas de config, trava anti-vazamento, CI, docs | concluída, 0.0.1 no npm |
 | 1 | Validador, lint, propose (loop de PR), hook Stop, init, doctor, skills | concluída |
-| 2 | Curador agendado sobre transcripts locais, templates de agendamento | planejada |
+| 2 | Curador agendado sobre transcripts locais, templates de agendamento | em revisão |
 | 3 | Fontes de agenda e notas de reunião (best effort por desenho) | planejada |
 | 4 | Briefing matinal | planejada |
 | 5 | Migração do vault original para o kit | planejada |
@@ -179,8 +214,10 @@ Leia [docs/rationale.md](docs/rationale.md) para o raciocínio e
 ## Requisitos (alvo)
 
 Node.js >= 24, git, a CLI do GitHub (`gh`) autenticada e o Claude Code. Linux é a
-plataforma de referência para agendamento (timers de usuário do systemd); macOS (launchd)
-e cron estão planejados; Windows fica fora do escopo de agendamento.
+plataforma de referência para agendamento (timers de usuário do systemd, que precisam de
+`loginctl enable-linger` para rodar com você deslogado); as entradas de macOS (launchd) e
+cron são geradas e testadas sem que a suíte de testes as instale; Windows fica fora do
+escopo de agendamento.
 
 ## Licença
 
