@@ -200,7 +200,8 @@ The log is `logs/curate-YYYY-MM-DD.log`, one file per day, one line per event:
 returned, the model's final text, anything read from a transcript, or the round's token.
 `brain-kit curate --keep-stream` (or `keep_stream: true` in `machine.json`) also keeps the
 model's raw output next to the log; that file does contain what the model read, so keep it
-only while you debug. This version does not prune old logs.
+only while you debug. Logs older than `log_retention_days` (in `machine.json`, default 30)
+are removed at the end of each round.
 
 `brain-kit doctor` reads all of this for you: the last round (with a warning for a round
 that exited 0 in seconds without a model turn, which is a dead round reported as a

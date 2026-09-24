@@ -337,7 +337,12 @@ export function runScheduleSync(argv, io, t, deps = {}) {
 
   const rendered = render({ platform, name, where, vaultId: machine.vault_id, argv: argvOfRound, path: pathDirs.join(':'), timezone, windows });
   if (parsed.action === 'status') {
-    const lastRun = machine.paths?.last_run ?? join(stateDir, STATE_FILES.LAST_RUN);
+    // A relative machine.paths entry belongs to the state directory, never
+    // to whatever directory status happens to run from.
+    const configured = machine.paths?.last_run;
+    const lastRun = typeof configured === 'string' && configured !== ''
+      ? resolve(stateDir, expandHome(configured, env))
+      : join(stateDir, STATE_FILES.LAST_RUN);
     return status(context, rendered, windows, lastRun, deps.now ?? new Date());
   }
   if (rendered.block !== undefined) {

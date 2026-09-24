@@ -825,6 +825,13 @@ export function roundFlags() {
     .filter((arg) => /^--?[A-Za-z]/.test(arg));
 }
 
+// Flags a round passes that the CLI's own --help does not list, measured
+// to work anyway: Claude Code 2.1.281 hides --max-turns from its help, and
+// every spike run of 24/09/2026 used it. `--version` cannot stand in as a
+// probe: the CLI prints its version and exits 0 whatever other flag it is
+// given, an unknown one included.
+export const HIDDEN_FLAGS = Object.freeze(['--max-turns']);
+
 function listsFlag(help, flag) {
   const escaped = flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`(^|[\\s,\\[(])${escaped}(?=$|[\\s,=<\\[\\])])`, 'm').test(help);
@@ -847,12 +854,12 @@ function claudeIsolationFlags(ctx) {
   if (r.status !== 0) {
     return { id, status: 'fail', messageKey: 'doctor.claude_isolation_flags.failed', params: { bin, status: r.status } };
   }
-  const flags = roundFlags();
+  const flags = roundFlags().filter((flag) => !HIDDEN_FLAGS.includes(flag));
   const missing = flags.filter((flag) => !listsFlag(r.stdout, flag));
   if (missing.length > 0) {
     return { id, status: 'fail', messageKey: 'doctor.claude_isolation_flags.missing', params: { bin, missing, command: UPDATE_CLAUDE_COMMAND } };
   }
-  return { id, status: 'ok', messageKey: 'doctor.claude_isolation_flags.ok', params: { bin, count: flags.length } };
+  return { id, status: 'ok', messageKey: 'doctor.claude_isolation_flags.ok', params: { bin, count: flags.length, hidden: HIDDEN_FLAGS } };
 }
 
 // The transcripts source reads only the projects the configuration lists

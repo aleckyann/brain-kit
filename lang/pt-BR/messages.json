@@ -368,7 +368,7 @@
   "doctor.claude_real.ok": "{bin} é uma CLI de verdade, versão {version}",
   "doctor.claude_isolation_flags.failed": "\"{bin} --help\" saiu com {status}, então o doctor não consegue saber se esta CLI conhece as flags que isolam uma rodada.",
   "doctor.claude_isolation_flags.missing": "\"{bin} --help\" não lista {missing}, flags que toda rodada passa para rodar isolada das suas próprias configurações do Claude Code. Atualize o Claude Code ({command}) e rode o doctor de novo.",
-  "doctor.claude_isolation_flags.ok": "{bin} lista as {count} flags que uma rodada passa",
+  "doctor.claude_isolation_flags.ok": "{bin} lista as {count} flags que uma rodada passa e que a ajuda consegue mostrar; {hidden} não aparece na ajuda do Claude Code 2.1.281 e foi medida funcionando",
   "doctor.include_projects.not_used": "transcripts não está entre as fontes do curate em {file}, então não há projetos a conferir.",
   "doctor.include_projects.empty": "{key} em {file} está vazio, então uma rodada não lê sessão nenhuma e se recusa a rodar. Liste os diretórios de projeto em {root} cujas sessões devem alimentar o vault.",
   "doctor.include_projects.root_missing": "o diretório de transcripts {root} não existe. Aponte o machine.json para o diretório que guarda seus projetos do Claude Code: {command}",

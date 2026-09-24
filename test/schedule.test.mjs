@@ -166,6 +166,20 @@ function shownLocal(iso) {
   return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+test('status reads a relative machine.paths.last_run from the state directory, never from the working directory', async () => {
+  const world = makeScheduleWorld();
+  world.setMachine({ paths: { watermark: 'watermark.json', last_run: 'last-run.json', log_dir: 'logs' } });
+  assert.equal((await world.run(['install', '--platform', 'systemd'])).status, 0);
+  writeFileSync(join(world.stateDir, 'last-run.json'), JSON.stringify({ exit: 0, reasonCode: 'from-state-dir' }));
+  // A decoy where a working-directory resolution would look.
+  const elsewhere = join(world.stateDir, '..', 'elsewhere');
+  mkdirSync(elsewhere, { recursive: true });
+  writeFileSync(join(elsewhere, 'last-run.json'), JSON.stringify({ exit: 1, reasonCode: 'from-cwd' }));
+  const s = await world.run(['status', world.vault, '--platform', 'systemd'], { cwd: elsewhere });
+  assert.match(s.stdout, /reasonCode=from-state-dir/);
+  assert.doesNotMatch(s.stdout, /from-cwd/);
+});
+
 test('the next fire times start strictly after now and roll over the days as far as they need to', () => {
   const at = (h, m) => new Date(2026, 8, 24, h, m);
   assert.deepEqual(nextFireTimes(['09:30', '14:00'], at(14, 0)), ['25/09/2026 09:30', '25/09/2026 14:00', '26/09/2026 09:30']);

@@ -64,7 +64,10 @@ permission mode, the MCP servers and every hook that fires. If the mode is not `
 if any MCP server appears, or if any hook event appears, the round stops the model at once
 and exits 1, before it does any work. `brain-kit doctor` (check `claude-isolation-flags`)
 asks the installed CLI's own `--help` for every flag a round passes, so an update that
-drops one is caught before a round runs with it.
+drops one is caught before a round runs with it. One flag is exempt: `--max-turns` is not
+in the help of Claude Code 2.1.281, yet it works (every run of the spike used it).
+`--version` cannot probe a flag instead: the CLI prints its version and exits 0 whatever
+other flag it is given, an unknown one included.
 
 Also measured: the round's environment reaches the commands the model runs through Bash
 (a variable set for `claude` was seen by the kit the model ran). Keep secrets out of the

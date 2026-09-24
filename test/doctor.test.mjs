@@ -1751,7 +1751,19 @@ test('claude-isolation-flags: flags written the way the CLI prints them, short f
   const fx = withClaude(setup(), claudeScript({ help: lines }));
   const { report } = await doctor(fx, ['--only', 'claude-isolation-flags']);
   const c = assertCheck(report, 'claude-isolation-flags', 'ok', 'doctor.claude_isolation_flags.ok');
-  assert.equal(c.params.count, roundFlags().length);
+  assert.equal(c.params.count, roundFlags().length - 1);
+});
+
+test('claude-isolation-flags: --max-turns, hidden from the help of 2.1.281 and measured to work, is not required; --setting-sources is', async () => {
+  let fx = withClaude(setup(), claudeScript({ help: roundFlags().filter((f) => f !== '--max-turns') }));
+  let r = await doctor(fx, ['--only', 'claude-isolation-flags']);
+  const c = assertCheck(r.report, 'claude-isolation-flags', 'ok', 'doctor.claude_isolation_flags.ok');
+  assert.deepEqual(c.params.hidden, ['--max-turns']);
+  assert.match(c.message, /--max-turns/);
+  fx = withClaude(setup(), claudeScript({ help: roundFlags().filter((f) => f !== '--max-turns' && f !== '--setting-sources') }));
+  r = await doctor(fx, ['--only', 'claude-isolation-flags']);
+  const failed = assertCheck(r.report, 'claude-isolation-flags', 'fail', 'doctor.claude_isolation_flags.missing');
+  assert.deepEqual(failed.params.missing, ['--setting-sources']);
 });
 
 test('claude-isolation-flags: a --help that fails, or exits 0 printing nothing, is never ok', async () => {
@@ -1761,7 +1773,7 @@ test('claude-isolation-flags: a --help that fails, or exits 0 printing nothing, 
   fx = withClaude(setup(), claudeScript({ help: [], before: 'if [ "$1" = --help ]; then exit 0; fi\n' }));
   r = await doctor(fx, ['--only', 'claude-isolation-flags']);
   const c = assertCheck(r.report, 'claude-isolation-flags', 'fail', 'doctor.claude_isolation_flags.missing');
-  assert.deepEqual(c.params.missing, roundFlags());
+  assert.deepEqual(c.params.missing, roundFlags().filter((f) => f !== '--max-turns'));
 });
 
 // --- include-projects --------------------------------------------------------

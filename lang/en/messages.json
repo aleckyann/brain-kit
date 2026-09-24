@@ -368,7 +368,7 @@
   "doctor.claude_real.ok": "{bin} is a real CLI, version {version}",
   "doctor.claude_isolation_flags.failed": "\"{bin} --help\" exited {status}, so doctor cannot tell whether this CLI knows the flags that isolate a round.",
   "doctor.claude_isolation_flags.missing": "\"{bin} --help\" does not list {missing}, flags every round passes to run isolated from your own Claude Code settings. Update Claude Code ({command}), then run doctor again.",
-  "doctor.claude_isolation_flags.ok": "{bin} lists all {count} flags a round passes",
+  "doctor.claude_isolation_flags.ok": "{bin} lists all {count} flags a round passes that its help can show; {hidden} is not in the help of Claude Code 2.1.281 and was measured to work",
   "doctor.include_projects.not_used": "transcripts is not among the curate sources in {file}, so there are no projects to check.",
   "doctor.include_projects.empty": "{key} in {file} is empty, so a round reads no session and refuses to run. List the project directories under {root} whose sessions should feed the vault.",
   "doctor.include_projects.root_missing": "the transcripts directory {root} does not exist. Point machine.json at the directory that holds your Claude Code projects: {command}",

@@ -226,7 +226,8 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   whole on timeout or interruption, and the `propose` it runs joins the lock the round
   holds.
 - `brain-kit doctor` checks the curator: `claude-real` (not a launcher stub, a real
-  version), `claude-isolation-flags` (the installed CLI lists every flag a round passes),
+  version), `claude-isolation-flags` (the installed CLI's help lists every flag a round
+  passes, but `--max-turns`, which 2.1.281 hides from its help and which works),
   `include-projects`, `watermark` (days behind per source; more than three warns),
   `last-run` (a round that exited 0 in under 20 seconds without a model turn is a dead
   round), `schedule` (installed, current, enabled, next fire times) and `notify`. Each
