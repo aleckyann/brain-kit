@@ -11,7 +11,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { acquireLock } from '../src/guards/lock.mjs';
+import { spawnSync } from 'node:child_process';
+import { acquireLock, currentIdentity } from '../src/guards/lock.mjs';
 import { GUARD_FILES } from '../src/guards/location.mjs';
 import { git, makeRepo, pathUnder } from './helpers/git-repo.mjs';
 import { makeHookVault, runHookProcess } from './helpers/hook-world.mjs';
@@ -214,6 +215,66 @@ test('rung 8: a held lock releases, naming its command and pid, even with sessio
   assertReleased(stop(fx), /lock is there but cannot be read/);
   unlinkSync(join(fx.root, '.git', GUARD_FILES.LOCK));
   reasonOf(stop(fx));
+});
+
+// A lock as acquireLock writes it, with this machine's identity and the pid
+// of a process that has already exited: provably dead by the lock's rule.
+function deadLockText(extra = {}) {
+  const dead = spawnSync(process.execPath, ['-e', '']).pid;
+  const me = currentIdentity();
+  return `${JSON.stringify({
+    pid: dead, host: me.host, command: 'brain-kit propose', startedAt: '2026-09-24T00:00:00.000Z',
+    machineId: me.machineId, bootId: me.bootId, pidNamespace: me.pidNamespace, ...extra,
+  })}\n`;
+}
+
+test('rung 8: a lock whose holder is provably dead is no writer: the ladder goes on, the block names the stale lock, and the lock is left in place', () => {
+  const fx = sessionWithWork();
+  const lockFile = join(fx.root, '.git', GUARD_FILES.LOCK);
+  const text = deadLockText();
+  const pid = JSON.parse(text).pid;
+  writeFileSync(lockFile, text);
+  const reason = reasonOf(stop(fx));
+  assert.match(reason, /^This session changed 1 path\(s\) in the vault:\n {2}mine\.md\n/);
+  assert.match(reason, new RegExp(`lock was left by brain-kit propose \\(pid ${pid}\\), which is no longer running; run brain-kit doctor`));
+  assert.equal(readFileSync(lockFile, 'utf8'), text, 'the hook never reclaims or deletes the lock');
+  // With nothing of the session's, the stale lock does not block by itself.
+  unlinkSync(join(fx.root, 'mine.md'));
+  assertReleased(stop(fx), /left nothing to propose/);
+  assert.equal(readFileSync(lockFile, 'utf8'), text);
+  // A dead pid on another host cannot be proved dead: still held.
+  writeFileSync(join(fx.root, 'mine.md'), 'x\n');
+  writeFileSync(lockFile, deadLockText({ host: 'other-host.example.invalid' }));
+  assertReleased(stop(fx), /held by brain-kit propose/);
+});
+
+test('a dirty path under .claude/worktrees/ never counts, even in a vault whose .gitignore lacks it', () => {
+  const fx = makeHookVault();
+  const gitignore = join(fx.root, '.gitignore');
+  writeFileSync(gitignore, readFileSync(gitignore, 'utf8').replace('.claude/worktrees/\n', ''));
+  git(fx.root, ['commit', '-q', '-am', 'adopted-style ignore']);
+  begin(fx);
+  git(fx.root, ['worktree', 'add', '-q', join(fx.root, '.claude', 'worktrees', 'agent-1'), '-b', 'agent-1']);
+  assert.match(git(fx.root, ['status', '--porcelain', '--untracked-files=all']), /\.claude\/worktrees\/agent-1\//);
+  assertReleased(stop(fx), /left nothing to propose \(0 path\(s\)/);
+  writeFileSync(join(fx.root, 'mine.md'), 'x\n');
+  const reason = reasonOf(stop(fx));
+  assert.match(reason, /^This session changed 1 path\(s\) in the vault:\n {2}mine\.md\n/);
+  assert.doesNotMatch(reason, /worktrees/);
+});
+
+test('payload.cwd wins over CLAUDE_PROJECT_DIR: a worktree copy as cwd releases at rung 6 though the vault has session dirt', () => {
+  const fx = sessionWithWork();
+  const worktree = join(fx.root, '.claude', 'worktrees', 'w');
+  git(fx.root, ['worktree', 'add', '-q', worktree, '-b', 'w']);
+  const r = runHookProcess('stop', { session_id: 's1', stop_hook_active: false, cwd: worktree },
+    { env: { ...fx.env, CLAUDE_PROJECT_DIR: fx.root }, cwd: join(fx.base, 'elsewhere') });
+  assert.equal(r.status, 0);
+  assertReleased(r, /is not the path registered on this machine/);
+  // Without a cwd in the payload, CLAUDE_PROJECT_DIR is what finds the vault.
+  const viaEnv = runHookProcess('stop', { session_id: 's1', stop_hook_active: false },
+    { env: { ...fx.env, CLAUDE_PROJECT_DIR: fx.root }, cwd: join(fx.base, 'elsewhere') });
+  assert.equal(JSON.parse(viaEnv.stdout).decision, 'block');
 });
 
 test('rung 9: with no snapshot, an unreadable one or one of another tree, every dirty path is the session\'s and the reason says so', () => {

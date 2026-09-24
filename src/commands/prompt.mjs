@@ -207,7 +207,12 @@ export async function runPrompt(argv, io, t, deps = {}) {
     io.stdout.write(`${skillT('prompt.body_unreadable', { name: parsed.name })}\n`);
     return EXIT.FAILURE;
   }
-  io.stdout.write(render(text, vars));
+  // Outside a vault a vault-only body would still tell the model to open
+  // the log, and it would create one in whatever directory the session is
+  // in. One line first says to write nothing; setup is the skill that
+  // makes a vault, so it is left alone.
+  const notice = root === null && parsed.name !== 'setup' ? `${skillT('prompt.no_vault_notice', { dir: startDir })}\n\n` : '';
+  io.stdout.write(notice + render(text, vars));
   return EXIT.OK;
 }
 

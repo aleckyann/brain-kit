@@ -271,6 +271,10 @@ for (const lang of ['en', 'pt-BR']) {
     assert.ok(ignore.includes('node_modules/'));
     assert.ok(ignore.includes('.env'));
     assert.ok(ignore.filter((line) => line.startsWith('# ')).length >= 3);
+    // Claude Code's agent worktrees: an embedded checkout the Stop hook
+    // and propose must never see as a change to the vault.
+    assert.ok(ignore.includes('.claude/worktrees/'));
+    assert.equal(git(vault, ['check-ignore', '-q', '.claude/worktrees/agent-1/x.md']).status, 0);
   });
 }
 

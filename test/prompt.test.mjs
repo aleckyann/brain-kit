@@ -142,6 +142,34 @@ test('renders outside a vault, by the locale, falling back to pack defaults', as
   assert.match(c2.stdout, /memory\/log\.md/);
 });
 
+test('outside a vault a vault-only skill starts with one line saying to write nothing and suggesting setup; setup itself does not', async () => {
+  const outside = makeTempDir('brain-kit-prompt-outside-');
+  const expected = {
+    en: /^No brain-kit vault was found from .+: do not write any file; tell the person no vault was found here, and suggest opening the session inside the vault or running the setup skill\.\n\n/,
+    'pt-BR': /^Nenhum vault do brain-kit foi encontrado a partir de .+: não escreva nenhum arquivo; diga à pessoa que não há vault aqui e sugira abrir a sessão dentro do vault ou rodar a skill setup\.\n\n/,
+  };
+  for (const [lang, pattern] of Object.entries(expected)) {
+    for (const name of SKILL_NAMES.filter((n) => n !== 'setup')) {
+      const c = collector();
+      const code = await runPrompt(['skill', name], c.io, noopT(), { cwd: outside, env: { ...process.env, BRAIN_KIT_LANG: lang } });
+      assert.equal(code, EXIT.OK, c.stdout + c.stderr);
+      assert.match(c.stdout, pattern, `${lang} ${name}`);
+      assert.ok(c.stdout.split('\n')[0].includes(outside), `${lang} ${name} names the directory`);
+    }
+    const c = collector();
+    await runPrompt(['skill', 'setup'], c.io, noopT(), { cwd: outside, env: { ...process.env, BRAIN_KIT_LANG: lang } });
+    assert.doesNotMatch(c.stdout, pattern, `${lang} setup`);
+    assert.doesNotMatch(c.stdout, /No brain-kit vault was found|Nenhum vault do brain-kit/, `${lang} setup`);
+  }
+  // Inside a vault no skill carries the line.
+  for (const lang of ['en', 'pt-BR']) {
+    const { vault, state } = freshVault(lang);
+    const c = collector();
+    await runPrompt(['skill', 'capture'], c.io, noopT(), { cwd: vault, env: testEnv(state) });
+    assert.doesNotMatch(c.stdout, /No brain-kit vault was found|Nenhum vault do brain-kit/, lang);
+  }
+});
+
 test('{{kit}} names an existing file, quoted, and survives a path with a space', async () => {
   const spacedBase = mkdtempSync(join(tmpdir(), 'brain kit prompt '));
   try {

@@ -1,12 +1,14 @@
 // The SessionStart hook, run as Claude Code runs it: the real launcher with
 // the event JSON on standard input, against a throwaway vault from
-// `init --yes`. Review focus 1: a snapshot taken at startup is kept when the
-// same session compacts or resumes, and retaken otherwise.
+// `init --yes`. Review focus 1: a snapshot is written only when a session
+// starts; a compaction or resume never writes one, and says so when the
+// snapshot on disk is not this session's own.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { acquireLock } from '../src/guards/lock.mjs';
+import { spawnSync } from 'node:child_process';
+import { acquireLock, currentIdentity } from '../src/guards/lock.mjs';
 import { GUARD_FILES } from '../src/guards/location.mjs';
 import { readSnapshot } from '../src/guards/snapshot.mjs';
 import { git, makeRepo } from './helpers/git-repo.mjs';
@@ -63,15 +65,40 @@ test('resume of the same session keeps the snapshot', () => {
   assert.deepEqual(recorded(fx.root, fx.env), []);
 });
 
-test('compact or resume of another session retakes the snapshot for that session', () => {
+test('compact or resume of another session writes nothing: the first session\'s snapshot stays, and the line says the work cannot be told apart', () => {
   for (const source of ['compact', 'resume']) {
     const fx = makeHookVault();
     start(fx, { session_id: 's1', source: 'startup' });
     writeFileSync(join(fx.root, 'earlier.md'), 'the first session\n');
-    assert.match(contextOf(start(fx, { session_id: 's2', source })), /Session snapshot taken: 1 path/);
-    assert.deepEqual(recorded(fx.root, fx.env), ['earlier.md']);
-    assert.equal(readSnapshot(fx.root, { env: fx.env }).session, 's2');
+    const line = contextOf(start(fx, { session_id: 's2', source }));
+    assert.match(line, /cannot tell this session's work from earlier work and will count every changed path/, source);
+    assert.doesNotMatch(line, /Session snapshot taken|was kept/, source);
+    assert.deepEqual(recorded(fx.root, fx.env), [], source);
+    assert.equal(readSnapshot(fx.root, { env: fx.env }).session, 's1', source);
   }
+});
+
+test('compact or resume with no snapshot on disk writes none', () => {
+  for (const source of ['compact', 'resume']) {
+    const fx = makeHookVault();
+    writeFileSync(join(fx.root, 'mid.md'), 'written before the plugin was on\n');
+    assert.match(contextOf(start(fx, { session_id: 's1', source })), /cannot tell this session's work/, source);
+    assert.equal(readSnapshot(fx.root, { env: fx.env }), null, source);
+  }
+});
+
+test('A writes a.md, B starts, A compacts: A\'s Stop still blocks listing a.md', () => {
+  const fx = makeHookVault();
+  start(fx, { session_id: 'A', source: 'startup' });
+  writeFileSync(join(fx.root, 'a.md'), 'A wrote this\n');
+  start(fx, { session_id: 'B', source: 'startup' });
+  assert.match(contextOf(start(fx, { session_id: 'A', source: 'compact' })), /cannot tell/);
+  assert.equal(readSnapshot(fx.root, { env: fx.env }).session, 'B');
+  const r = runHookProcess('stop', { session_id: 'A', stop_hook_active: false, cwd: fx.root }, { env: fx.env, cwd: join(fx.base, 'elsewhere') });
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.decision, 'block');
+  assert.match(out.reason, /^This session changed 1 path\(s\) in the vault:\n {2}a\.md\n/);
 });
 
 test('clear, and a second startup, retake the snapshot even for the same session id', () => {
@@ -84,36 +111,46 @@ test('clear, and a second startup, retake the snapshot even for the same session
   }
 });
 
-test('a session with no id never keeps a snapshot, not even one taken for no session', () => {
+test('a session with no id never keeps a snapshot, and its compaction writes none', () => {
   const fx = makeHookVault();
   start(fx, { source: 'startup' });
   assert.equal(readSnapshot(fx.root, { env: fx.env }).session, null);
   writeFileSync(join(fx.root, 'later.md'), 'x\n');
-  assert.match(contextOf(start(fx, { source: 'compact' })), /taken/);
-  assert.deepEqual(recorded(fx.root, fx.env), ['later.md']);
+  assert.match(contextOf(start(fx, { source: 'compact' })), /cannot tell/);
+  assert.deepEqual(recorded(fx.root, fx.env), []);
   start(fx, { session_id: '', source: 'startup' });
+  assert.deepEqual(recorded(fx.root, fx.env), ['later.md']);
   writeFileSync(join(fx.root, 'later2.md'), 'x\n');
-  start(fx, { session_id: '', source: 'compact' });
-  assert.deepEqual(recorded(fx.root, fx.env), ['later.md', 'later2.md']);
+  assert.match(contextOf(start(fx, { session_id: '', source: 'compact' })), /cannot tell/);
+  assert.deepEqual(recorded(fx.root, fx.env), ['later.md']);
 });
 
-test('a snapshot of another working tree is retaken even for the same session on compact: a vault copied elsewhere', () => {
+test('a snapshot of another working tree is never retaken on compact, even for the same session: a vault copied elsewhere', () => {
   const fx = makeHookVault();
   start(fx, { session_id: 's1', source: 'startup' });
   const copy = join(fx.base, 'copy');
   cpSync(fx.root, copy, { recursive: true });
   writeFileSync(join(copy, 'in-copy.md'), 'x\n');
   assert.equal(readSnapshot(copy, { env: fx.env }).root, fx.root, 'the copy carries the original snapshot');
-  assert.match(contextOf(start(fx, { session_id: 's1', source: 'compact' }, { root: copy })), /taken/);
+  assert.match(contextOf(start(fx, { session_id: 's1', source: 'compact' }, { root: copy })), /cannot tell/);
+  assert.equal(readSnapshot(copy, { env: fx.env }).root, fx.root);
+  assert.match(contextOf(start(fx, { session_id: 's1', source: 'startup' }, { root: copy })), /taken/);
   const snapshot = readSnapshot(copy, { env: fx.env });
   assert.equal(snapshot.root, copy);
   assert.deepEqual(snapshot.paths.map(String), ['in-copy.md']);
 });
 
-test('an unreadable snapshot is replaced and the line says so', () => {
+test('an unreadable snapshot is replaced at a start and the line says so; on compact or resume it is left as it is', () => {
+  for (const source of ['compact', 'resume']) {
+    const fx = makeHookVault();
+    const file = join(fx.root, '.git', GUARD_FILES.SNAPSHOT);
+    writeFileSync(file, 'not json');
+    assert.match(contextOf(start(fx, { session_id: 's1', source })), /cannot tell/, source);
+    assert.equal(readFileSync(file, 'utf8'), 'not json', source);
+  }
   const fx = makeHookVault();
   writeFileSync(join(fx.root, '.git', GUARD_FILES.SNAPSHOT), 'not json');
-  const line = contextOf(start(fx, { session_id: 's1', source: 'compact' }));
+  const line = contextOf(start(fx, { session_id: 's1', source: 'startup' }));
   assert.match(line, /could not be read, so it was replaced/);
   assert.equal(readSnapshot(fx.root, { env: fx.env }).session, 's1');
 });
@@ -171,6 +208,20 @@ test('a held lock is named in the line with its command and pid', () => {
   }
   writeFileSync(join(fx.root, '.git', GUARD_FILES.LOCK), 'garbage');
   assert.match(contextOf(start(fx, { session_id: 's1', source: 'startup' })), /cannot be read, so its holder is unknown/);
+});
+
+test('a lock whose holder is provably dead is named as stale with brain-kit doctor, never as another writer, and is left in place', () => {
+  const fx = makeHookVault();
+  const me = currentIdentity();
+  const pid = spawnSync(process.execPath, ['-e', '']).pid;
+  const text = `${JSON.stringify({ pid, host: me.host, command: 'brain-kit propose', startedAt: '2026-09-24T00:00:00.000Z', machineId: me.machineId, bootId: me.bootId, pidNamespace: me.pidNamespace })}\n`;
+  const lockFile = join(fx.root, '.git', GUARD_FILES.LOCK);
+  writeFileSync(lockFile, text);
+  const line = contextOf(start(fx, { session_id: 's1', source: 'startup' }));
+  assert.match(line, new RegExp(`left by brain-kit propose \\(pid ${pid}\\), which is no longer running`));
+  assert.match(line, /brain-kit doctor/);
+  assert.doesNotMatch(line, /another writer is working/);
+  assert.equal(readFileSync(lockFile, 'utf8'), text);
 });
 
 test('a pt-BR vault gets its line in Portuguese whatever the environment says', () => {

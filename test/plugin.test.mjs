@@ -31,6 +31,10 @@ test('hooks.json declares Stop and SessionStart through an existing wrapper', ()
   const hooks = read('hooks/hooks.json').hooks;
   assert.ok(hooks.Stop, 'Stop hook missing');
   assert.ok(hooks.SessionStart, 'SessionStart hook missing');
+  // Stop takes no matcher; SessionStart fires on every source, so a start
+  // writes the snapshot and a compaction or resume says whether it is kept.
+  assert.deepEqual(hooks.Stop.map((group) => group.matcher), [undefined]);
+  assert.deepEqual(hooks.SessionStart.map((group) => group.matcher.split('|').sort()), [['clear', 'compact', 'resume', 'startup']]);
   for (const group of [...hooks.Stop, ...hooks.SessionStart]) {
     for (const hook of group.hooks) {
       assert.equal(hook.type, 'command');

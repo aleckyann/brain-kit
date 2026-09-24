@@ -272,6 +272,14 @@ function isStale(holder, me) {
   return pidIsGone(holder.pid);
 }
 
+// Read-only view of the staleness rule for callers that must never reclaim
+// or delete the lock themselves (the hooks): true only when `holder`, as
+// describeLock returned it, is provably dead by the rule above. An
+// unreadable lock (pid null) is never stale.
+export function isLockHolderStale(holder, identity = currentIdentity()) {
+  return holder !== null && isStale(holder, identity);
+}
+
 // A private file holding `text` in full, created exclusively under a name
 // no other process uses, ready to be linked or renamed into place.
 function writePrivateFile(dir, baseName, text) {

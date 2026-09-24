@@ -12,11 +12,6 @@
   "license": "MIT",
   "keywords": ["second-brain", "okf", "knowledge-base", "curation", "pull-request", "markdown"],
   "userConfig": {
-    "vault_dir": {
-      "type": "directory",
-      "title": "Default vault directory",
-      "description": "Vault used by brain-kit skills when the current directory is not a vault. Leave empty to require running inside the vault."
-    },
     "lang": {
       "type": "string",
       "title": "Language",

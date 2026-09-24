@@ -17,9 +17,13 @@
 //    5. machine.json unreadable or invalid        BLOCK
 //    6. canonical_path is not this copy           release (a worktree, a copy)
 //    7. not a repository, or not its top level    BLOCK
-//    8. the lock is held (unreadable included)    release (another writer)
+//    8. the lock is held (unreadable included)    release (another writer);
+//       a holder provably dead by the lock's own staleness rule is no
+//       writer: the ladder goes on, and a block names the stale lock
+//       (the hook never reclaims or deletes it)
 //    9. no snapshot of this tree for THIS session every dirty path is the session's
-//   10. nothing dirty since the snapshot          release
+//   10. nothing dirty since the snapshot          release (paths under
+//       .claude/worktrees/, Claude Code's agent worktrees, never count)
 //   11. otherwise                                 BLOCK, naming the session's paths
 //
 // Each release after rung 3 writes one line on stderr saying which rung
@@ -28,7 +32,7 @@
 import { lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { canonicalPathMatches, loadMachine, MACHINE_FILENAME } from '../config.mjs';
-import { describeLock } from '../guards/lock.mjs';
+import { describeLock, isLockHolderStale } from '../guards/lock.mjs';
 import { locateRepository } from '../guards/location.mjs';
 import { readSnapshot, splitDirty } from '../guards/snapshot.mjs';
 import { decodeBytes } from '../io.mjs';
@@ -56,6 +60,15 @@ function isPresent(file) {
   } catch (error) {
     return error.code !== 'ENOENT';
   }
+}
+
+// Claude Code puts agent worktrees under .claude/worktrees/ inside the
+// project: an embedded checkout, never a change this session made to the
+// vault. A vault seeded by init ignores the folder; an adopted one may not.
+const WORKTREES_PREFIX = Buffer.from('.claude/worktrees/');
+
+function isVaultPath(path) {
+  return !(path.length >= WORKTREES_PREFIX.length && path.subarray(0, WORKTREES_PREFIX.length).equals(WORKTREES_PREFIX));
 }
 
 export function runStop(stdinText, env = process.env) {
@@ -102,7 +115,8 @@ export function runStop(stdinText, env = process.env) {
       return block(t('hook.stop.block_not_repository', { why }));
     }
     const holder = describeLock(root, { env });
-    if (holder !== null) {
+    const staleLock = holder !== null && isLockHolderStale(holder);
+    if (holder !== null && !staleLock) {
       if (holder.pid === null) return release(t('hook.stop.release_lock_unreadable'));
       return release(t('hook.stop.release_lock_held', { command: String(holder.command), pid: holder.pid }));
     }
@@ -114,9 +128,12 @@ export function runStop(stdinText, env = process.env) {
     }
     const trust = snapshotTrust(snapshot, topLevel, payload);
     const usable = trust === 'own';
-    const { before, since } = splitDirty(root, usable ? snapshot : { at: '', root: topLevel, paths: [] }, { env });
+    const split = splitDirty(root, usable ? snapshot : { at: '', root: topLevel, paths: [] }, { env });
+    const before = split.before.filter(isVaultPath);
+    const since = split.since.filter(isVaultPath);
     if (since.length === 0) return release(t('hook.stop.release_clean', { count: before.length }));
-    return block(blockReason(t, since, before.length, trust));
+    const reason = blockReason(t, since, before.length, trust);
+    return block(staleLock ? `${reason}\n${t('hook.stop.block_stale_lock', { command: String(holder.command), pid: holder.pid })}` : reason);
   } catch (error) {
     return block(t('hook.stop.block_failed', { detail: detailOf(error, t) }));
   }
