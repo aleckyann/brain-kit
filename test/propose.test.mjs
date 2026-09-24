@@ -96,6 +96,7 @@ test('success: exactly the listed path, on the remote tip, by the agent, as a pu
   assert.deepEqual(fingerprint(world.vault), before, 'HEAD, the branches, the index and the working tree are byte-identical');
   assert.equal(gitProbe(world.vault, ['status', '--porcelain']).stdout, '?? notes/\n', 'the proposed file is still uncommitted locally');
   assert.deepEqual(readdirSync(world.tmp), [], 'the temporary index and body are removed');
+  assert.deepEqual(readdirSync(join(world.vault, '.git', 'brain-kit-proposals')), [], 'a confirmed proposal leaves no body or record');
 });
 
 test('--only commits exactly the listed paths; another session\'s modified, staged and new files stay exactly as they were', async () => {
@@ -119,7 +120,7 @@ test('--only commits exactly the listed paths; another session\'s modified, stag
 
 test('a path given relative to a subdirectory, and a deleted path, are proposed as what they are', async () => {
   const world = makeProposeWorld();
-  world.publish(1);
+  world.publishNotes(1);
   git(world.vault, ['pull', '-q']);
   const published = git(world.vault, ['ls-files', 'published-*.md']).trim();
   world.write('notes/b.md', note('B'));
@@ -203,14 +204,14 @@ test('an ignored file cannot be proposed by --only, and --all never sweeps one i
   assert.deepEqual(world.changedIn(world.remoteSha(`refs/heads/${BRANCH}`)), ['A\tnotes/a.md']);
 });
 
-test('--all without --yes refuses a file that was already dirty in the session snapshot, naming it, exit 75, nothing pushed', async () => {
+test('--all without --yes refuses a file that was already dirty in the session snapshot, naming it, exit 2 (it lacks the confirmation), nothing pushed', async () => {
   const world = makeProposeWorld();
   world.write('drafts/theirs.md', note('Theirs'));
   const snapshot = takeSnapshot(world.vault, { env: world.env, now: new Date('2026-09-23T09:00:00.000Z') });
   world.write('notes/mine.md', note('Mine'));
   const refs = world.remoteRefs();
   const run = await propose(world, ['Sweep', '--all']);
-  assert.equal(run.code, EXIT.TEMPFAIL);
+  assert.equal(run.code, EXIT.USAGE);
   assert.equal(run.stderr, line('propose.dirty_before', { files: ['drafts/theirs.md'], at: snapshot.at }));
   assert.equal(world.remoteRefs(), refs);
   assert.deepEqual(world.ghCalls(), []);
@@ -226,28 +227,28 @@ test('--all with a fresh snapshot and only the session\'s own files proposes the
   assert.deepEqual(world.changedIn(world.remoteSha(`refs/heads/${BRANCH}`)), ['A\tnotes/one.md', 'A\tnotes/two.md']);
 });
 
-test('--all with no snapshot, or one older than a day, or one from the future, requires --yes (exit 75); --yes proposes every dirty file', async () => {
+test('--all with no snapshot, or one older than a day, or one from the future, requires --yes (exit 2); --yes proposes every dirty file', async () => {
   const world = makeProposeWorld();
   world.write('drafts/theirs.md', note('Theirs'));
   world.write('notes/mine.md', note('Mine'));
   let run = await propose(world, ['Sweep', '--all']);
-  assert.equal(run.code, EXIT.TEMPFAIL);
+  assert.equal(run.code, EXIT.USAGE);
   assert.equal(run.stderr, line('propose.no_snapshot'));
 
   const old = takeSnapshot(world.vault, { env: world.env, now: new Date('2026-09-22T11:59:59.000Z') });
   run = await propose(world, ['Sweep', '--all']);
-  assert.equal(run.code, EXIT.TEMPFAIL);
+  assert.equal(run.code, EXIT.USAGE);
   assert.equal(run.stderr, line('propose.stale_snapshot', { at: old.at }));
 
   const future = takeSnapshot(world.vault, { env: world.env, now: new Date('2026-09-23T12:00:01.000Z') });
   run = await propose(world, ['Sweep', '--all']);
-  assert.equal(run.code, EXIT.TEMPFAIL);
+  assert.equal(run.code, EXIT.USAGE);
   assert.equal(run.stderr, line('propose.stale_snapshot', { at: future.at }));
 
   // Exactly a day old is still recent.
   takeSnapshot(world.vault, { env: world.env, now: new Date('2026-09-22T12:00:00.000Z') });
   run = await propose(world, ['Sweep', '--all']);
-  assert.equal(run.code, EXIT.TEMPFAIL, 'both files were there at the snapshot');
+  assert.equal(run.code, EXIT.USAGE, 'both files were there at the snapshot');
   assert.equal(run.stderr, line('propose.dirty_before', { files: ['drafts/theirs.md', 'notes/mine.md'], at: '2026-09-22T12:00:00.000Z' }));
   assert.deepEqual(world.ghCalls(), []);
 
@@ -296,22 +297,35 @@ test('a push the remote refuses: exit 1, nothing published, and nothing local mo
   const before = fingerprint(world.vault);
   const run = await propose(world, ['A', '--only', 'notes/a.md']);
   assert.equal(run.code, EXIT.FAILURE);
-  assert.match(run.stderr, /^The push of bot\/2026-09-23-12-00-00 to remote origin failed/);
+  assert.match(run.stderr, new RegExp(`^The push of ${BRANCH} failed, and every push url \\(${world.remote}\\) answered that it does not hold it`));
+  assert.deepEqual(readdirSync(join(world.vault, '.git', 'brain-kit-proposals')), [], 'no body or record is left for a proposal nothing holds');
   assert.equal(world.remoteSha(`refs/heads/${BRANCH}`), null);
   assert.deepEqual(world.ghCalls(), []);
   assert.deepEqual(fingerprint(world.vault), before);
 });
 
-test('a branch of the same name already on the remote is never replaced: exit 1, and that branch is untouched', async () => {
+test('a branch of the same name already on the remote (a rerun in the same second) is never replaced: the proposal takes the next suffix', async () => {
   const world = makeProposeWorld();
   git(world.elsewhere, ['push', '-q', 'origin', `main:refs/heads/${BRANCH}`]);
+  git(world.elsewhere, ['push', '-q', 'origin', `main:refs/heads/${BRANCH}-2`]);
   const theirs = world.remoteSha(`refs/heads/${BRANCH}`);
   world.write('notes/a.md', note('A'));
   const run = await propose(world, ['A', '--only', 'notes/a.md']);
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.equal(world.remoteSha(`refs/heads/${BRANCH}`), theirs, 'the existing branch is untouched');
+  assert.deepEqual(world.changedIn(world.remoteSha(`refs/heads/${BRANCH}-3`)), ['A\tnotes/a.md']);
+  assert.deepEqual(createArgs(world).slice(4, 6), ['--head', `${BRANCH}-3`]);
+});
+
+test('every suffix taken: exit 1, nothing pushed', async () => {
+  const world = makeProposeWorld();
+  for (const suffix of ['', '-2', '-3', '-4', '-5', '-6', '-7', '-8', '-9']) git(world.elsewhere, ['push', '-q', 'origin', `main:refs/heads/${BRANCH}${suffix}`]);
+  const refs = world.remoteRefs();
+  world.write('notes/a.md', note('A'));
+  const run = await propose(world, ['A', '--only', 'notes/a.md']);
   assert.equal(run.code, EXIT.FAILURE);
-  assert.match(run.stderr, /^The push of /);
-  assert.equal(world.remoteSha(`refs/heads/${BRANCH}`), theirs);
-  assert.deepEqual(world.ghCalls(), []);
+  assert.equal(run.stderr, line('propose.branch_exhausted', { branch: BRANCH }));
+  assert.equal(world.remoteRefs(), refs);
 });
 
 test('a push that reports success but leaves nothing on the remote is exit 1, never a pull request', async () => {
@@ -322,7 +336,7 @@ test('a push that reports success but leaves nothing on the remote is exit 1, ne
   writeFileSync(shim, `#!/bin/sh\nif [ "$1" = "push" ]; then exit 0; fi\nexec '${realGit}' "$@"\n`, { mode: 0o755 });
   const run = await propose(world, ['A', '--only', 'notes/a.md']);
   assert.equal(run.code, EXIT.FAILURE);
-  assert.match(run.stderr, /reported success, but the remote does not show/);
+  assert.equal(run.stderr, line('propose.push_unproved', { branch: BRANCH, urls: [world.remote], commit: run.stderr.match(/holds ([0-9a-f]{12}) there/)[1] }));
   assert.deepEqual(world.ghCalls(), []);
 });
 
@@ -356,9 +370,9 @@ for (const [label, mode, key] of [
       assert.equal(run.stderr, line(key, { branch: BRANCH, detail, command }));
       assert.ok(run.stderr.includes(`Open it by hand with: gh pr create --base main --head ${BRANCH} --title 'curate: Add A' --body-file ${body[1]}`), run.stderr);
       assert.ok(existsSync(body[1]), 'the rendered body is left for the finishing command');
-      assert.deepEqual(readdirSync(world.tmp), [basename(join(body[1], '..'))], 'only the body is left, never the temporary index');
+      assert.equal(body[1], join(world.vault, '.git', 'brain-kit-proposals', `${BRANCH.replace('/', '-')}.md`), 'in the git directory');
+      assert.deepEqual(readdirSync(world.tmp), [], 'the temporary index and tree are removed');
       assert.equal(readFileSync(body[1], 'utf8'), world.ghCalls()[0].body);
-      rmSync(join(body[1], '..'), { recursive: true });
     }
     assert.deepEqual(fingerprint(world.vault), before);
   });
@@ -372,7 +386,6 @@ test('gh absent: exit 3, the branch published, the finishing command printed', a
   assert.equal(run.code, EXIT.DEGRADED, run.stderr);
   assert.ok(world.remoteSha(`refs/heads/${BRANCH}`));
   assert.match(run.stderr, new RegExp(`^The commit is pushed as ${BRANCH}, but the pull request was not opened: .*Open it by hand with: gh pr create --base main --head ${BRANCH} --title 'curate: Add A' --body-file \\S+\\n$`));
-  rmSync(join(/--body-file (\S+)\n$/.exec(run.stderr)[1], '..'), { recursive: true });
   assert.deepEqual(world.ghCalls(), []);
   assert.deepEqual(fingerprint(world.vault), before);
 });
@@ -411,13 +424,13 @@ test('a reclaim that died and left its marker: exit 1 naming the marker', async 
 
 test('--dry changes no reference (remote-tracking ones included), no file and no branch, asks gh nothing, and prints the plan', async () => {
   const world = makeProposeWorld();
-  world.publish(1);
+  world.publishNotes(1);
   world.write('notes/a.md', note('A'));
   const before = { ...fingerprint(world.vault), all: repoState(world.vault) };
   const refs = world.remoteRefs();
   const run = await propose(world, ['Add A', '--only', 'notes/a.md', '--dry']);
   assert.equal(run.code, EXIT.OK, run.stderr);
-  assert.equal(run.stdout, line('propose.dry_run', { files: ['notes/a.md'], remote: 'origin', base: 'main', branch: BRANCH, title: 'curate: Add A', origin: 'main' }));
+  assert.equal(run.stdout, line('propose.dry_run', { files: ['notes/a.md'], urls: [world.remote], base: 'main', branch: BRANCH, title: 'curate: Add A', origin: 'main' }));
   assert.deepEqual({ ...fingerprint(world.vault), all: repoState(world.vault) }, before);
   assert.equal(world.remoteRefs(), refs);
   assert.deepEqual(world.ghCalls(), []);
@@ -425,7 +438,7 @@ test('--dry changes no reference (remote-tracking ones included), no file and no
 
 test('behind the remote, with the path untouched there: the commit sits on the fetched tip, never on the stale local HEAD', async () => {
   const world = makeProposeWorld();
-  world.publish(2);
+  world.publishNotes(2);
   const fresh = tip(world);
   const stale = world.sha('HEAD');
   assert.notEqual(fresh, stale);
@@ -596,5 +609,526 @@ test('a path whose change is only staged, its working tree back to HEAD\'s versi
   assert.equal(run.code, EXIT.FAILURE);
   assert.equal(run.stderr, line('propose.tree_mismatch', { expected: ['index.md'], actual: [] }));
   assert.equal(world.remoteRefs(), refs);
+  assert.deepEqual(world.ghCalls(), []);
+});
+
+// --- fix round 1 -------------------------------------------------------------
+
+const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
+const bodyFileOf = (stderr) => /--body-file (\S+)\n$/.exec(stderr)?.[1];
+
+test('the gate judges the PROPOSED tree: a chosen note linking to a file left out is refused, exit 1, nothing pushed', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A').replace('# A\n', '# A\n\nSee [B](b.md).\n'));
+  world.write('notes/b.md', note('B'));
+  const refs = world.remoteRefs();
+  const run = await propose(world, ['A only', '--only', 'notes/a.md']);
+  assert.equal(run.code, EXIT.FAILURE);
+  assert.match(run.stderr, /notes\/a\.md:\d+ {2}link-target-exists/);
+  assert.ok(run.stderr.endsWith(line('propose.validate_failed', { code: EXIT.FAILURE })));
+  assert.equal(world.remoteRefs(), refs);
+  assert.deepEqual(readdirSync(world.tmp), [], 'the extracted tree is removed');
+  // Both chosen: the link resolves in the proposed tree, and it passes.
+  const both = await propose(world, ['A and B', '--only', 'notes/a.md', 'notes/b.md']);
+  assert.equal(both.code, EXIT.OK, both.stderr);
+});
+
+test('another session\'s broken, unchosen file no longer blocks a sound proposal: it is not in the proposed tree', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/mine.md', note('Mine'));
+  world.write('drafts/theirs.md', '---\ntitle: unfinished\n---\n');
+  const run = await propose(world, ['Mine', '--only', 'notes/mine.md']);
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.deepEqual(world.changedIn(world.remoteSha(`refs/heads/${BRANCH}`)), ['A\tnotes/mine.md']);
+});
+
+test('a note the owner merged on the remote default is never overwritten by a session\'s new file of the same name', async () => {
+  const world = makeProposeWorld();
+  git(world.elsewhere, ['pull', '-q']);
+  writeFileSync(join(world.elsewhere, 'notes.md'), note('Owner'));
+  git(world.elsewhere, ['add', 'notes.md']);
+  git(world.elsewhere, ['commit', '-q', '-m', 'owner merged']);
+  git(world.elsewhere, ['push', '-q', 'origin', 'main']);
+  world.write('notes.md', note('Session'));
+  const refs = world.remoteRefs();
+  const run = await propose(world, ['Notes', '--only', 'notes.md']);
+  assert.equal(run.code, EXIT.FAILURE);
+  assert.equal(run.stderr, line('propose.base_differs', { files: ['notes.md'], base: 'main', tip: tip(world).slice(0, 12) }));
+  assert.equal(world.remoteRefs(), refs);
+  assert.deepEqual(world.ghCalls(), []);
+});
+
+test('an untracked nested repository and a submodule pointer are refused naming them, exit 2, nothing pushed', async () => {
+  const world = makeProposeWorld();
+  // A submodule, committed and published, then moved to a new commit.
+  const sub = join(world.vault, 'sub');
+  git(world.base, ['init', '-q', '-b', 'main', sub]);
+  writeFileSync(join(sub, 'x.txt'), 'x\n');
+  git(sub, ['add', 'x.txt']);
+  git(sub, ['commit', '-q', '-m', 'x']);
+  git(world.vault, ['add', 'sub']);
+  git(world.vault, ['commit', '-q', '-m', 'sub']);
+  git(world.vault, ['push', '-q', 'origin', 'main']);
+  writeFileSync(join(sub, 'y.txt'), 'y\n');
+  git(sub, ['add', 'y.txt']);
+  git(sub, ['commit', '-q', '-m', 'y']);
+  // An untracked nested repository.
+  const nested = join(world.vault, 'nested');
+  git(world.base, ['init', '-q', '-b', 'main', nested]);
+  writeFileSync(join(nested, 'z.txt'), 'z\n');
+  const refs = world.remoteRefs();
+  for (const [argv, paths] of [
+    [['S', '--only', 'sub'], ['sub']],
+    [['S', '--only', 'nested'], ['nested/']],
+    [['S', '--all', '--yes'], ['nested/', 'sub']],
+  ]) {
+    const run = await propose(world, argv);
+    assert.equal(run.code, EXIT.USAGE, argv.join(' '));
+    assert.equal(run.stderr, line('propose.nested_repository', { paths }), argv.join(' '));
+  }
+  // A submodule deleted from the working tree is still a pointer.
+  rmSync(sub, { recursive: true });
+  rmSync(nested, { recursive: true });
+  const deleted = await propose(world, ['S', '--only', 'sub']);
+  assert.equal(deleted.code, EXIT.USAGE);
+  assert.equal(deleted.stderr, line('propose.nested_repository', { paths: ['sub'] }));
+  assert.equal(world.remoteRefs(), refs);
+  assert.deepEqual(world.ghCalls(), []);
+});
+
+test('-- ends options: a path and a summary beginning with - can be given, and the help says so', async () => {
+  const world = makeProposeWorld();
+  world.write('-dash.md', note('Dash'));
+  const run = await propose(world, ['--only', '--', '-leading dash summary', '-dash.md']);
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.deepEqual(world.changedIn(world.remoteSha(`refs/heads/${BRANCH}`)), ['A\t-dash.md']);
+  assert.equal(createArgs(world)[7], 'curate: -leading dash summary');
+  assert.match(t('propose.usage'), /The summary comes first, before --only/);
+  assert.match(t('propose.usage'), /After --, nothing is read as an option/);
+});
+
+// The nine refusals of base resolution, fetch and the body: each its exit
+// code, and nothing pushed or asked of gh.
+async function refused(world, argv, code, expected) {
+  const refs = world.remoteRefs();
+  const run = await propose(world, argv);
+  assert.equal(run.code, code, run.stderr);
+  if (expected !== undefined) assert.equal(run.stderr, expected);
+  assert.equal(run.stdout, '');
+  assert.equal(world.remoteRefs(), refs, 'nothing pushed');
+  assert.deepEqual(world.ghCalls(), [], 'nothing asked of gh');
+  return run;
+}
+
+test('refusal: no default branch known: exit 1', async () => {
+  const world = makeProposeWorld();
+  git(world.vault, ['branch', '-m', 'main', 'work']);
+  for (const ref of git(world.vault, ['for-each-ref', '--format=%(refname)', 'refs/remotes']).split('\n').filter(Boolean)) git(world.vault, ['update-ref', '-d', ref]);
+  world.write('notes/a.md', note('A'));
+  await refused(world, ['A', '--only', 'notes/a.md'], EXIT.FAILURE, line('propose.no_default_branch', { remote: 'origin', file: 'brain-kit.config.json' }));
+});
+
+test('refusal: vault.default_branch that is no branch name: exit 1, and --dry exits 1 too', async () => {
+  const world = makeProposeWorld({ defaultBranch: 'bad..name' });
+  world.write('notes/a.md', note('A'));
+  const expected = line('propose.default_branch_invalid', { name: 'bad..name', file: 'brain-kit.config.json' });
+  await refused(world, ['A', '--only', 'notes/a.md'], EXIT.FAILURE, expected);
+  await refused(world, ['A', '--only', 'notes/a.md', '--dry'], EXIT.FAILURE, expected);
+});
+
+test('refusal: the default branch tracks a branch of this repository: exit 1', async () => {
+  const world = makeProposeWorld();
+  git(world.vault, ['config', 'branch.main.remote', '.']);
+  world.write('notes/a.md', note('A'));
+  await refused(world, ['A', '--only', 'notes/a.md'], EXIT.FAILURE, line('propose.local_upstream', { branch: 'main', key: 'branch.main.remote' }));
+});
+
+test('refusal: the default branch tracks a remote that is not configured: exit 1', async () => {
+  const world = makeProposeWorld();
+  git(world.vault, ['config', 'branch.main.remote', 'upstream']);
+  world.write('notes/a.md', note('A'));
+  await refused(world, ['A', '--only', 'notes/a.md'], EXIT.FAILURE, line('propose.no_remote', { remote: 'upstream', branch: 'main' }));
+});
+
+test('refusal: the remote publishes nothing yet: exit 1', async () => {
+  const world = makeProposeWorld({ publishFirst: false });
+  world.write('notes/a.md', note('A'));
+  await refused(world, ['A', '--only', 'notes/a.md'], EXIT.FAILURE, line('propose.remote_has_no_branch', { remote: 'origin', branch: 'main' }));
+});
+
+test('refusal: the forge renamed the default branch: exit 1, naming what it publishes', async () => {
+  const world = makeProposeWorld();
+  git(world.remote, ['branch', '-m', 'main', 'trunk']);
+  git(world.remote, ['symbolic-ref', 'HEAD', 'refs/heads/trunk']);
+  world.write('notes/a.md', note('A'));
+  await refused(world, ['A', '--only', 'notes/a.md'], EXIT.FAILURE, line('propose.remote_lacks_branch', { remote: 'origin', branch: 'main', published: ['trunk'] }));
+});
+
+test('refusal: a fetch that reports success and reached nothing: exit 1', async () => {
+  const world = makeProposeWorld();
+  world.publishNotes(1);
+  const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8', env: world.env }).stdout.trim();
+  writeFileSync(join(world.base, 'fakebin', 'git'), `#!/bin/sh\nif [ "$1" = "fetch" ]; then exit 0; fi\nexec '${realGit}' "$@"\n`, { mode: 0o755 });
+  world.write('notes/a.md', note('A'));
+  await refused(world, ['A', '--only', 'notes/a.md'], EXIT.FAILURE, line('propose.fetch_incomplete', { remote: 'origin', branch: 'main' }));
+});
+
+test('refusal: a body template that cannot be read: exit 1', async () => {
+  const world = makeProposeWorld();
+  mkdirSync(join(world.vault, 'body-dir'));
+  withGitConfig(world, { pr_body: 'body-dir' });
+  world.write('notes/a.md', note('A'));
+  await refused(world, ['A', '--only', 'notes/a.md'], EXIT.FAILURE, line('propose.body_unreadable', { file: join(world.vault, 'body-dir'), detail: 'EISDIR' }));
+});
+
+// --- the push destination ---------------------------------------------------
+
+function bareCloneOf(world, name) {
+  const dir = join(world.base, name);
+  git(world.base, ['clone', '-q', '--bare', world.remote, dir]);
+  return dir;
+}
+
+test('a pushurl elsewhere: the branch lands there, is proved there, and no remote-tracking reference is left behind', async () => {
+  const world = makeProposeWorld();
+  const pushed = bareCloneOf(world, 'pushed.git');
+  git(world.vault, ['config', 'remote.origin.pushurl', pushed]);
+  world.write('notes/a.md', note('A'));
+  const before = fingerprint(world.vault);
+  const run = await propose(world, ['A', '--only', 'notes/a.md']);
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.equal(world.remoteSha(`refs/heads/${BRANCH}`), null, 'nothing published to the fetch url');
+  assert.deepEqual(git(pushed, ['diff-tree', '-r', '--no-commit-id', '--name-status', `${BRANCH}^`, BRANCH]).trim().split('\n'), ['A\tnotes/a.md']);
+  assert.deepEqual(fingerprint(world.vault), before, 'every reference, remote-tracking ones included, is as it was');
+});
+
+test('the mirror idiom (insteadOf to a mirror, identity pushInsteadOf upstream): the push and its proof both go upstream', async () => {
+  const world = makeProposeWorld();
+  const mirror = bareCloneOf(world, 'mirror.git');
+  git(world.vault, ['config', `url.${mirror}.insteadOf`, world.remote]);
+  git(world.vault, ['config', `url.${world.remote}.pushInsteadOf`, world.remote]);
+  world.write('notes/a.md', note('A'));
+  const run = await propose(world, ['A', '--only', 'notes/a.md']);
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.ok(world.remoteSha(`refs/heads/${BRANCH}`), 'published upstream');
+  assert.equal(gitProbe(mirror, ['rev-parse', '-q', '--verify', `refs/heads/${BRANCH}`]).status, 1, 'the mirror never received it');
+});
+
+test('two push urls: both must hold the commit; a partial publish is exit 3 naming which, with the commands that finish', async () => {
+  const world = makeProposeWorld();
+  const first = bareCloneOf(world, 'first.git');
+  const second = bareCloneOf(world, 'second.git');
+  git(world.vault, ['config', '--add', 'remote.origin.pushurl', first]);
+  git(world.vault, ['config', '--add', 'remote.origin.pushurl', second]);
+  writeFileSync(join(second, 'hooks', 'pre-receive'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  world.write('notes/a.md', note('A'));
+  const run = await propose(world, ['A', '--only', 'notes/a.md']);
+  assert.equal(run.code, EXIT.DEGRADED, run.stderr);
+  const commit = git(first, ['rev-parse', BRANCH]).trim();
+  const body = join(world.vault, '.git', 'brain-kit-proposals', `${BRANCH.replace('/', '-')}.md`);
+  const command = `git push ${second} ${commit}:refs/heads/${BRANCH} && gh pr create --base main --head ${BRANCH} --title 'curate: A' --body-file ${body}`;
+  assert.equal(run.stderr, line('propose.partial_publish', { branch: BRANCH, held: [first], missing: [second], command }));
+  assert.deepEqual(world.ghCalls(), [], 'no pull request for a partial publish');
+  // Finishing by hand, as printed, completes it.
+  rmSync(join(second, 'hooks', 'pre-receive'));
+  const done = spawnSync('sh', ['-c', command], { cwd: world.vault, env: world.env, encoding: 'utf8' });
+  assert.equal(done.status, 0, done.stderr);
+  assert.equal(git(second, ['rev-parse', BRANCH]).trim(), commit);
+});
+
+test('two push urls that both accept: exit 0, both hold the commit', async () => {
+  const world = makeProposeWorld();
+  const first = bareCloneOf(world, 'first.git');
+  const second = bareCloneOf(world, 'second.git');
+  git(world.vault, ['config', '--add', 'remote.origin.pushurl', first]);
+  git(world.vault, ['config', '--add', 'remote.origin.pushurl', second]);
+  world.write('notes/a.md', note('A'));
+  const run = await propose(world, ['A', '--only', 'notes/a.md']);
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.equal(git(first, ['rev-parse', BRANCH]).trim(), git(second, ['rev-parse', BRANCH]).trim());
+});
+
+test('the push runs the vault\'s pre-push gate: a refusing hook refuses the proposal, exit 1, nothing published', async () => {
+  const world = makeProposeWorld();
+  writeFileSync(join(world.vault, '.git', 'hooks', 'pre-push'), '#!/bin/sh\necho gate refused >&2\nexit 1\n', { mode: 0o755 });
+  world.write('notes/a.md', note('A'));
+  const refs = world.remoteRefs();
+  const run = await propose(world, ['A', '--only', 'notes/a.md']);
+  assert.equal(run.code, EXIT.FAILURE);
+  assert.match(run.stderr, /^The push of .* failed, .*git said: .*/);
+  assert.equal(world.remoteRefs(), refs);
+  assert.deepEqual(world.ghCalls(), []);
+});
+
+test('a destination holding another commit under the branch is not proof: exit 1, never a pull request', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8', env: world.env }).stdout.trim();
+  const marker = join(world.base, 'pushed-marker');
+  writeFileSync(join(world.base, 'fakebin', 'git'), [
+    '#!/bin/sh',
+    `if [ "$1" = "push" ]; then '${realGit}' "$@"; s=$?; touch '${marker}'; exit $s; fi`,
+    `if [ "$1" = "ls-remote" ] && [ -e '${marker}' ]; then printf '%s\\t%s\\n' 0123456789012345678901234567890123456789 "$3"; exit 0; fi`,
+    `exec '${realGit}' "$@"`, '',
+  ].join('\n'), { mode: 0o755 });
+  const run = await propose(world, ['A', '--only', 'notes/a.md']);
+  assert.equal(run.code, EXIT.FAILURE);
+  assert.match(run.stderr, /^The push of .* reported success, but no push url/);
+  assert.deepEqual(world.ghCalls(), []);
+});
+
+test('the printed finishing command runs as printed: a summary with a single quote, a newline and $()', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  const summary = "Ana's notes $(touch pwned)\nsecond line";
+  const run = await propose(world, [summary, '--only', 'notes/a.md'], { env: { ...world.env, FAKE_GH_MODE: 'fail' } });
+  assert.equal(run.code, EXIT.DEGRADED, run.stderr);
+  const marker = 'Open it by hand with: ';
+  const command = run.stderr.slice(run.stderr.indexOf(marker) + marker.length, -1);
+  const done = spawnSync('sh', ['-c', command], { cwd: world.vault, env: world.env, encoding: 'utf8' });
+  assert.equal(done.status, 0, done.stderr);
+  const created = world.ghCalls().filter((call) => call.args[1] === 'create');
+  assert.equal(created.length, 2);
+  assert.deepEqual(created[1].args, created[0].args, 'the same arguments, byte for byte');
+  assert.equal(created[1].args[7], `curate: ${summary}`);
+  assert.equal(existsSync(join(world.vault, 'pwned')), false);
+});
+
+test('gh gets no caller git environment, and GIT_TERMINAL_PROMPT=0 and GH_PROMPT_DISABLED=1', async () => {
+  const world = makeProposeWorld();
+  const other = join(world.base, 'other');
+  git(world.base, ['init', '-q', other]);
+  world.write('notes/a.md', note('A'));
+  const env = { ...world.env, GIT_DIR: join(other, '.git'), GIT_WORK_TREE: other, GIT_INDEX_FILE: join(other, '.git', 'index') };
+  const run = await propose(world, ['A', '--only', 'notes/a.md'], { env });
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  for (const call of world.ghCalls()) {
+    assert.deepEqual(call.env, { GIT_DIR: null, GIT_WORK_TREE: null, GIT_INDEX_FILE: null, GIT_TERMINAL_PROMPT: '0', GH_PROMPT_DISABLED: '1' }, call.args.join(' '));
+    assert.equal(call.cwd, world.vault);
+  }
+  assert.equal(git(other, ['for-each-ref']), '', 'the other repository was not touched');
+});
+
+test('a pt-BR vault without its own template gets the pt-BR body', async () => {
+  const world = makeProposeWorld();
+  const file = join(world.vault, 'brain-kit.config.json');
+  const config = JSON.parse(readFileSync(file, 'utf8'));
+  config.lang = 'pt-BR';
+  writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
+  world.write('notes/a.md', note('A'));
+  const run = await propose(world, ['A', '--only', 'notes/a.md']);
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  const template = readFileSync(join(KIT_ROOT, 'lang', 'pt-BR', 'vault', '.brain-kit', 'pr-body.md'), 'utf8');
+  assert.equal(world.ghCalls()[0].body, template.replace('{{summary}}', 'A').replace('{{files}}', '- `notes/a.md`').replace('{{branch}}', BRANCH).replace('{{base}}', 'main'));
+});
+
+test('a run killed after the push is reported by the next run with the finishing command; once finished, the record goes', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  const env = { ...world.env, FAKE_GH_MODE: 'killparent', TMPDIR: world.tmp, BRAIN_KIT_LANG: 'en' };
+  const killed = spawnSync(process.execPath, [BIN, 'propose', 'Killed', '--only', 'notes/a.md'], { cwd: world.vault, env, encoding: 'utf8' });
+  assert.equal(killed.signal, 'SIGKILL');
+  const dir = join(world.vault, '.git', 'brain-kit-proposals');
+  const records = readdirSync(dir).filter((name) => name.endsWith('.json'));
+  assert.equal(records.length, 1, 'the published branch was recorded before gh was called');
+  const record = JSON.parse(readFileSync(join(dir, records[0]), 'utf8'));
+  assert.ok(world.remoteSha(`refs/heads/${record.branch}`), 'and it is published');
+
+  world.write('notes/b.md', note('B'));
+  const next = await propose(world, ['B', '--only', 'notes/b.md'], { now: new Date('2026-09-23T13:00:00.000Z') });
+  assert.equal(next.code, EXIT.OK, next.stderr);
+  assert.equal(next.stderr, line('propose.pending', { branch: record.branch, command: record.command }));
+
+  const done = spawnSync('sh', ['-c', record.command], { cwd: world.vault, env: world.env, encoding: 'utf8' });
+  assert.equal(done.status, 0, done.stderr);
+  world.write('notes/c.md', note('C'));
+  const after = await propose(world, ['C', '--only', 'notes/c.md'], { now: new Date('2026-09-23T14:00:00.000Z') });
+  assert.equal(after.code, EXIT.OK, after.stderr);
+  assert.equal(after.stderr, '', 'the confirmed proposal is no longer reported');
+  assert.deepEqual(readdirSync(dir), [], 'its record and body are removed');
+});
+
+test('the mirror idiom in the person\'s global configuration: the pin is read first, and the push and its proof still go upstream', async () => {
+  const world = makeProposeWorld();
+  const mirror = bareCloneOf(world, 'mirror.git');
+  writeFileSync(world.env.GIT_CONFIG_GLOBAL, `[url "${mirror}"]\n\tinsteadOf = ${world.remote}\n[url "${world.remote}"]\n\tpushInsteadOf = ${world.remote}\n`);
+  world.write('notes/a.md', note('A'));
+  const run = await propose(world, ['A', '--only', 'notes/a.md']);
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.ok(world.remoteSha(`refs/heads/${BRANCH}`), 'published upstream');
+  assert.equal(gitProbe(mirror, ['rev-parse', '-q', '--verify', `refs/heads/${BRANCH}`]).status, 1, 'the mirror never received it');
+});
+
+test('a push url that cannot be asked which branches it holds: exit 1 before anything is pushed, no record left', async () => {
+  const world = makeProposeWorld();
+  git(world.vault, ['config', 'remote.origin.pushurl', join(world.base, 'gone.git')]);
+  world.write('notes/a.md', note('A'));
+  const refs = world.remoteRefs();
+  const run = await propose(world, ['A', '--only', 'notes/a.md']);
+  assert.equal(run.code, EXIT.FAILURE);
+  assert.equal(run.stderr, line('propose.destination_unreadable', { url: join(world.base, 'gone.git') }));
+  assert.equal(world.remoteRefs(), refs);
+  assert.equal(existsSync(join(world.vault, '.git', 'brain-kit-proposals')), false);
+});
+
+test('a destination that stops answering after the push is exit 3, never "nothing was published"', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8', env: world.env }).stdout.trim();
+  const marker = join(world.base, 'pushed-marker');
+  writeFileSync(join(world.base, 'fakebin', 'git'), [
+    '#!/bin/sh',
+    `if [ "$1" = "push" ]; then '${realGit}' "$@"; s=$?; touch '${marker}'; exit $s; fi`,
+    `if [ "$1" = "ls-remote" ] && [ -e '${marker}' ]; then echo "fatal: the remote hung up" >&2; exit 128; fi`,
+    `exec '${realGit}' "$@"`, '',
+  ].join('\n'), { mode: 0o755 });
+  const run = await propose(world, ['A', '--only', 'notes/a.md']);
+  assert.equal(run.code, EXIT.DEGRADED, run.stderr);
+  assert.ok(world.remoteSha(`refs/heads/${BRANCH}`), 'it is in fact published');
+  assert.match(run.stderr, new RegExp(`^${BRANCH} is published to - but not to ${world.remote}`));
+  assert.deepEqual(world.ghCalls(), []);
+});
+
+// --- fix round 1, additional survivors from the reviewer's mutation list ---
+
+test('a race at the push: another writer creates the just-checked-free branch first; the lease refuses it, and the decoy is untouched', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8', env: world.env }).stdout.trim();
+  const decoy = git(world.elsewhere, ['rev-parse', 'HEAD']).trim();
+  const marker = join(world.base, 'race-marker');
+  const ref = `refs/heads/${BRANCH}`;
+  writeFileSync(join(world.base, 'fakebin', 'git'), [
+    '#!/bin/sh',
+    `if [ "$1" = "ls-remote" ] && [ "$3" = "${ref}" ] && [ ! -e '${marker}' ]; then`,
+    `  touch '${marker}'`,
+    `  '${realGit}' push --quiet "$2" ${decoy}:${ref}`,
+    '  exit 0',
+    'fi',
+    `exec '${realGit}' "$@"`, '',
+  ].join('\n'), { mode: 0o755 });
+  const run = await propose(world, ['A', '--only', 'notes/a.md']);
+  assert.equal(run.code, EXIT.FAILURE, run.stderr);
+  assert.match(run.stderr, new RegExp(`^The push of ${BRANCH.replace(/\//g, '\\/')} failed`));
+  assert.equal(world.remoteSha(ref), decoy, 'the decoy commit that won the race is untouched');
+});
+
+test('lint judges the PROPOSED tree, not the working tree: an unchosen dirty file that fails lint does not block a sound proposal', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/mine.md', note('Mine'));
+  world.write('drafts/leaked.md', note('Leaked').replace('# Leaked\n', `# Leaked\n\nghp_${'a'.repeat(24)}\n`));
+  const run = await propose(world, ['Mine', '--only', 'notes/mine.md']);
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.deepEqual(world.changedIn(world.remoteSha(`refs/heads/${BRANCH}`)), ['A\tnotes/mine.md']);
+});
+
+test('lint judging the working tree instead of the proposed tree would have refused the case above (control)', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/mine.md', note('Mine'));
+  world.write('drafts/leaked.md', note('Leaked').replace('# Leaked\n', `# Leaked\n\nghp_${'a'.repeat(24)}\n`));
+  const linting = { stdout: '', stderr: '' };
+  const io = { stdout: { write: (s) => { linting.stdout += s; } }, stderr: { write: (s) => { linting.stderr += s; } } };
+  const { runLint } = await import('../src/commands/lint.mjs');
+  const code = await runLint([world.vault, '--base', 'worktree'], io, t, walkVault);
+  assert.equal(code, EXIT.FAILURE, 'confirms the working tree itself fails lint because of the foreign file, so propose succeeding proves it did not read the working tree');
+  assert.match(linting.stdout, /leaked/);
+});
+
+test('an earlier proposal record whose pull request now exists but on the wrong base: the pending message prints the edit command, not the create command', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  const killed = spawnSync(process.execPath, [join(KIT_ROOT, 'bin', 'brain-kit.mjs'), 'propose', 'Killed', '--only', 'notes/a.md'], {
+    cwd: world.vault, env: { ...world.env, FAKE_GH_MODE: 'killparent', TMPDIR: world.tmp, BRAIN_KIT_LANG: 'en' }, encoding: 'utf8',
+  });
+  assert.equal(killed.signal, 'SIGKILL');
+  const dir = join(world.vault, '.git', 'brain-kit-proposals');
+  const recordFile = join(dir, readdirSync(dir).find((name) => name.endsWith('.json')));
+  const record = JSON.parse(readFileSync(recordFile, 'utf8'));
+  // A pull request now exists for that branch, opened by hand against the wrong base.
+  spawnSync(join(world.base, 'fakebin', 'gh'), ['pr', 'create', '--base', 'trunk', '--head', record.branch, '--title', 'by hand', '--body-file', recordFile], {
+    cwd: world.vault, env: world.env,
+  });
+  world.write('notes/b.md', note('B'));
+  const run = await propose(world, ['B', '--only', 'notes/b.md'], { now: new Date('2026-09-23T13:00:00.000Z') });
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.equal(run.stderr, line('propose.pending', { branch: record.branch, command: `gh pr edit ${record.branch} --base ${record.base}` }));
+});
+
+test('--dry never checks or reports an earlier unconfirmed proposal, and asks gh nothing', async () => {
+  const world = makeProposeWorld();
+  const dir = join(world.vault, '.git', 'brain-kit-proposals');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'stale.json'), JSON.stringify({ branch: 'bot/stale', base: 'main', command: 'gh pr create --base main --head bot/stale' }));
+  world.write('notes/a.md', note('A'));
+  const run = await propose(world, ['A', '--only', 'notes/a.md', '--dry']);
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.equal(run.stdout, line('propose.dry_run', { files: ['notes/a.md'], urls: [world.remote], base: 'main', branch: BRANCH, title: 'curate: A', origin: 'main' }));
+  assert.deepEqual(world.ghCalls(), []);
+  assert.ok(existsSync(join(dir, 'stale.json')), 'the stale record is left exactly as it was');
+});
+
+
+// --- fix round 2: the person's own real global config leaked the push ------
+//
+// A `pushInsteadOf` rule in the OWNER's real global gitconfig, naming this
+// vault's origin url for a reason that has nothing to do with brain-kit,
+// silently retargeted the push while the run reported success. Reproduced
+// exactly as found, against the unmutated code, in
+// .superpowers/sdd/2026-09-23-phase-1c-propose-sync-machine-verify/repro-c3-pushinsteadof/probe.mjs.
+
+test('a pushInsteadOf rule in the person\'s real global gitconfig, naming the origin url for an unrelated reason, cannot retarget the push', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  const decoy = bareCloneOf(world, 'decoy.git');
+  const originUrl = git(world.vault, ['remote', 'get-url', '--push', 'origin']).trim();
+  writeFileSync(world.env.GIT_CONFIG_GLOBAL, `[url "${decoy}"]\n\tpushInsteadOf = "${originUrl}"\n`);
+  const run = await propose(world, ['Add A', '--only', 'notes/a.md']);
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.ok(world.remoteSha(`refs/heads/${BRANCH}`), 'the real remote has the branch');
+  assert.equal(gitProbe(decoy, ['rev-parse', '-q', '--verify', `refs/heads/${BRANCH}`]).status, 1, 'the decoy the global rule points at has nothing');
+});
+
+test('the same global pushInsteadOf rule, with an explicit remote.origin.pushurl set: the explicit pushurl is honoured, and the rule still cannot retarget it', async () => {
+  const world = makeProposeWorld();
+  const pushed = bareCloneOf(world, 'pushed.git');
+  git(world.vault, ['config', 'remote.origin.pushurl', pushed]);
+  world.write('notes/a.md', note('A'));
+  const decoy = bareCloneOf(world, 'decoy.git');
+  writeFileSync(world.env.GIT_CONFIG_GLOBAL, `[url "${decoy}"]\n\tpushInsteadOf = "${pushed}"\n`);
+  const run = await propose(world, ['A', '--only', 'notes/a.md']);
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.deepEqual(git(pushed, ['diff-tree', '-r', '--no-commit-id', '--name-status', `${BRANCH}^`, BRANCH]).trim().split('\n'), ['A\tnotes/a.md']);
+  assert.equal(gitProbe(decoy, ['rev-parse', '-q', '--verify', `refs/heads/${BRANCH}`]).status, 1);
+});
+
+test('a global insteadOf rule (not pushInsteadOf) naming the origin url cannot retarget the push either', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  const decoy = bareCloneOf(world, 'decoy.git');
+  const originUrl = git(world.vault, ['remote', 'get-url', 'origin']).trim();
+  writeFileSync(world.env.GIT_CONFIG_GLOBAL, `[url "${decoy}"]\n\tinsteadOf = "${originUrl}"\n`);
+  const run = await propose(world, ['A', '--only', 'notes/a.md']);
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.ok(world.remoteSha(`refs/heads/${BRANCH}`));
+  assert.equal(gitProbe(decoy, ['rev-parse', '-q', '--verify', `refs/heads/${BRANCH}`]).status, 1);
+});
+
+test('remote get-url --push --all can no longer be the source of the push destination: without any rewrite, it still agrees with rawPushUrls', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  const run = await propose(world, ['A', '--only', 'notes/a.md']);
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.equal(world.remoteSha(`refs/heads/${BRANCH}`) !== null, true);
+});
+
+test('no remote.origin.url and no pushurl at all: exit 1 naming the remote, nothing asked of gh', async () => {
+  const world = makeProposeWorld();
+  git(world.vault, ['remote', 'remove', 'origin']);
+  git(world.vault, ['remote', 'add', 'origin', world.remote]);
+  git(world.vault, ['config', '--unset', 'remote.origin.url']);
+  world.write('notes/a.md', note('A'));
+  const run = await propose(world, ['A', '--only', 'notes/a.md']);
+  assert.equal(run.code, EXIT.FAILURE);
+  assert.equal(run.stderr, line('propose.no_push_url', { remote: 'origin' }));
   assert.deepEqual(world.ghCalls(), []);
 });

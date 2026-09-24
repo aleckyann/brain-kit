@@ -9,9 +9,13 @@
 //     `fail` (`pr create` exits 1); `unauth` (`pr create` exits 4 with the
 //     message an unauthenticated gh prints); `otherbase` (`pr view`
 //     reports a base other than the one requested); `otherhead` (`pr view`
-//     reports another head branch); `viewfail` (`pr view` exits 1). `absentPath()` is a PATH with the real git and no gh at
+//     reports another head branch); `viewfail` (`pr view` exits 1);
+//     `killparent` (`pr create` kills the process that called it). `pr view`
+//     answers only for a head a successful `pr create` named. Each call also
+//     records its working directory and the git and prompt variables it saw. `absentPath()` is a PATH with the real git and no gh at
 //     all, so a gh installed on this machine can never answer a test.
-//   - `fingerprint(dir)`: HEAD, the local branches and tags, the index's
+//   - `fingerprint(dir)`: HEAD, every reference in every namespace,
+//     packed-refs, .git/config, the index's
 //     bytes and every working-tree file's bytes, mode and modification
 //     time, in one comparable value: what propose must never move.
 import { spawnSync } from 'node:child_process';
@@ -31,25 +35,29 @@ const fs = require('node:fs');
 const args = process.argv.slice(2);
 const mode = process.env.FAKE_GH_MODE || 'ok';
 const log = ${JSON.stringify(log)};
-const entry = { args };
+const env = {};
+for (const name of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_TERMINAL_PROMPT', 'GH_PROMPT_DISABLED']) env[name] = process.env[name] === undefined ? null : process.env[name];
+const entry = { args, cwd: process.cwd(), env };
 const isCreate = args[0] === 'pr' && args[1] === 'create';
 const isView = args[0] === 'pr' && args[1] === 'view';
 if (isCreate) {
   const at = args.indexOf('--body-file');
   entry.body = at === -1 ? null : fs.readFileSync(args[at + 1], 'utf8');
+  entry.ok = !['fail', 'unauth', 'killparent'].includes(mode);
 }
 const before = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\\n').filter(Boolean).map((line) => JSON.parse(line)) : [];
 fs.appendFileSync(log, JSON.stringify(entry) + '\\n');
 if (isCreate) {
+  if (mode === 'killparent') { process.kill(process.ppid, 'SIGKILL'); process.exit(1); }
   if (mode === 'fail') { process.stderr.write('HTTP 422: Validation Failed (createPullRequest)\\n'); process.exit(1); }
   if (mode === 'unauth') { process.stderr.write('To get started with GitHub CLI, please run:  gh auth login\\n'); process.exit(4); }
   process.stdout.write('Creating pull request\\n${PR_URL}\\n');
   process.exit(0);
 }
 if (isView) {
-  if (mode === 'viewfail') { process.stderr.write('no pull requests found for branch "' + args[2] + '"\\n'); process.exit(1); }
-  const created = before.filter((e) => e.args[0] === 'pr' && e.args[1] === 'create').at(-1);
-  const requested = created ? created.args[created.args.indexOf('--base') + 1] : null;
+  const created = before.filter((e) => e.args[0] === 'pr' && e.args[1] === 'create' && e.ok && e.args[e.args.indexOf('--head') + 1] === args[2]).at(-1);
+  if (mode === 'viewfail' || !created) { process.stderr.write('no pull requests found for branch "' + args[2] + '"\\n'); process.exit(1); }
+  const requested = created.args[created.args.indexOf('--base') + 1];
   const base = mode === 'otherbase' ? 'bot/2026-09-22-10-00-00' : requested;
   const head = mode === 'otherhead' ? 'someone-else/branch' : args[2];
   process.stdout.write(JSON.stringify({ baseRefName: base, headRefName: head, url: '${PR_URL}' }) + '\\n');
@@ -79,6 +87,7 @@ export function makeProposeWorld(options = {}) {
   // what it leaves behind.
   const tmp = join(world.base, 'tmp');
   mkdirSync(tmp);
+  let published = 0;
   return {
     ...world,
     env,
@@ -105,6 +114,17 @@ export function makeProposeWorld(options = {}) {
     remoteSha(ref) {
       const result = gitProbe(world.remote, ['rev-parse', '-q', '--verify', ref]);
       return result.status === 0 ? result.stdout.trim() : null;
+    },
+    // n valid notes published to the remote's main from the other clone.
+    publishNotes(n) {
+      git(world.elsewhere, ['pull', '-q', 'origin', 'main']);
+      for (let i = 0; i < n; i += 1) {
+        published += 1;
+        writeFileSync(join(world.elsewhere, `published-${published}.md`), note(`Published ${published}`));
+      }
+      git(world.elsewhere, ['add', '-A']);
+      git(world.elsewhere, ['commit', '-q', '-m', `published ${n}`]);
+      git(world.elsewhere, ['push', '-q', 'origin', 'main']);
     },
     // What the pushed commit changes against its parent, as "STATUS\tpath" lines.
     changedIn(commit) {
@@ -133,12 +153,23 @@ function files(root, rel = '', out = {}) {
   return out;
 }
 
+function readOrNull(file) {
+  try {
+    return sha256(readFileSync(file));
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
 export function fingerprint(dir) {
   const head = gitProbe(dir, ['symbolic-ref', '-q', 'HEAD']);
   return {
     head: head.status === 0 ? head.stdout.trim() : null,
     headSha: gitProbe(dir, ['rev-parse', '-q', '--verify', 'HEAD']).stdout.trim(),
-    refs: git(dir, ['for-each-ref', '--format=%(refname) %(objectname)', 'refs/heads', 'refs/tags']),
+    refs: git(dir, ['for-each-ref', '--format=%(refname) %(objectname) %(symref)']),
+    packedRefs: readOrNull(join(dir, '.git', 'packed-refs')),
+    config: readOrNull(join(dir, '.git', 'config')),
     index: sha256(readFileSync(join(dir, '.git', 'index'))),
     files: files(dir),
   };

@@ -1,14 +1,16 @@
 // The `propose` command: the only way an agent's work reaches a vault, as a
 // pull request against the default branch.
 //
-//   brain-kit propose "<summary>" (--only <path>... | --all [--yes]) [--dry]
+//   brain-kit propose "<summary>" (--only <path>... | --all [--yes]) [--dry] [-- <argument>...]
 //
 // It exists because of docs/incidents.md, section "Git and pull requests":
 // 10/08/2026 (one variable meant both the branch to return to and the
 // branch to target, and pull requests went to yesterday's branch);
 // 08/09/2026 (success left the repository on the new branch); 29/07/2026
 // (two rounds in one tree at once); 16/09/2026 (a blanket `git add -A`
-// nearly swept another session's unfinished files into a pull request).
+// nearly swept another session's unfinished files into a pull request);
+// and the addendum of 22/09/2026 in "Headless runs" (the remote that was
+// asked was not the one pushed to).
 //
 // THE COMMIT IS BUILT WITH GIT PLUMBING, AND HEAD, THE INDEX AND THE
 // WORKING TREE NEVER MOVE. The remote default branch's tip, fetched and
@@ -17,14 +19,24 @@
 // contents are added to it (`git update-index --add --remove`, so a deleted
 // path is removed); the tree is written and committed with that tip as its
 // only parent, under the configured agent identity (this command's designed
-// author), and the commit is pushed straight to a new remote branch. So:
-// a local commit that was never published cannot ride into the pull
-// request (the parent is the remote's tip, not HEAD); another session's
-// staged or unstaged work is never read, staged or moved (the real index
-// is never written); and "return to the origin branch in every outcome" is
-// true by construction, because nothing ever left it. No commit hook runs
-// (commit-tree runs none); the push runs the vault's pre-push gate as any
-// push does.
+// author). So a local commit that was never published cannot ride into the
+// pull request (the parent is the remote's tip, not HEAD); another
+// session's staged or unstaged work is never read, staged or moved (the
+// real index is never written); and "return to the origin branch in every
+// outcome" is true by construction, because nothing ever left it. No commit
+// hook runs (commit-tree runs none); the push runs the vault's pre-push
+// gate as any push does.
+//
+// THE PUSH GOES TO THE PUSH DESTINATION, BY URL, AND IS PROVED THERE. The
+// destination is what `git push <remote>` would use: every url `git remote
+// get-url --push --all` prints (a pushurl, several, pushInsteadOf applied).
+// Each is pushed to by url, never by remote name, so no remote-tracking
+// reference is written, and each is asked with `git ls-remote` whether it
+// now holds the commit. Both calls run with an identity url rewrite for
+// that url (url.<u>.insteadOf and pushInsteadOf, read before any rule of the
+// person's, see pinnedConfig), so a mirror's insteadOf can never send the
+// push or the question somewhere else, and `ls-remote --get-url` proves the
+// pin first.
 //
 // In order, under the vault's lock (src/guards/lock.mjs), released in
 // every outcome:
@@ -32,55 +44,72 @@
 //   1. An operation left half done (rebase, merge, cherry-pick, revert,
 //      bisection) postpones the run, exit 75. A vault that is not the top
 //      level of its repository is exit 2.
-//   2. A clean working tree is exit 0, "nothing to propose", in one line.
-//   3. The paths. `--only`: every listed path must be inside the vault and
+//   2. A proposal an earlier run published without a confirmed pull request
+//      (its record in the git directory, below) is checked with `gh pr
+//      view`: confirmed, the record is removed; otherwise its finishing
+//      command is printed again. Not in `--dry`.
+//   3. A clean working tree is exit 0, "nothing to propose", in one line.
+//   4. The paths. `--only`: every listed path must be inside the vault and
 //      dirty now, or the run refuses naming each one, exit 2; the session
 //      snapshot plays no part. `--all`: every dirty path, but a path the
 //      session snapshot (src/guards/snapshot.mjs, taken at session or round
 //      start by its caller; this command never takes one) recorded as
-//      already there is refused, exit 75, naming it, unless `--yes`; with
-//      no snapshot, or one taken more than a day ago (or in the future),
-//      `--all` requires `--yes`, exit 75.
-//   4. `validate` and `lint --base worktree` over the working tree; either
-//      failing is exit 1, their report printed.
+//      already there is refused, naming it, unless `--yes`; with no
+//      snapshot, or one taken more than a day ago (or in the future),
+//      `--all` requires `--yes`. Each of those refusals is exit 2: the run
+//      lacks the confirmation it needs. A submodule pointer or an untracked
+//      nested repository is refused in phase 1, naming it, exit 2.
 //   5. origin (the branch checked out, named in messages only) and base
 //      (the remote default branch: the one resolver, src/git.mjs
 //      defaultBranch, then the upstream it tracks, as sync reads it) are
 //      two variables that never share a meaning. A base that cannot be
-//      resolved is exit 1.
+//      resolved, or a remote with no push url, is exit 1.
 //   6. `--dry` stops here, prints the plan and exits 0: before any fetch,
-//      so it moves no reference at all, the remote-tracking one included.
+//      so it moves no reference and writes no object.
 //   7. The base is fetched and the fetch proved (src/git.mjs, fetch);
 //      anything short of a proved tip is exit 1. Every chosen path must
-//      then be the same at HEAD as at that tip: an edit made on a version
-//      the base does not hold (a branch behind the remote, or a previous
-//      round's unmerged commit) would silently revert or carry that
-//      difference. Otherwise exit 1, naming the paths.
-//   8. The commit is built as above, and the paths it changes against the
-//      base tip must be exactly the chosen ones, or exit 1. It is pushed to
-//      `<branch_prefix><YYYY-MM-DD-HH-MM-SS>` (UTC), refusing to replace a
-//      branch the remote already has, and the remote is asked whether it
-//      now holds that commit. A failure here is exit 1: nothing was
-//      published, and the working tree still holds everything.
-//   9. `gh pr create --base <base> --head <branch> --title <title>
-//      --body-file <body>`, then `gh pr view <branch> --json
-//      baseRefName,headRefName,url`, which must name the base and the
-//      branch. `gh` absent, failing, unauthenticated, unreadable, or
-//      reporting another base is exit 3 (a published commit without a
-//      confirmed pull request), naming the exact command that finishes by
-//      hand; the rendered body is then left on disk for that command.
+//      then be the same at HEAD as at that tip, present or absent on both:
+//      an edit made on a version the base does not hold (a branch behind
+//      the remote, a previous round's unmerged commit, or a new file where
+//      the owner merged one of the same name) would silently revert or
+//      carry that difference. Otherwise exit 1, naming the paths.
+//   8. The tree is built as above, and the paths it changes against the tip
+//      must be exactly the chosen ones, or exit 1. That tree, the one the
+//      pull request will hold, is extracted into a temporary repository
+//      (its objects borrowed through alternates, HEAD at the tip) and
+//      `validate` and `lint --base worktree` run THERE; either failing is
+//      exit 1, their report printed.
+//   9. The branch is `<branch_prefix><YYYY-MM-DD-HH-MM-SS>` (UTC), with
+//      `-2` to `-9` appended when a push url already holds that name. The
+//      rendered body is written to the git directory, the commit is made,
+//      and pushed to every push url with a lease that refuses to replace a
+//      branch there. No url holding it, every url answering: exit 1,
+//      nothing published. Some urls holding it, or one not answering: exit
+//      3 naming which, with the commands that finish by hand.
+//  10. With every url holding it, a record of the published branch is
+//      written to the git directory BEFORE `gh` is called, so a run killed
+//      from here on is reported by the next one (step 2). Then `gh pr
+//      create --base <base> --head <branch> --title <title> --body-file
+//      <body>` and `gh pr view <branch> --json baseRefName,headRefName,url`,
+//      which must name the base and the branch. `gh` absent, failing,
+//      unauthenticated, unreadable, or reporting another base or head is
+//      exit 3, naming the exact command that finishes by hand; the body and
+//      the record stay in the git directory for it. Confirmed, both are
+//      removed and the run exits 0.
 //
-// Declared, not handled: `validate` and `lint` judge the working tree,
-// not the proposed tree, so a chosen note that links to a file left out of
-// the proposal passes here and is broken in the pull request; a path
-// whose name is not valid UTF-8 never gets past `lint`, which cannot scan
-// it (paths are still handed to git as the bytes it printed); `gh` chooses the
-// repository from the checkout's remotes itself, and only the base and
-// head names it reports back are checked.
+// `gh` runs with the caller's git environment removed, GIT_TERMINAL_PROMPT=0
+// and GH_PROMPT_DISABLED=1.
+//
+// Declared, not handled: a submodule the proposed tree already holds (not
+// one being proposed) is extracted as the empty directory git leaves for it
+// and judged as such; a process that does not take the lock can still edit
+// a chosen file between the gate and the commit; `gh` chooses the
+// repository from the checkout's remotes itself, and only the base and head
+// names it reports back are checked.
 //
 // `deps` hands in the environment, the working directory, the clock, the
 // temporary directory and walkVault, for the tests and for src/cli.mjs.
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { EXIT } from '../exit-codes.mjs';
@@ -105,6 +134,12 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const NETWORK_TIMEOUT_MS = 120000;
 const DEFAULT_TITLE = '{{commit_prefix}} {{summary}}';
 const GIT_OPTS = { maxBuffer: 256 * 1024 * 1024 };
+// Where a published proposal without a confirmed pull request is recorded,
+// with its rendered body: in the repository's git common directory, beside
+// the lock, so every working tree and every environment sees one place.
+export const PROPOSALS_DIR = 'brain-kit-proposals';
+const MAX_SUFFIX = 9;
+const GITLINK_MODE = '160000';
 
 class Refusal extends Error {
   constructor(exitCode, text) {
@@ -113,11 +148,20 @@ class Refusal extends Error {
   }
 }
 
+// The summary comes first; --only takes every argument after it up to the
+// next option; `--` ends options, and what follows it fills the summary if
+// it is still missing, then the --only list.
 function parseArgs(argv) {
   const result = { summary: undefined, only: null, all: false, yes: false, dry: false, help: false };
+  let rest = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === '--help' || arg === '-h') result.help = true;
+    if (rest) {
+      if (result.summary === undefined) result.summary = arg;
+      else if (result.only !== null) result.only.push(arg);
+      else return { error: 'argument', arg };
+    } else if (arg === '--') rest = true;
+    else if (arg === '--help' || arg === '-h') result.help = true;
     else if (arg === '--all') result.all = true;
     else if (arg === '--yes') result.yes = true;
     else if (arg === '--dry') result.dry = true;
@@ -176,10 +220,56 @@ function gitOrFail(root, args, env, options) {
   return result;
 }
 
+// The configuration that makes git use exactly each push url: an identity
+// rewrite (insteadOf and pushInsteadOf) per url, as the longest possible
+// match. git breaks a tie between equally long rewrites in favour of the one
+// it read FIRST, and a mirror's insteadOf naming the whole url ties with it,
+// so the identity rules go in a global configuration file of their own that
+// then includes the system and global files the person has: read before the
+// repository's configuration and before theirs, the pin wins, and every
+// credential helper and transport setting still applies. Returns the
+// environment that selects that file.
+function pinnedConfig(root, env, dir, urls) {
+  const escape = (text) => text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const lines = [];
+  for (const url of urls) {
+    lines.push(`[url "${escape(url)}"]`, `\tinsteadOf = "${escape(url)}"`, `\tpushInsteadOf = "${escape(url)}"`);
+  }
+  const included = [];
+  if (!env.GIT_CONFIG_NOSYSTEM) {
+    const listed = git(root, ['config', '--system', '--list', '--show-origin'], env);
+    if (listed.status === 0) {
+      for (const line of listed.stdout.split('\n')) {
+        const origin = /^file:([^\t]+)\t/.exec(line);
+        if (origin !== null && !included.includes(origin[1])) included.push(origin[1]);
+      }
+    }
+  }
+  const home = env.HOME ?? '';
+  const globals = env.GIT_CONFIG_GLOBAL !== undefined
+    ? [env.GIT_CONFIG_GLOBAL]
+    : [join(env.XDG_CONFIG_HOME || join(home, '.config'), 'git', 'config'), join(home, '.gitconfig')];
+  for (const file of globals) {
+    try {
+      if (statSync(file).isFile()) included.push(file);
+    } catch {
+      // Absent, or no regular file: nothing to include.
+    }
+  }
+  if (included.length > 0) lines.push('[include]', ...included.map((file) => `\tpath = "${escape(file)}"`));
+  const file = join(dir, 'pinned.gitconfig');
+  writeFileSync(file, `${lines.join('\n')}\n`, { mode: 0o600 });
+  return { GIT_CONFIG_GLOBAL: file, GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' };
+}
+
 function captureIo() {
   let text = '';
   const sink = { write: (s) => { text += s; } };
   return { io: { stdout: sink, stderr: sink }, text: () => text };
+}
+
+function ghEnvOf(env) {
+  return { ...gitEnv(env), GIT_TERMINAL_PROMPT: '0', GH_PROMPT_DISABLED: '1' };
 }
 
 export async function runPropose(argv, io, t, deps = {}) {
@@ -225,10 +315,10 @@ export async function runPropose(argv, io, t, deps = {}) {
     }
     throw error;
   }
-  // Two private temporary directories: the index, always removed; the
-  // rendered body, kept when the run ends degraded, for the finishing
-  // command that names it.
-  const scratch = { work: null, body: null, keep: false };
+  // The temporary index and the extracted tree live in a private temporary
+  // directory, always removed. The body and the record live in the git
+  // directory and are removed unless the run ends degraded.
+  const scratch = { work: null, kept: [], keep: false };
   try {
     return await proposeUnderLock({ root, cwd, config, parsed, io, t, env, now, walkVault, scratch, temp });
   } catch (error) {
@@ -245,7 +335,7 @@ export async function runPropose(argv, io, t, deps = {}) {
   } finally {
     try {
       if (scratch.work !== null) rmSync(scratch.work, { recursive: true, force: true });
-      if (scratch.body !== null && !scratch.keep) rmSync(scratch.body, { recursive: true, force: true });
+      if (!scratch.keep) for (const file of scratch.kept) rmSync(file, { force: true });
     } finally {
       lock.release();
     }
@@ -260,6 +350,10 @@ async function proposeUnderLock({ root, cwd, config, parsed, io, t, env, now, wa
   if (prefix.stdout.replace(/\n$/, '') !== '') {
     throw new Refusal(EXIT.USAGE, t('propose.not_toplevel', { dir: root, prefix: prefix.stdout.trim() }));
   }
+  const gitConfig = config.git;
+  const commonDir = realpathSync(resolve(root, gitOrFail(root, ['rev-parse', '--git-common-dir'], env).stdout.replace(/\n$/, '')));
+  const proposals = join(commonDir, PROPOSALS_DIR);
+  if (!parsed.dry) checkEarlierProposals(root, io, t, env, proposals, gitConfig.pr_command);
 
   const dirty = dirtyPathBytes(root, { env });
   if (dirty.length === 0) {
@@ -267,44 +361,106 @@ async function proposeUnderLock({ root, cwd, config, parsed, io, t, env, now, wa
     return EXIT.OK;
   }
   const chosen = parsed.all ? chooseAll(root, dirty, parsed, t, env, now) : chooseOnly(root, cwd, dirty, parsed.only, t);
+  const head = treeEntries(root, env, resolveCommit(root, 'HEAD', { env }));
+  refuseNested(root, t, chosen, head);
   const names = chosen.map((path) => decodeBytes(path));
-
-  await gate(root, t, walkVault);
 
   // origin: where HEAD is, and stays. base: the remote default branch the
   // pull request targets. Never the same variable (docs/incidents.md,
   // 10/08/2026).
   const origin = currentBranch(root, { env }) ?? resolveCommit(root, 'HEAD', { env }) ?? '-';
   const { remote, base } = resolveBase(root, t, env);
+  scratch.work = realpathSync(mkdtempSync(join(temp, 'brain-kit-propose-')));
+  const { urls, pinned } = pushUrls(root, t, env, remote, scratch.work);
 
-  const gitConfig = config.git;
   const title = render(gitConfig.pr_title ?? DEFAULT_TITLE, { commit_prefix: gitConfig.commit_prefix, summary: parsed.summary });
-  const branch = `${gitConfig.branch_prefix}${branchStamp(now())}`;
-  if (!isBranchName(root, branch, { env }) || branch === base) throw new Refusal(EXIT.FAILURE, t('propose.branch_invalid', { branch }));
+  const stamped = `${gitConfig.branch_prefix}${branchStamp(now())}`;
+  if (!isBranchName(root, stamped, { env }) || stamped === base) throw new Refusal(EXIT.FAILURE, t('propose.branch_invalid', { branch: stamped }));
 
   if (parsed.dry) {
-    io.stdout.write(`${t('propose.dry_run', { files: names, remote, base, branch, title, origin })}\n`);
+    io.stdout.write(`${t('propose.dry_run', { files: names, urls, base, branch: stamped, title, origin })}\n`);
     return EXIT.OK;
   }
 
   const tip = fetchBase(root, t, env, remote, base);
-  sameAtHeadAndTip(root, t, env, chosen, tip, base);
+  const target = treeEntries(root, env, tip);
+  sameAtHeadAndTip(t, chosen, head, target, base, tip);
 
-  // Everything that can fail on this machine is done before the push: after
-  // it, every failure is a published commit without a pull request.
+  const tree = buildTree(root, t, env, { chosen, tip, index: join(scratch.work, 'index') });
+  await gate(root, t, env, walkVault, { tree, tip, commonDir, dir: join(scratch.work, 'proposed') });
+
+  const branch = freeBranch(root, t, env, stamped, urls, pinned);
   const files = names.map((name) => `- \`${name}\``).join('\n');
   const body = render(readBodyTemplate(root, config, t), { summary: parsed.summary, files, base, branch });
-  scratch.body = realpathSync(mkdtempSync(join(temp, 'brain-kit-propose-body-')));
-  const bodyFile = join(scratch.body, 'pr-body.md');
+  mkdirSync(proposals, { recursive: true, mode: 0o700 });
+  const slug = branch.replace(/[^A-Za-z0-9._-]/g, '-');
+  const bodyFile = join(proposals, `${slug}.md`);
+  const recordFile = join(proposals, `${slug}.json`);
+  scratch.kept.push(bodyFile, recordFile);
   writeFileSync(bodyFile, body);
-  scratch.work = realpathSync(mkdtempSync(join(temp, 'brain-kit-propose-index-')));
-  const commit = buildCommit(root, t, env, { chosen, tip, title, identity: gitConfig.agent_identity, index: join(scratch.work, 'index') });
-  push(root, t, env, { remote, branch, commit });
-  return openPullRequest(root, io, t, env, { program: gitConfig.pr_command, base, branch, title, bodyFile, scratch, count: names.length, origin });
+  const commit = commitTree(root, env, { tree, tip, title, identity: gitConfig.agent_identity });
+
+  const program = gitConfig.pr_command;
+  const createCommand = commandLine(program, ['pr', 'create', '--base', base, '--head', branch, '--title', title, '--body-file', bodyFile]);
+  const published = publish(root, env, { urls, pinned, branch, commit });
+  const record = (command) => writeFileSync(recordFile, `${JSON.stringify({ branch, base, commit, urls, bodyFile, command }, null, 2)}\n`);
+  // Nothing published is said only when every url answered that it does
+  // not hold the commit.
+  if (published.held.length === 0 && published.unknown.length === 0) {
+    if (published.failed !== null) throw new Refusal(EXIT.FAILURE, t('propose.push_failed', { branch, urls, detail: published.failed }));
+    throw new Refusal(EXIT.FAILURE, t('propose.push_unproved', { branch, urls, commit: commit.slice(0, 12) }));
+  }
+  if (published.held.length !== urls.length) {
+    const missing = urls.filter((url) => !published.held.includes(url));
+    const pushes = missing.map((url) => commandLine('git', ['push', url, `${commit}:refs/heads/${branch}`]));
+    const command = [...pushes, createCommand].join(' && ');
+    record(command);
+    scratch.keep = true;
+    io.stderr.write(`${t('propose.partial_publish', { branch, held: published.held.length > 0 ? published.held : '-', missing, command })}\n`);
+    return EXIT.DEGRADED;
+  }
+  record(createCommand);
+  return openPullRequest(root, io, t, env, { program, base, branch, title, bodyFile, scratch, count: names.length, origin, createCommand });
+}
+
+// A proposal an earlier run published and never saw confirmed: removed
+// once gh confirms its pull request, reported with its finishing command
+// otherwise. A record that cannot be read is named, never deleted.
+function checkEarlierProposals(root, io, t, env, dir, program) {
+  let entries;
+  try {
+    entries = readdirSync(dir).filter((name) => name.endsWith('.json')).sort();
+  } catch (error) {
+    if (error.code === 'ENOENT') return;
+    throw error;
+  }
+  for (const name of entries) {
+    const file = join(dir, name);
+    let record;
+    try {
+      record = JSON.parse(readFileSync(file, 'utf8'));
+    } catch {
+      record = null;
+    }
+    if (record === null || typeof record.branch !== 'string' || typeof record.base !== 'string' || typeof record.command !== 'string') {
+      io.stderr.write(`${t('propose.pending_unreadable', { file })}\n`);
+      continue;
+    }
+    const pr = viewPullRequest(root, env, program, record.branch);
+    if (pr !== null && pr.baseRefName === record.base && pr.headRefName === record.branch) {
+      rmSync(file, { force: true });
+      if (typeof record.bodyFile === 'string') rmSync(record.bodyFile, { force: true });
+      continue;
+    }
+    const command = pr !== null ? commandLine(program, ['pr', 'edit', record.branch, '--base', record.base]) : record.command;
+    io.stderr.write(`${t('propose.pending', { branch: record.branch, command })}\n`);
+  }
 }
 
 // --only: each path is inside the vault and dirty now, or the run refuses
-// naming every one that is not.
+// naming every one that is not. A directory git lists with a slash (an
+// untracked nested repository) matches its name without one, so it is
+// refused for what it is.
 function chooseOnly(root, cwd, dirty, listed, t) {
   const known = new Map(dirty.map((path) => [path.toString('hex'), path]));
   const outside = [];
@@ -316,9 +472,11 @@ function chooseOnly(root, cwd, dirty, listed, t) {
       outside.push(given);
       continue;
     }
-    const path = Buffer.from(rel.split(sep).join('/'), 'utf8');
-    const key = path.toString('hex');
+    const posix = rel.split(sep).join('/');
+    const key = Buffer.from(posix, 'utf8').toString('hex');
+    const dirKey = Buffer.from(`${posix}/`, 'utf8').toString('hex');
     if (known.has(key)) chosen.set(key, known.get(key));
+    else if (known.has(dirKey)) chosen.set(dirKey, known.get(dirKey));
     else clean.push(given);
   }
   if (outside.length > 0) throw new Refusal(EXIT.USAGE, t('propose.outside_vault', { paths: outside, dir: root }));
@@ -327,29 +485,37 @@ function chooseOnly(root, cwd, dirty, listed, t) {
 }
 
 // --all: every dirty path, but never one the session snapshot recorded as
-// already there, and never without a recent snapshot, unless --yes.
+// already there, and never without a recent snapshot, unless --yes. Each
+// refusal is exit 2: what the run lacks is the person's confirmation.
 function chooseAll(root, dirty, parsed, t, env, now) {
   if (parsed.yes) return dirty;
   const snapshot = readSnapshot(root, { env });
-  if (snapshot === null) throw new Refusal(EXIT.TEMPFAIL, t('propose.no_snapshot'));
+  if (snapshot === null) throw new Refusal(EXIT.USAGE, t('propose.no_snapshot'));
   const age = now().getTime() - Date.parse(snapshot.at);
-  if (!(age >= 0 && age <= DAY_MS)) throw new Refusal(EXIT.TEMPFAIL, t('propose.stale_snapshot', { at: snapshot.at }));
+  if (!(age >= 0 && age <= DAY_MS)) throw new Refusal(EXIT.USAGE, t('propose.stale_snapshot', { at: snapshot.at }));
   const { before } = splitDirty(root, snapshot, { env });
   if (before.length > 0) {
-    throw new Refusal(EXIT.TEMPFAIL, t('propose.dirty_before', { files: before.map((path) => decodeBytes(path)), at: snapshot.at }));
+    throw new Refusal(EXIT.USAGE, t('propose.dirty_before', { files: before.map((path) => decodeBytes(path)), at: snapshot.at }));
   }
   return dirty;
 }
 
-// validate, then lint over the working tree. Their report is printed only
-// when one fails.
-async function gate(root, t, walkVault) {
-  const validation = captureIo();
-  const validated = await runValidate([root, '--only-problems'], validation.io, t, walkVault);
-  if (validated !== EXIT.OK) throw new Refusal(EXIT.FAILURE, `${validation.text()}${t('propose.validate_failed', { code: validated })}`);
-  const linting = captureIo();
-  const linted = await runLint([root, '--base', 'worktree'], linting.io, t, walkVault);
-  if (linted !== EXIT.OK) throw new Refusal(EXIT.FAILURE, `${linting.text()}${t('propose.lint_failed', { code: linted })}`);
+// Phase 1 proposes files only: a submodule pointer (a directory in the
+// working tree, or a gitlink at HEAD for one deleted) and an untracked
+// nested repository (git lists it as "dir/") are refused, naming them.
+function refuseNested(root, t, chosen, head) {
+  const nested = chosen.filter((path) => {
+    if (path.at(-1) === 0x2f) return true;
+    let st = null;
+    try {
+      st = lstatSync(Buffer.concat([Buffer.from(`${root}/`), path]));
+    } catch (error) {
+      if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error;
+    }
+    if (st !== null) return st.isDirectory();
+    return (head.get(path.toString('hex')) ?? '').startsWith(`${GITLINK_MODE} `);
+  });
+  if (nested.length > 0) throw new Refusal(EXIT.USAGE, t('propose.nested_repository', { paths: nested.map((path) => decodeBytes(path)) }));
 }
 
 function configuredRemotes(root, env) {
@@ -376,6 +542,52 @@ function resolveBase(root, t, env) {
     throw new Refusal(EXIT.FAILURE, t('propose.no_remote', { remote: tracked.remote, branch: found.bare }));
   }
   return { remote: tracked.remote, base: tracked.branch };
+}
+
+// The RAW push destination(s), exactly as configured, never as any command
+// that applies url rewriting would resolve them: `remote.<remote>.pushurl`
+// (every value, in order), or `remote.<remote>.url` when no pushurl is set
+// (git's own fallback, matching an ordinary push). `git config --get-all`
+// never applies `url.*.insteadOf` or `pushInsteadOf`: it reads the stored
+// string, so this is immune to a rewrite rule anywhere, on this machine or
+// in this repository, by construction, rather than by outrunning one.
+//
+// This exists because of a live leak found in this round's own review, on
+// this branch's own unmutated code: `git remote get-url --push --all`,
+// which the first version of this function trusted, already applies
+// `pushInsteadOf`, and does that with the CALLER'S ambient configuration,
+// before any protection this module builds can exist to guard it. A
+// `pushInsteadOf` rule in the person's OWN global gitconfig, naming this
+// vault's origin url for a reason that has nothing to do with brain-kit
+// (a personal mirror, a corporate proxy, anything), silently retargeted
+// every proposal to wherever that rule pointed: the run still reported
+// success, the commit was real, and it was never on the vault's own
+// remote. No flag, no `--only`/`--all` choice, nothing the person did in
+// this run caused it or could have caught it.
+function rawPushUrls(root, env, remote) {
+  const pushurl = git(root, ['config', '--get-all', `remote.${remote}.pushurl`], env);
+  const source = pushurl.status === 0 ? pushurl.stdout : git(root, ['config', '--get-all', `remote.${remote}.url`], env).stdout;
+  return [...new Set(source.split('\n').filter((url) => url !== ''))];
+}
+
+// Where the branch is actually sent: the raw destination(s) above, each
+// proved to stay itself when pinned. A REPOSITORY-level `insteadOf` or
+// `pushInsteadOf` (the vault's own, deliberate: the mirror idiom, a
+// literal `pushurl`) is honoured, because rawPushUrls already reads past
+// it to the value it rewrites FROM, and this pin only ever maps that
+// value to itself. What is refused is a SECOND, unrelated rule (anywhere:
+// this machine's global or system configuration, or a stray repository
+// rule) matching this exact string once it is handed to `git` a second
+// time, at the literal push and at its proof.
+function pushUrls(root, t, env, remote, dir) {
+  const urls = rawPushUrls(root, env, remote);
+  if (urls.length === 0) throw new Refusal(EXIT.FAILURE, t('propose.no_push_url', { remote }));
+  const pinned = pinnedConfig(root, env, dir, urls);
+  for (const url of urls) {
+    const asked = git(root, ['ls-remote', '--get-url', url], env, { extraEnv: pinned });
+    if (asked.status !== 0 || asked.stdout.replace(/\n$/, '') !== url) throw new Refusal(EXIT.FAILURE, t('propose.url_rewritten', { url, got: asked.stdout.trim() }));
+  }
+  return { urls, pinned };
 }
 
 // The base's tip, fetched and proved: anything short of that is a refusal,
@@ -408,11 +620,10 @@ function treeEntries(root, env, commit) {
   return map;
 }
 
-// Each chosen path must be the same at HEAD as at the base's tip, so the
-// working-tree edit was made on the version the pull request replaces.
-function sameAtHeadAndTip(root, t, env, chosen, tip, base) {
-  const head = treeEntries(root, env, resolveCommit(root, 'HEAD', { env }));
-  const target = treeEntries(root, env, tip);
+// Each chosen path must be the same at HEAD as at the base's tip, present
+// with the same content or absent on both sides, so the working-tree edit
+// was made on the version the pull request replaces.
+function sameAtHeadAndTip(t, chosen, head, target, base, tip) {
   const differ = chosen.filter((path) => head.get(path.toString('hex')) !== target.get(path.toString('hex')));
   if (differ.length > 0) {
     throw new Refusal(EXIT.FAILURE, t('propose.base_differs', { files: differ.map((path) => decodeBytes(path)), base, tip: tip.slice(0, 12) }));
@@ -437,17 +648,16 @@ function readBodyTemplate(root, config, t) {
 }
 
 // The base's tip plus exactly the chosen paths, in a temporary index, as
-// one commit whose only parent is that tip. The real index, HEAD and the
-// working tree are never written.
-function buildCommit(root, t, env, { chosen, tip, title, identity, index }) {
+// one tree. The real index, HEAD and the working tree are never written.
+function buildTree(root, t, env, { chosen, tip, index }) {
   gitOrFail(root, ['read-tree', tip], env, { index });
   const input = Buffer.concat(chosen.flatMap((path) => [path, Buffer.from([0])]));
   gitOrFail(root, ['update-index', '--add', '--remove', '-z', '--stdin'], env, { index, input });
-  // What the commit will change against the tip must be exactly the chosen
-  // paths: one more or one fewer is a proposal of something not given. One
-  // fewer is reachable: a path whose change is only staged, its working
-  // tree back to HEAD's version, is dirty and yet adds nothing here, since
-  // propose reads the working tree and never the index.
+  // What the tree changes against the tip must be exactly the chosen paths:
+  // one more or one fewer is a proposal of something not given. One fewer
+  // is reachable: a path whose change is only staged, its working tree back
+  // to HEAD's version, is dirty and yet adds nothing here, since propose
+  // reads the working tree and never the index.
   const diff = gitOrFail(root, ['diff-index', '--cached', '--no-renames', '--name-only', '-z', tip], env, { index, encoding: 'buffer' });
   const changed = diff.stdout.length === 0 ? [] : diff.stdout.subarray(0, diff.stdout.at(-1) === 0 ? -1 : undefined).toString('latin1').split('\0');
   const expected = chosen.map((path) => path.toString('latin1'));
@@ -458,7 +668,54 @@ function buildCommit(root, t, env, { chosen, tip, title, identity, index }) {
     const show = (list) => list.map((path) => decodeBytes(Buffer.from(path, 'latin1')));
     throw new Refusal(EXIT.FAILURE, t('propose.tree_mismatch', { expected: show(expected), actual: show(changed) }));
   }
-  const tree = gitOrFail(root, ['write-tree'], env, { index }).stdout.trim();
+  return gitOrFail(root, ['write-tree'], env, { index }).stdout.trim();
+}
+
+// validate, then lint, over the tree the pull request will hold: extracted
+// into a throwaway repository that borrows the vault's objects, with HEAD at
+// the base tip and that tree in its index and working tree, so lint's
+// worktree scope is exactly what the pull request changes. Their report is
+// printed only when one fails.
+async function gate(root, t, env, walkVault, { tree, tip, commonDir, dir }) {
+  gitOrFail(root, ['init', '-q', '--template=', dir], env);
+  writeFileSync(join(dir, '.git', 'objects', 'info', 'alternates'), `${join(commonDir, 'objects')}\n`);
+  gitOrFail(dir, ['update-ref', 'HEAD', tip], env);
+  gitOrFail(dir, ['read-tree', tree], env);
+  gitOrFail(dir, ['checkout-index', '-a'], env);
+  const validation = captureIo();
+  const validated = await runValidate([dir, '--only-problems'], validation.io, t, walkVault);
+  if (validated !== EXIT.OK) throw new Refusal(EXIT.FAILURE, `${validation.text()}${t('propose.validate_failed', { code: validated })}`);
+  const linting = captureIo();
+  const linted = await runLint([dir, '--base', 'worktree'], linting.io, t, walkVault);
+  if (linted !== EXIT.OK) throw new Refusal(EXIT.FAILURE, `${linting.text()}${t('propose.lint_failed', { code: linted })}`);
+}
+
+// What every push url holds at refs/heads/<branch>: the object id, null
+// when the branch is not there, or undefined when the url did not answer.
+function heldAt(root, env, pinned, url, ref) {
+  const listed = git(root, ['ls-remote', url, ref], env, { extraEnv: pinned, timeout: NETWORK_TIMEOUT_MS });
+  if (listed.status !== 0) return undefined;
+  const line = listed.stdout.split('\n').find((entry) => entry.endsWith(`\t${ref}`));
+  return line === undefined ? null : line.split('\t')[0];
+}
+
+// The stamped name, or the first of `-2` to `-9` appended that no push url
+// holds: a rerun within the same second gets a name of its own.
+function freeBranch(root, t, env, stamped, urls, pinned) {
+  for (let n = 1; n <= MAX_SUFFIX; n++) {
+    const branch = n === 1 ? stamped : `${stamped}-${n}`;
+    let free = true;
+    for (const url of urls) {
+      const held = heldAt(root, env, pinned, url, `refs/heads/${branch}`);
+      if (held === undefined) throw new Refusal(EXIT.FAILURE, t('propose.destination_unreadable', { url }));
+      if (held !== null) free = false;
+    }
+    if (free) return branch;
+  }
+  throw new Refusal(EXIT.FAILURE, t('propose.branch_exhausted', { branch: stamped }));
+}
+
+function commitTree(root, env, { tree, tip, title, identity }) {
   const identityEnv = {
     GIT_AUTHOR_NAME: identity.name, GIT_AUTHOR_EMAIL: identity.email, GIT_COMMITTER_NAME: identity.name, GIT_COMMITTER_EMAIL: identity.email,
   };
@@ -467,22 +724,42 @@ function buildCommit(root, t, env, { chosen, tip, title, identity, index }) {
   return commit;
 }
 
-// The commit, to a branch the remote must not have yet, and proof that the
-// remote now holds it there.
-function push(root, t, env, { remote, branch, commit }) {
+// The commit to every push url, each with a lease refusing to replace a
+// branch there, then each url asked what it holds: `held` (the commit),
+// `unknown` (no answer), and the first push failure's detail, if any.
+function publish(root, env, { urls, pinned, branch, commit }) {
   const ref = `refs/heads/${branch}`;
-  const network = { extraEnv: { GIT_TERMINAL_PROMPT: '0' }, timeout: NETWORK_TIMEOUT_MS };
-  const pushed = git(root, ['push', '--quiet', `--force-with-lease=${ref}:`, remote, `${commit}:${ref}`], env, network);
-  if (pushed.status !== 0) throw new Refusal(EXIT.FAILURE, t('propose.push_failed', { remote, branch, detail: detailOf(pushed) }));
-  const listed = git(root, ['ls-remote', remote, ref], env, network);
-  const held = listed.status === 0 ? listed.stdout.split('\n').find((line) => line.endsWith(`\t${ref}`)) : undefined;
-  if (held === undefined || held.split('\t')[0] !== commit) throw new Refusal(EXIT.FAILURE, t('propose.push_unproved', { remote, branch, commit: commit.slice(0, 12) }));
+  let failed = null;
+  for (const url of urls) {
+    const pushed = git(root, ['push', '--quiet', `--force-with-lease=${ref}:`, url, `${commit}:${ref}`], env, { extraEnv: pinned, timeout: NETWORK_TIMEOUT_MS });
+    if (pushed.status !== 0 && failed === null) failed = `${url}: ${detailOf(pushed)}`;
+  }
+  const held = [];
+  const unknown = [];
+  for (const url of urls) {
+    const at = heldAt(root, env, pinned, url, ref);
+    if (at === undefined) unknown.push(url);
+    else if (at === commit) held.push(url);
+  }
+  return { held, unknown, failed };
+}
+
+// What gh says of the pull request whose head is `branch`, or null.
+function viewPullRequest(root, env, program, branch) {
+  const viewed = run(program, ['pr', 'view', branch, '--json', 'baseRefName,headRefName,url'], { cwd: root, env: ghEnvOf(env), timeout: NETWORK_TIMEOUT_MS });
+  if (viewed.status !== 0) return null;
+  try {
+    const pr = JSON.parse(viewed.stdout);
+    return pr !== null && typeof pr === 'object' && typeof pr.baseRefName === 'string' ? pr : null;
+  } catch {
+    return null;
+  }
 }
 
 // The pull request, then proof of its base. Every failure from here on is
 // exit 3: the commit is published, the pull request is not confirmed.
-function openPullRequest(root, io, t, env, { program, base, branch, title, bodyFile, scratch, count, origin }) {
-  const ghEnv = { ...gitEnv(env), GH_PROMPT_DISABLED: '1' };
+function openPullRequest(root, io, t, env, { program, base, branch, title, bodyFile, scratch, count, origin, createCommand }) {
+  const ghEnv = ghEnvOf(env);
   const createArgs = ['pr', 'create', '--base', base, '--head', branch, '--title', title, '--body-file', bodyFile];
   const degraded = (text) => {
     scratch.keep = true;
@@ -491,7 +768,7 @@ function openPullRequest(root, io, t, env, { program, base, branch, title, bodyF
   };
   const created = run(program, createArgs, { cwd: root, env: ghEnv, timeout: NETWORK_TIMEOUT_MS });
   if (created.status !== 0) {
-    return degraded(t('propose.degraded_create', { branch, detail: detailOf(created), command: commandLine(program, createArgs) }));
+    return degraded(t('propose.degraded_create', { branch, detail: detailOf(created), command: createCommand }));
   }
   const viewArgs = ['pr', 'view', branch, '--json', 'baseRefName,headRefName,url'];
   const viewed = run(program, viewArgs, { cwd: root, env: ghEnv, timeout: NETWORK_TIMEOUT_MS });
