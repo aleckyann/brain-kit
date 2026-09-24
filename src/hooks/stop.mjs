@@ -18,7 +18,7 @@
 //    6. canonical_path is not this copy           release (a worktree, a copy)
 //    7. not a repository, or not its top level    BLOCK
 //    8. the lock is held (unreadable included)    release (another writer)
-//    9. no usable session snapshot                every dirty path is the session's
+//    9. no snapshot of this tree for THIS session every dirty path is the session's
 //   10. nothing dirty since the snapshot          release
 //   11. otherwise                                 BLOCK, naming the session's paths
 //
@@ -112,21 +112,40 @@ export function runStop(stdinText, env = process.env) {
     } catch {
       snapshot = null;
     }
-    const usable = snapshot !== null && snapshot.root === topLevel;
+    const trust = snapshotTrust(snapshot, topLevel, payload);
+    const usable = trust === 'own';
     const { before, since } = splitDirty(root, usable ? snapshot : { at: '', root: topLevel, paths: [] }, { env });
     if (since.length === 0) return release(t('hook.stop.release_clean', { count: before.length }));
-    return block(blockReason(t, since, before.length, usable));
+    return block(blockReason(t, since, before.length, trust));
   } catch (error) {
     return block(t('hook.stop.block_failed', { detail: detailOf(error, t) }));
   }
 }
 
-function blockReason(t, since, inherited, usable) {
+// Whether the snapshot on disk may split this session's work from earlier
+// work: only one of this working tree taken for this very session. One per
+// working tree, a snapshot is retaken by any session that starts there; a
+// second session's startup would otherwise file the first session's work as
+// "already there", and the first would end with it unproposed. Anything but
+// 'own' makes every dirty path count as this session's, which fails toward
+// blocking, and the reason says why.
+export function snapshotTrust(snapshot, topLevel, payload) {
+  if (snapshot === null || snapshot.root !== topLevel) return 'missing';
+  if (snapshot.session === null) return 'sessionless';
+  // snapshot.session is a string here, so an absent or non-string id can
+  // never equal it; an empty one could, and is refused by name.
+  if (payload.session_id === '' || snapshot.session !== payload.session_id) return 'foreign';
+  return 'own';
+}
+
+function blockReason(t, since, inherited, trust) {
   const lines = [t('hook.stop.block_changed', { count: since.length })];
   for (const path of since.slice(0, LISTING_CEILING)) lines.push(`  ${decodeBytes(path)}`);
   if (since.length > LISTING_CEILING) lines.push(t('hook.stop.block_more', { count: since.length - LISTING_CEILING }));
   lines.push(t('hook.stop.block_inherited', { count: inherited }));
-  if (!usable) lines.push(t('hook.stop.block_no_snapshot'));
+  if (trust === 'missing') lines.push(t('hook.stop.block_no_snapshot'));
+  if (trust === 'sessionless') lines.push(t('hook.stop.block_sessionless_snapshot'));
+  if (trust === 'foreign') lines.push(t('hook.stop.block_foreign_snapshot'));
   lines.push(t('hook.stop.block_instruction'));
   return lines.join('\n');
 }

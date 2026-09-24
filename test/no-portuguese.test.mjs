@@ -341,7 +341,10 @@ test('self-check: collectFiles walks a real, previously untracked file the momen
 // of the repository rather than a file in it, and node_modules and
 // .superpowers, which .gitignore keeps out of every commit (.superpowers
 // is the internal working area where review and report documents quote
-// other people's prose verbatim).
+// other people's prose verbatim). Slice E adds .claude/worktrees, Claude
+// Code's default location for an agent's worktree: an untracked, whole
+// second checkout of this repository (its own .superpowers included), not
+// a file of this one. The rest of .claude stays scanned.
 //
 // Final fix round 2 narrowed this. It used to exempt docs/superpowers as
 // well, which IS tracked, and a file there still held an em dash, so the
@@ -351,7 +354,7 @@ test('self-check: collectFiles walks a real, previously untracked file the momen
 // The character itself is never written literally in this file, for the
 // obvious reason.
 const EM_DASH = String.fromCharCode(0x2014);
-const EM_DASH_EXEMPT = ['.git', 'node_modules', '.superpowers'];
+const EM_DASH_EXEMPT = ['.git', 'node_modules', '.superpowers', '.claude/worktrees'];
 
 function collectRepoFiles(base = KIT_ROOT) {
   const files = [];
@@ -407,6 +410,20 @@ test('no file anywhere in this repository contains a literal em dash', () => {
     violations,
     [],
     `em dash (U+2014) found at: ${violations.map((v) => `${v.rel}:${v.line}`).join(', ')}`,
+  );
+});
+
+test('self-check: the em dash scan skips an agent worktree under .claude/worktrees and nothing else under .claude', () => {
+  withTempDir(
+    (dir) => {
+      mkdirSync(join(dir, '.claude', 'worktrees', 'agent-x'), { recursive: true });
+      writeFileSync(join(dir, '.claude', 'worktrees', 'agent-x', 'report.md'), `a${EM_DASH}b\n`);
+      writeFileSync(join(dir, '.claude', 'settings.json'), `{"note": "a${EM_DASH}b"}\n`);
+    },
+    (dir) => {
+      const violations = findEmDashViolations(collectRepoFiles(dir));
+      assert.deepEqual(violations.map((v) => v.rel), ['.claude/settings.json']);
+    },
   );
 });
 

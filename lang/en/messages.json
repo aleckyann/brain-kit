@@ -22,6 +22,8 @@
   "hook.stop.block_more": "  and {count} more",
   "hook.stop.block_inherited": "{count} path(s) that were already there before this session were left out: they are not this session's to propose.",
   "hook.stop.block_no_snapshot": "The session snapshot was missing or unreadable, so every change counts as this session's and earlier work may be included.",
+  "hook.stop.block_foreign_snapshot": "The session snapshot belongs to another session, so every change counts as this session's and earlier or foreign work may be listed: propose only the files this session changed.",
+  "hook.stop.block_sessionless_snapshot": "The session snapshot was taken for no session, so every change counts as this session's and earlier or foreign work may be listed: propose only the files this session changed.",
   "hook.stop.block_instruction": "Before ending: capture what is new in the log, compile it into notes, run brain-kit validate and brain-kit lint, and open the pull request with brain-kit propose --only <paths> (or the curate-session skill). If these changes must not be proposed, say so to the person and stop.",
   "lang.fallback_warning": "[brain-kit] missing translation for \"{key}\" in {lang}; using {reference}.",
   "validate.usage": "Usage: brain-kit validate [dir] [--only-problems] [--json]",

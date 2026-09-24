@@ -22,6 +22,8 @@
   "hook.stop.block_more": "  e mais {count}",
   "hook.stop.block_inherited": "{count} caminho(s) que já estavam lá antes desta sessão ficaram de fora: não cabe a esta sessão propô-los.",
   "hook.stop.block_no_snapshot": "O retrato da sessão estava ausente ou ilegível, então toda mudança conta como desta sessão e trabalho anterior pode ter entrado.",
+  "hook.stop.block_foreign_snapshot": "O retrato da sessão pertence a outra sessão, então toda mudança conta como desta sessão e trabalho anterior ou alheio pode estar na lista: proponha só os arquivos que esta sessão mudou.",
+  "hook.stop.block_sessionless_snapshot": "O retrato da sessão foi tirado sem sessão nenhuma, então toda mudança conta como desta sessão e trabalho anterior ou alheio pode estar na lista: proponha só os arquivos que esta sessão mudou.",
   "hook.stop.block_instruction": "Antes de encerrar: registre o que é novo no log, compile em notas, rode brain-kit validate e brain-kit lint e abra o pull request com brain-kit propose --only <caminhos> (ou a skill curate-session). Se essas mudanças não devem ser propostas, diga isso à pessoa e pare.",
   "lang.fallback_warning": "[brain-kit] tradução ausente para \"{key}\" em {lang}; usando {reference}.",
   "validate.usage": "Uso: brain-kit validate [dir] [--only-problems] [--json]",

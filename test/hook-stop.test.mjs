@@ -235,6 +235,49 @@ test('rung 9: with no snapshot, an unreadable one or one of another tree, every 
   }
 });
 
+test('rung 9: two sessions in one tree: after B starts, A\'s Stop still blocks on A\'s own work and says the snapshot is another session\'s', () => {
+  const fx = makeHookVault();
+  begin(fx, { session: 'A' });
+  writeFileSync(join(fx.root, 'a.md'), 'A wrote this\n');
+  begin(fx, { session: 'B' });
+  const reason = reasonOf(stop(fx, { session_id: 'A' }));
+  assert.match(reason, /^This session changed 1 path\(s\) in the vault:\n {2}a\.md\n/);
+  assert.match(reason, /snapshot belongs to another session, so every change counts as this session's and earlier or foreign work may be listed: propose only the files this session changed/);
+  assert.doesNotMatch(reason, /snapshot was missing/);
+  // B's own Stop trusts B's snapshot: a.md was there before B began.
+  assertReleased(stop(fx, { session_id: 'B' }), /left nothing to propose \(1 path\(s\)/);
+  writeFileSync(join(fx.root, 'b.md'), 'B wrote this\n');
+  const forB = reasonOf(stop(fx, { session_id: 'B' }));
+  assert.match(forB, /^This session changed 1 path\(s\) in the vault:\n {2}b\.md\n1 path\(s\) that were already there/);
+  assert.doesNotMatch(forB, /another session/);
+});
+
+test('rung 9: a Stop with no session id, or a snapshot taken for no session, never trusts the snapshot', () => {
+  const noId = makeHookVault();
+  writeFileSync(join(noId.root, 'foreign.md'), 'x\n');
+  begin(noId, { session: 's1' });
+  for (const payload of [{ session_id: undefined }, { session_id: '' }, { session_id: 7 }]) {
+    const reason = reasonOf(stop(noId, payload));
+    assert.match(reason, /foreign\.md/);
+    assert.match(reason, /belongs to another session/);
+  }
+
+  // An empty id never matches, not even a snapshot that recorded an empty one.
+  writeFileSync(join(noId.root, '.git', GUARD_FILES.SNAPSHOT), JSON.stringify({
+    format: 1, at: '2026-09-24T00:00:00.000Z', root: noId.root, session: '', paths: [Buffer.from('foreign.md').toString('hex')],
+  }));
+  assert.match(reasonOf(stop(noId, { session_id: '' })), /foreign\.md[\s\S]*belongs to another session/);
+
+  const sliceC = makeHookVault();
+  writeFileSync(join(sliceC.root, 'foreign.md'), 'x\n');
+  writeFileSync(join(sliceC.root, '.git', GUARD_FILES.SNAPSHOT), JSON.stringify({
+    format: 1, at: '2026-09-24T00:00:00.000Z', root: sliceC.root, paths: [Buffer.from('foreign.md').toString('hex')],
+  }));
+  const reason = reasonOf(stop(sliceC));
+  assert.match(reason, /^This session changed 1 path\(s\) in the vault:\n {2}foreign\.md\n/);
+  assert.match(reason, /snapshot was taken for no session/);
+});
+
 test('rung 10: a clean tree releases, and so does one with only dirt from before the session, naming the inherited count', () => {
   const clean = makeHookVault();
   begin(clean);
