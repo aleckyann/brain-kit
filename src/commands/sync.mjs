@@ -144,7 +144,11 @@ export async function runSync(argv, io, t, deps = {}) {
   }
 }
 
-function syncUnderLock(root, io, t, env) {
+// The sync itself, for a caller that already holds the vault's lock
+// (`curate`, which takes it for the whole round): runSync is this plus the
+// lock. An unexpected git failure throws; runSync turns it into exit 1
+// (sync.git_failed), and so must any other caller.
+export function syncUnderLock(root, io, t, env) {
   const operation = operationInProgress(root, { env });
   if (operation !== null) {
     io.stderr.write(`${t('sync.operation_in_progress', { operation })}\n`);

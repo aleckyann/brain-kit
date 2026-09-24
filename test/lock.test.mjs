@@ -8,12 +8,13 @@ import {
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { acquireLock, currentIdentity, describeLock, LockHeld } from '../src/guards/lock.mjs';
+import { acquireLock, currentIdentity, describeLock, joinOrAcquire, LockHeld } from '../src/guards/lock.mjs';
 import { GUARD_FILES, GuardError } from '../src/guards/location.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { makeTempDir } from './helpers/tmp.mjs';
 import { git, makeRepo } from './helpers/git-repo.mjs';
+import { makeHookVault, runHookProcess } from './helpers/hook-world.mjs';
 
 const CHILD = fileURLToPath(new URL('./helpers/lock-child.mjs', import.meta.url));
 const WATCHER = fileURLToPath(new URL('./helpers/lock-watcher.mjs', import.meta.url));
@@ -114,7 +115,7 @@ test('acquire records who holds the lock in a 0600 file in the git common direct
   });
   assert.equal(lock.lockPath, lockPath(root));
   assert.deepEqual(describeLock(root), lock.holder);
-  assert.deepEqual(JSON.parse(readFileSync(lockPath(root), 'utf8')), lock.holder);
+  assert.deepEqual(JSON.parse(readFileSync(lockPath(root), 'utf8')), { ...lock.holder, token: lock.token });
   assert.equal(statSync(lockPath(root)).mode & 0o777, 0o600);
   assert.deepEqual(leftovers(root), [], 'no temporary file or marker is left beside the lock');
   lock.release();
@@ -815,3 +816,163 @@ test('unforced races between child processes on one stale lock always produce ex
   }
 });
 
+
+// --- the round's token (phase 2, task 5) ------------------------------------------
+
+const TOKEN_RE = /^[0-9a-f]{32}$/;
+
+function withToken(token) {
+  return { ...process.env, BRAIN_KIT_ROUND_TOKEN: token };
+}
+
+// Every text a caller could print about a holder, in both languages.
+function everythingSaid(error) {
+  return [JSON.stringify(error.holder), error.message, ...Object.values(TRANSLATORS).map((t) => t(error.messageKey, error.params))].join('\n');
+}
+
+test('acquire records a fresh 32-hex token in the lock file and returns it, never in the holder callers see', () => {
+  const root = makeRepo();
+  const lock = acquireLock(root, { command: 'curate', now: NOW });
+  try {
+    assert.match(lock.token, TOKEN_RE);
+    assert.equal(JSON.parse(readFileSync(lockPath(root), 'utf8')).token, lock.token);
+    assert.equal('token' in lock.holder, false);
+    assert.equal('token' in describeLock(root), false);
+    assert.equal(JSON.stringify(describeLock(root)).includes(lock.token), false);
+    const refused = thrown(() => acquireLock(root, { command: 'propose' }));
+    assert.equal(refused.exitCode, EXIT.TEMPFAIL);
+    assert.equal(everythingSaid(refused).includes(lock.token), false, 'LockHeld never carries the token');
+    const joinedRefusal = thrown(() => joinOrAcquire(root, { command: 'propose', env: withToken('0'.repeat(32)) }));
+    assert.equal(everythingSaid(joinedRefusal).includes(lock.token), false);
+  } finally {
+    lock.release();
+  }
+  const second = acquireLock(root, { command: 'curate' });
+  assert.notEqual(second.token, lock.token, 'each acquire draws its own token');
+  second.release();
+});
+
+test('a lock written before the token existed still reads and still refuses; a malformed token makes the lock unreadable', () => {
+  const root = makeRepo();
+  const old = holderLikeMe({ pid: process.pid });
+  writeLock(root, old);
+  assert.equal(describeLock(root).pid, process.pid);
+  assert.equal(describeLock(root).command, 'curate');
+  const refused = thrown(() => acquireLock(root, { command: 'propose' }));
+  assert.equal(refused.holder.pid, process.pid);
+  for (const bad of ['', 'A'.repeat(32), 'a'.repeat(31), 'a'.repeat(33), ' '.repeat(32), 42, ['a'.repeat(32)]]) {
+    writeLock(root, { ...old, token: bad });
+    assert.equal(describeLock(root).unreadable, true, `token ${JSON.stringify(bad)}`);
+  }
+  writeLock(root, { ...old, token: 'a'.repeat(32) });
+  assert.equal(describeLock(root).pid, process.pid);
+  unlinkSync(lockPath(root));
+});
+
+test('joinOrAcquire with the round\'s token joins its live lock: no second lock, the file untouched, and release never removes it', () => {
+  const root = makeRepo();
+  const round = acquireLock(root, { command: 'curate', now: NOW });
+  try {
+    const before = readFileSync(lockPath(root));
+    const inode = statSync(lockPath(root)).ino;
+    const joined = joinOrAcquire(root, { command: 'propose', env: withToken(round.token) });
+    assert.equal(joined.joined, true);
+    assert.equal(joined.token, round.token);
+    assert.equal(joined.lockPath, lockPath(root));
+    assert.equal(joined.holder.pid, process.pid);
+    assert.equal(joined.holder.command, 'curate');
+    assert.equal('token' in joined.holder, false);
+    assert.equal(joined.release(), false);
+    assert.deepEqual(readFileSync(lockPath(root)), before);
+    assert.equal(statSync(lockPath(root)).ino, inode);
+    assert.deepEqual(leftovers(root), []);
+  } finally {
+    assert.equal(round.release(), true, 'the round still owns and releases its lock');
+  }
+});
+
+test('joinOrAcquire falls back to acquiring for a wrong, a malformed or an absent token: refused with 75 while the round holds the lock', () => {
+  const root = makeRepo();
+  const round = acquireLock(root, { command: 'curate', now: NOW });
+  try {
+    const wrong = round.token.replace(/^./, (c) => (c === '0' ? '1' : '0'));
+    const cases = [wrong, round.token.toUpperCase(), round.token.slice(1), `${round.token}0`, ` ${round.token}`, `${round.token}\n`, ''];
+    for (const token of cases) {
+      const error = thrown(() => joinOrAcquire(root, { command: 'propose', env: withToken(token) }));
+      assert.equal(error.exitCode, EXIT.TEMPFAIL, JSON.stringify(token));
+      assert.equal(error.holder.command, 'curate');
+    }
+    const { BRAIN_KIT_ROUND_TOKEN, ...without } = withToken('');
+    assert.equal(thrown(() => joinOrAcquire(root, { command: 'propose', env: without })).exitCode, EXIT.TEMPFAIL);
+  } finally {
+    round.release();
+  }
+});
+
+test('joinOrAcquire never joins an old-format lock, whatever token it is given', () => {
+  const root = makeRepo();
+  writeLock(root, holderLikeMe({ pid: process.pid }));
+  for (const token of ['0'.repeat(32), 'f'.repeat(32)]) {
+    assert.equal(thrown(() => joinOrAcquire(root, { command: 'propose', env: withToken(token) })).exitCode, EXIT.TEMPFAIL);
+  }
+  unlinkSync(lockPath(root));
+});
+
+test('joinOrAcquire with the right token on a stale holder does not join: it reclaims, as any acquire does, and owns what it placed', () => {
+  const root = makeRepo();
+  const token = 'c'.repeat(32);
+  writeLock(root, holderLikeMe({ token }));
+  const got = joinOrAcquire(root, { command: 'propose', env: withToken(token) });
+  assert.equal(got.joined, false);
+  assert.notEqual(got.token, token);
+  const onDisk = JSON.parse(readFileSync(lockPath(root), 'utf8'));
+  assert.equal(onDisk.pid, process.pid);
+  assert.equal(onDisk.command, 'propose');
+  assert.equal(onDisk.token, got.token);
+  assert.equal(got.release(), true);
+  assert.equal(describeLock(root), null);
+});
+
+test('joinOrAcquire with a token and no lock at all acquires, and releases what it placed', () => {
+  const root = makeRepo();
+  const got = joinOrAcquire(root, { command: 'propose', env: withToken('d'.repeat(32)) });
+  assert.equal(got.joined, false);
+  assert.match(got.token, TOKEN_RE);
+  assert.notEqual(got.token, 'd'.repeat(32));
+  assert.equal(describeLock(root).command, 'propose');
+  assert.equal(got.release(), true);
+  assert.equal(describeLock(root), null);
+});
+
+test('the hooks never print the token of a lock that carries one, live or stale', () => {
+  const fx = makeHookVault();
+  const outside = join(fx.base, 'elsewhere');
+  // session-start, then a file of the session's own, then stop: so stop
+  // blocks and names a stale lock, the one place it prints a holder while
+  // blocking.
+  let n = 0;
+  const hooks = () => {
+    const started = runHookProcess('session-start', { session_id: 's1', source: 'startup', cwd: fx.root }, { env: fx.env, cwd: outside });
+    n += 1;
+    writeFileSync(join(fx.root, `mine-${n}.md`), 'x\n');
+    const stopped = runHookProcess('stop', { session_id: 's1', hook_event_name: 'Stop', stop_hook_active: false, cwd: fx.root }, { env: fx.env, cwd: outside });
+    return [started, stopped];
+  };
+  const lock = acquireLock(fx.root, { command: 'curate', env: fx.env });
+  try {
+    for (const r of hooks()) {
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(`${r.stdout}${r.stderr}`, /curate/);
+      assert.equal(`${r.stdout}${r.stderr}`.includes(lock.token), false);
+    }
+  } finally {
+    lock.release();
+  }
+  const token = 'e'.repeat(32);
+  writeFileSync(join(fx.root, '.git', GUARD_FILES.LOCK), `${JSON.stringify(holderLikeMe({ token }))}\n`);
+  for (const r of hooks()) {
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(`${r.stdout}${r.stderr}`, /no longer running/);
+    assert.equal(`${r.stdout}${r.stderr}`.includes(token), false);
+  }
+});

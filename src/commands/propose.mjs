@@ -97,6 +97,24 @@
 //      the record stay in the git directory for it. Confirmed, both are
 //      removed and the run exits 0.
 //
+// INSIDE A ROUND. The lock is taken with joinOrAcquire: a scheduled round
+// holds the vault's lock and hands its token to the model as
+// BRAIN_KIT_ROUND_TOKEN, and the `propose` the model runs joins that lock
+// instead of being refused by it (src/guards/lock.mjs says when a join is
+// allowed). Joined, and only once a commit is proved on at least one push
+// url (the pull request opened, or the run degraded with the commit held
+// there), the run writes the round record
+// `<git dir>/brain-kit-round-<token>.json`, atomically and private to its
+// owner: `{ format: 1, opened, remote, branch, commit, paths }`, `paths`
+// being exactly the vault-relative paths the commit changed. The round
+// reads it to bring those files back to the default branch's content, so
+// the next round does not stop on its own proposal as a dirty tree. A
+// pushed commit no url could be asked about writes no record: the round
+// then leaves the files alone and says so, the safe direction, since they
+// may be the only copy. A record that cannot be written is exit 3, said
+// with its directory and the error code. Not joined, nothing is written
+// and nothing else changes. The token is never printed.
+//
 // `gh` runs with the caller's git environment removed, GIT_TERMINAL_PROMPT=0
 // and GH_PROMPT_DISABLED=1.
 //
@@ -109,7 +127,10 @@
 //
 // `deps` hands in the environment, the working directory, the clock, the
 // temporary directory and walkVault, for the tests and for src/cli.mjs.
-import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import {
+  closeSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { EXIT } from '../exit-codes.mjs';
@@ -119,8 +140,8 @@ import { decodeBytes } from '../io.mjs';
 import { run } from '../exec.mjs';
 import { KIT_ROOT } from '../version.mjs';
 import { PR_BODY_PATH } from '../init/skeleton.mjs';
-import { acquireLock } from '../guards/lock.mjs';
-import { GuardError } from '../guards/location.mjs';
+import { joinOrAcquire } from '../guards/lock.mjs';
+import { GuardError, locateRepository } from '../guards/location.mjs';
 import { readSnapshot, splitDirty } from '../guards/snapshot.mjs';
 import {
   currentBranch, defaultBranch, defaultBranchUpstream, dirtyPathBytes, fetch, gitEnv, isBranchName, operationInProgress, resolveCommit, runGit,
@@ -140,6 +161,15 @@ const GIT_OPTS = { maxBuffer: 256 * 1024 * 1024 };
 export const PROPOSALS_DIR = 'brain-kit-proposals';
 const MAX_SUFFIX = 9;
 const GITLINK_MODE = '160000';
+const ROUND_RECORD_FORMAT = 1;
+
+// Where a joined run records what it pushed for the round holding the lock:
+// in the working tree's own git directory, named by the round's token.
+const roundRecordName = (token) => `brain-kit-round-${token}.json`;
+
+export function roundRecordPath(root, token, env = process.env) {
+  return join(locateRepository(root, env).gitDir, roundRecordName(token));
+}
 
 class Refusal extends Error {
   constructor(exitCode, text) {
@@ -307,7 +337,7 @@ export async function runPropose(argv, io, t, deps = {}) {
 
   let lock;
   try {
-    lock = acquireLock(root, { command: 'propose', env });
+    lock = joinOrAcquire(root, { command: 'propose', env });
   } catch (error) {
     if (error instanceof GuardError) {
       io.stderr.write(`${t(error.messageKey, error.params)}\n`);
@@ -320,7 +350,8 @@ export async function runPropose(argv, io, t, deps = {}) {
   // directory and are removed unless the run ends degraded.
   const scratch = { work: null, kept: [], keep: false };
   try {
-    return await proposeUnderLock({ root, cwd, config, parsed, io, t, env, now, walkVault, scratch, temp });
+    const round = lock.joined ? lock.token : null;
+    return await proposeUnderLock({ root, cwd, config, parsed, io, t, env, now, walkVault, scratch, temp, round });
   } catch (error) {
     if (error instanceof Refusal) {
       io.stderr.write(`${error.message}\n`);
@@ -342,7 +373,7 @@ export async function runPropose(argv, io, t, deps = {}) {
   }
 }
 
-async function proposeUnderLock({ root, cwd, config, parsed, io, t, env, now, walkVault, scratch, temp }) {
+async function proposeUnderLock({ root, cwd, config, parsed, io, t, env, now, walkVault, scratch, temp, round }) {
   const operation = operationInProgress(root, { env });
   if (operation !== null) throw new Refusal(EXIT.TEMPFAIL, t('propose.operation_in_progress', { operation }));
   const prefix = runGit(root, ['rev-parse', '--show-prefix'], { env });
@@ -417,10 +448,40 @@ async function proposeUnderLock({ root, cwd, config, parsed, io, t, env, now, wa
     record(command);
     scratch.keep = true;
     io.stderr.write(`${t('propose.partial_publish', { branch, held: published.held.length > 0 ? published.held : '-', missing, command })}\n`);
+    if (round !== null && published.held.length > 0) recordRound(root, io, t, env, round, { opened: false, remote, branch, commit, paths: names });
     return EXIT.DEGRADED;
   }
   record(createCommand);
-  return openPullRequest(root, io, t, env, { program, base, branch, title, bodyFile, scratch, count: names.length, origin, createCommand });
+  const code = openPullRequest(root, io, t, env, { program, base, branch, title, bodyFile, scratch, count: names.length, origin, createCommand });
+  if (round !== null && !recordRound(root, io, t, env, round, { opened: code === EXIT.OK, remote, branch, commit, paths: names })) return EXIT.DEGRADED;
+  return code;
+}
+
+// The round record, written in full to a private file created exclusively
+// beside it and renamed into place, so the round never reads half of one.
+// True when it is in place. A failure is said with the directory and the
+// error code only, never the error's own text, which names the file and so
+// the token; the run then ends degraded (the commit is pushed, the round
+// will find its files still dirty and report them).
+function recordRound(root, io, t, env, token, { opened, remote, branch, commit, paths }) {
+  const dir = locateRepository(root, env).gitDir;
+  const file = join(dir, roundRecordName(token));
+  const text = `${JSON.stringify({ format: ROUND_RECORD_FORMAT, opened, remote, branch, commit, paths }, null, 2)}\n`;
+  const tmp = `${file}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+  try {
+    const fd = openSync(tmp, 'wx', 0o600);
+    try {
+      writeSync(fd, text);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, file);
+    return true;
+  } catch (error) {
+    rmSync(tmp, { force: true });
+    io.stderr.write(`${t('propose.round_record_failed', { branch, dir, code: typeof error.code === 'string' ? error.code : 'error' })}\n`);
+    return false;
+  }
 }
 
 // A proposal an earlier run published and never saw confirmed: removed

@@ -12,10 +12,10 @@ import { spawn, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runSync } from '../src/commands/sync.mjs';
+import { runSync, syncUnderLock } from '../src/commands/sync.mjs';
 import { main } from '../src/cli.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
-import { currentIdentity, describeLock } from '../src/guards/lock.mjs';
+import { acquireLock, currentIdentity, describeLock } from '../src/guards/lock.mjs';
 import { GUARD_FILES } from '../src/guards/location.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { CONFIG_FILENAME } from '../src/config.mjs';
@@ -805,4 +805,46 @@ test('a staged rename is a dirty tree: 75 naming both paths, not a git failure',
   assert.equal(run.code, EXIT.TEMPFAIL);
   assert.equal(run.stderr, line('sync.dirty', { files: [note, 'moved.md'] }));
   assertUnlocked(world);
+});
+
+// --- syncUnderLock, for a caller that already holds the lock (phase 2, task 5) ----
+
+function underLock(world, env = world.env) {
+  const f = fakeIo();
+  const code = syncUnderLock(world.vault, f.io, t, env);
+  return { code, stdout: f.stdout(), stderr: f.stderr() };
+}
+
+test('syncUnderLock is exported and, run by a caller holding the lock, does what runSync does, leaving the caller\'s lock alone', async () => {
+  const world = makeWorld();
+  const from = world.sha('main');
+  world.publish(2);
+  const tip = world.sha('main', world.elsewhere);
+  const round = acquireLock(world.vault, { command: 'curate', env: world.env });
+  try {
+    const lockFile = join(world.vault, '.git', GUARD_FILES.LOCK);
+    const lockBytes = readFileSync(lockFile);
+    const run = underLock(world);
+    assert.equal(run.code, EXIT.OK, run.stderr);
+    assert.equal(run.stdout, line('sync.fast_forwarded', { branch: 'main', upstream: 'origin/main', behind: 2, from: short(from), to: short(tip) }));
+    assert.equal(run.stderr, '');
+    assert.equal(world.sha('main'), tip);
+    assert.equal(git(world.vault, ['status', '--porcelain']), '');
+    assert.deepEqual(readFileSync(lockFile), lockBytes, 'the caller\'s lock is untouched');
+    // runSync, beside it, is refused by that same lock: the only difference.
+    assert.equal((await sync(world)).code, EXIT.TEMPFAIL);
+    assert.equal(describeLock(world.vault, { env: world.env }).command, 'curate');
+  } finally {
+    assert.equal(round.release(), true);
+  }
+});
+
+test('syncUnderLock refuses a dirty tree with the same words and exit as runSync', async () => {
+  const world = makeWorld();
+  world.publish(1);
+  writeFileSync(join(world.vault, 'draft.md'), 'draft\n');
+  const viaRun = await sync(world);
+  const viaUnder = underLock(world);
+  assert.equal(viaUnder.code, EXIT.TEMPFAIL);
+  assert.deepEqual(viaUnder, viaRun);
 });

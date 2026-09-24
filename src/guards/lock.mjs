@@ -77,6 +77,23 @@
 // down; the window is a handful of system calls long, and a refusal is the
 // safe direction.
 //
+// THE ROUND'S TOKEN. Every acquire also records a token in the holder: 32
+// lowercase hex characters from randomBytes(16), returned to the acquirer
+// and never printed, logged or put in a message (describeHolder, LockHeld's
+// holder and describeLock all leave it out; only the lock file, private to
+// its owner, carries it). A scheduled round hands it to the model it runs
+// as BRAIN_KIT_ROUND_TOKEN, and the one command the round lets the model
+// run that takes the lock, `propose`, joins the round's lock with
+// joinOrAcquire instead of being refused by it: the lock is held by the
+// round for the round's own work, and the round's `propose` is part of it.
+// A join needs all of: a token in the environment of the right shape, a
+// lock file there, its holder's token equal to it, and that holder not
+// stale by the rule above. Anything else acquires as any command does, so
+// a token that matches nothing is ignored, never trusted: it can only fail
+// to open a door, never open one. A lock written before the token existed
+// still reads (the token is optional) and is never joinable. A joined
+// command never releases the lock; the round does.
+//
 // LEFTOVERS. A process killed while holding a private temporary file leaves
 // it behind. Each acquire looks in the git common directory and in its own
 // working tree's git directory (where that tree's snapshot is written), and
@@ -100,6 +117,7 @@ import { GUARD_FILES, GuardError, locateRepository } from './location.mjs';
 const MAX_ATTEMPTS = 8;
 
 const ORPHAN_AGE_MS = 60 * 60 * 1000;
+const TOKEN_SHAPE = /^[0-9a-f]{32}$/;
 const LOCK_PRIVATE = /^brain-kit\.lock(?:\.reclaim)?\.\d+\.[0-9a-f]{12}\.tmp$/;
 const SNAPSHOT_PRIVATE = /^brain-kit-snapshot\.json\.\d+\.[0-9a-f]{12}\.tmp$/;
 
@@ -155,11 +173,18 @@ function describeHolder(holder, lockPath) {
   };
 }
 
+// The holder as callers see it: everything but the token, which only the
+// lock file and the acquirer ever carry.
+function publicHolder(holder) {
+  const { token, ...rest } = holder;
+  return rest;
+}
+
 export class LockHeld extends GuardError {
   constructor(holder, lockPath) {
     super({ code: 'LOCK_HELD', exitCode: EXIT.TEMPFAIL, ...describeHolder(holder, lockPath) });
     this.name = 'LockHeld';
-    this.holder = holder;
+    this.holder = publicHolder(holder);
     this.lockPath = lockPath;
     this.blockedBy = null;
   }
@@ -190,7 +215,7 @@ function noHardLinks(dir) {
 }
 
 const UNREADABLE = Object.freeze({
-  pid: null, host: null, command: null, startedAt: null, machineId: null, bootId: null, pidNamespace: null, unreadable: true,
+  pid: null, host: null, command: null, startedAt: null, machineId: null, bootId: null, pidNamespace: null, token: null, unreadable: true,
 });
 
 // An identity field is optional: absent means the writer's platform did
@@ -219,7 +244,13 @@ function parseHolder(raw) {
   const bootId = optionalIdentity(value.bootId);
   const pidNamespace = optionalIdentity(value.pidNamespace);
   if (!machineId.ok || !bootId.ok || !pidNamespace.ok) return UNREADABLE;
-  return { pid, host, command, startedAt, machineId: machineId.value, bootId: bootId.value, pidNamespace: pidNamespace.value };
+  // The token is optional (a lock from before it existed has none); when
+  // present it must have its exact shape, or the lock is unreadable.
+  const token = value.token === undefined || value.token === null ? null : value.token;
+  if (token !== null && (typeof token !== 'string' || !TOKEN_SHAPE.test(token))) return UNREADABLE;
+  return {
+    pid, host, command, startedAt, machineId: machineId.value, bootId: bootId.value, pidNamespace: pidNamespace.value, token,
+  };
 }
 
 // What is at `path` right now: its raw text, its inode, its modification
@@ -402,6 +433,7 @@ export function acquireLock(root, { command, now = new Date(), env = process.env
     machineId: identity.machineId,
     bootId: identity.bootId,
     pidNamespace: identity.pidNamespace,
+    token: randomBytes(16).toString('hex'),
   };
   const text = `${JSON.stringify(holder)}\n`;
   const ctx = { dir: commonDir, lockPath, markerPath: join(commonDir, GUARD_FILES.LOCK_RECLAIM), text, onStage, me: identity, link };
@@ -419,9 +451,28 @@ export function acquireLock(root, { command, now = new Date(), env = process.env
       ino = reclaim(ctx, seen);
       if (ino === RETRY) continue;
     }
-    return { holder, lockPath, release: releaser(lockPath, text, ino) };
+    return { holder: publicHolder(holder), lockPath, release: releaser(lockPath, text, ino), token: holder.token };
   }
   throw new LockHeld(lastSeen, lockPath);
+}
+
+// The lock for a command a round may run inside itself (`propose`): joined
+// when env.BRAIN_KIT_ROUND_TOKEN has the token's shape, a lock file is
+// there, its holder's token equals it and that holder is not stale; then
+// `{ joined: true, holder, lockPath, token, release }` where release never
+// removes anything (the round releases its own lock). In every other case
+// exactly acquireLock, with `joined: false`. See the header.
+export function joinOrAcquire(root, { command, now = new Date(), env = process.env } = {}, deps = {}) {
+  const wanted = env.BRAIN_KIT_ROUND_TOKEN;
+  if (typeof wanted === 'string' && TOKEN_SHAPE.test(wanted)) {
+    const { commonDir } = locateRepository(root, env);
+    const lockPath = join(commonDir, GUARD_FILES.LOCK);
+    const seen = readLockFile(lockPath);
+    if (seen !== null && seen.holder.token === wanted && !isStale(seen.holder, deps.identity ?? currentIdentity())) {
+      return { joined: true, holder: publicHolder(seen.holder), lockPath, token: wanted, release: () => false };
+    }
+  }
+  return { joined: false, ...acquireLock(root, { command, now, env }, deps) };
 }
 
 // Release removes the lock only while it is still the one this acquire
@@ -446,5 +497,5 @@ function releaser(lockPath, text, ino) {
 export function describeLock(root, { env = process.env } = {}) {
   const { commonDir } = locateRepository(root, env);
   const seen = readLockFile(join(commonDir, GUARD_FILES.LOCK));
-  return seen === null ? null : seen.holder;
+  return seen === null ? null : publicHolder(seen.holder);
 }

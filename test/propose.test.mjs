@@ -10,7 +10,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { runPropose } from '../src/commands/propose.mjs';
 import { main } from '../src/cli.mjs';
@@ -1161,4 +1161,214 @@ process.exit(r.status ?? 1);
   assert.equal(world.remoteSha(`refs/heads/${BRANCH}`), null, 'nothing was pushed: the check fired before any push attempt');
   assert.deepEqual(world.ghCalls(), [], 'gh was never asked either');
   assert.deepEqual(fingerprint(world.vault), before, 'HEAD, the index and the working tree are untouched');
+});
+
+// --- inside a round: joining its lock, and the round record (phase 2, task 5) -----
+
+const roundRecord = (world, token) => join(world.vault, '.git', `brain-kit-round-${token}.json`);
+
+// Every round record, and every temporary file of one, in the git directory.
+function roundFiles(world) {
+  return readdirSync(join(world.vault, '.git')).filter((name) => name.startsWith('brain-kit-round-'));
+}
+
+function holdAsRound(world) {
+  return acquireLock(world.vault, { command: 'curate', env: world.env, now: NOW });
+}
+
+function readRecord(world, token) {
+  return JSON.parse(readFileSync(roundRecord(world, token), 'utf8'));
+}
+
+test('inside a round: propose joins the round\'s lock, the lock is byte-identical afterwards, and the record names exactly the commit\'s paths', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  world.write('notes/b.md', note('B'));
+  world.write('notes/c.md', note('C'));
+  const round = holdAsRound(world);
+  try {
+    const lockFile = join(world.vault, '.git', GUARD_FILES.LOCK);
+    const before = readFileSync(lockFile);
+    const inode = statSync(lockFile).ino;
+    const run = await propose(world, ['A and B', '--only', 'notes/b.md', 'notes/a.md'], { env: { ...world.env, BRAIN_KIT_ROUND_TOKEN: round.token } });
+    assert.equal(run.code, EXIT.OK, run.stderr);
+    assert.equal(run.stdout, line('propose.opened', { url: PR_URL, base: 'main', branch: BRANCH, count: 2, origin: 'main' }));
+    assert.equal(`${run.stdout}${run.stderr}`.includes(round.token), false, 'the token is never printed');
+    assert.deepEqual(readFileSync(lockFile), before, 'the round\'s lock is untouched');
+    assert.equal(statSync(lockFile).ino, inode);
+    const commit = world.remoteSha(`refs/heads/${BRANCH}`);
+    assert.deepEqual(readRecord(world, round.token), {
+      format: 1, opened: true, remote: 'origin', branch: BRANCH, commit, paths: ['notes/a.md', 'notes/b.md'],
+    });
+    assert.deepEqual(world.changedIn(commit).map((entry) => entry.split('\t')[1]), readRecord(world, round.token).paths);
+    assert.equal(statSync(roundRecord(world, round.token)).mode & 0o777, 0o600);
+    assert.deepEqual(roundFiles(world), [basename(roundRecord(world, round.token))], 'no temporary file is left beside the record');
+  } finally {
+    assert.equal(round.release(), true, 'the round still owns its lock');
+  }
+});
+
+test('inside a round: a pull request that cannot be opened still records the pushed commit, with opened false', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  const round = holdAsRound(world);
+  try {
+    const run = await propose(world, ['A', '--only', 'notes/a.md'], { env: { ...world.env, FAKE_GH_MODE: 'fail', BRAIN_KIT_ROUND_TOKEN: round.token } });
+    assert.equal(run.code, EXIT.DEGRADED, run.stderr);
+    assert.equal(`${run.stdout}${run.stderr}`.includes(round.token), false);
+    assert.deepEqual(readRecord(world, round.token), {
+      format: 1, opened: false, remote: 'origin', branch: BRANCH, commit: world.remoteSha(`refs/heads/${BRANCH}`), paths: ['notes/a.md'],
+    });
+  } finally {
+    round.release();
+  }
+});
+
+test('inside a round: a partial publish records the commit one url holds, with opened false', async () => {
+  const world = makeProposeWorld();
+  const first = bareCloneOf(world, 'first.git');
+  const second = bareCloneOf(world, 'second.git');
+  git(world.vault, ['config', '--add', 'remote.origin.pushurl', first]);
+  git(world.vault, ['config', '--add', 'remote.origin.pushurl', second]);
+  writeFileSync(join(second, 'hooks', 'pre-receive'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  world.write('notes/a.md', note('A'));
+  const round = holdAsRound(world);
+  try {
+    const run = await propose(world, ['A', '--only', 'notes/a.md'], { env: { ...world.env, BRAIN_KIT_ROUND_TOKEN: round.token } });
+    assert.equal(run.code, EXIT.DEGRADED, run.stderr);
+    assert.deepEqual(readRecord(world, round.token), {
+      format: 1, opened: false, remote: 'origin', branch: BRANCH, commit: git(first, ['rev-parse', BRANCH]).trim(), paths: ['notes/a.md'],
+    });
+  } finally {
+    round.release();
+  }
+});
+
+test('inside a round: nothing pushed, or a push no url can confirm, writes no record', async () => {
+  // The vault's pre-push gate refuses: nothing published.
+  const refusing = makeProposeWorld();
+  writeFileSync(join(refusing.vault, '.git', 'hooks', 'pre-push'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  refusing.write('notes/a.md', note('A'));
+  let round = holdAsRound(refusing);
+  try {
+    const run = await propose(refusing, ['A', '--only', 'notes/a.md'], { env: { ...refusing.env, BRAIN_KIT_ROUND_TOKEN: round.token } });
+    assert.equal(run.code, EXIT.FAILURE);
+    assert.deepEqual(roundFiles(refusing), []);
+  } finally {
+    round.release();
+  }
+  // The destination stops answering after the push: the commit may be
+  // there, and nothing proves it, so the files must stay for a person.
+  const silent = makeProposeWorld();
+  silent.write('notes/a.md', note('A'));
+  const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8', env: silent.env }).stdout.trim();
+  const marker = join(silent.base, 'pushed-marker');
+  writeFileSync(join(silent.base, 'fakebin', 'git'), [
+    '#!/bin/sh',
+    `if [ "$1" = "push" ]; then '${realGit}' "$@"; s=$?; touch '${marker}'; exit $s; fi`,
+    `if [ "$1" = "ls-remote" ] && [ -e '${marker}' ]; then echo "fatal: the remote hung up" >&2; exit 128; fi`,
+    `exec '${realGit}' "$@"`, '',
+  ].join('\n'), { mode: 0o755 });
+  round = holdAsRound(silent);
+  try {
+    const run = await propose(silent, ['A', '--only', 'notes/a.md'], { env: { ...silent.env, BRAIN_KIT_ROUND_TOKEN: round.token } });
+    assert.equal(run.code, EXIT.DEGRADED, run.stderr);
+    assert.deepEqual(roundFiles(silent), []);
+  } finally {
+    round.release();
+  }
+  // --dry pushes nothing.
+  const dry = makeProposeWorld();
+  dry.write('notes/a.md', note('A'));
+  round = holdAsRound(dry);
+  try {
+    const run = await propose(dry, ['A', '--only', 'notes/a.md', '--dry'], { env: { ...dry.env, BRAIN_KIT_ROUND_TOKEN: round.token } });
+    assert.equal(run.code, EXIT.OK, run.stderr);
+    assert.deepEqual(roundFiles(dry), []);
+  } finally {
+    round.release();
+  }
+});
+
+test('not joined: a token that matches nothing is ignored, propose takes and releases its own lock, and no record is written', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  const token = '0123456789abcdef0123456789abcdef';
+  const run = await propose(world, ['A', '--only', 'notes/a.md'], { env: { ...world.env, BRAIN_KIT_ROUND_TOKEN: token } });
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.deepEqual(roundFiles(world), []);
+  assert.equal(existsSync(join(world.vault, '.git', GUARD_FILES.LOCK)), false);
+});
+
+test('not joined: the right token on a round that died reclaims its lock as any propose would, and writes no record', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  const token = 'abcdef0123456789abcdef0123456789';
+  const dead = spawnSync(process.execPath, ['-e', '']).pid;
+  const me = currentIdentity();
+  writeFileSync(join(world.vault, '.git', GUARD_FILES.LOCK), `${JSON.stringify({
+    pid: dead, host: me.host, command: 'curate', startedAt: '2026-09-23T03:00:00.000Z', machineId: me.machineId, bootId: me.bootId, pidNamespace: me.pidNamespace, token,
+  })}\n`);
+  const run = await propose(world, ['A', '--only', 'notes/a.md'], { env: { ...world.env, BRAIN_KIT_ROUND_TOKEN: token } });
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.deepEqual(roundFiles(world), []);
+  assert.equal(existsSync(join(world.vault, '.git', GUARD_FILES.LOCK)), false, 'reclaimed, then released');
+});
+
+test('refused while a round holds the lock: a wrong or malformed token is exit 75 naming the round, and the round\'s token is never printed', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  const round = holdAsRound(world);
+  try {
+    const me = currentIdentity();
+    for (const token of [undefined, 'f'.repeat(32), round.token.toUpperCase(), round.token.slice(0, 31)]) {
+      const env = token === undefined ? world.env : { ...world.env, BRAIN_KIT_ROUND_TOKEN: token };
+      const run = await propose(world, ['A', '--only', 'notes/a.md'], { env });
+      assert.equal(run.code, EXIT.TEMPFAIL, `${token}: ${run.stderr}`);
+      assert.equal(run.stderr, line('lock.held', { pid: process.pid, host: me.host, command: 'curate', startedAt: NOW.toISOString() }));
+      assert.equal(`${run.stdout}${run.stderr}`.includes(round.token), false);
+    }
+    assert.deepEqual(world.ghCalls(), []);
+    assert.deepEqual(roundFiles(world), []);
+  } finally {
+    round.release();
+  }
+});
+
+test('not joined: a pushed commit writes no round record, whether the pull request opened, failed or the publish was partial', async () => {
+  const token = '0123456789abcdef0123456789abcdef';
+  for (const mode of ['ok', 'fail']) {
+    const world = makeProposeWorld();
+    world.write('notes/a.md', note('A'));
+    const run = await propose(world, ['A', '--only', 'notes/a.md'], { env: { ...world.env, FAKE_GH_MODE: mode, BRAIN_KIT_ROUND_TOKEN: token } });
+    assert.equal(run.code, mode === 'ok' ? EXIT.OK : EXIT.DEGRADED, run.stderr);
+    assert.deepEqual(roundFiles(world), [], mode);
+  }
+  const world = makeProposeWorld();
+  const first = bareCloneOf(world, 'first.git');
+  const second = bareCloneOf(world, 'second.git');
+  git(world.vault, ['config', '--add', 'remote.origin.pushurl', first]);
+  git(world.vault, ['config', '--add', 'remote.origin.pushurl', second]);
+  writeFileSync(join(second, 'hooks', 'pre-receive'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  world.write('notes/a.md', note('A'));
+  const run = await propose(world, ['A', '--only', 'notes/a.md'], { env: { ...world.env, BRAIN_KIT_ROUND_TOKEN: token } });
+  assert.equal(run.code, EXIT.DEGRADED, run.stderr);
+  assert.deepEqual(roundFiles(world), [], 'partial');
+});
+
+test('inside a round: a record that cannot be written is exit 3 naming the directory and the error code, never the file, so never the token', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  const round = holdAsRound(world);
+  try {
+    mkdirSync(roundRecord(world, round.token));
+    const run = await propose(world, ['A', '--only', 'notes/a.md'], { env: { ...world.env, BRAIN_KIT_ROUND_TOKEN: round.token } });
+    assert.equal(run.code, EXIT.DEGRADED, run.stderr);
+    assert.equal(run.stderr, line('propose.round_record_failed', { branch: BRANCH, dir: join(world.vault, '.git'), code: 'EISDIR' }));
+    assert.equal(`${run.stdout}${run.stderr}`.includes(round.token), false);
+    assert.ok(world.remoteSha(`refs/heads/${BRANCH}`), 'the commit is pushed');
+    assert.deepEqual(roundFiles(world), [basename(roundRecord(world, round.token))], 'only the planted directory: no temporary file left');
+  } finally {
+    round.release();
+  }
 });
