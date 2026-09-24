@@ -150,6 +150,14 @@ function markdownCount(lang, { dotEntries = false } = {}) {
   return listFiles(skeletonDir(lang)).filter((file) => file.endsWith('.md') && (dotEntries || !hasDotSegment(file))).length;
 }
 
+// Every file the skeleton ships, any extension, dot-directories included
+// (.brain-kit/pr-body.md, .claude/settings.json): what the secrets rule
+// reads once it is handed a git listing with nothing ignored, which is
+// exactly what `materialise` builds (no .gitignore is copied).
+function skeletonFileCount(lang) {
+  return listFiles(skeletonDir(lang)).length;
+}
+
 for (const lang of LANGS) {
   test(`${lang}: the skeleton passes validate with no finding of any tier`, () => {
     const dir = materialise(lang, completedConfig(lang));
@@ -175,10 +183,11 @@ for (const lang of LANGS) {
     assert.deepEqual(report.skipped, []);
     assert.equal(report.scope.files, markdownCount(lang), 'lint must have judged every note of the skeleton');
     assert.equal(report.secrets.ran, true);
-    // Every skeleton file plus the configuration itself: the configuration
-    // is scanned against the credential shapes its own
-    // privacy.secret_patterns lists, and must not flag itself.
-    assert.equal(report.secrets.scanned, markdownCount(lang, { dotEntries: true }) + 1);
+    // Every skeleton file (any extension, dot-directories included) plus
+    // the configuration itself: the configuration is scanned against the
+    // credential shapes its own privacy.secret_patterns lists, and must
+    // not flag itself.
+    assert.equal(report.secrets.scanned, skeletonFileCount(lang) + 1);
   });
 
   test(`${lang}: a broken copy of the skeleton fails both commands, so the clean runs above can fail`, () => {

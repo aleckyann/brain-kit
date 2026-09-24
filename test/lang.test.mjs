@@ -110,6 +110,9 @@ const SKELETON_ROLES = Object.freeze({
   // The kit's own machinery, the same folder in every language: the pull
   // request body template propose renders.
   kit: { en: '.brain-kit', 'pt-BR': '.brain-kit' },
+  // The documental Claude Code settings, same folder and file in every
+  // language: no vocabulary of the vault's own to translate.
+  claude: { en: '.claude', 'pt-BR': '.claude' },
 });
 
 function skeletonFiles(lang, rel = '') {

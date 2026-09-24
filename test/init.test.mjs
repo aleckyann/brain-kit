@@ -39,7 +39,9 @@ import { hasDotSegment, walkVault } from '../src/vault.mjs';
 import { splitFrontmatter, readMapping } from '../src/frontmatter.mjs';
 import { completeDefaults } from '../src/init/config.mjs';
 import { resolveClaudeBin, defaultAnswers, invalidAnswer } from '../src/init/answers.mjs';
-import { MANAGED_SKELETON_FILES, HOOK_PATH, PR_BODY_PATH, isInside, stampGenerated, writeVault } from '../src/init/skeleton.mjs';
+import {
+  MANAGED_SKELETON_FILES, HOOK_PATH, PR_BODY_PATH, CLAUDE_SETTINGS_PATH, isInside, stampGenerated, writeVault,
+} from '../src/init/skeleton.mjs';
 import { runInit, worseExit } from '../src/commands/init.mjs';
 import { MANIFEST_PATH, readManifest } from '../src/manifest.mjs';
 import { makeTempDir } from './helpers/tmp.mjs';
@@ -235,6 +237,16 @@ for (const lang of ['en', 'pt-BR']) {
     // vault's language (slice C, task 3).
     assert.equal(byPath.get(PR_BODY_PATH)?.class, 'managed');
     assert.equal(readFileSync(join(vault, PR_BODY_PATH), 'utf8'), readFileSync(join(KIT_ROOT, 'lang', lang, 'vault', PR_BODY_PATH), 'utf8'));
+
+    // The documental Claude Code settings: written, managed, identical to
+    // this kit's copy, and it parses as JSON with the marketplace and
+    // plugin it exists to point at.
+    assert.equal(byPath.get(CLAUDE_SETTINGS_PATH)?.class, 'managed');
+    const claudeSettingsText = readFileSync(join(vault, CLAUDE_SETTINGS_PATH), 'utf8');
+    assert.equal(claudeSettingsText, readFileSync(join(KIT_ROOT, 'lang', lang, 'vault', CLAUDE_SETTINGS_PATH), 'utf8'));
+    const claudeSettings = JSON.parse(claudeSettingsText);
+    assert.deepEqual(claudeSettings.enabledPlugins, { 'brain-kit@brain-kit': true });
+    assert.equal(claudeSettings.extraKnownMarketplaces['brain-kit'].source.repo, 'aleckyann/brain-kit');
     for (const file of skeletonFiles(lang)) {
       if (!MANAGED_SKELETON_FILES.includes(file)) assert.equal(byPath.get(file)?.class, 'seeded', file);
     }

@@ -1,0 +1,10 @@
+{
+  "extraKnownMarketplaces": {
+    "brain-kit": {
+      "source": { "source": "github", "repo": "aleckyann/brain-kit" }
+    }
+  },
+  "enabledPlugins": {
+    "brain-kit@brain-kit": true
+  }
+}

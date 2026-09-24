@@ -49,7 +49,7 @@ import { KIT_ROOT } from '../src/version.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { splitFrontmatter, readMapping } from '../src/frontmatter.mjs';
-import { HOOK_PATH, MANAGED_SKELETON_FILES, gitignoreText, stampGenerated } from '../src/init/skeleton.mjs';
+import { HOOK_PATH, CLAUDE_SETTINGS_PATH, MANAGED_SKELETON_FILES, gitignoreText, stampGenerated } from '../src/init/skeleton.mjs';
 import { GATE_LINE, installGate } from '../src/init/gate.mjs';
 import { MANIFEST_PATH, readManifest } from '../src/manifest.mjs';
 import { runUpdate } from '../src/commands/update.mjs';
@@ -138,7 +138,9 @@ function makeOlder(vault, path) {
   const current = readFileSync(abs, 'utf8');
   const older = path === HOOK_PATH
     ? current.replace('\n', '\n# an older version of this hook\n')
-    : current.replace(/^(title: .*)$/m, '$1 (an older wording)');
+    : path === CLAUDE_SETTINGS_PATH
+      ? current.replace('"aleckyann/brain-kit"', '"aleckyann/brain-kit-old"')
+      : current.replace(/^(title: .*)$/m, '$1 (an older wording)');
   assert.notEqual(older, current, 'the fixture must actually change the file');
   writeFileSync(abs, older);
   setManifestHash(vault, path, sha(Buffer.from(older)));
@@ -228,6 +230,53 @@ test('an untouched hook from an older kit is replaced by the template, byte for 
   assert.deepEqual(readFileSync(hook), readFileSync(TEMPLATE_HOOK));
   assert.equal(statSync(hook).mode & 0o777, 0o755);
   assert.equal(manifestEntry(v.vault, HOOK_PATH).sha256, sha(readFileSync(TEMPLATE_HOOK)));
+});
+
+test('an untouched .claude/settings.json from an older kit is rewritten with this kit\'s version, and its manifest hash updated', () => {
+  const v = initVault();
+  makeOlder(v.vault, CLAUDE_SETTINGS_PATH);
+  const before = snapshot(v.vault);
+  const r = update(v);
+  assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
+  says(r, 'update.refreshed', { file: CLAUDE_SETTINGS_PATH });
+
+  const abs = join(v.vault, CLAUDE_SETTINGS_PATH);
+  const now = readFileSync(abs, 'utf8');
+  assert.equal(now, kitSkeleton('en', CLAUDE_SETTINGS_PATH), 'the file is exactly this kit\'s version (it holds no generated.at to stamp)');
+  assert.doesNotThrow(() => JSON.parse(now));
+  assert.equal(manifestEntry(v.vault, CLAUDE_SETTINGS_PATH).sha256, sha(Buffer.from(now)));
+  assert.equal(manifestEntry(v.vault, CLAUDE_SETTINGS_PATH).class, 'managed');
+
+  // Nothing else changed: only .claude/settings.json and the manifest differ.
+  assert.deepEqual(
+    withoutPaths(snapshot(v.vault), CLAUDE_SETTINGS_PATH, MANIFEST_PATH),
+    withoutPaths(before, CLAUDE_SETTINGS_PATH, MANIFEST_PATH),
+  );
+  assert.ok(!existsSync(`${abs}${NEW_SUFFIX}`));
+  const again = update(v, ['--check']);
+  assert.equal(again.status, EXIT.OK, again.stdout + again.stderr);
+});
+
+test('an edited .claude/settings.json is kept, and this kit\'s version is written beside it as .brain-kit-new, exit 3', () => {
+  const v = initVault();
+  makeOlder(v.vault, CLAUDE_SETTINGS_PATH);
+  const abs = join(v.vault, CLAUDE_SETTINGS_PATH);
+  const older = readFileSync(abs, 'utf8');
+  const edited = older.replace('"brain-kit@brain-kit": true', '"brain-kit@brain-kit": true,\n    "other@marketplace": true');
+  assert.notEqual(edited, older, 'the fixture must actually change the file');
+  writeFileSync(abs, edited);
+  const manifestBefore = readFileSync(join(v.vault, MANIFEST_PATH));
+
+  const r = update(v);
+  assert.equal(r.status, EXIT.DEGRADED, r.stdout + r.stderr);
+  assert.equal(readFileSync(abs, 'utf8'), edited, 'the person\'s bytes are kept');
+  const beside = `${abs}${NEW_SUFFIX}`;
+  assert.ok(existsSync(beside), 'the new version is written beside it');
+  assert.equal(readFileSync(beside, 'utf8'), kitSkeleton('en', CLAUDE_SETTINGS_PATH));
+  says(r, 'update.offered', {
+    file: CLAUDE_SETTINGS_PATH, new: `${CLAUDE_SETTINGS_PATH}${NEW_SUFFIX}`, command: `brain-kit update --accept ${CLAUDE_SETTINGS_PATH}`,
+  });
+  assert.deepEqual(readFileSync(join(v.vault, MANIFEST_PATH)), manifestBefore, 'the manifest is not rewritten for an offer');
 });
 
 // --- edited: kept, new version beside it ---------------------------------------
@@ -747,7 +796,7 @@ test('--accept after taking the offer wholesale records the file\'s own hash, an
   assert.equal(manifestEntry(v.vault, 'AGENTS.md').sha256, sha(readFileSync(abs)));
   const r = update(v);
   assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
-  assert.ok(r.stdout.includes(T('update.summary', { managed: 7, refreshed: 0, current: 7, kept: 0, seeded: 27, attention: 0 })), r.stdout);
+  assert.ok(r.stdout.includes(T('update.summary', { managed: 8, refreshed: 0, current: 8, kept: 0, seeded: 27, attention: 0 })), r.stdout);
 });
 
 test('--accept clears a blocked offer, so the loop of "run update again" ends', () => {
@@ -1066,8 +1115,8 @@ test('--check\'s summary says what would be updated, never that anything was', (
   const v = initVault();
   makeOlder(v.vault, 'AGENTS.md');
   const check = update(v, ['--check']);
-  says(check, 'update.check_summary', { managed: 7, refreshed: 1, current: 6, kept: 0, seeded: 27, attention: 0 });
-  assert.ok(!check.stdout.includes(T('update.summary', { managed: 7, refreshed: 1, current: 6, kept: 0, seeded: 27, attention: 0 })));
+  says(check, 'update.check_summary', { managed: 8, refreshed: 1, current: 7, kept: 0, seeded: 27, attention: 0 });
+  assert.ok(!check.stdout.includes(T('update.summary', { managed: 8, refreshed: 1, current: 7, kept: 0, seeded: 27, attention: 0 })));
 });
 
 // A directory swapped for a link between the read and the write.

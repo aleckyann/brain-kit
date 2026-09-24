@@ -37,8 +37,15 @@ export const ROOT_CONTRACT_FILES = Object.freeze(['AGENTS.md', 'CLAUDE.md', 'CON
 // `update` like the contract files.
 export const PR_BODY_PATH = '.brain-kit/pr-body.md';
 
+// The documental Claude Code settings: no permission, no hook, no path,
+// only the marketplace and plugin entries that let a clone of the vault
+// offer to install the plugin. The kit's text, so `managed` like the
+// other root files; `init --adopt` never writes it (see src/init/adopt.mjs
+// and buildAdoptionManifest, which record only what a vault already has).
+export const CLAUDE_SETTINGS_PATH = '.claude/settings.json';
+
 // Every skeleton file the kit keeps current: `managed` in the manifest.
-export const MANAGED_SKELETON_FILES = Object.freeze([...ROOT_CONTRACT_FILES, PR_BODY_PATH]);
+export const MANAGED_SKELETON_FILES = Object.freeze([...ROOT_CONTRACT_FILES, PR_BODY_PATH, CLAUDE_SETTINGS_PATH]);
 
 export function skeletonDir(lang) {
   return join(KIT_ROOT, 'lang', lang, 'vault');
