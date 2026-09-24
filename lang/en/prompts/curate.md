@@ -17,7 +17,7 @@ The kit computed the block below for this round. Take it as given: do not recomp
 ## Read
 
 <!-- rule:read-index-first -->
-Open the vault's `index.md` first. It lists every note with a one-line description. From it, open only the notes the captures of this round will change. Never load the whole vault.
+Open the vault's `index.md` first. It lists every note with a one-line description. From it, open only the notes the captures of this round will change, plus the template and the vault's conventions when you need them. Never load the whole vault.
 
 <!-- rule:sample-from-end -->
 Read the transcripts the block lists, and only those. A transcript is long: read each one with Read, starting at the line the block gives as its `sampleLine` (pass it as the offset), which is near the end, and read from there to the end. If that is not enough to understand what happened, read earlier slices, one at a time, moving backwards. Never read a transcript whole. Besides the vault's own notes, open no file and no folder the block does not list.
@@ -25,15 +25,15 @@ Read the transcripts the block lists, and only those. A transcript is long: read
 ## Capture
 
 <!-- rule:log-before-note -->
-Everything new goes into the log before it goes into any note. Open `{{log}}` and find the heading `## {{today_iso}}`. If it is missing, create it above the older headings, because the most recent day comes first. Under it, add one entry per item, the newest on top, each starting with the bold marker **{{capture_marker}}** and saying which session it came from.
+Everything new goes into the log before it goes into any note. Open `{{log}}` and find the heading `## {{today_iso}}`. If it is missing, create it above the older headings, because the most recent day comes first. Under it, add one entry per item, the newest on top, each starting with the bold marker **{{capture_marker}}** and naming the session it came from by the identifier the block gives for its transcript.
 
 An item is a new fact, a change of mind, or a conflict with what a note already says. Record a conflict as a conflict, with both versions side by side; never settle it by picking one. A number goes in only with where it came from and when, and saying whether it is an estimate or a measured value.
 
-For example: **{{capture_marker}}** (session from the morning, about the essay on soil erosion) Ana now plans to cite the 2019 survey instead of the 2015 one, because the newer one covers the whole region; the note on the essay still names the older one.
+For example: **{{capture_marker}}** (session a1b2c3d4, about the essay on soil erosion) Ana now plans to cite the 2019 survey instead of the 2015 one, because the newer one covers the whole region; the note on the essay still names the older one.
 
 ## Compile
 
-Turn the captures into notes: a new note from the right template, or a change to one that already exists. Every note you create or change carries `generated: { by: {{agent}}, at: <ISO 8601 date and time with its UTC offset> }`, with `<model>` replaced by the model you are running as, and a `sources` entry whose `resource` is `/{{log}}` (a path from the vault's root, with the leading slash). When a note draws on more than one source, give each `sources` entry an id and put a footnote with that id on every claim, including the claims not yet confirmed.
+Turn the captures into notes: a new note from the right template, or a change to one that already exists. Every note you create or change carries `generated: { by: {{agent}}, at: {{now_iso}} }`, with `<model>` replaced by the model you are running as and `at` exactly as written here, the same for every note of this round (never guess a time, and never try to look one up), and a `sources` entry whose `resource` is `/{{log}}` (a path from the vault's root, with the leading slash). When a note draws on more than one source, give each `sources` entry an id and put a footnote with that id on every claim, including the claims not yet confirmed.
 
 <!-- rule:never-verified -->
 Never write `verified` in any note, and never mark your own work as confirmed in any other way. The owner's merge is the confirmation.
@@ -71,7 +71,7 @@ Run every kit command exactly as written here, never with `node` or anything els
 
 1. Run `{{kit}} validate`.
 2. Run `{{kit}} lint --base worktree`.
-3. If either one reports a problem, fix it and run both again, until both pass.
+3. If either one reports a problem, fix it and run both again, until both pass. Fix only the files this round wrote: if validate or lint still fail because of files this round did not touch, do not edit them, name them in your final message, and still run propose with only this round's files. If propose refuses, say why in your final message.
 
 <!-- rule:propose-only -->
 4. Run `{{kit}} propose "<one-line summary>" --only <path> <path>`, naming every file this round created or changed, and nothing else. Never use `--all`: other changes in the vault may not be yours. The kit opens the pull request; you never commit, push or merge anything yourself.

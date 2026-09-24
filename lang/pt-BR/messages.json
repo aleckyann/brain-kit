@@ -640,7 +640,7 @@
   "propose.url_rewritten": "A url de push {url} não continua a mesma quando o git é perguntado sobre ela (resolve para \"{got}\"), então não dá para provar onde a proposta chegaria. Nada foi mudado.",
   "propose.destination_unreadable": "Não foi possível perguntar à url de push {url} quais branches ela tem, então nenhum nome de branch pode ser escolhido com segurança. Nada foi mudado.",
   "propose.branch_exhausted": "{branch} e todo sufixo até -9 já existem no destino do push. Nada foi mudado; rode de novo daqui a um segundo.",
-  "prompt.usage": "Uso: brain-kit prompt skill <nome> [--vault <dir>]\n     brain-kit prompt curate [--vault <dir>]\n     brain-kit prompt --check [--vault <dir>]\n\nskill imprime o corpo de uma skill, no idioma do vault, para as SKILL.md do plugin rodarem pela linha \"!\". curate imprime o prompt que uma rodada agendada de curadoria entrega ao modelo, o .brain-kit/prompts/curate.md do próprio vault quando ele existe. --check confere se toda skill que o plugin distribui tem corpo nos dois pacotes de idioma, se os dois pacotes têm os mesmos arquivos de skill e de prompt com os mesmos placeholders, se todo placeholder usado é conhecido e se todo prompt traz os seus marcadores de contrato; avisa, sem falhar, quando o prompt de curadoria do próprio vault não tem algum.",
+  "prompt.usage": "Uso: brain-kit prompt skill <nome> [--vault <dir>]\n     brain-kit prompt curate [--vault <dir>]\n     brain-kit prompt --check [--vault <dir>]\n\nskill imprime o corpo de uma skill, no idioma do vault, para as SKILL.md do plugin rodarem pela linha \"!\". curate imprime o prompt que uma rodada agendada de curadoria entrega ao modelo, o arquivo do próprio vault em curate.prompt (.brain-kit/prompts/curate.md por padrão) quando ele existe. --check confere se toda skill que o plugin distribui tem corpo nos dois pacotes de idioma, se os dois pacotes têm os mesmos arquivos de skill e de prompt com os mesmos placeholders, se todo placeholder usado é conhecido e se todo prompt traz os seus marcadores de contrato; avisa, sem falhar, quando o prompt de curadoria do próprio vault não tem algum.",
   "prompt.skill_name_missing": "brain-kit prompt: \"skill\" precisa de um nome.",
   "prompt.vault_value_missing": "brain-kit prompt: \"--vault\" precisa de um valor.",
   "prompt.bad_argument": "brain-kit prompt: argumento não reconhecido \"{arg}\".",
@@ -680,5 +680,7 @@
   "prompt.check_prompt_missing_rule": "prompts/{name}.md ({lang}): falta o marcador de contrato da regra \"{rule}\".",
   "prompt.check_prompt_placeholders_differ": "prompts/{name}.md: os placeholders diferem entre {lang} e {other}.",
   "prompt.check_overlay_unreadable": "aviso: o prompt de curadoria do vault {path} não pôde ser lido ({detail}).",
-  "prompt.check_overlay_missing_rule": "aviso: o prompt de curadoria do vault {path} não tem o marcador de contrato da regra \"{rule}\"; a rodada vai usá-lo como está."
+  "prompt.check_overlay_missing_rule": "aviso: o prompt de curadoria do vault {path} não tem o marcador de contrato da regra \"{rule}\"; a rodada vai usá-lo como está.",
+  "prompt.check_overlay_signature_prepended": "aviso: o prompt de curadoria do vault {path} não começa com {line}; a rodada vai pôr a linha de assinatura na frente dele.",
+  "prompt.check_overlay_unknown_placeholder": "aviso: o prompt de curadoria do vault {path} usa o placeholder \"{placeholder}\", que a rodada não preenche; ele chega ao modelo como está escrito."
 }

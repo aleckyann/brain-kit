@@ -17,7 +17,7 @@ O kit calculou o bloco abaixo para esta rodada. Aceite-o como está: não recalc
 ## Ler
 
 <!-- rule:read-index-first -->
-Abra primeiro o `index.md` do vault. Ele lista cada nota com uma descrição de uma linha. A partir dele, abra só as notas que as capturas desta rodada vão alterar. Nunca carregue o vault inteiro.
+Abra primeiro o `index.md` do vault. Ele lista cada nota com uma descrição de uma linha. A partir dele, abra só as notas que as capturas desta rodada vão alterar, e mais o modelo e as convenções do vault quando precisar deles. Nunca carregue o vault inteiro.
 
 <!-- rule:sample-from-end -->
 Leia as transcrições que o bloco lista, e só elas. Uma transcrição é longa: leia cada uma com o Read, começando na linha que o bloco indica como `sampleLine` (passe esse número como offset), que fica perto do fim, e leia dali até o final. Se isso não bastar para entender o que aconteceu, leia trechos anteriores, um de cada vez, voltando para trás. Nunca leia uma transcrição inteira. Fora as notas do próprio vault, não abra arquivo nem pasta que o bloco não liste.
@@ -25,15 +25,15 @@ Leia as transcrições que o bloco lista, e só elas. Uma transcrição é longa
 ## Capturar
 
 <!-- rule:log-before-note -->
-Tudo o que é novo entra no log antes de entrar em qualquer nota. Abra `{{log}}` e procure o título `## {{today_iso}}`. Se ele não existir, crie acima dos títulos mais antigos, porque o dia mais recente vem primeiro. Embaixo dele, acrescente uma entrada por item, a mais nova no topo, cada uma começando com o marcador em negrito **{{capture_marker}}** e dizendo de qual sessão veio.
+Tudo o que é novo entra no log antes de entrar em qualquer nota. Abra `{{log}}` e procure o título `## {{today_iso}}`. Se ele não existir, crie acima dos títulos mais antigos, porque o dia mais recente vem primeiro. Embaixo dele, acrescente uma entrada por item, a mais nova no topo, cada uma começando com o marcador em negrito **{{capture_marker}}** e dizendo de qual sessão veio, pelo identificador que o bloco dá para a transcrição dela.
 
 Um item é um fato novo, uma mudança de ideia ou um conflito com o que uma nota já diz. Registre um conflito como conflito, com as duas versões lado a lado; nunca resolva escolhendo uma delas. Número só entra com a origem e a data, e dizendo se é estimativa ou valor medido.
 
-Por exemplo: **{{capture_marker}}** (sessão da manhã, sobre o artigo de erosão do solo) Ana agora pretende citar o levantamento de 2019 em vez do de 2015, porque o mais novo cobre a região inteira; a nota do artigo ainda cita o antigo.
+Por exemplo: **{{capture_marker}}** (sessão a1b2c3d4, sobre o artigo de erosão do solo) Ana agora pretende citar o levantamento de 2019 em vez do de 2015, porque o mais novo cobre a região inteira; a nota do artigo ainda cita o antigo.
 
 ## Compilar
 
-Transforme as capturas em notas: uma nota nova a partir do modelo certo, ou a alteração de uma que já existe. Toda nota que você criar ou alterar leva `generated: { by: {{agent}}, at: <data e hora ISO 8601 com o deslocamento de UTC> }`, trocando `<model>` pelo modelo que você está usando, e uma entrada em `sources` cujo `resource` é `/{{log}}` (caminho a partir da raiz do vault, com a barra inicial). Quando uma nota se apoia em mais de uma fonte, dê um id a cada entrada de `sources` e ponha uma nota de rodapé com esse id em cada afirmação, inclusive nas que ainda não foram confirmadas.
+Transforme as capturas em notas: uma nota nova a partir do modelo certo, ou a alteração de uma que já existe. Toda nota que você criar ou alterar leva `generated: { by: {{agent}}, at: {{now_iso}} }`, trocando `<model>` pelo modelo que você está usando e mantendo o `at` exatamente como está aqui, o mesmo em todas as notas desta rodada (nunca chute um horário, nem tente descobrir um), e uma entrada em `sources` cujo `resource` é `/{{log}}` (caminho a partir da raiz do vault, com a barra inicial). Quando uma nota se apoia em mais de uma fonte, dê um id a cada entrada de `sources` e ponha uma nota de rodapé com esse id em cada afirmação, inclusive nas que ainda não foram confirmadas.
 
 <!-- rule:never-verified -->
 Nunca escreva `verified` em nota nenhuma, e nunca marque o seu próprio trabalho como confirmado de nenhum outro jeito. A confirmação é o merge do dono.
@@ -71,7 +71,7 @@ Rode cada comando do kit exatamente como está escrito aqui, nunca com `node` ne
 
 1. Rode `{{kit}} validate`.
 2. Rode `{{kit}} lint --base worktree`.
-3. Se algum dos dois apontar problema, corrija e rode os dois de novo, até os dois passarem.
+3. Se algum dos dois apontar problema, corrija e rode os dois de novo, até os dois passarem. Corrija só os arquivos que esta rodada escreveu: se o validate ou o lint continuarem falhando por causa de arquivos que esta rodada não tocou, não mexa neles, cite-os na mensagem final e rode o propose mesmo assim, só com os arquivos desta rodada. Se o propose recusar, diga o porquê na mensagem final.
 
 <!-- rule:propose-only -->
 4. Rode `{{kit}} propose "<resumo em uma linha>" --only <caminho> <caminho>`, listando todos os arquivos que esta rodada criou ou alterou, e nada além deles. Nunca use `--all`: outras mudanças no vault podem não ser suas. Quem abre o pull request é o kit; você nunca faz commit, push nem merge por conta própria.

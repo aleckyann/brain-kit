@@ -640,7 +640,7 @@
   "propose.url_rewritten": "The push url {url} does not stay itself when git is asked about it (it resolves to \"{got}\"), so where the proposal would land cannot be proved. Nothing was changed.",
   "propose.destination_unreadable": "The push url {url} could not be asked which branches it holds, so no branch name can be chosen safely. Nothing was changed.",
   "propose.branch_exhausted": "{branch} and every suffix up to -9 already exist at the push destination. Nothing was changed; run again in a second.",
-  "prompt.usage": "Usage: brain-kit prompt skill <name> [--vault <dir>]\n       brain-kit prompt curate [--vault <dir>]\n       brain-kit prompt --check [--vault <dir>]\n\nskill prints a skill's body, in the vault's own language, for the plugin's SKILL.md files to run through their \"!\" line. curate prints the prompt a scheduled curate round hands the model, the vault's own .brain-kit/prompts/curate.md when it exists. --check verifies that every skill the plugin ships has a body in both language packs, that both packs carry the same skill and prompt files with the same placeholders, that every placeholder used is known, and that every prompt carries its contract markers; it warns, without failing, when the vault's own curate prompt lacks one.",
+  "prompt.usage": "Usage: brain-kit prompt skill <name> [--vault <dir>]\n       brain-kit prompt curate [--vault <dir>]\n       brain-kit prompt --check [--vault <dir>]\n\nskill prints a skill's body, in the vault's own language, for the plugin's SKILL.md files to run through their \"!\" line. curate prints the prompt a scheduled curate round hands the model, the vault's own file at curate.prompt (.brain-kit/prompts/curate.md by default) when it exists. --check verifies that every skill the plugin ships has a body in both language packs, that both packs carry the same skill and prompt files with the same placeholders, that every placeholder used is known, and that every prompt carries its contract markers; it warns, without failing, when the vault's own curate prompt lacks one.",
   "prompt.skill_name_missing": "brain-kit prompt: \"skill\" needs a name.",
   "prompt.vault_value_missing": "brain-kit prompt: \"--vault\" needs a value.",
   "prompt.bad_argument": "brain-kit prompt: unrecognized argument \"{arg}\".",
@@ -680,5 +680,7 @@
   "prompt.check_prompt_missing_rule": "prompts/{name}.md ({lang}): the contract marker for the rule \"{rule}\" is missing.",
   "prompt.check_prompt_placeholders_differ": "prompts/{name}.md: the placeholders differ between {lang} and {other}.",
   "prompt.check_overlay_unreadable": "warning: the vault's curate prompt {path} could not be read ({detail}).",
-  "prompt.check_overlay_missing_rule": "warning: the vault's curate prompt {path} has no contract marker for the rule \"{rule}\"; a round will run it as written."
+  "prompt.check_overlay_missing_rule": "warning: the vault's curate prompt {path} has no contract marker for the rule \"{rule}\"; a round will run it as written.",
+  "prompt.check_overlay_signature_prepended": "warning: the vault's curate prompt {path} does not start with {line}; a round will put the signature line in front of it.",
+  "prompt.check_overlay_unknown_placeholder": "warning: the vault's curate prompt {path} uses the placeholder \"{placeholder}\", which a round does not fill; it will reach the model as written."
 }

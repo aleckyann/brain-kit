@@ -37,7 +37,9 @@
 // lang/<code>/prompts/ (same file set and placeholders in both packs,
 // the signature as first line, every contract marker present) and, when
 // run inside a vault or with --vault, reads that vault's curate overlay
-// and warns on stderr, never failing, for each contract marker it lacks.
+// and warns on stderr, never failing, for each contract marker it lacks,
+// for a first line that is not the signature (the round puts the
+// signature in front) and for each placeholder the round does not fill.
 // It never writes to a vault.
 //
 // `deps.packsDir` is the one seam this module offers: production always
@@ -70,7 +72,7 @@ const PLACEHOLDER_RE = /\{\{(\w+)\}\}/g;
 // the first line of every prompt, by which the curator's own sessions are
 // told apart from the person's.
 export const PROMPT_NAMES = Object.freeze(['curate']);
-const KNOWN_PROMPT_PLACEHOLDERS = Object.freeze(['parameters', 'kit', 'log', 'capture_marker', 'agent', 'today_iso', 'signature']);
+const KNOWN_PROMPT_PLACEHOLDERS = Object.freeze(['parameters', 'kit', 'log', 'capture_marker', 'agent', 'today_iso', 'now_iso', 'signature']);
 const SIGNATURE_LINE = '{{signature}}';
 
 // The rules the curate prompt paid for in incidents (docs/incidents.md,
@@ -192,21 +194,78 @@ export function curatePromptSource({ vaultRoot, config, lang, packsDir = join(KI
   return { path: promptPath(packsDir, lang, 'curate'), overlay: false };
 }
 
+// `now` as the vault's own clock reads it: `date` (YYYY-MM-DD) and `iso`
+// (ISO 8601 with the UTC offset, e.g. 2026-09-24T09:30:00-03:00) in
+// `timeZone`, or in the process's own zone when `timeZone` is missing or
+// not one Intl knows (a fresh config's "<vault-timezone>" placeholder).
+// The model in a round cannot read a clock (dontAsk denies `date`), and
+// the validator requires generated.at to carry an explicit offset, so the
+// round hands it this value instead of letting it guess.
+export function vaultClock(now, timeZone) {
+  let parts = null;
+  if (timeZone) {
+    try {
+      const format = new Intl.DateTimeFormat('en-US', {
+        timeZone, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit', timeZoneName: 'longOffset',
+      });
+      parts = Object.fromEntries(format.formatToParts(now).map((part) => [part.type, part.value]));
+    } catch {
+      parts = null;
+    }
+  }
+  if (parts) {
+    const offset = parts.timeZoneName === 'GMT' ? '+00:00' : parts.timeZoneName.slice(3);
+    const date = `${parts.year}-${parts.month}-${parts.day}`;
+    return { date, iso: `${date}T${parts.hour}:${parts.minute}:${parts.second}${offset}` };
+  }
+  const minutes = -now.getTimezoneOffset();
+  const sign = minutes < 0 ? '-' : '+';
+  const offset = `${sign}${pad2(Math.floor(Math.abs(minutes) / 60))}:${pad2(Math.abs(minutes) % 60)}`;
+  const date = todayISO(now);
+  return { date, iso: `${date}T${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(now.getSeconds())}${offset}` };
+}
+
+function firstNonEmptyLine(text) {
+  return text.split(/\r?\n/).find((line) => line.trim() !== '')?.trim() ?? '';
+}
+
+// True when a prompt's first non-empty line is neither the signature
+// placeholder nor the rendered signature itself. The transcripts source
+// recognises the curator's own sessions by that first line (ruling R3), so
+// an overlay that starts with anything else would make the next round read
+// the curator's own runs as the owner's and capture its own output as new.
+export function lacksSignatureLine(text, signature) {
+  const first = firstNonEmptyLine(stripFrontmatter(text));
+  return first !== SIGNATURE_LINE && first !== signature;
+}
+
+function signatureFor(config, defaults) {
+  return config?.curate?.signature ?? defaults?.curate?.signature;
+}
+
 // The curate prompt, rendered. `parameters` is the block the round
-// computes, inserted verbatim. Throws when the prompt file cannot be read;
-// the caller decides what that means.
+// computes, inserted verbatim; `now` is the round's own time, rendered as
+// `{{now_iso}}` and `{{today_iso}}` on the vault's clock. An overlay whose
+// first line is not the signature gets the signature line put in front of
+// it. Throws when the prompt file cannot be read; the caller decides what
+// that means.
 export function renderCuratePrompt({ vaultRoot, config, lang, parameters, now = new Date(), packsDir = join(KIT_ROOT, 'lang') }) {
   const defaults = defaultsFor(packsDir, lang);
   const { path } = curatePromptSource({ vaultRoot, config, lang, packsDir });
-  const text = stripFrontmatter(readFileSync(path, 'utf8'));
+  const signature = signatureFor(config, defaults);
+  let text = stripFrontmatter(readFileSync(path, 'utf8'));
+  if (lacksSignatureLine(text, signature)) text = `${SIGNATURE_LINE}\n\n${text}`;
+  const clock = vaultClock(now, config?.vault?.timezone);
   const vars = {
     parameters: String(parameters ?? ''),
     kit: kitCommand(),
     log: config?.taxonomy?.log ?? defaults.taxonomy.log,
     capture_marker: config?.taxonomy?.log_markers?.capture ?? defaults.taxonomy.log_markers.capture,
     agent: `${config?.actors?.agent_prefix ?? defaults.actors.agent_prefix}/<model>`,
-    today_iso: todayISO(now),
-    signature: config?.curate?.signature ?? defaults.curate.signature,
+    today_iso: clock.date,
+    now_iso: clock.iso,
+    signature,
   };
   return render(text, vars);
 }
@@ -461,8 +520,9 @@ function checkPrompts(t, packsDir, problems) {
 }
 
 // The vault's own curate overlay, when there is one: a missing contract
-// marker is a warning on stderr, never a failure, because the owner may
-// have dropped a rule on purpose.
+// marker, a first line that is not the signature (the round puts it in
+// front) and a placeholder the round does not fill are each a warning on
+// stderr, never a failure, because the overlay is the owner's to write.
 function checkOverlay(t, io, startDir) {
   const { root, config } = resolveVault(startDir);
   if (!root) return;
@@ -475,7 +535,13 @@ function checkOverlay(t, io, startDir) {
     io.stderr.write(`${t('prompt.check_overlay_unreadable', { path, detail: error.code ?? error.message })}\n`);
     return;
   }
+  if (lacksSignatureLine(text, signatureFor(config, null))) {
+    io.stderr.write(`${t('prompt.check_overlay_signature_prepended', { path, line: SIGNATURE_LINE })}\n`);
+  }
   for (const rule of missingCurateRules(text)) {
     io.stderr.write(`${t('prompt.check_overlay_missing_rule', { path, rule })}\n`);
+  }
+  for (const placeholder of placeholdersOf(text).filter((p) => !KNOWN_PROMPT_PLACEHOLDERS.includes(p))) {
+    io.stderr.write(`${t('prompt.check_overlay_unknown_placeholder', { path, placeholder: `{{${placeholder}}}` })}\n`);
   }
 }

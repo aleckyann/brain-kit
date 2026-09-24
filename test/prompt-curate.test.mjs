@@ -17,7 +17,7 @@ import { KIT_ROOT } from '../src/version.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { loadConfig } from '../src/config.mjs';
-import { CURATE_RULES, renderCuratePrompt, runPrompt } from '../src/commands/prompt.mjs';
+import { CURATE_RULES, renderCuratePrompt, runPrompt, vaultClock } from '../src/commands/prompt.mjs';
 import { KIT_SUBCOMMANDS, allowedTools, disallowedTools, kitCommand } from '../src/curate/tools.mjs';
 
 const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
@@ -136,7 +136,9 @@ for (const lang of LANGS) {
     assert.equal(text.split('\n')[0], config.curate.signature);
     assert.doesNotMatch(text, /\{\{\w+\}\}/);
     assert.ok(text.includes(PARAMS));
-    assert.ok(text.includes(`## 2026-09-24`));
+    const clock = vaultClock(NOW, config.vault.timezone);
+    assert.ok(text.includes(`## ${clock.date}`));
+    assert.ok(text.includes(`at: ${clock.iso} }`), `${lang}: generated.at is the round's own timestamp`);
     assert.ok(text.includes(config.taxonomy.log));
     assert.ok(text.includes(`**${config.taxonomy.log_markers.capture}**`));
     assert.ok(text.includes(`${config.actors.agent_prefix}/<model>`));
@@ -163,7 +165,7 @@ for (const lang of LANGS) {
     // Nothing else reads as a command to run, and the kit never appears
     // behind node.
     for (const span of codeSpans(text)) {
-      assert.doesNotMatch(span, /^(git|gh|node|npm|npx|rm|curl|wget|bash|sh|cat|ls|cd|mv|cp)\s/, `${lang}: "${span}" reads as a command outside the kit`);
+      assert.doesNotMatch(span, /^(git|gh|node|npm|npx|rm|curl|wget|bash|sh|zsh|cat|ls|cd|mv|cp|date|find|sed|awk|grep|rg|head|tail|echo|python|python3|touch|mkdir|chmod)\s/, `${lang}: "${span}" reads as a command outside the kit`);
     }
     assert.ok(!text.includes(`node ${kit}`), `${lang}: the kit appears behind node`);
     assert.ok(text.includes(`${kit} lint --base worktree`));
@@ -341,4 +343,70 @@ test('brain-kit prompt curate, run through the real binary inside a real vault, 
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.equal(r.stdout.split('\n')[0], config.curate.signature);
   for (const rule of CURATE_RULES) assert.ok(r.stdout.includes(`<!-- rule:${rule} -->`));
+});
+
+// --- fix round 1: the round's timestamp, the signature on overlays --------
+
+test('vaultClock renders the date and the ISO 8601 time with the offset of the vault time zone', () => {
+  const noonUtc = new Date(Date.UTC(2026, 8, 24, 12, 30, 0));
+  assert.deepEqual(vaultClock(noonUtc, 'America/Argentina/Buenos_Aires'), { date: '2026-09-24', iso: '2026-09-24T09:30:00-03:00' });
+  assert.deepEqual(vaultClock(noonUtc, 'UTC'), { date: '2026-09-24', iso: '2026-09-24T12:30:00+00:00' });
+  assert.deepEqual(vaultClock(noonUtc, 'Asia/Kolkata'), { date: '2026-09-24', iso: '2026-09-24T18:00:00+05:30' });
+  // The date is the vault's, not UTC's: 01:00 UTC on the 25th is still the 24th in Buenos Aires.
+  assert.deepEqual(vaultClock(new Date(Date.UTC(2026, 8, 25, 1, 0, 0)), 'America/Argentina/Buenos_Aires'), { date: '2026-09-24', iso: '2026-09-24T22:00:00-03:00' });
+});
+
+test('vaultClock falls back to the process clock, still with an explicit offset, for a missing or unknown zone', () => {
+  const now = new Date(Date.UTC(2026, 8, 24, 12, 30, 0));
+  for (const zone of [undefined, '<vault-timezone>', 'Not/AZone']) {
+    const { date, iso } = vaultClock(now, zone);
+    assert.match(date, /^\d{4}-\d{2}-\d{2}$/);
+    assert.match(iso, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/);
+    assert.equal(Date.parse(iso), now.getTime(), `${zone}: the same instant`);
+  }
+});
+
+test('renderCuratePrompt renders {{now_iso}} from the now it receives, in the vault time zone', () => {
+  for (const lang of LANGS) {
+    const { vault, config } = vaultFor(lang);
+    const zoned = { ...config, vault: { ...config.vault, timezone: 'America/Argentina/Buenos_Aires' } };
+    const text = renderCuratePrompt({ vaultRoot: vault, config: zoned, lang, parameters: PARAMS, now: new Date(Date.UTC(2026, 8, 24, 12, 30, 0)) });
+    assert.ok(text.includes('at: 2026-09-24T09:30:00-03:00 }'), lang);
+    assert.ok(text.includes('## 2026-09-24'), lang);
+    assert.doesNotMatch(text, /\{\{now_iso\}\}/);
+  }
+});
+
+test('an overlay that does not start with the signature gets the signature line put in front, once', async () => {
+  const { vault, state } = freshVault('en');
+  const signature = loadConfig(vault).curate.signature;
+  writeOverlay(vault, '---\ntype: prompt\n---\n# My own curation prompt\nBody {{log}}\n');
+  const c = collector();
+  const code = await runPrompt(['curate'], c.io, createTranslator('en'), { cwd: vault, env: testEnv(state) });
+  assert.equal(code, EXIT.OK, c.stdout + c.stderr);
+  const lines = c.stdout.split('\n');
+  assert.equal(lines[0], signature);
+  assert.equal(lines[2], '# My own curation prompt');
+  assert.equal(c.stdout.split(signature).length - 1, 1);
+});
+
+test('an overlay whose first non-empty line is already the signature, as placeholder or as text, is left as written', () => {
+  const { vault } = freshVault('en');
+  const config = loadConfig(vault);
+  for (const first of ['{{signature}}', config.curate.signature]) {
+    writeOverlay(vault, `\n${first}\nBody\n`);
+    const text = renderCuratePrompt({ vaultRoot: vault, config, lang: 'en', parameters: PARAMS });
+    assert.equal(text, `\n${config.curate.signature}\nBody\n`);
+  }
+});
+
+test('--check warns when the overlay does not start with the signature, and about placeholders a round does not fill', async () => {
+  const { vault, state } = freshVault('en');
+  writeOverlay(vault, `# Heading\n${CURATE_RULES.map((r) => `<!-- rule:${r} -->\nx\n`).join('')}{{today}}\n`);
+  const c = collector();
+  const code = await runPrompt(['--check', '--vault', vault], c.io, createTranslator('en'), { cwd: vault, env: testEnv(state) });
+  assert.equal(code, EXIT.OK, c.stdout + c.stderr);
+  assert.match(c.stderr, /does not start with \{\{signature\}\}; a round will put the signature line in front of it/);
+  assert.match(c.stderr, /"\{\{today\}\}", which a round does not fill/);
+  assert.doesNotMatch(c.stderr, /contract marker/);
 });
