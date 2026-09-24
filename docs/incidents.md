@@ -451,6 +451,20 @@ oldest falls off, and the log says how many were dropped.
 **Where it lives in brain-kit.** `src/guards/recency-cap.mjs`,
 `test/incidents/2026-08-11-recency-cap.test.mjs` (Phase 2).
 
+### 24/09/2026: selection by modification time turned an old session into a new fact
+**What happened.** The curator picked the transcripts of its window by their file
+modification time. A session file touched again weeks after its last message was
+selected as if it belonged to the day, and the round wrote its content up as new
+fact. It happened twice before anyone noticed that the "new" material was weeks old.
+**Rule.** Select a transcript by the timestamps of the messages inside the window,
+never by when the file was last written. Modification time is only a cheap
+pre-filter: a file last modified before the window opened cannot hold a message
+inside it and is not opened. The recency cap sorts by the last message inside the
+window for the same reason, which replaces the modification time order of the
+11/08/2026 entry above.
+**Where it lives in brain-kit.** `src/sources/transcripts-claude-code.mjs`,
+`test/incidents/2026-09-24-mtime-selection.test.mjs` (Phase 2).
+
 ### 11/08/2026: the round fired in the same second the machine woke up
 **What happened.** A midnight schedule with catch up enabled fired the round at the
 exact moment the laptop resumed: the process started at 07:52:19 and the network only

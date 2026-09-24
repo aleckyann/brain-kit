@@ -189,6 +189,7 @@ function allSites() {
     ...extractTranslatorCallSites(readSrc('src/commands/verify.mjs'), 'src/commands/verify.mjs'),
     ...extractTranslatorCallSites(readSrc('src/commands/propose.mjs'), 'src/commands/propose.mjs'),
     ...extractTranslatorCallSites(readSrc('src/init/skeleton.mjs'), 'src/init/skeleton.mjs'),
+    ...extractTranslatorCallSites(readSrc('src/sources/transcripts-claude-code.mjs'), 'src/sources/transcripts-claude-code.mjs'),
   ];
   return [...rule, ...direct];
 }
