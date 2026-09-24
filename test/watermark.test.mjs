@@ -20,6 +20,9 @@ import { makeTempDir } from './helpers/tmp.mjs';
 
 const OK_LINE = { transcripts: 'ok' };
 const READ = { read: 2, expected: 2, ok: true };
+// The round's clock and zone: yesterday is 24/09/2026 in UTC.
+const ROUND = { timezone: 'UTC', now: new Date('2026-09-25T12:00:00Z') };
+const advance = (dir, id, day, options = {}) => advanceWatermark(dir, id, day, { ...ROUND, ...options });
 
 function stateDir() {
   return makeTempDir('brain-kit-watermark-state-');
@@ -40,7 +43,22 @@ test('windowFor: an unset mark reads only yesterday; a mark at yesterday reads n
   const covered = windowFor('2026-09-23', '2026-09-24', 'UTC');
   assert.deepEqual(covered.days, []);
   assert.equal(covered.from.getTime(), covered.to.getTime());
-  assert.deepEqual(windowFor('2026-09-30', '2026-09-24', 'UTC').days, [], 'a mark past yesterday opens nothing');
+  assert.equal(covered.future, false);
+});
+
+test('windowFor: a mark later than yesterday is flagged future, never read as covered', () => {
+  for (const mark of ['2026-09-24', '2026-09-30', '2099-01-01']) {
+    const w = windowFor(mark, '2026-09-24', 'UTC');
+    assert.deepEqual([w.days, w.clipped, w.future], [[], false, true], mark);
+    assert.equal(w.from.getTime(), w.to.getTime());
+  }
+  assert.equal(windowFor('2026-09-23', '2026-09-24', 'UTC').future, false, 'yesterday is covered, not future');
+  assert.equal(windowFor(null, '2026-09-24', 'UTC').future, false);
+  assert.equal(windowFor('2026-09-01', '2026-09-24', 'UTC').future, false);
+  // In the vault's zone: at 22:00 of 23/09 at UTC-3 a mark of 23/09 is ahead.
+  const now = new Date('2026-09-24T01:00:00Z');
+  assert.equal(windowFor('2026-09-23', now, 'America/Sao_Paulo').future, true);
+  assert.equal(windowFor('2026-09-23', now, 'UTC').future, false);
 });
 
 test('windowFor: from the day after the mark to yesterday, inclusive', () => {
@@ -95,6 +113,14 @@ test('startOfDay across daylight saving changes: 23 and 25 hour days, and a day 
   assert.equal(startOfDay('2019-02-17', 'America/Sao_Paulo').toISOString(), '2019-02-17T03:00:00.000Z');
 });
 
+test('startOfDay where the clock goes back from 01:00 to 00:00: the first midnight starts the day', () => {
+  // Asia/Gaza, 21/09/2012: 00:00 +03 came, and at 01:00 the clock went back
+  // to 00:00 +02. The day began at the first 00:00, 21:00Z of the 20th.
+  assert.equal(startOfDay('2012-09-21', 'Asia/Gaza').toISOString(), '2012-09-20T21:00:00.000Z');
+  assert.equal(startOfDay('2012-09-22', 'Asia/Gaza').toISOString(), '2012-09-21T22:00:00.000Z');
+  assert.equal(startOfDay('2012-09-20', 'Asia/Gaza').toISOString(), '2012-09-19T21:00:00.000Z');
+});
+
 test('addDays crosses months, years and leap days', () => {
   assert.equal(addDays('2026-02-28', 1), '2026-03-01');
   assert.equal(addDays('2028-02-28', 1), '2028-02-29');
@@ -126,7 +152,7 @@ test('readWatermark: a damaged file is an error, never read as unset', () => {
 test('advance: exit 0, read evidence and the source reported ok move the mark, atomically and 0600', () => {
   const dir = stateDir();
   setWatermark(dir, 'calendar', '2026-09-01');
-  const result = advanceWatermark(dir, 'transcripts', '2026-09-23', { modelExit: 0, evidence: READ, sourcesLine: OK_LINE });
+  const result = advance(dir, 'transcripts', '2026-09-23', { modelExit: 0, evidence: READ, sourcesLine: OK_LINE });
   assert.deepEqual(result, { advanced: true, previous: null });
   assert.deepEqual(markOf(dir), { sources: { calendar: '2026-09-01', transcripts: '2026-09-23' } });
   assert.equal(statSync(join(dir, 'watermark.json')).mode & 0o777, 0o600);
@@ -136,7 +162,7 @@ test('advance: exit 0, read evidence and the source reported ok move the mark, a
 test('advance: a model exit other than 0 leaves the day open, even with evidence and the line', () => {
   for (const modelExit of [1, 69, null, undefined, '0']) {
     const dir = stateDir();
-    const result = advanceWatermark(dir, 'transcripts', '2026-09-23', { modelExit, evidence: READ, sourcesLine: OK_LINE });
+    const result = advance(dir, 'transcripts', '2026-09-23', { modelExit, evidence: READ, sourcesLine: OK_LINE });
     assert.deepEqual(result, { advanced: false, reason: 'model_exit' }, String(modelExit));
     assert.equal(existsSync(join(dir, 'watermark.json')), false);
   }
@@ -145,7 +171,7 @@ test('advance: a model exit other than 0 leaves the day open, even with evidence
 test('advance: evidence that is not ok, or missing, leaves the day open', () => {
   for (const evidence of [{ read: 0, expected: 2, ok: false }, null, undefined, { read: 2, expected: 2, ok: 'yes' }]) {
     const dir = stateDir();
-    const result = advanceWatermark(dir, 'transcripts', '2026-09-23', { modelExit: 0, evidence, sourcesLine: OK_LINE });
+    const result = advance(dir, 'transcripts', '2026-09-23', { modelExit: 0, evidence, sourcesLine: OK_LINE });
     assert.deepEqual(result, { advanced: false, reason: 'no_evidence' });
     assert.equal(existsSync(join(dir, 'watermark.json')), false);
   }
@@ -153,67 +179,88 @@ test('advance: evidence that is not ok, or missing, leaves the day open', () => 
 
 test('advance: no sources line leaves the day open', () => {
   const dir = stateDir();
-  assert.deepEqual(advanceWatermark(dir, 'transcripts', '2026-09-23', { modelExit: 0, evidence: READ, sourcesLine: null }), { advanced: false, reason: 'no_sources_line' });
-  assert.deepEqual(advanceWatermark(dir, 'transcripts', '2026-09-23', { modelExit: 0, evidence: READ }), { advanced: false, reason: 'no_sources_line' });
+  assert.deepEqual(advance(dir, 'transcripts', '2026-09-23', { modelExit: 0, evidence: READ, sourcesLine: null }), { advanced: false, reason: 'no_sources_line' });
+  assert.deepEqual(advance(dir, 'transcripts', '2026-09-23', { modelExit: 0, evidence: READ }), { advanced: false, reason: 'no_sources_line' });
   assert.equal(existsSync(join(dir, 'watermark.json')), false);
 });
 
 test('advance: a line that does not name the source, or names it failed, leaves the day open', () => {
   const dir = stateDir();
-  assert.deepEqual(advanceWatermark(dir, 'transcripts', '2026-09-23', { modelExit: 0, evidence: READ, sourcesLine: { calendar: 'ok' } }), { advanced: false, reason: 'not_reported' });
-  assert.deepEqual(advanceWatermark(dir, 'transcripts', '2026-09-23', { modelExit: 0, evidence: READ, sourcesLine: {} }), { advanced: false, reason: 'not_reported' });
+  assert.deepEqual(advance(dir, 'transcripts', '2026-09-23', { modelExit: 0, evidence: READ, sourcesLine: { calendar: 'ok' } }), { advanced: false, reason: 'not_reported' });
+  assert.deepEqual(advance(dir, 'transcripts', '2026-09-23', { modelExit: 0, evidence: READ, sourcesLine: {} }), { advanced: false, reason: 'not_reported' });
   for (const state of ['failed', 'OK', 'partial', '']) {
-    assert.deepEqual(advanceWatermark(dir, 'transcripts', '2026-09-23', { modelExit: 0, evidence: READ, sourcesLine: { transcripts: state } }), { advanced: false, reason: 'reported_failed' }, state);
+    assert.deepEqual(advance(dir, 'transcripts', '2026-09-23', { modelExit: 0, evidence: READ, sourcesLine: { transcripts: state } }), { advanced: false, reason: 'reported_failed' }, state);
   }
   assert.equal(existsSync(join(dir, 'watermark.json')), false);
 });
 
 test('advance: "empty" counts only when the plan offered nothing', () => {
   const dir = stateDir();
-  const withFiles = advanceWatermark(dir, 'transcripts', '2026-09-23', { modelExit: 0, evidence: { read: 1, expected: 3, ok: true }, sourcesLine: { transcripts: 'empty' } });
+  const withFiles = advance(dir, 'transcripts', '2026-09-23', { modelExit: 0, evidence: { read: 1, expected: 3, ok: true }, sourcesLine: { transcripts: 'empty' } });
   assert.deepEqual(withFiles, { advanced: false, reason: 'empty_with_files' });
   assert.equal(existsSync(join(dir, 'watermark.json')), false);
-  const nothing = advanceWatermark(dir, 'transcripts', '2026-09-23', { modelExit: 0, evidence: { read: 0, expected: 0, ok: true }, sourcesLine: { transcripts: 'empty' } });
+  const nothing = advance(dir, 'transcripts', '2026-09-23', { modelExit: 0, evidence: { read: 0, expected: 0, ok: true }, sourcesLine: { transcripts: 'empty' } });
   assert.deepEqual(nothing, { advanced: true, previous: null });
 });
 
 test('advance: "empty" with nothing expected still needs exit 0 and ok evidence', () => {
   const dir = stateDir();
   const nothing = { read: 0, expected: 0, ok: true };
-  assert.equal(advanceWatermark(dir, 'transcripts', '2026-09-23', { modelExit: 1, evidence: nothing, sourcesLine: { transcripts: 'empty' } }).advanced, false);
-  assert.equal(advanceWatermark(dir, 'transcripts', '2026-09-23', { modelExit: 0, evidence: { ...nothing, ok: false }, sourcesLine: { transcripts: 'empty' } }).advanced, false);
-  assert.equal(advanceWatermark(dir, 'transcripts', '2026-09-23', { modelExit: 1, evidence: nothing, sourcesLine: OK_LINE }).advanced, false);
+  assert.equal(advance(dir, 'transcripts', '2026-09-23', { modelExit: 1, evidence: nothing, sourcesLine: { transcripts: 'empty' } }).advanced, false);
+  assert.equal(advance(dir, 'transcripts', '2026-09-23', { modelExit: 0, evidence: { ...nothing, ok: false }, sourcesLine: { transcripts: 'empty' } }).advanced, false);
+  assert.equal(advance(dir, 'transcripts', '2026-09-23', { modelExit: 1, evidence: nothing, sourcesLine: OK_LINE }).advanced, false);
   assert.equal(existsSync(join(dir, 'watermark.json')), false);
 });
 
 test('advance, vacuous (no model ran): only when the evidence expected nothing', () => {
   const dir = stateDir();
   for (const evidence of [{ read: 0, expected: 1, ok: false }, { read: 0, expected: null, ok: false }, null, undefined]) {
-    assert.deepEqual(advanceWatermark(dir, 'transcripts', '2026-09-23', { vacuous: true, evidence }), { advanced: false, reason: 'not_vacuous' });
+    assert.deepEqual(advance(dir, 'transcripts', '2026-09-23', { vacuous: true, evidence }), { advanced: false, reason: 'not_vacuous' });
   }
   assert.equal(existsSync(join(dir, 'watermark.json')), false);
-  const ok = advanceWatermark(dir, 'transcripts', '2026-09-23', { vacuous: true, evidence: { read: 0, expected: 0, ok: true } });
+  const ok = advance(dir, 'transcripts', '2026-09-23', { vacuous: true, evidence: { read: 0, expected: 0, ok: true } });
   assert.deepEqual(ok, { advanced: true, previous: null });
   assert.equal(markOf(dir).sources.transcripts, '2026-09-23');
 });
 
 test('advance: vacuous must be exactly true; anything else takes the model path', () => {
   const dir = stateDir();
-  const result = advanceWatermark(dir, 'transcripts', '2026-09-23', { vacuous: 'yes', evidence: { read: 0, expected: 0, ok: true } });
+  const result = advance(dir, 'transcripts', '2026-09-23', { vacuous: 'yes', evidence: { read: 0, expected: 0, ok: true } });
   assert.deepEqual(result, { advanced: false, reason: 'model_exit' });
 });
 
 test('advance never moves the mark back or onto the day it already holds', () => {
   const dir = stateDir();
   setWatermark(dir, 'transcripts', '2026-09-23');
-  assert.deepEqual(advanceWatermark(dir, 'transcripts', '2026-09-23', { modelExit: 0, evidence: READ, sourcesLine: OK_LINE }), { advanced: false, reason: 'not_later' });
-  assert.deepEqual(advanceWatermark(dir, 'transcripts', '2026-09-20', { modelExit: 0, evidence: READ, sourcesLine: OK_LINE }), { advanced: false, reason: 'not_later' });
+  assert.deepEqual(advance(dir, 'transcripts', '2026-09-23', { modelExit: 0, evidence: READ, sourcesLine: OK_LINE }), { advanced: false, reason: 'not_later' });
+  assert.deepEqual(advance(dir, 'transcripts', '2026-09-20', { modelExit: 0, evidence: READ, sourcesLine: OK_LINE }), { advanced: false, reason: 'not_later' });
   assert.equal(markOf(dir).sources.transcripts, '2026-09-23');
-  assert.deepEqual(advanceWatermark(dir, 'transcripts', '2026-09-24', { modelExit: 0, evidence: READ, sourcesLine: OK_LINE }), { advanced: true, previous: '2026-09-23' });
+  assert.deepEqual(advance(dir, 'transcripts', '2026-09-24', { modelExit: 0, evidence: READ, sourcesLine: OK_LINE }), { advanced: true, previous: '2026-09-23' });
+});
+
+test('advance refuses a day later than yesterday in the vault zone, on every path', () => {
+  const dir = stateDir();
+  const now = new Date('2026-09-24T01:00:00Z');
+  const nothing = { read: 0, expected: 0, ok: true };
+  for (const day of ['2026-09-24', '2099-01-01']) {
+    assert.deepEqual(advanceWatermark(dir, 'transcripts', day, { modelExit: 0, evidence: READ, sourcesLine: OK_LINE, timezone: 'UTC', now }), { advanced: false, reason: 'future_day' }, day);
+    assert.deepEqual(advanceWatermark(dir, 'transcripts', day, { vacuous: true, evidence: nothing, timezone: 'UTC', now }), { advanced: false, reason: 'future_day' }, day);
+  }
+  // 23/09 has ended in UTC but not at UTC-3 (22:00 there).
+  assert.deepEqual(advanceWatermark(dir, 'transcripts', '2026-09-23', { vacuous: true, evidence: nothing, timezone: 'America/Sao_Paulo', now }), { advanced: false, reason: 'future_day' });
+  assert.equal(existsSync(join(dir, 'watermark.json')), false);
+  assert.deepEqual(advanceWatermark(dir, 'transcripts', '2026-09-22', { vacuous: true, evidence: nothing, timezone: 'America/Sao_Paulo', now }), { advanced: true, previous: null });
+  assert.deepEqual(advanceWatermark(dir, 'transcripts', '2026-09-23', { vacuous: true, evidence: nothing, timezone: 'UTC', now }), { advanced: true, previous: '2026-09-22' });
+});
+
+test('advance needs the vault time zone; the default clock is now', () => {
+  const dir = stateDir();
+  assert.throws(() => advanceWatermark(dir, 'transcripts', '2026-09-01', { modelExit: 0, evidence: READ, sourcesLine: OK_LINE }), TypeError);
+  assert.deepEqual(advanceWatermark(dir, 'transcripts', '2099-01-01', { modelExit: 0, evidence: READ, sourcesLine: OK_LINE, timezone: 'UTC' }), { advanced: false, reason: 'future_day' });
 });
 
 test('advance refuses a day that is not a date', () => {
-  assert.throws(() => advanceWatermark(stateDir(), 'transcripts', '23/09/2026', { modelExit: 0, evidence: READ, sourcesLine: OK_LINE }), TypeError);
+  assert.throws(() => advance(stateDir(), 'transcripts', '23/09/2026', { modelExit: 0, evidence: READ, sourcesLine: OK_LINE }), TypeError);
 });
 
 // ------------------------------------------------------------ parseSourcesLine
@@ -226,6 +273,20 @@ test('parseSourcesLine reads the LAST BRAIN_KIT_SOURCES line as id=state pairs',
   assert.equal(parseSourcesLine('I would print BRAIN_KIT_SOURCES: transcripts=ok here'), null, 'a line must start with it');
   assert.equal(parseSourcesLine(null), null);
   assert.equal(parseSourcesLine(undefined), null);
+});
+
+test('parseSourcesLine: an id named twice keeps the first state that is not ok', () => {
+  assert.deepEqual(parseSourcesLine('BRAIN_KIT_SOURCES: transcripts=failed transcripts=ok'), { transcripts: 'failed' });
+  assert.deepEqual(parseSourcesLine('BRAIN_KIT_SOURCES: transcripts=ok transcripts=failed'), { transcripts: 'failed' });
+  assert.deepEqual(parseSourcesLine('BRAIN_KIT_SOURCES: transcripts=empty transcripts=ok calendar=ok calendar=ok'), { transcripts: 'empty', calendar: 'ok' });
+});
+
+test('parseSourcesLine: one layer of markdown around the line is removed', () => {
+  const want = { transcripts: 'ok', calendar: 'empty' };
+  assert.deepEqual(parseSourcesLine('`BRAIN_KIT_SOURCES: transcripts=ok calendar=empty`'), want);
+  assert.deepEqual(parseSourcesLine('**BRAIN_KIT_SOURCES:** transcripts=ok calendar=empty'), want);
+  assert.deepEqual(parseSourcesLine('> BRAIN_KIT_SOURCES: transcripts=ok calendar=empty'), want);
+  assert.equal(parseSourcesLine('see `BRAIN_KIT_SOURCES: transcripts=ok`'), null, 'still only at the start of a line');
 });
 
 // ------------------------------------------------------------ the command
@@ -265,7 +326,7 @@ test('watermark set writes the day, and says what it closed unread', async () =>
   assert.equal(r.code, EXIT.OK, r.stderr);
   assert.equal(readWatermark(state).sources.transcripts, '2026-09-21');
   assert.match(r.stdout, /moved from 19\/09\/2026 to 21\/09\/2026/);
-  assert.match(r.stdout, /These 2 day\(s\) are now closed without having been read by a round: 20\/09\/2026, 21\/09\/2026/);
+  assert.match(r.stdout, /Days now closed without having been read by a round \(2\): 20\/09\/2026, 21\/09\/2026/);
   const back = await run(root, ['set', 'transcripts', '2026-09-10'], { state });
   assert.equal(back.code, EXIT.OK);
   assert.doesNotMatch(back.stdout, /closed without/);
@@ -324,12 +385,12 @@ test('watermark assume-covered sets yesterday and prints every day it skips', as
   const r = await run(root, ['assume-covered', 'calendar'], { state });
   assert.equal(r.code, EXIT.OK, r.stderr);
   assert.equal(readWatermark(state).sources.calendar, '2026-09-23');
-  assert.match(r.stdout, /These 3 day\(s\) are now closed without having been read by a round: 21\/09\/2026, 22\/09\/2026, 23\/09\/2026/);
+  assert.match(r.stdout, /Days now closed without having been read by a round \(3\): 21\/09\/2026, 22\/09\/2026, 23\/09\/2026/);
   const again = await run(root, ['assume-covered', 'calendar'], { state });
   assert.equal(again.code, EXIT.OK);
   assert.match(again.stdout, /already 23\/09\/2026/);
   const unset = await run(root, ['assume-covered', 'transcripts'], { state });
-  assert.match(unset.stdout, /These 1 day\(s\) are now closed without having been read by a round: 23\/09\/2026/);
+  assert.match(unset.stdout, /Days now closed without having been read by a round \(1\): 23\/09\/2026/);
 });
 
 test('watermark writes take the vault lock: a live holder postpones with 75 and nothing moves', async () => {
@@ -348,6 +409,35 @@ test('watermark writes take the vault lock: a live holder postpones with 75 and 
     lock.release();
   }
   assert.equal(readWatermark(state).sources.transcripts, '2026-09-20');
+});
+
+test('watermark show flags a mark ahead of yesterday and names the reopen command', async () => {
+  const root = vaultRepo();
+  const state = stateDir();
+  setWatermark(state, 'transcripts', '2026-09-26');
+  setWatermark(state, 'calendar', '2026-09-23');
+  const r = await run(root, ['show'], { state });
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  assert.match(r.stdout, /transcripts: last day swept 26\/09\/2026, 3 day\(s\) AHEAD of yesterday \(23\/09\/2026\)/);
+  assert.match(r.stdout, /brain-kit watermark reopen transcripts 2026-09-23/);
+  assert.match(r.stdout, /calendar: last day swept 23\/09\/2026, 0 day\(s\) behind yesterday/);
+  assert.doesNotMatch(r.stdout, /transcripts: last day swept 26\/09\/2026, 0 day/);
+  const pt = await run(root, ['show'], { state, lang: 'pt-BR' });
+  assert.match(pt.stdout, /À FRENTE de ontem/);
+  assert.match(pt.stdout, /brain-kit watermark reopen transcripts 2026-09-23/);
+  // The command it names works, and brings the window back.
+  const reopened = await run(root, ['reopen', 'transcripts', '2026-09-23'], { state });
+  assert.equal(reopened.code, EXIT.OK, reopened.stderr);
+  assert.equal(readWatermark(state).sources.transcripts, '2026-09-22');
+  assert.deepEqual(windowFor('2026-09-22', '2026-09-24', 'UTC').days, ['2026-09-23']);
+});
+
+test('watermark with a vault.timezone the system does not know exits 2 naming it', async () => {
+  const root = vaultRepo('Mars/Base');
+  const state = stateDir();
+  const r = await run(root, ['show'], { state });
+  assert.equal(r.code, EXIT.USAGE);
+  assert.match(r.stderr, /"Mars\/Base"/);
 });
 
 test('watermark on a damaged file exits 1 and changes nothing', async () => {

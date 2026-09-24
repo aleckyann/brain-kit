@@ -115,13 +115,18 @@ function offsetAt(ms, tz) {
 // The first instant of `day` in `tz`. Usually local 00:00; where a
 // daylight saving change skips midnight (the clock jumps from 23:59:59 to
 // 01:00), the day starts at the jump, so it is found by bisection between
-// the two offsets around it.
+// the two offsets around it. Where a change repeats midnight (01:00 back to
+// 00:00), the earlier of the two 00:00 is the day's start.
 export function startOfDay(day, tz) {
   const { y, m, d } = splitDay(day);
   const guess = Date.UTC(y, m - 1, d);
   const first = guess - offsetAt(guess, tz);
   const second = guess - offsetAt(first, tz);
-  for (const candidate of [second, first]) {
+  // Every offset in force within a day of the guess, so both occurrences
+  // of a repeated midnight are candidates, tried earliest first.
+  const candidates = new Set([first, second]);
+  for (const probe of [guess - DAY_MS, guess + DAY_MS]) candidates.add(guess - offsetAt(probe, tz));
+  for (const candidate of [...candidates].sort((a, b) => a - b)) {
     const w = wallClock(candidate, tz);
     if (localDay(candidate, tz) === day && w.h === 0 && w.min === 0 && w.s === 0) return new Date(candidate);
   }
@@ -154,6 +159,12 @@ function todayIn(today, tz) {
 // More than `maxDays` open days keeps the most recent `maxDays`, and
 // `clipped` says so. An empty `days` means the mark already covers
 // yesterday; then `from` equals `to`.
+//
+// A mark later than yesterday is an error state, never "covered": no round
+// can have swept a day that has not ended, so it was written by a clock
+// that ran ahead (a wrong clock at resume, a restored snapshot), and every
+// real day up to it would be skipped in silence. It returns `future: true`
+// with no days; `curate` exits 1 on it and names `watermark reopen`.
 export function windowFor(mark, today, tz, { maxDays = DEFAULT_MAX_DAYS } = {}) {
   if (mark !== null && mark !== undefined && !isValidIsoDate(mark)) {
     throw new TypeError(`mark must be null or a YYYY-MM-DD string, got ${JSON.stringify(mark)}`);
@@ -161,6 +172,10 @@ export function windowFor(mark, today, tz, { maxDays = DEFAULT_MAX_DAYS } = {}) 
   if (!Number.isInteger(maxDays) || maxDays < 1) throw new TypeError('maxDays must be a positive integer');
   const current = todayIn(today, tz);
   const yesterday = addDays(current, -1);
+  if (mark && mark > yesterday) {
+    const to = startOfDay(current, tz);
+    return { from: to, to, days: [], clipped: false, skipped: [], future: true };
+  }
   const first = mark ? addDays(mark, 1) : yesterday;
   const days = [];
   for (let day = first; day <= yesterday; day = addDays(day, 1)) days.push(day);
@@ -168,7 +183,7 @@ export function windowFor(mark, today, tz, { maxDays = DEFAULT_MAX_DAYS } = {}) 
   const kept = clipped ? days.slice(days.length - maxDays) : days;
   const to = startOfDay(current, tz);
   const from = kept.length > 0 ? startOfDay(kept[0], tz) : to;
-  return { from, to, days: kept, clipped, skipped: clipped ? days.slice(0, days.length - maxDays) : [] };
+  return { from, to, days: kept, clipped, skipped: clipped ? days.slice(0, days.length - maxDays) : [], future: false };
 }
 
 // ---------------------------------------------------------------- the file
@@ -233,12 +248,18 @@ export function setWatermark(stateDir, sourceId, day) {
 //     AND the model's sources line reports the source `ok`, or `empty`
 //     with evidence.expected === 0 (it said it found nothing, and the plan
 //     indeed offered nothing).
-// Never moves the mark backwards or onto the day it already holds.
+// Never moves the mark backwards or onto the day it already holds, and
+// never onto a day later than yesterday in `timezone` (the vault's zone,
+// required) as of `now`: no round can have swept a day that has not ended.
 // Returns { advanced: true, previous } or { advanced: false, reason }, and
 // writes nothing in the second case.
-export function advanceWatermark(stateDir, sourceId, day, { modelExit, evidence, sourcesLine, vacuous = false } = {}) {
+export function advanceWatermark(stateDir, sourceId, day, {
+  modelExit, evidence, sourcesLine, vacuous = false, timezone, now = new Date(),
+} = {}) {
   if (typeof sourceId !== 'string' || sourceId === '') throw new TypeError('sourceId must be a non-empty string');
   if (typeof day !== 'string' || !isValidIsoDate(day)) throw new TypeError(`day must be a YYYY-MM-DD date, got ${JSON.stringify(day)}`);
+  if (typeof timezone !== 'string' || timezone === '') throw new TypeError('advanceWatermark needs the vault time zone');
+  if (day > addDays(todayIn(now, timezone), -1)) return { advanced: false, reason: 'future_day' };
   const hasEvidence = evidence !== null && typeof evidence === 'object';
   if (vacuous === true) {
     if (!hasEvidence || evidence.expected !== 0) return { advanced: false, reason: 'not_vacuous' };
@@ -267,12 +288,16 @@ export function advanceWatermark(stateDir, sourceId, day, { modelExit, evidence,
 // `BRAIN_KIT_SOURCES:`, read as space-separated `id=state` pairs, e.g.
 // `BRAIN_KIT_SOURCES: transcripts=ok calendar=empty`. States are kept as
 // written (`ok`, `empty`, `failed`, or anything else, which never counts as
-// ok). A token without `=` is ignored. No such line: null.
+// ok). A token without `=` is ignored. An id named twice keeps the first
+// state that is not `ok`: a model contradicting itself in one line has not
+// reported the source ok. One layer of markdown a model may wrap the line in
+// (a `> ` quote, backticks, bold asterisks) is removed first; those
+// characters never belong to an id or a state. No such line: null.
 export function parseSourcesLine(text) {
   if (typeof text !== 'string') return null;
   let found = null;
   for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim();
+    const line = raw.trim().replace(/^>\s*/, '').replace(/[`*]/g, '').trim();
     if (line.startsWith(SOURCES_LINE_PREFIX)) found = line;
   }
   if (found === null) return null;
@@ -280,7 +305,9 @@ export function parseSourcesLine(text) {
   for (const token of found.slice(SOURCES_LINE_PREFIX.length).trim().split(/\s+/)) {
     const eq = token.indexOf('=');
     if (eq <= 0 || eq === token.length - 1) continue;
-    states[token.slice(0, eq)] = token.slice(eq + 1);
+    const id = token.slice(0, eq);
+    if (Object.hasOwn(states, id) && states[id] !== 'ok') continue;
+    states[id] = token.slice(eq + 1);
   }
   return states;
 }

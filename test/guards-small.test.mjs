@@ -185,6 +185,34 @@ test('network: an argument vector still running at the timeout is killed, not le
   assert.equal(alive, false, `child ${pid} is still running`);
 });
 
+test('network: a function check that never settles is a failed attempt at the bound, not a hung round', async () => {
+  const r = await waitForNetwork(() => new Promise(() => {}), { timeoutMs: 300, intervalMs: 100 });
+  assert.equal(r.ok, false);
+  assert.ok(r.attempts >= 1);
+});
+
+test('network: at the bound the whole process group of an argv check is killed, grandchildren included', async () => {
+  const dir = makeTempDir('brain-kit-network-group-');
+  const pidFile = join(dir, 'grandchild');
+  const grandchild = `require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 600000);`;
+  const child = `require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}], { stdio: 'ignore' }); setTimeout(() => {}, 600000);`;
+  const r = await waitForNetwork([process.execPath, '-e', child], { timeoutMs: 1500, intervalMs: 5000 });
+  assert.equal(r.ok, false);
+  assert.ok(existsSync(pidFile), 'the grandchild started');
+  const pid = Number(readFileSync(pidFile, 'utf8'));
+  let alive = true;
+  for (let i = 0; i < 50 && alive; i += 1) {
+    try {
+      process.kill(pid, 0);
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
+    } catch {
+      alive = false;
+    }
+  }
+  if (alive) process.kill(pid, 'SIGKILL');
+  assert.equal(alive, false, `grandchild ${pid} is still running`);
+});
+
 // ------------------------------------------------------------ dirty tree
 
 test('dirty tree: a clean tree is ok with no files', () => {
@@ -209,6 +237,16 @@ test('dirty tree: modified, staged, deleted and untracked are listed with mtimes
   assert.equal(byPath['a.md'], '2026-09-13T09:30:00.000Z');
   assert.equal(byPath['gone.md'], null);
   assert.match(byPath['notes/new.md'], /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test('dirty tree: a name that is not valid UTF-8 finds its file, and is not reported as deleted', () => {
+  const root = makeRepo({ 'index.md': '# Index\n' });
+  const name = Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x2e, 0x6d, 0x64]);
+  write(root, name, 'x\n');
+  const r = checkDirtyTree(root, null, { env: CLEAN_ENV });
+  assert.equal(r.ok, false);
+  assert.equal(r.files.length, 1);
+  assert.match(r.files[0].mtime ?? '', /^\d{4}-\d{2}-\d{2}T/, JSON.stringify(r.files));
 });
 
 test('dirty tree: a list the caller already read is reported as given, without asking git', () => {

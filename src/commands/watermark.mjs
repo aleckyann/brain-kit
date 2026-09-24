@@ -46,6 +46,12 @@ function shown(day) {
   return `${d}/${m}/${y}`;
 }
 
+// The command that brings a mark ahead of yesterday back: yesterday is read
+// again; an earlier day reads more.
+function reopenCommand(source, yesterday) {
+  return `brain-kit watermark reopen ${source} ${yesterday}`;
+}
+
 function daysFrom(first, last) {
   const days = [];
   for (let day = first; day <= last; day = addDays(day, 1)) days.push(day);
@@ -115,7 +121,14 @@ export async function runWatermark(argv, io, t, deps = {}) {
   }
   const config = loadConfig(root);
   const tz = config.vault.timezone;
-  const yesterday = addDays(localDay(now, tz), -1);
+  let yesterday;
+  try {
+    yesterday = addDays(localDay(now, tz), -1);
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error;
+    io.stderr.write(`${t('watermark.bad_timezone', { timezone: tz, file: CONFIG_FILENAME })}\n`);
+    return EXIT.USAGE;
+  }
   const stateDir = stateDirFor(root, env);
 
   let mark;
@@ -135,6 +148,9 @@ export async function runWatermark(argv, io, t, deps = {}) {
     for (const source of sources) {
       const day = mark.sources[source];
       if (day === undefined) io.stdout.write(`${t('watermark.show_unset', { source })}\n`);
+      // A mark later than yesterday was written by a clock that ran ahead;
+      // every real day up to it would be skipped (src/guards/watermark.mjs).
+      else if (day > yesterday) io.stdout.write(`${t('watermark.show_future', { source, day: shown(day), ahead: daysBetween(yesterday, day), yesterday: shown(yesterday), command: reopenCommand(source, yesterday) })}\n`);
       else io.stdout.write(`${t('watermark.show_line', { source, day: shown(day), behind: Math.max(0, daysBetween(day, yesterday)) })}\n`);
     }
     return EXIT.OK;

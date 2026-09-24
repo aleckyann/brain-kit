@@ -64,12 +64,19 @@ function runArgvCheck(argv, timeoutMs) {
       clearTimeout(timer);
       resolvePromise(ok);
     };
+    // The check runs in a process group of its own, and the whole group is
+    // killed at the bound: `sh -c ...` as a check must not leave its own
+    // children behind either.
     const timer = setTimeout(() => {
-      try { child?.kill('SIGKILL'); } catch { /* already gone */ }
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        try { child?.kill('SIGKILL'); } catch { /* already gone */ }
+      }
       finish(false);
     }, timeoutMs);
     try {
-      child = spawn(argv[0], argv.slice(1), { stdio: 'ignore', shell: false });
+      child = spawn(argv[0], argv.slice(1), { stdio: 'ignore', shell: false, detached: process.platform !== 'win32' });
     } catch {
       finish(false);
       return;
@@ -83,8 +90,16 @@ function defaultSleep(ms) {
   return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
 }
 
+// A function check is bounded like the others: one that never settles is a
+// failed attempt at the bound, not a round that hangs.
+function bounded(promise, limitMs) {
+  let timer;
+  const expired = new Promise((resolvePromise) => { timer = setTimeout(() => resolvePromise(false), limitMs); });
+  return Promise.race([Promise.resolve(promise), expired]).finally(() => clearTimeout(timer));
+}
+
 function attemptFor(check, deps) {
-  if (typeof check === 'function') return async () => (await check()) === true;
+  if (typeof check === 'function') return async (limitMs) => (await bounded(check(), limitMs)) === true;
   if (Array.isArray(check) && check.length > 0) {
     if (!check.every((part) => typeof part === 'string') || check[0] === '') {
       throw new TypeError('network_check must be an argument vector of strings');

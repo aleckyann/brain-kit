@@ -49,7 +49,7 @@ function roundAdvance(stateDir, lines, modelExit = 0) {
   const record = parseStream(lines);
   const evidence = evidenceFor([transcripts], { transcripts: PLAN }, record);
   const sourcesLine = parseSourcesLine(record.result?.text);
-  return advanceWatermark(stateDir, 'transcripts', '2026-08-19', { modelExit, evidence: evidence.transcripts, sourcesLine });
+  return advanceWatermark(stateDir, 'transcripts', '2026-08-19', { modelExit, evidence: evidence.transcripts, sourcesLine, timezone: 'UTC', now: new Date('2026-08-20T09:30:00Z') });
 }
 
 test('20/08/2026 replayed: exit 0, "no curation today", nothing read: the day stays open', () => {
