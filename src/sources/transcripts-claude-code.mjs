@@ -345,7 +345,11 @@ function collect({ window, config, machine, home = homedir(), io = fs, limits = 
 // The source counts as read only when EVERY kept file was read (ruling
 // R13, 24/09/2026): a day read in part stays open, and the round's report
 // says "read x of y", so the next round reads it again instead of closing
-// a day whose unread sessions nobody will ever look at.
+// a day whose unread sessions nobody will ever look at. A file the plan
+// lists as unreadable counts as expected and can never be read (controller
+// ruling, fix round 1 of task 6): a day holding a session nobody could open
+// stays open, loudly, until a person looks, instead of closing as "nothing
+// to curate".
 function readEvidence(record, plan) {
   const failed = new Set();
   const answered = new Set();
@@ -358,7 +362,7 @@ function readEvidence(record, plan) {
     if (use?.name !== 'Read' || !answered.has(use.id) || failed.has(use.id)) continue;
     if (typeof use.input?.file_path === 'string') readPaths.add(use.input.file_path);
   }
-  const expected = plan.files.length;
+  const expected = plan.files.length + (plan.unreadable?.length ?? 0);
   const read = plan.files.filter((file) => readPaths.has(file.path)).length;
   return { read, expected, ok: read === expected };
 }

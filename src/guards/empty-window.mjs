@@ -8,10 +8,14 @@
 // source's evidence to show it expected nothing).
 //
 // `plans` is `{ [id]: plan }`. A plan whose `files` is not an array is not
-// empty: an answer that cannot be read is never "nothing". Whether a source
+// empty: an answer that cannot be read is never "nothing". Nor is a plan
+// that lists an unreadable file (controller ruling, fix round 1 of task 6):
+// a session nobody could open is not an empty day, and the round goes on
+// to exit 4 on it, keeping the day open. Whether a source
 // is misconfigured (and so must not advance at all) is the caller's check,
 // made before this one (curate step 11, plan.misconfigured).
 export function emptyWindow(plans) {
   if (plans === null || typeof plans !== 'object') return false;
-  return Object.values(plans).every((plan) => plan !== null && typeof plan === 'object' && Array.isArray(plan.files) && plan.files.length === 0);
+  return Object.values(plans).every((plan) => plan !== null && typeof plan === 'object' && Array.isArray(plan.files) && plan.files.length === 0
+    && !(Array.isArray(plan.unreadable) && plan.unreadable.length > 0));
 }

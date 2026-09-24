@@ -68,18 +68,23 @@ test('windowFor: from the day after the mark to yesterday, inclusive', () => {
   assert.equal(w.to.toISOString(), '2026-09-24T00:00:00.000Z');
 });
 
-test('windowFor: more than maxDays open keeps the most recent and says it clipped', () => {
+test('windowFor: more than maxDays open keeps the OLDEST, ends the window after the last kept day, and counts the newer days left', () => {
   const w = windowFor('2026-09-10', '2026-09-24', 'UTC');
-  assert.equal(w.days.length, 7);
-  assert.equal(w.days[0], '2026-09-17');
-  assert.equal(w.days[6], '2026-09-23');
+  assert.deepEqual(w.days, ['2026-09-11', '2026-09-12', '2026-09-13', '2026-09-14', '2026-09-15', '2026-09-16', '2026-09-17']);
   assert.equal(w.clipped, true);
-  assert.deepEqual(w.skipped, ['2026-09-11', '2026-09-12', '2026-09-13', '2026-09-14', '2026-09-15', '2026-09-16']);
-  assert.equal(w.from.toISOString(), '2026-09-17T00:00:00.000Z');
+  assert.equal(w.remaining, 6, '18/09 to 23/09 are left for the next round');
+  assert.equal('skipped' in w, false, 'no day is ever closed unread');
+  assert.equal(w.from.toISOString(), '2026-09-11T00:00:00.000Z');
+  assert.equal(w.to.toISOString(), '2026-09-18T00:00:00.000Z');
   const exact = windowFor('2026-09-16', '2026-09-24', 'UTC');
-  assert.deepEqual([exact.days.length, exact.clipped], [7, false]);
+  assert.deepEqual([exact.days.length, exact.clipped, exact.remaining], [7, false, 0]);
+  assert.equal(exact.to.toISOString(), '2026-09-24T00:00:00.000Z');
   const three = windowFor('2026-09-10', '2026-09-24', 'UTC', { maxDays: 3 });
-  assert.deepEqual([three.days, three.clipped], [['2026-09-21', '2026-09-22', '2026-09-23'], true]);
+  assert.deepEqual([three.days, three.clipped, three.remaining], [['2026-09-11', '2026-09-12', '2026-09-13'], true, 10]);
+  assert.equal(three.to.toISOString(), '2026-09-14T00:00:00.000Z');
+  // The next round, from the mark this one leaves, continues where it stopped.
+  const next = windowFor('2026-09-13', '2026-09-24', 'UTC', { maxDays: 3 });
+  assert.deepEqual([next.days[0], next.remaining], ['2026-09-14', 7]);
 });
 
 test('windowFor: "today" is the day in the vault time zone, not in UTC', () => {

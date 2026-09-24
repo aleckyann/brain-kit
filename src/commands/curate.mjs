@@ -195,7 +195,7 @@ function renderParameters(t, { window, tz, plans, sources, config }) {
   const lines = [];
   lines.push(t('curate.params.days', { days: window.days.map(shown).join(', '), timezone: tz }));
   lines.push(t('curate.params.window', { from: window.from.toISOString(), to: window.to.toISOString() }));
-  if (window.clipped) lines.push(t('curate.params.clipped', { skipped: window.skipped.map(shown).join(', ') }));
+  if (window.remaining > 0) lines.push(t('curate.params.remaining', { count: window.remaining }));
   for (const source of sources) {
     lines.push('');
     lines.push(t('curate.params.source', { source: source.id }));
@@ -396,7 +396,7 @@ export async function runCurate(argv, io, t, deps = {}) {
   // The round's own state, filled as it goes and written at the end.
   const run = {
     at: now.toISOString(), durationMs: null, exit: null, reasonCode: null, reason: null, window: null, network: null,
-    sources: {}, warnings: [], skippedDays: [], costUsd: null, numTurns: null, denials: [], isolation: null, proposed: null, leftovers: [],
+    sources: {}, warnings: [], remainingDays: 0, costUsd: null, numTurns: null, denials: [], isolation: null, proposed: null, leftovers: [],
   };
   let lock = null;
   let recordFile = null;
@@ -471,7 +471,10 @@ export async function runCurate(argv, io, t, deps = {}) {
       io.stderr.write(`${t('sync.git_failed', { detail: error.message })}\n`);
       synced = EXIT.FAILURE;
     }
-    if (synced === EXIT.TEMPFAIL || outcome.diverged) return fail(EXIT.TEMPFAIL, 'sync_postponed', t('curate.sync_postponed', {}));
+    // A diverged base is exit 1, not 75: retrying cannot fix it, a person
+    // must reconcile the two histories (controller ruling, fix round 1).
+    if (outcome.diverged) return fail(EXIT.FAILURE, 'sync_diverged', t('curate.sync_diverged', {}));
+    if (synced === EXIT.TEMPFAIL) return fail(EXIT.TEMPFAIL, 'sync_postponed', t('curate.sync_postponed', {}));
     if (synced !== EXIT.OK) return fail(EXIT.FAILURE, 'sync_failed', t('curate.sync_failed', {}));
 
     // 6. The configuration, as synced, and the prompt it names.
@@ -507,7 +510,7 @@ export async function runCurate(argv, io, t, deps = {}) {
       return fail(EXIT.FAILURE, 'watermark_future', t('curate.watermark_future', { source, day: shown(day), yesterday: shown(yesterday), command }));
     }
     const { window } = computed;
-    run.window = { days: window.days, from: window.from.toISOString(), to: window.to.toISOString(), clipped: window.clipped };
+    run.window = { days: window.days, from: window.from.toISOString(), to: window.to.toISOString(), remaining: window.remaining };
     if (window.days.length === 0) {
       run.exit = EXIT.OK;
       run.reasonCode = 'up_to_date';
@@ -515,15 +518,14 @@ export async function runCurate(argv, io, t, deps = {}) {
       return EXIT.OK;
     }
     const lastDay = window.days.at(-1);
-    if (window.clipped) {
-      run.skippedDays = window.skipped;
-      // No command reopens them: every round keeps the most recent days, so
-      // a reopened mark is clipped again. They are closed with this round,
-      // and said to be (last-run.json skippedDays, the log, stderr).
-      const text = t('curate.days_skipped', { count: window.skipped.length, days: window.skipped.map(shown).join(', '), max: window.days.length });
+    if (window.remaining > 0) {
+      // Catching up oldest first: the mark moves through the last day read
+      // here, and the newer days wait for the next round (never closed).
+      run.remainingDays = window.remaining;
+      const text = t('curate.days_remaining', { count: window.remaining, last: shown(lastDay) });
       run.warnings.push(text);
       io.stderr.write(`${text}\n`);
-      log('days_skipped', { days: window.skipped });
+      log('days_remaining', { count: window.remaining, through: lastDay });
     }
 
     // 8. A dirty tree postpones the round.

@@ -470,6 +470,18 @@ test('readEvidence is ok only when every kept file was read: one of two leaves t
   assert.deepEqual(transcriptsSource.readEvidence(record([{ path: b }, { path: a }]), plan), { read: 2, expected: 2, ok: true });
 });
 
+test('readEvidence is never ok while the plan lists an unreadable file, even with every kept file read', () => {
+  const world = makeWorld();
+  const a = world.write(PROJECT, 'a.jsonl', [user('Ana asks', INSIDE)]);
+  world.write(PROJECT, 'bad.jsonl', ['not json at all']);
+  const plan = world.collect();
+  assert.equal(plan.unreadable.length, 1);
+  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: a }]), plan), { read: 1, expected: 2, ok: false });
+  const only = makeWorld();
+  only.write(PROJECT, 'bad.jsonl', ['not json at all']);
+  assert.deepEqual(transcriptsSource.readEvidence(record([]), only.collect()), { read: 0, expected: 1, ok: false });
+});
+
 test('readEvidence is ok with nothing read when the plan kept no file', () => {
   const world = makeWorld();
   const plan = world.collect();

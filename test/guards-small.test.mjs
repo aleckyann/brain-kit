@@ -61,6 +61,11 @@ test('unreadRequired names each required source whose evidence is missing or not
 
 // ------------------------------------------------------------ empty window
 
+test('emptyWindow: a plan that lists an unreadable file is never empty', () => {
+  assert.equal(emptyWindow({ transcripts: { files: [], unreadable: [{ path: '/x' }] } }), false);
+  assert.equal(emptyWindow({ transcripts: { files: [], unreadable: [] } }), true);
+});
+
 test('emptyWindow: true only when every plan keeps zero files', () => {
   assert.equal(emptyWindow({ transcripts: { files: [] }, calendar: { files: [] } }), true);
   assert.equal(emptyWindow({ transcripts: { files: [] }, calendar: { files: [{ path: '/x' }] } }), false);

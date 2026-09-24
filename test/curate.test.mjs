@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runCurate } from '../src/commands/curate.mjs';
 import { acquireLock } from '../src/guards/lock.mjs';
@@ -262,16 +262,17 @@ test('a dirty tree postpones the round with 75, naming the file, before anything
   assert.equal(traces(w).model, false);
 });
 
-test('a diverged default branch postpones the round with 75 and sync\'s message', () => {
+test('a diverged default branch fails the round with 1 and sync\'s message: a person must act, retrying cannot fix it', () => {
   const w = makeCurateWorld();
   w.publishNotes(1);
   w.write('local.md', note('Local'));
   git(w.vault, ['add', '-A']);
   git(w.vault, ['commit', '-q', '-m', 'local']);
   const r = w.curate();
-  assert.equal(r.status, EXIT.TEMPFAIL, r.stderr);
-  assert.match(r.stderr, /diverged|ahead/);
-  assert.equal(w.lastRun().reasonCode, 'sync_postponed');
+  assert.equal(r.status, EXIT.FAILURE, r.stderr);
+  assert.match(r.stderr, /diverged/);
+  assert.equal(w.lastRun().reasonCode, 'sync_diverged');
+  assert.equal(w.notifications().length, 1);
   assert.equal(traces(w).model, false);
 });
 
@@ -583,14 +584,46 @@ test('a proposed deletion is left alone when the file came back after the push',
   assert.equal(w2.status(), '');
 });
 
-test('more open days than a round reads: the oldest are named as closed unread, in stderr, the log and last-run', () => {
+test('more open days than a round reads: it curates the oldest, advances only through the last day it read, and says how many remain; the next round continues', () => {
   const w = makeCurateWorld();
   writeFileSync(join(w.state, 'watermark.json'), JSON.stringify({ sources: { transcripts: utcDay(-11) } }));
+  // A session ten days old, the only one inside the first round's window.
+  const old = join(w.projects, PROJECT, 'bbbbbbbb-1111-4222-8333-444444444444.jsonl');
+  writeFileSync(old, `${JSON.stringify({ type: 'user', timestamp: `${utcDay(-10)}T12:00:00.000Z`, message: { role: 'user', content: 'An older session' } })}\n`);
+  w.scenario({ rewrite: { toolUses: [{ name: 'Read', input: { file_path: old, offset: 1 } }] } });
   const r = w.curate();
   assert.equal(r.status, EXIT.OK, r.stderr);
-  const skipped = [utcDay(-10), utcDay(-9), utcDay(-8)];
-  assert.deepEqual(w.lastRun().skippedDays, skipped);
-  assert.match(r.stderr, /closes them unread/);
-  assert.match(w.logText(), /days_skipped/);
+  const last = w.lastRun();
+  assert.deepEqual(last.window.days, [-10, -9, -8, -7, -6, -5, -4].map(utcDay));
+  assert.equal(last.remainingDays, 3);
+  assert.equal('skippedDays' in last, false);
+  assert.match(r.stderr, /3 more day\(s\) remain/);
+  assert.match(w.logText(), /days_remaining/);
+  assert.deepEqual(w.watermark(), { transcripts: utcDay(-4) }, 'the mark stops at the last day read');
+  const prompt = readFileSync(w.files.stdinFile, 'utf8');
+  assert.match(prompt, /3 newer open day\(s\) are left for the next round/);
+  assert.ok(prompt.includes(old));
+  assert.equal(prompt.includes(w.transcript), false, 'yesterday\'s session is outside this round\'s window');
+
+  w.scenario();
+  const next = w.curate();
+  assert.equal(next.status, EXIT.OK, next.stderr);
+  assert.deepEqual(w.lastRun().window.days, [-3, -2, -1].map(utcDay));
+  assert.equal(w.lastRun().remainingDays, 0);
   assert.deepEqual(w.watermark(), { transcripts: utcDay(-1) });
+});
+
+test('a day whose only transcript cannot be opened is not an empty day: the round exits 4 and the mark stays', { skip: process.getuid?.() === 0 ? 'root reads any file' : false }, () => {
+  const w = makeCurateWorld();
+  chmodSync(w.transcript, 0o000);
+  try {
+    w.scenario({ rewrite: { toolUses: [], finalText: 'BRAIN_KIT_SOURCES: transcripts=failed' } });
+    const r = w.curate();
+    assert.equal(r.status, EXIT.SOURCE_UNREAD, r.stderr);
+    assert.match(w.lastRun().reason, /transcripts \(0\/1\)/);
+    assert.equal(w.watermark(), null);
+    assert.equal(w.notifications().length, 1);
+  } finally {
+    chmodSync(w.transcript, 0o600);
+  }
 });

@@ -558,7 +558,7 @@
   "watermark.unchanged": "{source}: o último dia varrido já é {day}. Nada foi alterado.",
   "watermark.moved": "{source}: último dia varrido passou de {from} para {to}.",
   "watermark.skipped": "Dias agora fechados sem terem sido lidos por uma rodada ({count}): {days}.",
-  "watermark.beyond_clip": "Atenção: há {count} dias em aberto, e uma rodada lê no máximo os {max} mais recentes; os mais antigos são pulados pela próxima rodada, e o relatório dela diz isso.",
+  "watermark.beyond_clip": "Atenção: há {count} dias em aberto, e uma rodada lê no máximo {max}, dos mais antigos para os mais novos; as rodadas seguintes continuam até a marca chegar a ontem.",
   "watermark.show_future": "  {source}: último dia varrido {day}, {ahead} dia(s) À FRENTE de ontem ({yesterday}). Nenhuma rodada varre um dia que ainda não terminou: algum relógio adiantou, e as rodadas se recusam a rodar até isso ser corrigido. Reabra a partir do primeiro dia que não foi lido de fato, por exemplo: {command}",
   "watermark.bad_timezone": "brain-kit watermark: vault.timezone em {file} é \"{timezone}\", que não é um fuso horário conhecido por este sistema (use um nome IANA como America/Sao_Paulo ou Europe/Lisbon). Nada foi alterado.",
   "verify.usage": "Uso: brain-kit verify --pr <número> [dir]\n     brain-kit verify --files <caminho>...\n\nO comando do dono, depois de fazer merge do pull request do agente: carimba verified (por actors.human da configuração, na hora atual) em cada nota que o pull request mergeado mudou, ou nas notas listadas, commita os carimbos com a sua própria identidade do git e imprime o comando de push. Roda no branch padrão com a árvore limpa e recusa a identidade do agente.",
@@ -768,7 +768,6 @@
   "curate.bad_timezone": "brain-kit curate: vault.timezone em {file} vale {timezone}, que não é um fuso que esta máquina conheça; a rodada não tem dias para ler.",
   "curate.watermark_future": "brain-kit curate: a marca d'água de {source} diz {day}, depois de ontem ({yesterday}); algum relógio adiantou e dias reais seriam pulados. Rode {command} e a próxima rodada lê esses dias.",
   "curate.up_to_date": "brain-kit curate: já está em dia, toda fonte foi varrida até ontem.",
-  "curate.days_skipped": "brain-kit curate: {count} dia(s) em aberto são mais antigos que os {max} dias mais recentes que uma rodada lê, e esta rodada os fecha sem ler: {days}. Nenhuma rodada posterior os lê; se importarem, cure-os numa sessão sua.",
   "curate.dirty": "brain-kit curate: adiada, a árvore de trabalho tem mudanças que a rodada não fez: {files}. Faça commit, proponha ou descarte, e a próxima rodada roda.",
   "curate.cli_unusable": "brain-kit curate: a CLI do Claude Code não consegue rodar uma rodada: {problem}",
   "curate.source_unknown": "brain-kit curate: {setting} cita {sources}, que esta versão não sabe ler; nenhuma marca d'água andou.",
@@ -798,9 +797,11 @@
   "curate.not_advanced": "brain-kit curate: a marca d'água de {source} não andou ({reason}).",
   "curate.params.days": "Dias a curar: {days} (fuso {timezone}).",
   "curate.params.window": "Janela: de {from} (incluído) a {to} (não incluído).",
-  "curate.params.clipped": "Dias em aberto mais antigos que esta rodada não lê: {skipped}.",
   "curate.params.source": "Fonte {source}:",
   "curate.params.caps": "Limites: {caps}.",
   "curate.params.kit": "O comando do kit: {kit}",
-  "prompt.check_prompt_outside": "o curate.prompt do vault em {file} aponta para {path}, fora do vault; a rodada se recusa a rodá-lo."
+  "prompt.check_prompt_outside": "o curate.prompt do vault em {file} aponta para {path}, fora do vault; a rodada se recusa a rodá-lo.",
+  "curate.days_remaining": "brain-kit curate: esta rodada lê até {last}; faltam mais {count} dia(s), e a próxima rodada continua dali.",
+  "curate.params.remaining": "Há mais {count} dia(s) em aberto, mais recentes, deixados para a próxima rodada; esta rodada cura só os dias acima.",
+  "curate.sync_diverged": "brain-kit curate: o branch padrão divergiu do remoto (veja a mensagem acima); uma pessoa precisa reconciliar os dois, e nada foi curado."
 }

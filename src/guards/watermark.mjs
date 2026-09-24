@@ -154,10 +154,15 @@ function todayIn(today, tz) {
 }
 
 // The days a round reads: from the day after `mark` (yesterday when the
-// mark is unset) to yesterday, inclusive, in `tz`. `to` is today's first
-// instant (exclusive); `from` the first instant of the first open day.
-// More than `maxDays` open days keeps the most recent `maxDays`, and
-// `clipped` says so. An empty `days` means the mark already covers
+// mark is unset) to yesterday, inclusive, in `tz`. `from` is the first
+// instant of the first day kept, `to` the first instant of the day after
+// the last day kept (exclusive): today's, unless the window was clipped.
+// More than `maxDays` open days keeps the OLDEST `maxDays` (ruling of
+// 24/09/2026, fix round 1 of task 6): the round advances the mark through
+// the last day it read, and `remaining` counts the newer open days left
+// for the next round, so a machine that was off for weeks catches up
+// oldest first and no day is ever closed unread. `clipped` is
+// `remaining > 0`. An empty `days` means the mark already covers
 // yesterday; then `from` equals `to`.
 //
 // A mark later than yesterday is an error state, never "covered": no round
@@ -174,16 +179,16 @@ export function windowFor(mark, today, tz, { maxDays = DEFAULT_MAX_DAYS } = {}) 
   const yesterday = addDays(current, -1);
   if (mark && mark > yesterday) {
     const to = startOfDay(current, tz);
-    return { from: to, to, days: [], clipped: false, skipped: [], future: true };
+    return { from: to, to, days: [], clipped: false, remaining: 0, future: true };
   }
   const first = mark ? addDays(mark, 1) : yesterday;
   const days = [];
   for (let day = first; day <= yesterday; day = addDays(day, 1)) days.push(day);
-  const clipped = days.length > maxDays;
-  const kept = clipped ? days.slice(days.length - maxDays) : days;
-  const to = startOfDay(current, tz);
+  const kept = days.slice(0, maxDays);
+  const remaining = days.length - kept.length;
+  const to = startOfDay(kept.length > 0 ? addDays(kept.at(-1), 1) : current, tz);
   const from = kept.length > 0 ? startOfDay(kept[0], tz) : to;
-  return { from, to, days: kept, clipped, skipped: clipped ? days.slice(0, days.length - maxDays) : [], future: false };
+  return { from, to, days: kept, clipped: remaining > 0, remaining, future: false };
 }
 
 // ---------------------------------------------------------------- the file

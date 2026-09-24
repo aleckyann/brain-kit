@@ -558,7 +558,7 @@
   "watermark.unchanged": "{source}: the last day swept is already {day}. Nothing was changed.",
   "watermark.moved": "{source}: last day swept moved from {from} to {to}.",
   "watermark.skipped": "Days now closed without having been read by a round ({count}): {days}.",
-  "watermark.beyond_clip": "Note: {count} days are open, and a round reads at most the most recent {max}; the older ones are skipped by the next round, and its report says so.",
+  "watermark.beyond_clip": "Note: {count} days are open, and a round reads at most {max}, oldest first; the rounds after it continue until the mark reaches yesterday.",
   "watermark.show_future": "  {source}: last day swept {day}, {ahead} day(s) AHEAD of yesterday ({yesterday}). No round can have swept a day that has not ended: a clock ran ahead, and rounds refuse to run until this is fixed. Reopen from the first day that was not really read, for example: {command}",
   "watermark.bad_timezone": "brain-kit watermark: vault.timezone in {file} is \"{timezone}\", which is not a time zone this system knows (use an IANA name such as America/New_York or Asia/Tokyo). Nothing was changed.",
   "verify.usage": "Usage: brain-kit verify --pr <number> [dir]\n       brain-kit verify --files <path>...\n\nThe owner's command, after merging the agent's pull request: stamps verified (by actors.human from the configuration, at the current time) on every note the merged pull request changed, or on the notes listed, commits the stamps with your own git identity and prints the push command. It runs on the default branch with a clean tree, and refuses the agent's identity.",
@@ -768,7 +768,6 @@
   "curate.bad_timezone": "brain-kit curate: vault.timezone in {file} is {timezone}, not a time zone this machine knows; the round has no days to read.",
   "curate.watermark_future": "brain-kit curate: the watermark of {source} says {day}, later than yesterday ({yesterday}); a clock ran ahead and real days would be skipped. Run {command} and the next round reads them.",
   "curate.up_to_date": "brain-kit curate: already up to date, every source was swept through yesterday.",
-  "curate.days_skipped": "brain-kit curate: {count} open day(s) are older than the {max} most recent days a round reads, and this round closes them unread: {days}. No later round reads them; curate them in a session of your own if they matter.",
   "curate.dirty": "brain-kit curate: postponed, the working tree has changes the round did not make: {files}. Commit, propose or discard them, and the next round runs.",
   "curate.cli_unusable": "brain-kit curate: the Claude Code CLI cannot run a round: {problem}",
   "curate.source_unknown": "brain-kit curate: {setting} names {sources}, which this version cannot read; no watermark moved.",
@@ -798,9 +797,11 @@
   "curate.not_advanced": "brain-kit curate: the watermark of {source} did not move ({reason}).",
   "curate.params.days": "Days to curate: {days} (time zone {timezone}).",
   "curate.params.window": "Window: from {from} (included) to {to} (not included).",
-  "curate.params.clipped": "Older open days not read in this round: {skipped}.",
   "curate.params.source": "Source {source}:",
   "curate.params.caps": "Limits: {caps}.",
   "curate.params.kit": "The kit command: {kit}",
-  "prompt.check_prompt_outside": "the vault's curate.prompt in {file} points at {path}, outside the vault; a round refuses to run it."
+  "prompt.check_prompt_outside": "the vault's curate.prompt in {file} points at {path}, outside the vault; a round refuses to run it.",
+  "curate.days_remaining": "brain-kit curate: this round reads through {last}; {count} more day(s) remain, and the next round continues from there.",
+  "curate.params.remaining": "{count} newer open day(s) are left for the next round; this round curates only the days above.",
+  "curate.sync_diverged": "brain-kit curate: the default branch has diverged from its remote (see the message above); a person must reconcile them, and nothing was curated."
 }
