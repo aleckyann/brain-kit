@@ -87,7 +87,7 @@ test('the snapshot is kept in the working tree\'s git directory, 0600, paths in 
   const root = makeRepo(FILES);
   write(root, 'notes/a.md', 'edited\n');
   const snapshot = takeSnapshot(root, { now: NOW });
-  assert.deepEqual(snapshot, { at: NOW.toISOString(), root, paths: [Buffer.from('notes/a.md')] });
+  assert.deepEqual(snapshot, { at: NOW.toISOString(), root, session: null, paths: [Buffer.from('notes/a.md')] });
   const stored = JSON.parse(readFileSync(snapshotFile(root), 'utf8'));
   assert.deepEqual(stored, { format: 1, at: NOW.toISOString(), root, paths: [Buffer.from('notes/a.md').toString('hex')] });
   assert.equal(statSync(snapshotFile(root)).mode & 0o777, 0o600);
@@ -114,11 +114,41 @@ test('readSnapshot is null only when no snapshot was taken: a file that cannot b
     rendersIn(error, snapshotFile(root));
   }
   writeFileSync(snapshotFile(root), JSON.stringify(valid));
-  assert.deepEqual(readSnapshot(root), { at: valid.at, root: '/v', paths: [Buffer.from('a.md')] });
+  assert.deepEqual(readSnapshot(root), { at: valid.at, root: '/v', session: null, paths: [Buffer.from('a.md')] });
   // There, but not readable as a file: raised, never "no snapshot".
   unlinkSync(snapshotFile(root));
   mkdirSync(snapshotFile(root));
   assert.equal(codeOf(() => readSnapshot(root)), 'EISDIR');
+});
+
+test('the session a snapshot was taken for is stored and read back; a snapshot for no session stores none', () => {
+  const root = makeRepo(FILES);
+  write(root, 'notes/a.md', 'edited\n');
+  const snapshot = takeSnapshot(root, { now: NOW, session: 'session-ana-1' });
+  assert.equal(snapshot.session, 'session-ana-1');
+  const stored = JSON.parse(readFileSync(snapshotFile(root), 'utf8'));
+  assert.equal(stored.format, 1, 'the on-disk format does not change');
+  assert.equal(stored.session, 'session-ana-1');
+  assert.deepEqual(readSnapshot(root), snapshot);
+  takeSnapshot(root, { now: NOW });
+  assert.equal('session' in JSON.parse(readFileSync(snapshotFile(root), 'utf8')), false);
+  assert.equal(readSnapshot(root).session, null);
+});
+
+test('a snapshot written before the session field existed reads with session null', () => {
+  const root = makeRepo(FILES);
+  const sliceC = { format: 1, at: NOW.toISOString(), root, paths: [Buffer.from('notes/a.md').toString('hex')] };
+  writeFileSync(snapshotFile(root), `${JSON.stringify(sliceC, null, 2)}\n`);
+  assert.deepEqual(readSnapshot(root), { at: sliceC.at, root, session: null, paths: [Buffer.from('notes/a.md')] });
+});
+
+test('a snapshot whose session is not a string is unreadable', () => {
+  const root = makeRepo(FILES);
+  const valid = { format: 1, at: NOW.toISOString(), root, paths: [] };
+  for (const session of [null, 7, true, ['s'], { id: 's' }]) {
+    writeFileSync(snapshotFile(root), JSON.stringify({ ...valid, session }));
+    assert.equal(codeOf(() => readSnapshot(root)), 'SNAPSHOT_UNREADABLE', `session ${JSON.stringify(session)}`);
+  }
 });
 
 // --- what counts ------------------------------------------------------------------

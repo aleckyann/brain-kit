@@ -131,14 +131,21 @@ function snapshotFile(gitDir) {
 }
 
 // Record every path git reports in `root` now, in any state, and return
-// the snapshot: `{ at, root, paths }`, `paths` being Buffers in byte order.
-export function takeSnapshot(root, { env = process.env, now = new Date() } = {}) {
+// the snapshot: `{ at, root, session, paths }`, `paths` being Buffers in
+// byte order. `session` is the Claude Code session the snapshot was taken
+// for (the SessionStart hook keeps a snapshot across that session's own
+// compaction or resume); a snapshot taken for no session stores none and
+// reads back `session: null`, as does one written before the field existed.
+export function takeSnapshot(root, { env = process.env, now = new Date(), session } = {}) {
   const { gitDir, topLevel } = topLevelOf(root, env);
   const paths = distinct(readStatus(root, env).map((entry) => entry.path));
-  const snapshot = { at: now.toISOString(), root: topLevel, paths };
+  const hasSession = typeof session === 'string';
+  const snapshot = { at: now.toISOString(), root: topLevel, session: hasSession ? session : null, paths };
   const target = snapshotFile(gitDir);
   const tmp = `${target}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
-  const stored = { format: FORMAT, at: snapshot.at, root: snapshot.root, paths: paths.map((path) => path.toString('hex')) };
+  const stored = {
+    format: FORMAT, at: snapshot.at, root: snapshot.root, ...(hasSession ? { session } : {}), paths: paths.map((path) => path.toString('hex')),
+  };
   writeFileSync(tmp, `${JSON.stringify(stored, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
   renameSync(tmp, target);
   return snapshot;
@@ -178,10 +185,13 @@ export function readSnapshot(root, { env = process.env } = {}) {
     && stored.format === FORMAT
     && typeof stored.at === 'string'
     && typeof stored.root === 'string'
+    && (stored.session === undefined || typeof stored.session === 'string')
     && Array.isArray(stored.paths)
     && stored.paths.every((hex) => typeof hex === 'string' && HEX_PATH.test(hex));
   if (!valid) throw unreadableSnapshot(file);
-  return { at: stored.at, root: stored.root, paths: stored.paths.map((hex) => Buffer.from(hex, 'hex')) };
+  return {
+    at: stored.at, root: stored.root, session: stored.session ?? null, paths: stored.paths.map((hex) => Buffer.from(hex, 'hex')),
+  };
 }
 
 function isSnapshot(value) {

@@ -175,6 +175,7 @@ function allSites() {
   const direct = [
     ...extractTranslatorCallSites(readSrc('src/cli.mjs'), 'src/cli.mjs'),
     ...extractTranslatorCallSites(readSrc('src/commands/hook.mjs'), 'src/commands/hook.mjs'),
+    ...extractTranslatorCallSites(readSrc('src/hooks/session-start.mjs'), 'src/hooks/session-start.mjs'),
     ...extractTranslatorCallSites(readSrc('src/commands/validate.mjs'), 'src/commands/validate.mjs'),
     ...extractTranslatorCallSites(readSrc('src/commands/lint.mjs'), 'src/commands/lint.mjs'),
     ...extractTranslatorCallSites(readSrc('src/commands/push-gate.mjs'), 'src/commands/push-gate.mjs'),
