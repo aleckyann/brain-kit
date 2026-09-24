@@ -6,7 +6,18 @@
 // that this command fills in before printing.
 //
 //   brain-kit prompt skill <name> [--vault <dir>]
-//   brain-kit prompt --check
+//   brain-kit prompt curate [--vault <dir>]
+//   brain-kit prompt --check [--vault <dir>]
+//
+// `curate` prints the prompt a scheduled curate round hands the model
+// (docs/superpowers/plans/2026-09-24-phase-2-scheduled-curator.md, task
+// 4): lang/<code>/prompts/curate.md, or the vault's own overlay at
+// `curate.prompt` (`.brain-kit/prompts/curate.md` by default) when it
+// exists. Standalone, the parameters block the round computes is one
+// translated line saying `brain-kit curate` fills it in at run time;
+// `brain-kit curate` itself calls renderCuratePrompt with the real block.
+// The prompt's first line is always `{{signature}}`: the transcripts
+// source recognises the curator's own runs by it and leaves them out.
 //
 // `skill` always exits 0: the body is what a model reads in place of a
 // SKILL.md's own prose, and a failure that left stdout empty would hand
@@ -22,20 +33,26 @@
 // placeholder this command does not know how to fill, and every name in
 // SKILL_NAMES has a body in every supported language (task 4 wrote all
 // seven, so a missing one is now a broken pack, not unfinished work). It
-// exits 0 when all three hold, 1 otherwise, and never touches a vault.
+// exits 0 when all three hold, 1 otherwise. Phase 2 extends it to
+// lang/<code>/prompts/ (same file set and placeholders in both packs,
+// the signature as first line, every contract marker present) and, when
+// run inside a vault or with --vault, reads that vault's curate overlay
+// and warns on stderr, never failing, for each contract marker it lacks.
+// It never writes to a vault.
 //
 // `deps.packsDir` is the one seam this module offers: production always
 // reads lang/<code>/skills/ under KIT_ROOT, and a test pointing `--check`
 // at a scratch copy of the packs (to prove a missing body or an unknown
 // placeholder is actually caught) passes a different directory here,
 // never editing the real packs to do it.
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { EXIT } from '../exit-codes.mjs';
 import { KIT_ROOT } from '../version.mjs';
 import { createTranslator, resolveLang, SUPPORTED_LANGS } from '../lang.mjs';
 import { findVaultRoot } from '../vault.mjs';
 import { loadConfig, ConfigError } from '../config.mjs';
+import { kitCommand } from '../curate/tools.mjs';
 
 // The seven skills the plugin ships, one skills/<name>/SKILL.md each,
 // and one body per name in every language pack.
@@ -47,6 +64,34 @@ export const SKILL_NAMES = Object.freeze(['setup', 'curate-session', 'capture', 
 const KNOWN_PLACEHOLDERS = Object.freeze(['today', 'today_iso', 'vault', 'log', 'capture_marker', 'human', 'agent', 'kit']);
 
 const PLACEHOLDER_RE = /\{\{(\w+)\}\}/g;
+
+// The prompts the kit ships, one lang/<code>/prompts/<name>.md each, and
+// the placeholders a prompt may use. `signature` is prompts only: it is
+// the first line of every prompt, by which the curator's own sessions are
+// told apart from the person's.
+export const PROMPT_NAMES = Object.freeze(['curate']);
+const KNOWN_PROMPT_PLACEHOLDERS = Object.freeze(['parameters', 'kit', 'log', 'capture_marker', 'agent', 'today_iso', 'signature']);
+const SIGNATURE_LINE = '{{signature}}';
+
+// The rules the curate prompt paid for in incidents (docs/incidents.md,
+// "Prompts, policy and evidence", "Connectors" and "Privacy"), each
+// introduced in the prompt by `<!-- rule:<id> -->` in both packs. A pack
+// prompt without one fails `--check`; a vault's overlay without one only
+// warns, because the overlay is the owner's to write.
+export const CURATE_RULES = Object.freeze([
+  'read-index-first', 'sample-from-end', 'log-before-note', 'never-verified', 'never-empty-unopened',
+  'closed-uncertainty', 'only-kit-commands', 'propose-only', 'sources-line',
+]);
+const RULES_BY_PROMPT = Object.freeze({ curate: CURATE_RULES });
+
+export function ruleMarker(rule) {
+  return `<!-- rule:${rule} -->`;
+}
+
+// The contract rules `text` lacks, in CURATE_RULES order.
+export function missingCurateRules(text) {
+  return CURATE_RULES.filter((rule) => !text.includes(ruleMarker(rule)));
+}
 
 function pad2(n) {
   return String(n).padStart(2, '0');
@@ -93,7 +138,7 @@ function resolveVault(startDir) {
   }
 }
 
-function langFor(config, env) {
+export function langFor(config, env) {
   if (config && SUPPORTED_LANGS.includes(config.lang)) return config.lang;
   return resolveLang(env);
 }
@@ -120,31 +165,78 @@ function render(text, vars) {
   return text.replace(PLACEHOLDER_RE, (match, name) => (name in vars ? String(vars[name]) : match));
 }
 
+function promptsDir(packsDir, lang) {
+  return join(packsDir, lang, 'prompts');
+}
+
+function promptPath(packsDir, lang, name) {
+  return join(promptsDir(packsDir, lang), `${name}.md`);
+}
+
+// A prompt goes to the model on standard input with its frontmatter
+// stripped (incident of 29/07/2026, the prompt's frontmatter read as a
+// command line flag): an overlay kept as a vault document may carry one,
+// and its first line must still be the signature.
+function stripFrontmatter(text) {
+  const match = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(text);
+  return match ? text.slice(match[0].length) : text;
+}
+
+// Where the curate prompt comes from for this vault: its overlay when the
+// file exists, otherwise the language pack's own.
+export function curatePromptSource({ vaultRoot, config, lang, packsDir = join(KIT_ROOT, 'lang') }) {
+  if (vaultRoot) {
+    const overlay = join(vaultRoot, config?.curate?.prompt ?? join('.brain-kit', 'prompts', 'curate.md'));
+    if (existsSync(overlay)) return { path: overlay, overlay: true };
+  }
+  return { path: promptPath(packsDir, lang, 'curate'), overlay: false };
+}
+
+// The curate prompt, rendered. `parameters` is the block the round
+// computes, inserted verbatim. Throws when the prompt file cannot be read;
+// the caller decides what that means.
+export function renderCuratePrompt({ vaultRoot, config, lang, parameters, now = new Date(), packsDir = join(KIT_ROOT, 'lang') }) {
+  const defaults = defaultsFor(packsDir, lang);
+  const { path } = curatePromptSource({ vaultRoot, config, lang, packsDir });
+  const text = stripFrontmatter(readFileSync(path, 'utf8'));
+  const vars = {
+    parameters: String(parameters ?? ''),
+    kit: kitCommand(),
+    log: config?.taxonomy?.log ?? defaults.taxonomy.log,
+    capture_marker: config?.taxonomy?.log_markers?.capture ?? defaults.taxonomy.log_markers.capture,
+    agent: `${config?.actors?.agent_prefix ?? defaults.actors.agent_prefix}/<model>`,
+    today_iso: todayISO(now),
+    signature: config?.curate?.signature ?? defaults.curate.signature,
+  };
+  return render(text, vars);
+}
+
+function parseVaultOption(argv, start, result) {
+  let i = start;
+  while (i < argv.length) {
+    const arg = argv[i];
+    if (arg === '--vault') {
+      i += 1;
+      if (i >= argv.length) return { error: 'vault_value' };
+      result.vault = argv[i];
+      i += 1;
+    } else {
+      return { error: 'argument', arg };
+    }
+  }
+  return result;
+}
+
 function parseArgs(argv) {
   if (argv.length === 0) return { error: 'usage' };
   const first = argv[0];
   if (first === '--help' || first === '-h') return { help: true };
-  if (first === '--check') {
-    if (argv.length > 1) return { error: 'argument', arg: argv[1] };
-    return { mode: 'check' };
-  }
+  if (first === '--check') return parseVaultOption(argv, 1, { mode: 'check', vault: undefined });
+  if (first === 'curate') return parseVaultOption(argv, 1, { mode: 'curate', vault: undefined });
   if (first === 'skill') {
     const name = argv[1];
     if (name === undefined) return { error: 'skill_name_missing' };
-    const result = { mode: 'skill', name, vault: undefined };
-    let i = 2;
-    while (i < argv.length) {
-      const arg = argv[i];
-      if (arg === '--vault') {
-        i += 1;
-        if (i >= argv.length) return { error: 'vault_value' };
-        result.vault = argv[i];
-        i += 1;
-      } else {
-        return { error: 'argument', arg };
-      }
-    }
-    return result;
+    return parseVaultOption(argv, 2, { mode: 'skill', name, vault: undefined });
   }
   return { error: 'argument', arg: first };
 }
@@ -180,8 +272,14 @@ export async function runPrompt(argv, io, t, deps = {}) {
     return EXIT.USAGE;
   }
 
+  const startDir = parsed.vault !== undefined ? resolve(cwd, parsed.vault) : cwd;
+
   if (parsed.mode === 'check') {
-    return runCheck(t, io, packsDir);
+    return runCheck(t, io, packsDir, startDir);
+  }
+
+  if (parsed.mode === 'curate') {
+    return runCurate(io, { startDir, env, now, packsDir });
   }
 
   // mode === 'skill'. Unlike the usage errors above (a malformed
@@ -194,7 +292,6 @@ export async function runPrompt(argv, io, t, deps = {}) {
     return EXIT.USAGE;
   }
 
-  const startDir = parsed.vault !== undefined ? resolve(cwd, parsed.vault) : cwd;
   const { root, config } = resolveVault(startDir);
   const lang = langFor(config, env);
   const skillT = createTranslator(lang, { warn: (message) => io.stderr.write(`${message}\n`) });
@@ -216,6 +313,24 @@ export async function runPrompt(argv, io, t, deps = {}) {
   return EXIT.OK;
 }
 
+// Like `skill`, `curate` never leaves stdout empty on failure: one line,
+// in the target language, says the prompt could not be loaded.
+function runCurate(io, { startDir, env, now, packsDir }) {
+  const { root, config } = resolveVault(startDir);
+  const lang = langFor(config, env);
+  const langT = createTranslator(lang, { warn: (message) => io.stderr.write(`${message}\n`) });
+  let text;
+  try {
+    text = renderCuratePrompt({ vaultRoot: root, config, lang, parameters: langT('prompt.curate_parameters_standalone'), now, packsDir });
+  } catch (error) {
+    const { path } = curatePromptSource({ vaultRoot: root, config, lang, packsDir });
+    io.stdout.write(`${langT('prompt.curate_unreadable', { path, detail: error.code ?? error.message })}\n`);
+    return EXIT.FAILURE;
+  }
+  io.stdout.write(text);
+  return EXIT.OK;
+}
+
 function listSkillFiles(dir) {
   try {
     return readdirSync(dir)
@@ -227,8 +342,10 @@ function listSkillFiles(dir) {
   }
 }
 
-function runCheck(t, io, packsDir) {
+function runCheck(t, io, packsDir, startDir) {
   const problems = [];
+  checkPrompts(t, packsDir, problems);
+  checkOverlay(t, io, startDir);
   const filesByLang = {};
   for (const lang of SUPPORTED_LANGS) {
     const names = listSkillFiles(skillsDir(packsDir, lang));
@@ -284,4 +401,81 @@ function runCheck(t, io, packsDir) {
   }
   for (const problem of problems) io.stdout.write(`${problem}\n`);
   return EXIT.FAILURE;
+}
+
+function placeholdersOf(text) {
+  return [...new Set([...text.matchAll(PLACEHOLDER_RE)].map((m) => m[1]))].sort();
+}
+
+// The prompts in both packs: the same set of files, every name in
+// PROMPT_NAMES present, only known placeholders, the same placeholders in
+// both languages, the signature placeholder as the first line, and every
+// contract marker the prompt owes.
+function checkPrompts(t, packsDir, problems) {
+  const namesByLang = {};
+  for (const lang of SUPPORTED_LANGS) {
+    const names = listSkillFiles(promptsDir(packsDir, lang));
+    if (names === null) {
+      problems.push(t('prompt.check_prompts_dir_unreadable', { lang, dir: promptsDir(packsDir, lang) }));
+      namesByLang[lang] = [];
+    } else {
+      namesByLang[lang] = names;
+    }
+    for (const name of PROMPT_NAMES) {
+      if (!namesByLang[lang].includes(name)) problems.push(t('prompt.check_missing_prompt', { name, lang }));
+    }
+  }
+  const [langA, langB] = SUPPORTED_LANGS;
+  for (const [lang, other] of [[langA, langB], [langB, langA]]) {
+    for (const name of namesByLang[lang]) {
+      if (!namesByLang[other].includes(name)) problems.push(t('prompt.check_prompt_mismatch', { name, lang, other }));
+    }
+  }
+  const placeholdersByLang = {};
+  for (const lang of SUPPORTED_LANGS) {
+    placeholdersByLang[lang] = {};
+    for (const name of namesByLang[lang]) {
+      let text;
+      try {
+        text = readFileSync(promptPath(packsDir, lang, name), 'utf8');
+      } catch (error) {
+        problems.push(t('prompt.check_prompt_unreadable', { name, lang, detail: error.code ?? error.message }));
+        continue;
+      }
+      const used = placeholdersOf(text);
+      placeholdersByLang[lang][name] = used;
+      for (const placeholder of used.filter((p) => !KNOWN_PROMPT_PLACEHOLDERS.includes(p))) {
+        problems.push(t('prompt.check_prompt_unknown_placeholder', { name, lang, placeholder: `{{${placeholder}}}` }));
+      }
+      if (text.split(/\r?\n/)[0] !== SIGNATURE_LINE) problems.push(t('prompt.check_prompt_first_line', { name, lang, line: SIGNATURE_LINE }));
+      for (const rule of RULES_BY_PROMPT[name] ?? []) {
+        if (!text.includes(ruleMarker(rule))) problems.push(t('prompt.check_prompt_missing_rule', { name, lang, rule }));
+      }
+    }
+  }
+  for (const name of namesByLang[langA]) {
+    const a = placeholdersByLang[langA][name];
+    const b = placeholdersByLang[langB][name];
+    if (a && b && a.join(' ') !== b.join(' ')) problems.push(t('prompt.check_prompt_placeholders_differ', { name, lang: langA, other: langB }));
+  }
+}
+
+// The vault's own curate overlay, when there is one: a missing contract
+// marker is a warning on stderr, never a failure, because the owner may
+// have dropped a rule on purpose.
+function checkOverlay(t, io, startDir) {
+  const { root, config } = resolveVault(startDir);
+  if (!root) return;
+  const { path, overlay } = curatePromptSource({ vaultRoot: root, config, lang: SUPPORTED_LANGS[0] });
+  if (!overlay) return;
+  let text;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch (error) {
+    io.stderr.write(`${t('prompt.check_overlay_unreadable', { path, detail: error.code ?? error.message })}\n`);
+    return;
+  }
+  for (const rule of missingCurateRules(text)) {
+    io.stderr.write(`${t('prompt.check_overlay_missing_rule', { path, rule })}\n`);
+  }
 }

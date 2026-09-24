@@ -70,6 +70,10 @@
 // all three are scanned like the English pack. lang/pt-BR/skills/ stays
 // out for the same reason as the rest of the Portuguese pack.
 //
+// Phase 2, task 4: lang/en/prompts/ (the curate prompt an English
+// speaker's round hands the model) joins the scanned set for the same
+// reason as the English skill bodies; lang/pt-BR/prompts/ stays out.
+//
 // Two independent checks, since either alone misses a real leak: a
 // non-ASCII byte catches every accented word ("não", "situação",
 // "vazio" has none but "criação" does) and the em dash itself; the
@@ -108,7 +112,7 @@ import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 
-const SCANNED = ['src', 'bin', 'lang/en/messages.json', 'lang/en/vault', 'lang/en/config.defaults.json', 'lang/en/skills', 'skills', 'agents'];
+const SCANNED = ['src', 'bin', 'lang/en/messages.json', 'lang/en/vault', 'lang/en/config.defaults.json', 'lang/en/skills', 'lang/en/prompts', 'skills', 'agents'];
 
 // Deliberately NOT scanned, each for the reason in this file's header. Named
 // here, and checked below to exist and to sit outside SCANNED, so that a
@@ -220,6 +224,7 @@ test('the scan itself covers a real, non-trivial set of files, not zero and not 
   assert.ok(relFiles.includes(join('lang', 'en', 'messages.json')), 'expected the single scanned file itself');
   assert.ok(relFiles.includes(join('lang', 'en', 'vault', 'core', 'weekly-rhythm.md')), 'expected the walk to reach the English vault skeleton');
   assert.ok(relFiles.includes(join('lang', 'en', 'config.defaults.json')), 'expected the English default configuration');
+  assert.ok(relFiles.includes(join('lang', 'en', 'prompts', 'curate.md')), 'expected the English curate prompt');
 });
 
 test('every deliberate exclusion names a real path, outside the scanned set', () => {

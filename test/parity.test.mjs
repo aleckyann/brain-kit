@@ -555,3 +555,27 @@ test('each skill body uses the same placeholders in pt-BR and en', () => {
     assert.deepEqual(pt, en, `${file}: placeholders differ between pt-BR and en`);
   }
 });
+
+// --- prompt parity between the two language packs (phase 2, task 4) ------
+//
+// Same shape as the skill bodies above, plus the contract markers: a rule
+// the curate prompt paid for in an incident must not exist in one
+// language only.
+
+const PACK_PROMPTS = (lang) => join(KIT_ROOT, 'lang', lang, 'prompts');
+const promptFiles = (lang) => readdirSync(PACK_PROMPTS(lang)).filter((name) => name.endsWith('.md')).sort();
+const markersIn = (text) => [...text.matchAll(/<!-- rule:([a-z0-9-]+) -->/g)].map((m) => m[1]);
+
+test('the pt-BR and en packs carry the same prompts/*.md set, curate.md among them', () => {
+  assert.deepEqual(promptFiles('pt-BR'), promptFiles('en'));
+  assert.ok(promptFiles('en').includes('curate.md'));
+});
+
+test('each prompt uses the same placeholders and the same contract markers, in the same order, in pt-BR and en', () => {
+  for (const file of promptFiles('en')) {
+    const en = readFileSync(join(PACK_PROMPTS('en'), file), 'utf8');
+    const pt = readFileSync(join(PACK_PROMPTS('pt-BR'), file), 'utf8');
+    assert.deepEqual(placeholdersIn(pt), placeholdersIn(en), `${file}: placeholders differ between pt-BR and en`);
+    assert.deepEqual(markersIn(pt), markersIn(en), `${file}: contract markers differ between pt-BR and en`);
+  }
+});
