@@ -654,6 +654,7 @@
   "propose.git_failed": "brain-kit propose stopped, and nothing more was done: {detail}",
   "propose.partial_publish": "{branch} is published to {held} but not to {missing} (not held, or no answer), so no pull request was opened. Finish by hand with: {command}",
   "propose.round_record_failed": "The commit is pushed as {branch}, but the record the round reads could not be written in {dir} ({code}), so the round will leave the proposed files in the working tree and report them.",
+  "propose.round_record_invalid": "The commit is pushed as {branch}, but the record the round reads in {dir} is not one this version can read, so it was left as it is and this proposal is not in it; the round will leave the proposed files in the working tree and report them.",
   "propose.pending": "An earlier run published {branch} without a confirmed pull request. Finish it by hand with: {command}",
   "propose.pending_unreadable": "The record of an earlier proposal, {file}, cannot be read; check it and remove it by hand.",
   "propose.nested_repository": "These paths are a submodule pointer or a nested repository, which propose does not handle in this version, so nothing was proposed: {paths}.",

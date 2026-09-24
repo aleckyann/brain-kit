@@ -63,9 +63,9 @@ test('the round\'s own propose, run as a separate process with the round\'s toke
     const commit = world.remoteSha(`refs/heads/${branch}`);
     assert.ok(commit, 'the branch is on the remote');
     assert.deepEqual(record, {
-      format: 1, opened: true, remote: 'origin', branch, commit, paths: ['notes/follow-up.md', 'notes/meeting.md'],
+      format: 1, proposals: [{ opened: true, remote: 'origin', branch, commit, paths: ['notes/follow-up.md', 'notes/meeting.md'] }],
     });
-    assert.deepEqual(world.changedIn(commit).map((entry) => entry.split('\t')[1]), record.paths, 'the record names exactly what the commit changed');
+    assert.deepEqual(world.changedIn(commit).map((entry) => entry.split('\t')[1]), record.proposals[0].paths, 'the record names exactly what the commit changed');
     assert.equal(statSync(recordFile).mode & 0o777, 0o600);
 
     // The lock is still the round's, byte for byte.

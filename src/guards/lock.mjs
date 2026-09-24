@@ -89,18 +89,25 @@
 // A join needs all of: a token in the environment of the right shape, a
 // lock file there, its holder's token equal to it, and that holder not
 // stale by the rule above. Anything else acquires as any command does, so
-// a token that matches nothing is ignored, never trusted: it can only fail
-// to open a door, never open one. A lock written before the token existed
-// still reads (the token is optional) and is never joinable. A joined
-// command never releases the lock; the round does.
+// a stray or stale token (one that matches nothing, or an earlier round's)
+// is ignored, never trusted: it can only fail to open a door, never open
+// one. The threat this answers is a wrong token, not a hostile process of
+// the same user: such a process can read the lock file, which is where the
+// token is kept, as it can delete the lock itself. A lock written before
+// the token existed still reads (the token is optional) and is never
+// joinable. A joined command never releases the lock; the round does. The
+// join is judged once, when it is made: a round that dies while its
+// `propose` runs leaves that `propose` running, so the round must end its
+// model's whole process group before it releases the lock.
 //
 // LEFTOVERS. A process killed while holding a private temporary file leaves
 // it behind. Each acquire looks in the git common directory and in its own
-// working tree's git directory (where that tree's snapshot is written), and
-// removes the ones whose creator is provably dead
+// working tree's git directory (where that tree's snapshot and a round's
+// record are written), and removes the ones whose creator is provably dead
 // (the holder written in them, judged by the same rule as a lock), and
 // those that name no one (killed before their first byte) or belong to a
-// snapshot, once they are an hour old: no live write takes that long.
+// snapshot, or are a round record's temporary file or guard (never the
+// record itself), once they are an hour old: no live write takes that long.
 import {
   closeSync, constants, fstatSync, linkSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, unlinkSync, writeSync,
 } from 'node:fs';
@@ -120,6 +127,8 @@ const ORPHAN_AGE_MS = 60 * 60 * 1000;
 const TOKEN_SHAPE = /^[0-9a-f]{32}$/;
 const LOCK_PRIVATE = /^brain-kit\.lock(?:\.reclaim)?\.\d+\.[0-9a-f]{12}\.tmp$/;
 const SNAPSHOT_PRIVATE = /^brain-kit-snapshot\.json\.\d+\.[0-9a-f]{12}\.tmp$/;
+// A round record's temporary file and its guard (src/commands/propose.mjs).
+const ROUND_PRIVATE = /^brain-kit-round-[0-9a-f]{32}\.json(?:\.\d+\.[0-9a-f]{12}\.tmp|\.lock)$/;
 
 // The errors `link` raises on a file system that has no hard links.
 const NO_HARD_LINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS']);
@@ -336,7 +345,7 @@ function sweepLeftovers(dir, me) {
   const now = Date.now();
   for (const name of readdirSync(dir)) {
     const isLock = LOCK_PRIVATE.test(name);
-    if (!isLock && !SNAPSHOT_PRIVATE.test(name)) continue;
+    if (!isLock && !SNAPSHOT_PRIVATE.test(name) && !ROUND_PRIVATE.test(name)) continue;
     const path = join(dir, name);
     const seen = readLockFile(path);
     if (seen === null) continue;

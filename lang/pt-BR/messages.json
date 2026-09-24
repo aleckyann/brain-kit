@@ -654,6 +654,7 @@
   "propose.git_failed": "brain-kit propose parou, e nada mais foi feito: {detail}",
   "propose.partial_publish": "{branch} foi publicado em {held} mas não em {missing} (ausente, ou sem resposta), então nenhum pull request foi aberto. Termine à mão com: {command}",
   "propose.round_record_failed": "O commit foi enviado como {branch}, mas o registro que a rodada lê não pôde ser gravado em {dir} ({code}), então a rodada vai deixar os arquivos propostos na árvore de trabalho e apontá-los.",
+  "propose.round_record_invalid": "O commit foi enviado como {branch}, mas o registro que a rodada lê em {dir} não é um que esta versão consiga ler, então ele foi deixado como está e esta proposta não entrou nele; a rodada vai deixar os arquivos propostos na árvore de trabalho e apontá-los.",
   "propose.pending": "Uma execução anterior publicou {branch} sem pull request confirmado. Termine à mão com: {command}",
   "propose.pending_unreadable": "O registro de uma proposta anterior, {file}, não pode ser lido; confira e remova à mão.",
   "propose.nested_repository": "Estes caminhos são um ponteiro de submódulo ou um repositório aninhado, que o propose não trata nesta versão, então nada foi proposto: {paths}.",

@@ -976,3 +976,25 @@ test('the hooks never print the token of a lock that carries one, live or stale'
     assert.equal(`${r.stdout}${r.stderr}`.includes(token), false);
   }
 });
+
+test('an acquire sweeps a round record\'s temporary file and guard once they are an hour old, and never the record itself', () => {
+  const root = makeRepo();
+  const token = '1'.repeat(32);
+  const names = {
+    oldTmp: `brain-kit-round-${token}.json.4242.abcdef012345.tmp`,
+    oldGuard: `brain-kit-round-${token}.json.lock`,
+    oldRecord: `brain-kit-round-${token}.json`,
+    freshTmp: `brain-kit-round-${'2'.repeat(32)}.json.4243.abcdef012345.tmp`,
+    freshGuard: `brain-kit-round-${'2'.repeat(32)}.json.lock`,
+    notOurs: 'brain-kit-round-XYZ.json.lock',
+  };
+  const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  for (const [key, name] of Object.entries(names)) {
+    writeFileSync(join(commonDir(root), name), '');
+    if (!key.startsWith('fresh')) utimesSync(join(commonDir(root), name), twoHoursAgo, twoHoursAgo);
+  }
+  const lock = acquireLock(root, { command: 'curate' });
+  lock.release();
+  const left = readdirSync(commonDir(root)).filter((name) => name.startsWith('brain-kit-round-')).sort();
+  assert.deepEqual(left, [names.notOurs, names.oldRecord, names.freshTmp, names.freshGuard].sort());
+});
