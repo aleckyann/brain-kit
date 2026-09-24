@@ -136,6 +136,51 @@ Nothing below is on npm yet. It runs from a clone of the repository.
 - The frontmatter reader reads a `verified` (or `sources`) list whose entries are inline
   mappings, the form the format's own section 5.2 uses, so a conformant note written that
   way no longer reports its `by` and `at` missing.
+- `brain-kit sync [dir]` brings the default branch level with its remote before anything
+  is written: it fast-forwards a branch that is behind, refuses one that diverged naming
+  both counts, and resolves the default branch through the same ladder as the push gate.
+- `brain-kit propose "<summary>" (--only <path>... | --all [--yes]) [--dry]` turns the listed
+  paths into a pull request against the default branch. The commit is built from the
+  remote tip with only the given paths, so HEAD, the index and the working tree never move
+  and no other session's file is swept in; the push goes to the URL the remote's raw
+  configuration names, pinned so that a `pushInsteadOf` rule cannot redirect it, and a git
+  that would send it anywhere else is refused before anything is pushed. Without `gh`, or when the pull request cannot be opened against the
+  right base, it exits 3 with the commit in place and says what to run.
+- `brain-kit machine show|set|register [dir]` reads and edits `machine.json`, and
+  registers a vault that was moved.
+- `brain-kit verify --pr <number> | --files <path>...` is the owner's command after a
+  merge: it stamps `verified` on the notes the merged pull request changed, commits with
+  the owner's own identity, refuses the agent's, and prints the push command.
+
+### Phase 1, slice 1E: the plugin surface
+
+- The Claude Code plugin's two hooks are real. `SessionStart` records which paths were
+  already dirty when a session began, in the working tree's git directory, and keeps that
+  record across compaction and resume; only a new session (startup or clear) writes a new
+  one. It adds one line of context: the vault, how many paths were already dirty, and
+  whether another writer holds the lock.
+- The `Stop` hook asks the session to curate only what this session changed, and never
+  blocks outside a vault (another person's dirty repository ends as if the plugin were
+  not there), in a copy away from the path registered in `machine.json`, while a live
+  writer holds the lock, or a second time in a row. A lock left by a process that is
+  provably dead does not switch it off. A snapshot of another session, or none, counts
+  every dirty path as the session's and says so. It lists up to 20 paths, says how many
+  it left out, and never changes the working tree. `.claude/worktrees/` is never counted.
+- Seven skills: `setup`, `curate-session`, `capture`, `ask`, `lint`, `review-stale` and
+  `approve`. Each body lives in the language packs and is printed by the new
+  `brain-kit prompt skill <name>`, so the model reads it in the vault's own language;
+  each skill grants itself exactly that one command. Outside a vault every skill but
+  `setup` opens by telling the model to write nothing. `brain-kit prompt --check`
+  verifies every skill has a body in every language with known placeholders only.
+- A read-only subagent, `vault-reader` (Read, Grep, Glob), for questions that need more
+  than a few notes.
+- `evals/`: one `claude plugin eval` case per skill and language. How to run them, and
+  what was measured, is in `docs/testing.md`.
+- `init` seeds `.claude/settings.json` in a new vault, holding only the marketplace and
+  plugin entries so a clone offers to install the plugin, and `update` keeps it current;
+  `init --adopt` does not write it. A new vault's `.gitignore` ignores `.claude/worktrees/`.
+- The plugin no longer declares a `vault_dir` option: nothing reads it, since the vault is
+  always found from the working directory.
 
 ## 0.0.1 (published on npm on 18/09/2026)
 

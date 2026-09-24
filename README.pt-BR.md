@@ -1,8 +1,11 @@
 # brain-kit
 
-> Em construção. A fase 1 está em andamento: `init`, `init --adopt`, `update`, `doctor`, o
-> validador, o linter e os gates de push já funcionam hoje, a partir de um clone deste repositório. Nada aqui cura um vault ainda, e o pacote no npm ainda é o esqueleto
-> da fase 0. Acompanhe o repositório para a primeira versão usável.
+> Em construção. A fase 1 está concluída: o validador, o linter, os gates de push, o
+> `init`, o `init --adopt`, o `update`, o `doctor`, o loop de pull request (`sync`,
+> `propose`, `verify`) e o plugin do Claude Code (hooks, skills, um subagente somente
+> leitura) já funcionam hoje, a partir de um clone deste repositório. O curador agendado e
+> o briefing matinal ainda estão por vir, e o pacote no npm ainda é o esqueleto da fase 0.
+> Acompanhe o repositório para a primeira versão usável.
 
 Um segundo cérebro em markdown puro, no Open Knowledge Format (OKF) v0.2, mantido por um
 agente de IA que o lê por um índice, o alimenta todo dia a partir do seu próprio trabalho
@@ -13,14 +16,13 @@ O brain-kit é um repositório que pretende ser, ao mesmo tempo:
 
 - um pacote npm, `second-brain-kit`, com um único executável, `brain-kit`. Hoje ele
   cria um vault ou adota um existente, instala o gate de push dele, mantém atualizados os
-  arquivos do próprio kit, confere a máquina com o `doctor`, e valida e aplica lint a um
-  vault; o loop de PR, o curador, o pré-voo do briefing e os templates de agendamento
-  ainda estão por vir;
-- um plugin do Claude Code (skills, um hook Stop, um subagente somente leitura) que chama o
-  mesmo motor. Hoje o repositório traz só o manifesto do plugin e o encaixe do hook, e o
-  hook ainda não faz nada;
+  arquivos do próprio kit, confere a máquina com o `doctor`, valida e aplica lint a um
+  vault, e roda o loop de pull request (`sync`, `propose`, `verify`); o curador agendado, o
+  pré-voo do briefing e os templates de agendamento ainda estão por vir;
+- um plugin do Claude Code (sete skills, os hooks Stop e SessionStart, um subagente
+  somente leitura) que chama o mesmo motor;
 - um marketplace de um plugin só, para que `claude plugin marketplace add aleckyann/brain-kit`
-  o instale quando a superfície do plugin chegar.
+  seguido de `claude plugin install brain-kit@brain-kit` o instale.
 
 O registro do npm recusou o nome `brain-kit`: já existe lá um pacote sem relação chamado
 `brainkit`, e os dois foram considerados parecidos demais. Por isso o pacote é publicado
@@ -45,6 +47,9 @@ node brain-kit/bin/brain-kit.mjs update caminho/do/vault
 node brain-kit/bin/brain-kit.mjs doctor caminho/do/vault
 node brain-kit/bin/brain-kit.mjs validate caminho/do/vault
 node brain-kit/bin/brain-kit.mjs lint caminho/do/vault
+node brain-kit/bin/brain-kit.mjs sync caminho/do/vault
+node brain-kit/bin/brain-kit.mjs propose "resumo" --only notas/alterada.md
+node brain-kit/bin/brain-kit.mjs verify --pr 12
 ```
 
 O `init` cria um vault novo num diretório vazio ou novo, em inglês ou português: o
@@ -99,12 +104,38 @@ mudança (`auto`, `worktree`, `merge-base` ou `all`), e `--json` gera saída leg
 máquina. A regra `secrets` ignora o `--base` e sempre lê tudo o que um push poderia
 publicar, porque uma credencial que já está lá é o achado de que um vault novo mais precisa.
 
+O `sync` deixa o branch padrão em dia com o remoto antes de qualquer escrita: avança um
+branch que está atrás e recusa um que divergiu. O `propose` transforma os caminhos que você
+lista num pull request contra o branch padrão sem mexer no HEAD, no índice nem na árvore de
+trabalho, então arquivos de outra sessão nunca entram de carona; sem o `gh`, ou quando o
+pull request não pode ser aberto contra a base certa, ele sai com 3, deixa o commit feito e
+diz o que rodar. O `verify` é o comando do dono depois do merge: carimba `verified` nas
+notas que o pull request mergeado alterou e faz o commit com a identidade do próprio dono.
+O `machine` mostra e edita o `machine.json` local da máquina.
+
+## O plugin do Claude Code
+
+Carregue a partir de um clone com `claude --plugin-dir caminho/do/brain-kit`, ou instale
+pelo marketplace. Dentro de um vault:
+
+- o hook `SessionStart` registra quais arquivos já estavam sujos quando a sessão começou,
+  e mantém esse registro depois de uma compactação;
+- o hook `Stop` pede à sessão que cure só o que ela mesma mudou. Ele nunca bloqueia fora
+  de um vault, numa cópia longe do caminho registrado do vault, enquanto outro processo
+  segura o lock, nem duas vezes seguidas;
+- sete skills conduzem o motor no idioma do próprio vault: `setup`, `curate-session`,
+  `capture`, `ask`, `lint`, `review-stale` e `approve`;
+- o subagente `vault-reader` lê notas só com Read, Grep e Glob.
+
+A pasta `evals/` traz um caso de `claude plugin eval` por skill e idioma; veja
+[docs/testing.md](docs/testing.md).
+
 ## Status
 
 | Fase | Conteúdo | Estado |
 |---|---|---|
 | 0 | Esqueleto, códigos de saída, packs de idioma, schemas de config, trava anti-vazamento, CI, docs | concluída, 0.0.1 no npm |
-| 1 | Validador, lint, propose (loop de PR), hook Stop, init, doctor, skills | em andamento |
+| 1 | Validador, lint, propose (loop de PR), hook Stop, init, doctor, skills | concluída |
 | 2 | Curador agendado sobre transcripts locais, templates de agendamento | planejada |
 | 3 | Fontes de agenda e notas de reunião (best effort por desenho) | planejada |
 | 4 | Briefing matinal | planejada |
@@ -118,9 +149,9 @@ A fase 1 é construída em cinco fatias:
 |---|---|---|
 | 1A | Leitor de vault, frontmatter, markdown, `validate` | concluída |
 | 1B | `lint` e suas oito regras, o scanner de vazamento, os dois gates de push | concluída |
-| 1C | `propose` (o loop de PR) e `sync` | planejada |
+| 1C | `propose` (o loop de PR) e `sync` | concluída |
 | 1D | `init`, `init --adopt`, `update`, `doctor` | concluída |
-| 1E | Superfície do plugin: skills, hooks Stop e SessionStart, subagente somente leitura, evals | planejada |
+| 1E | Superfície do plugin: skills, hooks Stop e SessionStart, subagente somente leitura, evals | concluída |
 
 ## Segurança
 
