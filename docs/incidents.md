@@ -30,7 +30,7 @@ a rendered link. Then lock it in the validator so it cannot come back on its own
 and make the graph viewer resolve links the same way the validator does.
 **Where it lives in brain-kit.** `brain-kit validate` (`link_style` in config,
 `[house]` ruler), `brain-kit visualize` sharing the same resolver,
-`test/incidents/2026-08-10-relative-links.test.mjs` (Phase 1).
+`test/rules-house.test.mjs` (the `link-style` cases) (Phase 1).
 
 ### 10/08/2026: a claim about someone else's tooling was simply false
 **What happened.** The conventions document asserted that the format's publisher
@@ -651,12 +651,13 @@ rewritten form, so a denied command ran anyway. Loading only the project's setti
 ran a hook from the project's own settings file, in a folder never trusted, and every
 vault the kit creates carries such a file enabling the kit's plugin.
 **Rule.** An unattended model runs with no settings file loaded at all and no MCP server
-but the ones passed, denying everything its own rules do not allow, and the run proves
-it: the permission mode, hooks and servers the CLI reports in its first event are checked
+but the ones passed, denying everything its own rules do not allow, leaving no session
+transcript of its own, and the run proves it: the permission mode, hooks and servers the CLI reports in its first event are checked
 before the model does any work, and a mismatch stops it. What held was `--setting-sources
 ''` (the empty string), `--strict-mcp-config`, `--permission-mode dontAsk` and
 `--permission-prompts none`, together; the login keeps working, because it is not a
-settings file.
+settings file. Every round adds `--no-session-persistence`, so it writes no transcript of
+its own, which also keeps its runs out of the transcripts the next round reads.
 **Where it lives in brain-kit.** `src/harness/claude-code.mjs` (the flags on every
 round), `src/guards/isolation.mjs` (the check of the first event), `brain-kit doctor`
 check `claude-isolation-flags`, [security.md](security.md),
@@ -675,8 +676,8 @@ verification has a timestamp. Never attest to the state of a document that was n
 opened in this round. The reliable link between a meeting and its minutes is the
 event's attachment with a file URL, never the title.
 **Where it lives in brain-kit.** Closed uncertainty vocabulary in the curate prompt,
-`src/guards/read-evidence.mjs`,
-`test/incidents/2026-08-10-unopened-document.test.mjs` (Phase 3).
+`src/guards/read-evidence.mjs` (a document counts as read only by a successful read of
+it in this round); the meeting-notes source and its incident test come in Phase 3.
 
 ### 11/08/2026: half the meeting notes were invisible
 **What happened.** Only one door existed: searching the document store by title
@@ -687,8 +688,8 @@ the curator's own hands.
 ones and the event's own attachments for the manual ones. Deduplicate by the literal
 document title recorded in the log, with the stated limit that this only works
 between nights where capture actually happened.
-**Where it lives in brain-kit.** `src/sources/meeting-notes.mjs` (two doors, literal
-search string, dedup by title) (Phase 3).
+**Where it lives in brain-kit.** The meeting-notes source (two doors, literal search
+string, dedup by title), not built yet (Phase 3).
 
 ### 11/08/2026: a meeting note entered the log as a link and nothing else
 **What happened.** Meeting notes were recorded in the log as a title plus a link,
@@ -697,8 +698,8 @@ content: the source is live and can change or lose its permissions.
 **Rule.** A meeting note is a first class source, with the same weight as a
 transcript. Every note in the window produces a distillation in the log. Promotion to
 a note stays selective; distillation does not.
-**Where it lives in brain-kit.** `src/sources/meeting-notes.mjs`, curate prompt stage
-for distillation (Phase 3).
+**Where it lives in brain-kit.** The meeting-notes source, not built yet, and a curate
+prompt stage for distillation (Phase 3).
 
 ### 11/08/2026: a squad's daily stand-up was invisible to the vault
 **What happened.** Only the owner's own calendar was in scope, so a squad's daily
@@ -706,8 +707,8 @@ stand up, which the owner does not attend, never reached the vault at all.
 **Rule.** Team calendars are in scope, and there the value is precisely what the
 owner does not see. An event that already has the owner among its attendees is
 skipped, and deduplication is by event id.
-**Where it lives in brain-kit.** `src/sources/calendar.mjs` (team calendars with
-recorded consent, dedup by event id) (Phase 3).
+**Where it lives in brain-kit.** The calendar source (team calendars with recorded
+consent, dedup by event id), not built yet (Phase 3).
 
 ### 21/08/2026: thirteen of sixteen attachments came back "not found"
 **What happened.** Of 16 minutes attached to the previous day's events, 13 returned
@@ -717,8 +718,8 @@ next day.
 **Rule.** An attachment that does not open for permission reasons is reported as "no
 access (document store permission)", never as empty and never as a connector failure,
 and the list goes into the answer so the human can decide whether to request access.
-**Where it lives in brain-kit.** Closed label set in the curate prompt,
-`src/sources/meeting-notes.mjs` (Phase 3).
+**Where it lives in brain-kit.** Closed label set in the curate prompt, and the
+meeting-notes source, not built yet (Phase 3).
 
 ### Undated: the document search is accent sensitive and fails silently
 **What happened.** The search string for the automatically generated meeting notes
@@ -728,8 +729,8 @@ found while calibrating the source.
 **Rule.** Copy the accented search string literally, and treat silent source failure
 as a risk class of its own. A wrong query does not raise an error, it produces a
 quiet night.
-**Where it lives in brain-kit.** `src/sources/meeting-notes.mjs` (literal search
-string in config), `src/guards/read-evidence.mjs` (Phase 3).
+**Where it lives in brain-kit.** The meeting-notes source (literal search string in
+config), not built yet, and `src/guards/read-evidence.mjs` (Phase 3).
 
 ### 03/09/2026: the search found nothing because the event is named after two people
 **What happened.** Searching for a mentor's surname returned nothing, because the
@@ -740,8 +741,8 @@ speaker separation kept swapping two colleagues whose names differ by one letter
 **Rule.** Search by the literal event title, read the whole document rather than just
 the summary, and treat a speaker separation error as a divergence to confirm, never
 as a fact.
-**Where it lives in brain-kit.** `src/sources/meeting-notes.mjs`, divergence table
-required by the curate prompt, skill `seed-rituals` (Phase 3).
+**Where it lives in brain-kit.** The meeting-notes source, not built yet, the
+divergence table required by the curate prompt, skill `seed-rituals` (Phase 3).
 
 ### Undated: the deduplication key had to be the escaped literal title
 **What happened.** Matching recurring meetings by the note they feed would have
@@ -776,8 +777,8 @@ allowlist the agent never loads the schemas in the first place. The signature of
 wrong allowlist is the agent saying it is waiting for permission.
 **Rule.** Check the MCP tool names with the CLI's own listing before writing the
 allowlist, include the tool search tool, and forbid workarounds in the prompt.
-**Where it lives in brain-kit.** `src/guards/connector-state.mjs` (parser for the
-CLI listing), allowlist derived per subcommand plus source tools, `brain-kit doctor`
+**Where it lives in brain-kit.** A connector-state guard (parser for the CLI listing),
+not built yet, allowlist derived per subcommand plus source tools, `brain-kit doctor`
 comparing the configured tool prefix with the observed one (Phase 3).
 
 ### Undated: a smoke test on a cheap model invented a connector problem
@@ -800,8 +801,8 @@ than in the connectors.
 **Rule.** If the connector says connected and the network is up, it is the
 invocation's configuration, not an outage and not authentication. Compare the
 environment of the two invocations before touching the allowlist.
-**Where it lives in brain-kit.** `brain-kit doctor` (the environment comparison check),
-`docs/connectors.md` (Phase 3).
+**Where it lives in brain-kit.** `brain-kit doctor` (the environment comparison check)
+and a connectors guide, neither built yet (Phase 3).
 
 ### 14/09/2026: disabled is a state, and nobody reports it
 **What happened.** The session connector status returned the calendar and document
@@ -811,9 +812,9 @@ finding from the blind nights earlier that month.
 **Rule.** Disabled is a state, not an error, and nobody reports it. Check the
 connector's literal status before investigating authentication, network or allowlist.
 The switch becomes the default for new sessions.
-**Where it lives in brain-kit.** `src/guards/connector-state.mjs` (seven states, exact
-display name, unknown format stays unknown), `brain-kit doctor`, `docs/connectors.md`
-(Phase 3).
+**Where it lives in brain-kit.** A connector-state guard (seven states, exact display
+name, unknown format stays unknown), `brain-kit doctor` and a connectors guide, none
+built yet (Phase 3).
 
 ## The Stop hook and the session
 
@@ -840,7 +841,8 @@ time and mark the inherited ones. A hook installed at user scope needs a vault
 sentinel, otherwise it holds every unrelated repository hostage.
 **Where it lives in brain-kit.** `src/vault.mjs` (the vault sentinel), `brain-kit hook
 stop` (fail open before the sentinel, fail closed after; inherited files marked),
-`test/incidents/2026-09-14-foreign-repo.test.mjs` (Phase 1).
+`test/hook-stop.test.mjs` (rung 3: a dirty repository that is not a vault releases
+silently) (Phase 1).
 
 ### Undated: the safety net depended on a tool it never checked for
 **What happened.** The Stop hook called a JSON command line tool in three places
@@ -867,8 +869,8 @@ validation at the same time, because the validator walks the file system and not
 index. The trade off, that material can disappear silently with only the Stop hook as
 a net, is written down rather than assumed.
 **Where it lives in brain-kit.** `validate.ignore_paths` (additive) in config,
-generated `.gitignore`, `brain-kit hook stop`,
-`test/incidents/2026-09-12-output-folder.test.mjs` (Phase 1).
+generated `.gitignore`, `brain-kit hook stop`, `test/vault.test.mjs` (the walk skips
+every prefix in `validate.ignore_paths`) (Phase 1).
 
 ### 10/08/2026: two orphaned notes survived three weeks as a second version of the truth
 **What happened.** After a refactor on 22/07/2026 two notes were left unreferenced,

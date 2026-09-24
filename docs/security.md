@@ -45,6 +45,7 @@ The measurements that followed, one change at a time:
 
 ```
 --setting-sources ''  --strict-mcp-config  --permission-mode dontAsk  --permission-prompts none
+--no-session-persistence
 ```
 
 - `--setting-sources ''`, with the empty string as its value, loads no settings file at
@@ -54,8 +55,11 @@ The measurements that followed, one change at a time:
 - `--permission-mode dontAsk` denies every tool use that no rule of the round allows,
   without asking anyone.
 - `--permission-prompts none` makes sure nothing waits for an answer.
+- `--no-session-persistence` keeps the round from writing a session transcript of its
+  own: nothing of the round is left in your Claude Code history, and its runs stay out of
+  the transcripts the next round reads.
 
-With the four together, the disallowed command was denied and listed among the run's
+With the first four together, the disallowed command was denied and listed among the run's
 denials, no hook ran, no MCP server was loaded, and the login still worked: it is not a
 settings file.
 
