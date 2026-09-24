@@ -16,6 +16,9 @@
 //   - a bare mapping (`verified: { by, at }`, or `verified:` then indented
 //     `by:` / `at:` lines): it becomes a one-element list, its own pairs
 //     carried over as written, byte for byte, and the new entry appended.
+//   - an empty value (`verified:` alone, `verified: []`) is an empty list,
+//     and a null (`verified: ~`) is no key yet: either gains the entry in
+//     place of the value.
 //
 // Everything outside the `verified` key is sliced out of the original
 // text, never rebuilt: the frontmatter's other keys, the delimiters, a
@@ -27,16 +30,22 @@
 // It never guesses (src/frontmatter.mjs is a regular-expression reader, not
 // a YAML parser, and says so in PARSER_LIMITS). A `verified` value in any
 // shape that reader cannot see, or can see only partly, is a refusal
-// (StampRefused, naming the reason), never a rewrite: an inline list, a
+// (StampRefused, naming the reason), never a rewrite. First of all, a
+// frontmatter that is not block style (fix round 1, I2): a flow mapping at
+// the top, an explicit key ("? verified"), a merge key, a key spelt with
+// an escape, anything at column 0 that is not a plain or quoted key; in
+// each, where `verified` is, or whether it is there, cannot be located
+// with certainty, and appending a key could duplicate one or break the
+// YAML. Then, for the value itself: an inline list, a
 // scalar, an anchor or alias, a comment after the value, a value that
 // continues past a blank line or a comment where the reader stops, a
 // compact list at the key's own indentation, a tab in the indentation, the
 // key written twice, or an existing event without a readable `by` and
-// `at`. The last one also refuses a block list of inline mappings
-// (`- { by: ..., at: ... }`, the form section 5.2 prints), because the
-// reader reads each such entry as one key named "{ by": the owner fixes
-// the shape by hand, once, rather than the writer appending under an
-// entry nobody can read. And the result is read back with the same reader
+// `at`, or with any field the reader returns as undefined (present, with
+// something nested or folded under it that it does not read). A block
+// list of inline mappings (`- { by: ..., at: ... }`, the form section 5.2
+// prints) is read by the reader since slice 1C task 6, and gains a block
+// entry after its last one. And the result is read back with the same reader
 // before it is returned: the events it reads must be exactly the events
 // read before plus the new one, or it is a refusal.
 //
@@ -70,6 +79,18 @@ const DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\
 
 const DELIMITER = /^---[ \t]*$/;
 const KEY_LINE = /^(?:"verified"|'verified'|verified)[ \t]*:(.*)$/;
+// A line at column 0 of a block-style frontmatter: a key of the top-level
+// mapping, then a colon ending it. The key is plain (its first character
+// none YAML gives a meaning to: no flow brace or bracket, no explicit-key
+// "?", no ":" or "-", no anchor, alias, tag, block scalar, directive,
+// reserved character, comment, quote, and no "<<" merge key; no "#" in it)
+// or quoted with no escape inside (no backslash, no doubled quote), so the
+// key it names is the key written, and "verified" can only be spelt one
+// of the three ways KEY_LINE finds.
+const TOP_KEY = /^(?:"[^"\\]*"|'[^']*'|[^\s{}[\]?:\-&*!|>%@`#'",<][^#]*?)[ \t]*:(?:[ \t]|$)/;
+// The empty values section 11 reads as "no event yet": an empty flow list
+// is an empty list, and a null is no key at all.
+const EMPTY_VALUE = /^(?:\[[ \t]*\]|~|null|Null|NULL)$/;
 
 // The lines of `text` from `start`, each with where it starts, where its
 // content ends, where the next line starts and its own ending ("\r\n",
@@ -184,23 +205,34 @@ export function stampVerified(text, { by, at } = {}) {
   // The reader and this writer must be looking at the same block.
   if (frontmatter !== fm.map((line) => line.content).join('\n')) throw new StampRefused(REFUSAL.UNREADABLE, 'frontmatter located differently');
 
+  // Block style only: the first line with content is at column 0, and
+  // every line at column 0 that is not blank or a comment is a plain or
+  // quoted key. A flow mapping, an explicit key ("? verified"), a merge
+  // key, a key spelt with an escape: in each, where "verified" is (or
+  // whether it is there at all) is beyond this writer, so it writes
+  // nothing.
+  const significant = fm.filter((line) => line.content.trim() !== '' && !/^[ \t]*#/.test(line.content));
+  if ((significant.length > 0 && isIndented(significant[0]))
+    || significant.some((line) => !isIndented(line) && !TOP_KEY.test(line.content))) {
+    throw new StampRefused(REFUSAL.UNREADABLE, 'frontmatter is not a block mapping at column 0');
+  }
+
   const keyIndexes = fm.flatMap((line, index) => (KEY_LINE.test(line.content) ? [index] : []));
   if (keyIndexes.length > 1) throw new StampRefused(REFUSAL.DUPLICATE);
-  const before = readEvents(frontmatter);
+  const emptyValue = keyIndexes.length === 1 && EMPTY_VALUE.test(KEY_LINE.exec(fm[keyIndexes[0]].content)[1].trim());
+  const before = emptyValue ? [] : readEvents(frontmatter);
 
   let result;
   if (keyIndexes.length === 0) {
-    // The frontmatter must be a mapping written from column 0, or a key
-    // added at column 0 would not belong to it.
-    const first = fm.find((line) => line.content.trim() !== '' && !/^[ \t]*#/.test(line.content));
-    if (first !== undefined && (isIndented(first) || isEntryMarker(first.content) || !isPair(first.content))) {
-      throw new StampRefused(REFUSAL.UNREADABLE, 'frontmatter is not a mapping at column 0');
-    }
     const after = fm.length > 0 ? fm[fm.length - 1] : lines[0];
     const insert = `verified:${after.eol}${entryLines('  ', by, at, after.eol)}`;
     result = `${text.slice(0, after.next)}${insert}${text.slice(after.next)}`;
   } else {
     if (before === undefined || before === null) throw new StampRefused(REFUSAL.UNREADABLE, 'value beyond the reader');
+    // A field the reader sees as present but cannot read (something
+    // nested or folded under it) is never taken for absent: the event is
+    // not what the reader read, so nothing is written.
+    if (before.some((event) => Object.values(event).some((value) => value === undefined))) throw new StampRefused(REFUSAL.UNREADABLE, 'a field of an event beyond the reader');
     if (before.some((event) => isBlank(event.by) || isBlank(event.at))) throw new StampRefused(REFUSAL.INCOMPLETE);
     result = rewriteKey(text, fm, keyIndexes[0], { by, at });
   }
@@ -232,6 +264,12 @@ function rewriteKey(text, fm, keyIndex, { by, at }) {
   if (block.some((line) => indentOf(line.content).includes('\t'))) throw new StampRefused(REFUSAL.UNREADABLE, 'tab in indentation');
 
   const trimmedHead = head.trim();
+  if (EMPTY_VALUE.test(trimmedHead)) {
+    // `verified: []` or `verified: ~`: the value becomes the first entry.
+    if (block.length > 0) throw new StampRefused(REFUSAL.UNREADABLE, 'empty value with something under it');
+    const keyPart = keyLine.content.slice(0, keyLine.content.length - head.length);
+    return `${text.slice(0, keyLine.start)}${keyPart}${keyLine.eol}${entryLines('  ', by, at, keyLine.eol)}${text.slice(keyLine.next)}`;
+  }
   if (trimmedHead.startsWith('{')) {
     // An inline bare mapping: nothing may follow its closing brace, and
     // nothing may be indented under it.

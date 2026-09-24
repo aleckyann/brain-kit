@@ -209,7 +209,25 @@ test('an existing event without a readable by and at is refused, including the i
   refused('---\nverified: {}\n---\n', REFUSAL.INCOMPLETE);
   refused('---\nverified: { by: human:bo, at: "" }\n---\n', REFUSAL.INCOMPLETE);
   refused('---\nverified:\n  by: human:bo\n---\n', REFUSAL.INCOMPLETE);
-  refused('---\nverified:\n  - { by: human:bo, at: 2026-06-25T09:00:00Z }\n---\n', REFUSAL.INCOMPLETE);
+  refused('---\nverified:\n  - { by: human:bo }\n---\n', REFUSAL.INCOMPLETE);
+});
+
+test('the list section 5.2 prints, inline mappings under markers, gains a block entry after its last', () => {
+  const text = '---\ntype: note\nverified:\n  - { by: human:ahormati, at: 2026-06-25T09:00:00Z }\n  - { by: process:finance-nightly, at: 2026-06-26T02:00:00Z }\ntitle: A\n---\n';
+  const out = stampOk(text, '---\ntype: note\nverified:\n  - { by: human:ahormati, at: 2026-06-25T09:00:00Z }\n  - { by: process:finance-nightly, at: 2026-06-26T02:00:00Z }\n  - by: human:ana\n    at: 2026-09-23T12:00:00+00:00\ntitle: A\n---\n');
+  assert.deepEqual(readEntries(splitFrontmatter(out).frontmatter, 'verified').map((event) => event.by), ['human:ahormati', 'process:finance-nightly', 'human:ana']);
+  stampOk(text.replace(/\n/g, '\r\n'), out.replace(/\n/g, '\r\n'));
+});
+
+test('an event with a field the reader sees but cannot read is refused, never read as absent', () => {
+  for (const nested of [
+    '  - by: human:bo\n    at: 2026-06-25T09:00:00Z\n    note:\n      deep: 1',
+    '  - by: human:bo\n    at: 2026-06-25T09:00:00Z\n    tags:\n      - a',
+    '  - by: human:bo\n    at: 2026-06-25T09:00:00Z\n      continued',
+    '  - by:\n      name: bo\n    at: 2026-06-25T09:00:00Z',
+  ]) {
+    refused(`---\nverified:\n${nested}\n---\n`, REFUSAL.UNREADABLE);
+  }
 });
 
 test('the key written twice is refused', () => {
@@ -259,4 +277,54 @@ test('a tab counts as indentation where the reader stops, and in the frontmatter
   refused('---\nverified:\n  - by: human:bo\n    at: 2026-06-25T09:00:00Z\n\n\textra: 1\n---\n', REFUSAL.UNREADABLE);
   refused('---\n\ttype: note\n---\n', REFUSAL.UNREADABLE);
   refused('---\n- a: 1\n---\n', REFUSAL.UNREADABLE);
+});
+
+test('a frontmatter that is not block style is refused, written into nowhere (fix round 1, I2)', () => {
+  const shapes = [
+    '{type: note, title: F}', // a flow mapping at the top: valid YAML, where would a key go
+    'type: note\n? verified\n: { by: human:bo, at: 2026-06-25T09:00:00Z }', // an explicit key
+    '? verified\n: [x]', // an explicit key first
+    'type: note\n? verified: x', // an explicit key whose content reads like a pair
+    'type: note\n: orphan value',
+    'type: note\n<<: *base', // a merge key can bring a verified with it
+    'type: note\n"verif\\x69ed": x', // a key spelt with an escape
+    "type: note\n'it''s': x", // a doubled quote inside a quoted key
+    'type: note\n&a title: A',
+    'type: note\n*a : x',
+    'type: note\n!!str title: A',
+    '%YAML 1.2\ntype: note',
+    'type: note\n...',
+    'type: note\n[a, b]: x',
+    'type: note\n|: x',
+    'type: note\n@x: y',
+    'type: note\n`x`: y',
+    'type: note\ntitle#x: A',
+    'type: note\nplain text line',
+    'type: note\nverified:x',
+  ];
+  for (const shape of shapes) {
+    const text = `---\n${shape}\n---\n${BODY}`;
+    assert.throws(() => stampVerified(text, EVENT), (error) => error instanceof StampRefused && error.reason === REFUSAL.UNREADABLE, shape);
+  }
+});
+
+test('the block-style guard still admits every plain and quoted key a note uses', () => {
+  const text = '---\ntype: note\n"title": A\n\'description\': B\nsources:\n  - resource: https://example.com/x\nstale_after: 2026-12-01\nkey with spaces: v\nurl-ish:thing: v\n# a comment\n\n---\n';
+  const out = stampVerified(text, EVENT);
+  assert.equal(out, text.replace('\n\n---\n', `\n\n${NEW}---\n`));
+});
+
+test('an empty flow list is an empty list and a null is no key: both gain the first entry in place of the value (fix round 1, M3)', () => {
+  for (const value of ['[]', '[ ]', '~', 'null', 'Null', 'NULL']) {
+    stampOk(`---\ntype: note\nverified: ${value}\ntitle: A\n---\n${BODY}`, `---\ntype: note\n${NEW}title: A\n---\n${BODY}`);
+  }
+  stampOk('---\n"verified": []\r\n---\r\n'.replace('---\n', '---\r\n'), '---\r\n"verified":\r\n  - by: human:ana\r\n    at: 2026-09-23T12:00:00+00:00\r\n---\r\n');
+  for (const value of ['[] # none yet', '~ # none', '[ ]x', 'nULL', '""', "''", '[~]']) {
+    refused(`---\ntype: note\nverified: ${value}\n---\n`, REFUSAL.UNREADABLE);
+  }
+  refused('---\ntype: note\nverified: ~\n  - by: human:bo\n---\n', REFUSAL.UNREADABLE);
+});
+
+test('an event whose by is only quoted spaces is incomplete', () => {
+  refused('---\nverified:\n  - by: " "\n    at: 2026-06-25T09:00:00Z\n---\n', REFUSAL.INCOMPLETE);
 });

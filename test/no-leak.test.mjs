@@ -21,6 +21,16 @@ const SECRET_PATTERNS = GENERIC_PATTERNS.map((raw) => new RegExp(raw, 'i'));
 // personal gmail.com address does not slip through as "just another gmail".
 const ALLOWED_ADDRESSES = new Set(['aleckyann@gmail.com']);
 const ALLOWED_EMAIL_DOMAINS = /@(example\.(com|org|net|invalid)|anthropic\.com|users\.noreply\.github\.com)$/;
+// A domain has no case, so every address is judged in lower case: one
+// written in capitals is the same address, allowed or refused exactly as
+// its lower-case spelling is. (Fix round 1 of slice 1C, task 5: the domain
+// test was case-sensitive, so an example domain in capitals failed, and a
+// real domain was only refused because it failed to match, not because it
+// was read.)
+function emailAllowed(email) {
+  const lower = email.toLowerCase();
+  return ALLOWED_ADDRESSES.has(lower) || ALLOWED_EMAIL_DOMAINS.test(lower);
+}
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 const TEXT_EXT = /\.(mjs|js|json|md|yml|yaml|sh|cmd|txt)$/;
 const EXEMPT_FILES = new Set([
@@ -50,10 +60,16 @@ test('every e-mail address in tracked files uses an example domain, a public-aut
   for (const file of trackedTextFiles()) {
     const text = readFileSync(join(KIT_ROOT, file), 'utf8');
     for (const email of text.match(EMAIL) ?? []) {
-      if (ALLOWED_ADDRESSES.has(email.toLowerCase())) continue;
-      assert.match(email, ALLOWED_EMAIL_DOMAINS, `${file}: unexpected e-mail domain in ${email}`);
+      assert.ok(emailAllowed(email), `${file}: unexpected e-mail domain in ${email}`);
     }
   }
+});
+
+test('the e-mail allowlist ignores case in both directions', () => {
+  for (const email of ['ana@example.com', 'ANA@EXAMPLE.INVALID', 'Curator@Example.Org', 'AleckYann@Gmail.com']) assert.ok(emailAllowed(email), email);
+  // Joined at run time, so this file's own scan never reads them as addresses.
+  const refused = [['someone', 'gmail.com'], ['Someone', 'GMAIL.COM'], ['ana', 'example.co'], ['ANA', 'EXAMPLE.COM.EVIL.IO'], ['other', 'Gmail.com']].map((parts) => parts.join('@'));
+  for (const email of refused) assert.ok(!emailAllowed(email), email);
 });
 
 test('bin/brain-kit.mjs is executable', () => {

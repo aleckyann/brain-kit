@@ -11,7 +11,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runVerify } from '../src/commands/verify.mjs';
@@ -56,7 +56,12 @@ if (process.env.FAKE_GH_STATUS && process.env.FAKE_GH_STATUS !== '0') {
   process.exit(Number(process.env.FAKE_GH_STATUS));
 }
 if (process.env.FAKE_GH_SLEEP) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.FAKE_GH_SLEEP));
-process.stdout.write((process.env.FAKE_GH_VIEW || '') + '\\n');
+let payload = process.env.FAKE_GH_VIEW || '';
+if (payload.includes('__REMOTE_MAIN__')) {
+  const tip = require('node:child_process').execFileSync('git', ['rev-parse', 'refs/heads/main'], { cwd: process.env.FAKE_GH_REMOTE, encoding: 'utf8' }).trim();
+  payload = payload.split('__REMOTE_MAIN__').join(tip);
+}
+process.stdout.write(payload + '\\n');
 `;
 
 // A world whose vault holds notes committed and published, the owner's
@@ -89,10 +94,21 @@ function makeVerifyWorld({ files = {}, lang = null, prefix = 'brain-kit-verify-'
   const log = join(world.base, 'gh-calls.jsonl');
   writeFileSync(join(bin, 'gh'), FAKE_GH(log));
   chmodSync(join(bin, 'gh'), 0o755);
-  const env = { ...world.env, PATH: `${bin}:${world.env.PATH}` };
+  // The remote as the owner configured it, a GitHub URL, rewritten to the
+  // bare repository on this machine for every git call (insteadOf), so
+  // gh is handed "github.com/ana/brain" while nothing reaches a network.
+  git(world.vault, ['config', 'remote.origin.url', GITHUB_URL]);
+  git(world.vault, ['config', `url.${world.remote}.insteadOf`, GITHUB_URL]);
+  const env = { ...world.env, PATH: `${bin}:${world.env.PATH}`, FAKE_GH_REMOTE: world.remote };
   return {
     ...world,
     env,
+    // The remote's URL as configured, and where git really goes for it.
+    pointRemote(url, target = world.remote) {
+      git(world.vault, ['config', '--remove-section', `url.${world.remote}`]);
+      git(world.vault, ['config', 'remote.origin.url', url]);
+      if (target !== null) git(world.vault, ['config', `url.${target}.insteadOf`, url]);
+    },
     // The pull request, merged: `change` maps a path to its new content, or
     // null to delete it; committed and pushed from the other clone.
     merge(change) {
@@ -120,8 +136,17 @@ function makeVerifyWorld({ files = {}, lang = null, prefix = 'brain-kit-verify-'
   };
 }
 
-function view(files, { state = 'MERGED', base = 'main' } = {}) {
-  return JSON.stringify({ state, baseRefName: base, files: files.map((path) => ({ path, additions: 1, deletions: 0 })) });
+const GITHUB_URL = 'https://github.com/ana/brain.git';
+// A user before a host reads as an e-mail address to the repository's own
+// leak scan, so URLs carrying one are joined at run time.
+const at = (user, rest) => [user, rest].join('@');
+const GH_ARGS = ['pr', 'view', '7', '--repo', 'github.com/ana/brain', '--json', 'state,baseRefName,files,mergeCommit'];
+
+// The payload gh prints. `merge` is the merge commit's object id; by
+// default the remote's main at the moment gh answers, which is what a pull
+// request merged into main looks like from here.
+function view(files, { state = 'MERGED', base = 'main', merge = '__REMOTE_MAIN__' } = {}) {
+  return JSON.stringify({ state, baseRefName: base, files: files.map((path) => ({ path, additions: 1, deletions: 0 })), mergeCommit: merge === null ? null : { oid: merge } });
 }
 
 async function verify(world, argv, { env = {}, cwd = world.vault, deps = {} } = {}) {
@@ -185,7 +210,7 @@ test('a pull request merged into the default branch: every changed note still he
 
   const result = await verify(world, ['--pr', '7']);
   assert.equal(result.code, EXIT.OK, result.stderr);
-  assert.deepEqual(world.ghCalls().map((call) => call.args), [['pr', 'view', '7', '--json', 'state,baseRefName,files']]);
+  assert.deepEqual(world.ghCalls().map((call) => call.args), [GH_ARGS]);
 
   // Exactly the stamp, nothing else, in the two notes; nothing anywhere else.
   assert.equal(world.read('notes/a.md'), stampVerified(before.a, { by: BY, at: AT }));
@@ -227,11 +252,13 @@ test('validate passes on every stamped note, in each of the three shapes', async
       'notes/list.md': note('List', 'verified:\n  - by: human:bo\n    at: 2026-06-25T09:00:00Z\n'),
       'notes/inline.md': note('Inline', 'verified: { by: human:bo, at: 2026-06-25T09:00:00Z }\n'),
       'notes/block.md': note('Block', 'verified:\n  by: human:bo\n  at: 2026-06-25T09:00:00Z\n'),
+      'notes/spec.md': note('Spec', 'verified:\n  - { by: human:ahormati, at: 2026-06-25T09:00:00Z }\n  - { by: process:finance-nightly, at: 2026-06-26T02:00:00Z }\n'),
     },
   });
-  const result = await verify(world, ['--files', 'notes/list.md', 'notes/inline.md', 'notes/block.md', 'notes/a.md']);
+  const result = await verify(world, ['--files', 'notes/list.md', 'notes/inline.md', 'notes/block.md', 'notes/a.md', 'notes/spec.md']);
   assert.equal(result.code, EXIT.OK, result.stderr);
-  const stamped = ['notes/a.md', 'notes/block.md', 'notes/inline.md', 'notes/list.md'];
+  const stamped = ['notes/a.md', 'notes/block.md', 'notes/inline.md', 'notes/list.md', 'notes/spec.md'];
+  assert.match(world.read('notes/spec.md'), /at: 2026-06-26T02:00:00Z \}\n {2}- by: human:ana\n {4}at: 2026-09-23T12:00:00\+00:00\n---/);
   assert.deepEqual(lastCommit(world).files, stamped);
   for (const rel of ['notes/list.md', 'notes/inline.md', 'notes/block.md']) {
     assert.match(world.read(rel), /verified:\n {2}- by: human:bo\n {4}at: 2026-06-25T09:00:00Z\n {2}- by: human:ana\n {4}at: 2026-09-23T12:00:00\+00:00\n/);
@@ -267,8 +294,9 @@ test('an open pull request, a closed one and one merged into another base are re
 
 test('the agent\'s identity is refused, by e-mail or by name, as author or as committer, before gh is asked', async () => {
   for (const [how, apply, shown] of [
-    ['email', (w) => git(w.vault, ['config', 'user.email', 'Curator@Example.invalid']), ['Ana Owner', 'Curator@Example.invalid']],
+    ['email', (w) => git(w.vault, ['config', 'user.email', 'CURATOR@example.invalid']), ['Ana Owner', 'CURATOR@example.invalid']],
     ['name', (w) => git(w.vault, ['config', 'user.name', AGENT.name]), [AGENT.name, 'owner@example.com']],
+    ['name in another case', (w) => git(w.vault, ['config', 'user.name', AGENT.name.toLowerCase()]), [AGENT.name.toLowerCase(), 'owner@example.com']],
     ['committer', () => ({ GIT_COMMITTER_EMAIL: AGENT.email }), ['Ana Owner', AGENT.email]],
     ['author', () => ({ GIT_AUTHOR_NAME: AGENT.name }), [AGENT.name, 'owner@example.com']],
   ]) {
@@ -351,14 +379,97 @@ test('a merged pull request not yet pulled into this checkout is refused naming 
   const before = snapshot(world);
   const result = await verify(world, ['--pr', '7']);
   assert.equal(result.code, EXIT.FAILURE);
-  assert.equal(result.stderr, line('verify.behind', { branch: 'main', upstream: 'origin/main', behind: 1 }));
+  const sha = git(world.remote, ['rev-parse', 'main']).trim().slice(0, 12);
+  assert.equal(result.stderr, line('verify.merge_not_pulled', { pr: '7', sha, branch: 'main', tip: world.sha('main').slice(0, 12), upstream: 'origin/main' }));
   assert.deepEqual(snapshot(world), before);
   assertUnlocked(world);
 });
 
+test('a merge in this history with the local branch behind the remote is still refused naming sync', async () => {
+  const world = makeVerifyWorld();
+  const merge = world.sha('HEAD');
+  world.merge({ 'notes/b.md': note('B', 'tags: [later]\n') });
+  world.env.FAKE_GH_VIEW = view(['notes/a.md'], { merge });
+  const before = snapshot(world);
+  const result = await verify(world, ['--pr', '7']);
+  assert.equal(result.code, EXIT.FAILURE);
+  assert.equal(result.stderr, line('verify.behind', { branch: 'main', upstream: 'origin/main', behind: 1 }));
+  assert.deepEqual(snapshot(world), before);
+});
+
+test('a pull request gh reports as merged whose merge commit is not in this history is refused, never stamped', async () => {
+  // Another repository's merge (gh answering about a remote it prefers),
+  // a commit this repository holds only on another branch, and one it
+  // does not hold at all.
+  const world = makeVerifyWorld();
+  git(world.elsewhere, ['checkout', '-q', '-b', 'side']);
+  writeFileSync(join(world.elsewhere, 'side.md'), note('Side'));
+  git(world.elsewhere, ['add', '-A']);
+  git(world.elsewhere, ['commit', '-q', '-m', 'side']);
+  git(world.elsewhere, ['push', '-q', 'origin', 'side']);
+  git(world.vault, ['fetch', '-q', 'origin', 'side']);
+  const side = git(world.elsewhere, ['rev-parse', 'HEAD']).trim();
+  for (const merge of [side, 'a'.repeat(40), 'b'.repeat(64)]) {
+    world.env.FAKE_GH_VIEW = view(['notes/a.md'], { merge });
+    const before = snapshot(world);
+    const result = await verify(world, ['--pr', '7']);
+    assert.equal(result.code, EXIT.FAILURE, merge);
+    assert.equal(result.stderr, line('verify.merge_not_here', { pr: '7', repo: 'github.com/ana/brain', sha: merge.slice(0, 12), branch: 'main', tip: world.sha('main').slice(0, 12), upstream: 'origin/main' }), merge);
+    assert.deepEqual(snapshot(world), before, merge);
+  }
+  for (const merge of [null, 'not-a-sha', 'A'.repeat(40)]) {
+    world.env.FAKE_GH_VIEW = view(['notes/a.md'], { merge });
+    const result = await verify(world, ['--pr', '7']);
+    assert.equal(result.code, EXIT.FAILURE, String(merge));
+    assert.ok(result.stderr.startsWith('gh answered about pull request #7 in a shape'), result.stderr);
+  }
+  world.env.FAKE_GH_VIEW = JSON.stringify({ state: 'MERGED', baseRefName: 'main', files: [{ path: 'notes/a.md' }], mergeCommit: 'deadbeef' });
+  assert.equal((await verify(world, ['--pr', '7'])).code, EXIT.FAILURE);
+  assert.ok(!world.read('notes/a.md').includes('verified'));
+});
+
+test('gh is handed the repository the default branch\'s remote names, whatever other remote it would prefer', async () => {
+  for (const [url, repo] of [
+    [GITHUB_URL, 'github.com/ana/brain'],
+    [at('git', 'github.com:ana/brain.git'), 'github.com/ana/brain'],
+    ['ssh://git@Example.COM:2222/ana/brain', 'example.com/ana/brain'],
+    [`https://${at('token', 'github.com/ana/brain/')}`, 'github.com/ana/brain'],
+  ]) {
+    const world = makeVerifyWorld();
+    world.pointRemote(url);
+    git(world.vault, ['remote', 'add', 'upstream', 'https://github.com/someone/template.git']);
+    world.env.FAKE_GH_VIEW = view(['notes/a.md']);
+    const result = await verify(world, ['--pr', '7']);
+    assert.equal(result.code, EXIT.OK, `${url}: ${result.stderr}`);
+    assert.deepEqual(world.ghCalls().map((call) => call.args), [['pr', 'view', '7', '--repo', repo, '--json', 'state,baseRefName,files,mergeCommit']], url);
+  }
+});
+
+test('a remote whose URL names no GitHub repository is refused before gh is asked, with no credential printed', async () => {
+  for (const [url, shown] of [
+    [`https://${at('user:s3cr3t', 'gitlab.example.com/group/sub/brain.git')}`, 'https://gitlab.example.com/group/sub/brain.git'],
+    ['/srv/git/brain.git', '/srv/git/brain.git'],
+    ['file:///srv/git/brain.git', 'file:///srv/git/brain.git'],
+    ['https://github.com/ana', 'https://github.com/ana'],
+    ['https://github.com/ana/bra in.git', 'https://github.com/ana/bra in.git'],
+    ['https://github.com/ana/brain%2F..', 'https://github.com/ana/brain%2F..'],
+  ]) {
+    const world = makeVerifyWorld();
+    world.pointRemote(url);
+    world.env.FAKE_GH_VIEW = view(['notes/a.md']);
+    const before = snapshot(world);
+    const result = await verify(world, ['--pr', '7']);
+    assert.equal(result.code, EXIT.FAILURE, url);
+    assert.equal(result.stderr, line('verify.remote_not_github', { remote: 'origin', url: shown }), url);
+    assert.ok(!result.stderr.includes('s3cr3t'));
+    assert.deepEqual(world.ghCalls(), [], url);
+    assert.deepEqual(snapshot(world), before, url);
+  }
+});
+
 test('a remote that cannot be fetched is refused: whether the merge is here is not known', async () => {
   const world = makeVerifyWorld();
-  git(world.vault, ['remote', 'set-url', 'origin', join(world.base, 'nowhere.git')]);
+  world.pointRemote(GITHUB_URL, join(world.base, 'nowhere.git'));
   world.env.FAKE_GH_VIEW = view(['notes/a.md']);
   const before = snapshot(world);
   const result = await verify(world, ['--pr', '7']);
@@ -384,12 +495,12 @@ test('gh failing, answering garbage, listing no file or 100 files is refused, an
     [{ FAKE_GH_VIEW: 'not json' }, (r) => assert.ok(r.stderr.startsWith('gh answered about pull request #7 in a shape'), r.stderr)],
     [{ FAKE_GH_VIEW: '' }, (r) => assert.ok(r.stderr.startsWith('gh answered about pull request #7 in a shape'), r.stderr)],
     [{ FAKE_GH_VIEW: 'null' }, (r) => assert.ok(r.stderr.startsWith('gh answered about pull request #7 in a shape'), r.stderr)],
-    [{ FAKE_GH_VIEW: JSON.stringify({ state: 'MERGED', baseRefName: 'main' }) }, (r) => assert.ok(r.stderr.startsWith('gh answered about pull request #7 in a shape'), r.stderr)],
-    [{ FAKE_GH_VIEW: JSON.stringify({ state: 'MERGED', files: [{ path: 'notes/a.md' }] }) }, (r) => assert.ok(r.stderr.startsWith('gh answered about pull request #7 in a shape'), r.stderr)],
-    [{ FAKE_GH_VIEW: JSON.stringify({ baseRefName: 'main', files: [{ path: 'notes/a.md' }] }) }, (r) => assert.ok(r.stderr.startsWith('gh answered about pull request #7 in a shape'), r.stderr)],
-    [{ FAKE_GH_VIEW: JSON.stringify({ state: 'MERGED', baseRefName: 'main', files: [{ path: 7 }] }) }, (r) => assert.ok(r.stderr.startsWith('gh answered about pull request #7 in a shape'), r.stderr)],
-    [{ FAKE_GH_VIEW: JSON.stringify({ state: 'MERGED', baseRefName: 'main', files: [{ path: '' }] }) }, (r) => assert.ok(r.stderr.startsWith('gh answered about pull request #7 in a shape'), r.stderr)],
-    [{ FAKE_GH_VIEW: JSON.stringify({ state: 'MERGED', baseRefName: 'main', files: [null] }) }, (r) => assert.ok(r.stderr.startsWith('gh answered about pull request #7 in a shape'), r.stderr)],
+    [{ FAKE_GH_VIEW: JSON.stringify({ state: 'MERGED', baseRefName: 'main', mergeCommit: { oid: 'c'.repeat(40) } }) }, (r) => assert.ok(r.stderr.startsWith('gh answered about pull request #7 in a shape'), r.stderr)],
+    [{ FAKE_GH_VIEW: JSON.stringify({ state: 'MERGED', files: [{ path: 'notes/a.md' }], mergeCommit: { oid: 'c'.repeat(40) } }) }, (r) => assert.ok(r.stderr.startsWith('gh answered about pull request #7 in a shape'), r.stderr)],
+    [{ FAKE_GH_VIEW: JSON.stringify({ baseRefName: 'main', files: [{ path: 'notes/a.md' }], mergeCommit: { oid: 'c'.repeat(40) } }) }, (r) => assert.ok(r.stderr.startsWith('gh answered about pull request #7 in a shape'), r.stderr)],
+    [{ FAKE_GH_VIEW: JSON.stringify({ state: 'MERGED', baseRefName: 'main', files: [{ path: 7 }], mergeCommit: { oid: 'c'.repeat(40) } }) }, (r) => assert.ok(r.stderr.startsWith('gh answered about pull request #7 in a shape'), r.stderr)],
+    [{ FAKE_GH_VIEW: JSON.stringify({ state: 'MERGED', baseRefName: 'main', files: [{ path: '' }], mergeCommit: { oid: 'c'.repeat(40) } }) }, (r) => assert.ok(r.stderr.startsWith('gh answered about pull request #7 in a shape'), r.stderr)],
+    [{ FAKE_GH_VIEW: JSON.stringify({ state: 'MERGED', baseRefName: 'main', files: [null], mergeCommit: { oid: 'c'.repeat(40) } }) }, (r) => assert.ok(r.stderr.startsWith('gh answered about pull request #7 in a shape'), r.stderr)],
     [{ FAKE_GH_VIEW: view([]) }, (r) => assert.equal(r.stderr, line('verify.pr_no_files', { pr: '7' }))],
     [{ FAKE_GH_VIEW: view(Array.from({ length: 100 }, (_, i) => `notes/n${i}.md`)) }, (r) => assert.equal(r.stderr, line('verify.pr_too_many_files', { pr: '7', count: 100, limit: 100 }))],
   ];
@@ -561,6 +672,8 @@ test('a vault in a folder below the repository\'s top maps the pull request\'s p
   git(repo, ['push', '-q', '-u', 'origin', 'main']);
   git(repo, ['config', 'user.name', 'Ana']);
   git(repo, ['config', 'user.email', 'ana@example.com']);
+  git(repo, ['config', 'remote.origin.url', GITHUB_URL]);
+  git(repo, ['config', `url.${remote}.insteadOf`, GITHUB_URL]);
   const bin = join(base, 'fakebin');
   mkdirSync(bin);
   writeFileSync(join(bin, 'gh'), FAKE_GH(join(base, 'gh.jsonl')));
@@ -570,7 +683,7 @@ test('a vault in a folder below the repository\'s top maps the pull request\'s p
   const env = {
     ...process.env, HOME: join(base, 'home'), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(base, 'gitconfig'),
     XDG_STATE_HOME: join(base, 'state'), BRAIN_KIT_STATE_DIR: join(base, 'state', 'brain-kit'), PATH: `${bin}:${process.env.PATH}`,
-    FAKE_GH_VIEW: view(['brain/notes/a.md', 'notes/a.md']),
+    FAKE_GH_VIEW: view(['brain/notes/a.md', 'notes/a.md']), FAKE_GH_REMOTE: remote,
   };
   const f = fakeIo();
   const code = await runVerify(['--pr', '7'], f.io, t, { env, cwd: join(repo, 'brain'), now: NOW });
@@ -604,7 +717,7 @@ test('a commit hook that changes the tree leaves a commit verify cannot prove, a
   git(world.vault, ['config', 'core.hooksPath', hooks]);
   const result = await verify(world, ['--files', 'notes/a.md']);
   assert.equal(result.code, EXIT.FAILURE);
-  assert.equal(result.stderr, line('verify.commit_unproven', { branch: 'main' }));
+  assert.equal(result.stderr, line('verify.commit_unproven', { branch: 'main', current: 'main' }));
 });
 
 test('the lock held by another run postpones verify, exit 75, and nothing moves', async () => {
@@ -694,7 +807,7 @@ test('a remote that no longer publishes the default branch is refused, naming wh
   git(world.elsewhere, ['push', '-q', 'origin', 'main:trunk']);
   git(world.remote, ['symbolic-ref', 'HEAD', 'refs/heads/trunk']);
   git(world.remote, ['update-ref', '-d', 'refs/heads/main']);
-  world.env.FAKE_GH_VIEW = view(['notes/a.md']);
+  world.env.FAKE_GH_VIEW = view(['notes/a.md'], { merge: world.sha('HEAD') });
   const before = snapshot(world);
   const result = await verify(world, ['--pr', '7']);
   assert.equal(result.code, EXIT.FAILURE);
@@ -746,7 +859,7 @@ test('a hook that adds a commit of its own leaves a commit verify cannot prove',
   hook(world, 'post-commit', '[ -f .second ] && exit 0; : > .second; echo more >> notes/a.md; git commit -q -m second -- notes/a.md; rm .second');
   const result = await verify(world, ['--files', 'notes/a.md']);
   assert.equal(result.code, EXIT.FAILURE);
-  assert.equal(result.stderr, line('verify.commit_unproven', { branch: 'main' }));
+  assert.equal(result.stderr, line('verify.commit_unproven', { branch: 'main', current: 'main' }));
 });
 
 test('a hook that slips another file into the commit leaves a commit verify cannot prove', async () => {
@@ -754,7 +867,7 @@ test('a hook that slips another file into the commit leaves a commit verify cann
   hook(world, 'post-commit', '[ -f .amending ] && exit 0; : > .amending; echo x > extra.txt; git add extra.txt; git commit -q --amend --no-edit; rm .amending');
   const result = await verify(world, ['--files', 'notes/a.md']);
   assert.equal(result.code, EXIT.FAILURE);
-  assert.equal(result.stderr, line('verify.commit_unproven', { branch: 'main' }));
+  assert.equal(result.stderr, line('verify.commit_unproven', { branch: 'main', current: 'main' }));
   assert.deepEqual(lastCommit(world).files, ['extra.txt', 'notes/a.md']);
   assert.equal(git(world.vault, ['status', '--porcelain']), '', 'the tree is clean, so only the path check saw it');
 });
@@ -798,4 +911,77 @@ test('a gh that hangs is given up on, exit 1, and nothing moves', async () => {
   assert.ok(result.stderr.startsWith('gh could not read pull request #7'), result.stderr);
   assert.ok(Date.now() - started < 4500, 'it did not wait for gh');
   assert.deepEqual(snapshot(world), before);
+});
+
+test('a hook that checks out another branch leaves a commit verify cannot prove, and names where the checkout is', async () => {
+  const world = makeVerifyWorld();
+  hook(world, 'post-commit', 'git checkout -q -b somewhere-else');
+  const result = await verify(world, ['--files', 'notes/a.md']);
+  assert.equal(result.code, EXIT.FAILURE);
+  assert.equal(result.stderr, line('verify.commit_unproven', { branch: 'main', current: 'somewhere-else' }));
+  assert.equal(git(world.vault, ['symbolic-ref', '--short', 'HEAD']).trim(), 'somewhere-else');
+});
+
+test('an error nothing else catches is exit 1, named, with nothing written', async () => {
+  const world = makeVerifyWorld();
+  writeFileSync(join(world.vault, '.git', 'index'), 'not an index\n');
+  const a = world.read('notes/a.md');
+  const head = world.sha('HEAD');
+  const result = await verify(world, ['--files', 'notes/a.md']);
+  assert.equal(result.code, EXIT.FAILURE);
+  assert.ok(result.stderr.startsWith(t('verify.failed', { detail: '' }).trimEnd()), result.stderr);
+  assert.equal(world.read('notes/a.md'), a);
+  assert.equal(world.sha('HEAD'), head);
+  assertUnlocked(world);
+});
+
+test('a write that throws puts back every note already written: all or nothing', async () => {
+  const world = makeVerifyWorld();
+  const head = world.sha('HEAD');
+  const a = world.read('notes/a.md');
+  const b = world.read('notes/b.md');
+  const result = await verify(world, ['--files', 'notes/a.md', 'notes/b.md'], {
+    deps: { beforeWrite: (rel) => { if (rel === 'notes/b.md') throw new Error('disk full'); } },
+  });
+  assert.equal(result.code, EXIT.FAILURE);
+  assert.equal(result.stderr, line('verify.write_failed', { path: 'notes/b.md', detail: 'disk full' }));
+  assert.equal(world.read('notes/a.md'), a);
+  assert.equal(world.read('notes/b.md'), b);
+  assert.equal(world.sha('HEAD'), head);
+  assert.equal(git(world.vault, ['status', '--porcelain']), '');
+});
+
+test('a note that is there but cannot be read is refused by name, never skipped as gone and never blamed on git', async () => {
+  const world = makeVerifyWorld({ files: { 'notes/locked/l.md': note('L') } });
+  git(world.vault, ['config', 'core.trustctime', 'false']);
+  const before = snapshot(world);
+  chmodSync(join(world.vault, 'notes/locked'), 0o600);
+  try {
+    world.env.FAKE_GH_VIEW = view(['notes/a.md', 'notes/locked/l.md']);
+    let result = await verify(world, ['--pr', '7']);
+    assert.equal(result.code, EXIT.FAILURE, `${result.stderr}`);
+    assert.equal(result.stderr, line('verify.unreadable', { path: 'notes/locked/l.md', detail: 'EACCES' }) + line('verify.nothing_written'));
+    result = await verify(world, ['--files', 'notes/a.md', 'notes/locked/l.md']);
+    assert.equal(result.code, EXIT.FAILURE, result.stderr);
+    assert.equal(result.stderr, line('verify.unreadable', { path: 'notes/locked/l.md', detail: 'EACCES' }) + line('verify.nothing_written'));
+  } finally {
+    chmodSync(join(world.vault, 'notes/locked'), 0o755);
+  }
+  assert.deepEqual(snapshot(world), before);
+
+  const unreadable = makeVerifyWorld({ files: { 'notes/u.md': note('U') } });
+  git(unreadable.vault, ['config', 'core.trustctime', 'false']);
+  // An old modification time, recorded in the index, so git's racy check
+  // never has to read the file's bytes to call the tree clean.
+  utimesSync(join(unreadable.vault, 'notes/u.md'), new Date('2026-01-01T00:00:00Z'), new Date('2026-01-01T00:00:00Z'));
+  git(unreadable.vault, ['update-index', '--refresh']);
+  chmodSync(join(unreadable.vault, 'notes/u.md'), 0o000);
+  try {
+    const result = await verify(unreadable, ['--files', 'notes/a.md', 'notes/u.md']);
+    assert.equal(result.code, EXIT.FAILURE, result.stderr);
+    assert.equal(result.stderr, line('verify.unreadable', { path: 'notes/u.md', detail: 'EACCES' }) + line('verify.nothing_written'));
+  } finally {
+    chmodSync(join(unreadable.vault, 'notes/u.md'), 0o644);
+  }
+  assert.ok(!unreadable.read('notes/a.md').includes('verified'));
 });

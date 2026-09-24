@@ -25,24 +25,34 @@
 //      itself resolves them (`git var`), must not be the agent's
 //      (git.agent_identity: the same name or the same e-mail), exit 1.
 //      verify never supplies an identity: the commit is the person's own.
-//   4. With --pr: `gh pr view <n> --json state,baseRefName,files`. The
+//   4. With --pr: `gh pr view <n> --repo <host/owner/name> --json
+//      state,baseRefName,files,mergeCommit`, the repository read from the
+//      URL of the remote the default branch tracks (fix round 1, I3: gh
+//      otherwise picks its own base repository, preferring a remote named
+//      `upstream`); a URL that names no GitHub repository is exit 1. The
 //      state must be MERGED and the base the default branch, or exit 1. A
 //      merged pull request listing no file is exit 1, not "nothing to do"
 //      (the recurring shape: success read about nothing); so is one
 //      listing 100 files or more, since gh lists at most the first 100 of
 //      a pull request's files and the rest would be skipped in silence.
-//      Then the default branch is fetched from what it tracks, the fetch
-//      proved, and a local default branch behind it is exit 1 naming
-//      `brain-kit sync`: without the merge in this checkout, a note the
-//      pull request added is not here and would be skipped as deleted,
-//      and the others would be stamped on their content before the merge.
+//      Then the default branch is fetched from what it tracks and the
+//      fetch proved, and the pull request's merge commit must be an
+//      ancestor of the local default branch (`git merge-base
+//      --is-ancestor`): held by the fetched branch only, it is exit 1
+//      naming `brain-kit sync`; held by neither, it is not this history's
+//      merge and is exit 1, never stamped. A local default branch behind
+//      the fetched one is exit 1 too: without the merge in this checkout,
+//      a note the pull request added is not here and would be skipped as
+//      deleted, and the others would be stamped on content before it.
 //   5. Each file becomes a vault-relative path (gh names paths from the
 //      repository's top, the vault may be a folder below it). A note is a
 //      markdown file the vault's own walk returns (validate.ignore_paths
 //      honoured), a regular file tracked by git, not index.md or log.md
 //      (reserved, section 3.1) and not under taxonomy.templates_dir. With
 //      --pr, a file that is no longer here, outside the vault or not a
-//      note is skipped and named; with --files, each is exit 2.
+//      note is skipped and named; with --files, each is exit 2. A note
+//      that is there but cannot be read (a permission) is exit 1 naming
+//      it, never skipped as gone.
 //   6. Every note is stamped in memory first. A note that is not UTF-8, or
 //      whose frontmatter the writer refuses (none at all, a `verified` in
 //      a shape the reader cannot see), is exit 1 naming it, and NOTHING is
@@ -55,11 +65,10 @@
 //      stamped paths, the tree clean after it.
 //   8. It prints the push command. Pushing is the owner's (out of scope).
 //
-// Declared, not handled: gh chooses the repository from this checkout's
-// remotes or its own default (GH_REPO is removed from its environment, so
-// a variable left from another project does not answer instead); verify
-// cannot prove the pull request it read belongs to the remote it fetched.
-// A second run over the same pull request adds a second event, which the
+// Declared, not handled: the repository handed to gh is the remote's URL
+// as configured (before insteadOf rewriting), host included, so a GitHub
+// Enterprise host works and an SSH alias host (`git@work:ana/brain`) is
+// passed as that alias, which gh will not know. A second run over the same pull request adds a second event, which the
 // format allows (independent confirmations). A person who sets GIT_AUTHOR_*
 // or GIT_COMMITTER_* to someone else's identity is who git says.
 //
@@ -199,7 +208,7 @@ export async function runVerify(argv, io, t, deps = {}) {
   try {
     return verifyUnderLock({ root, config, parsed, io, t, env, cwd, now, beforeWrite, ghTimeout });
   } catch (error) {
-    io.stderr.write(`${t('verify.git_failed', { detail: error.message })}\n`);
+    io.stderr.write(`${t('verify.failed', { detail: error.message })}\n`);
     return EXIT.FAILURE;
   } finally {
     lock.release();
@@ -244,7 +253,7 @@ function verifyUnderLock({ root, config, parsed, io, t, env, cwd, now, beforeWri
       return EXIT.FAILURE;
     }
     const [, name, email] = parts;
-    if (name.trim() === agent.name.trim() || email.trim().toLowerCase() === agent.email.trim().toLowerCase()) {
+    if (name.trim().toLowerCase() === agent.name.trim().toLowerCase() || email.trim().toLowerCase() === agent.email.trim().toLowerCase()) {
       io.stderr.write(`${t('verify.agent_identity', { name, email, file: CONFIG_FILENAME })}\n`);
       return EXIT.FAILURE;
     }
@@ -257,14 +266,26 @@ function verifyUnderLock({ root, config, parsed, io, t, env, cwd, now, beforeWri
   const stamped = [];
   const skipped = [];
   if (parsed.mode === 'pr') {
-    const listed = readPullRequest(root, parsed.pr, branch, io, t, env, ghTimeout);
+    if (upstream.local) {
+      io.stderr.write(`${t('verify.local_upstream', { branch })}\n`);
+      return EXIT.FAILURE;
+    }
+    // gh is told which repository to ask: the one the default branch's
+    // remote names, so it cannot answer about another remote it prefers.
+    const url = remoteUrl(root, upstream.remote, env);
+    const repo = githubRepoOf(url);
+    if (repo === null) {
+      io.stderr.write(`${t('verify.remote_not_github', { remote: upstream.remote, url: withoutCredentials(url ?? '') })}\n`);
+      return EXIT.FAILURE;
+    }
+    const listed = readPullRequest(root, parsed.pr, branch, repo, io, t, env, ghTimeout);
     if (typeof listed === 'number') return listed;
-    const proved = proveMergeIsHere(root, found, upstream, io, t, env);
+    const proved = proveMergeIsHere(root, found, upstream, { pr: parsed.pr, repo, merge: listed.merge }, io, t, env);
     if (proved !== null) return proved;
-    for (const path of listed) {
+    for (const path of listed.paths) {
       const rel = prefix === '' || path.startsWith(prefix) ? path.slice(prefix.length) : null;
       const kind = rel === null ? 'outside' : classify(root, rel, notes);
-      if (kind === 'note') stamped.push(rel);
+      if (kind === 'note' || kind === 'unreadable') stamped.push(rel);
       else skipped.push({ path, kind });
     }
   } else {
@@ -272,7 +293,7 @@ function verifyUnderLock({ root, config, parsed, io, t, env, cwd, now, beforeWri
       const abs = resolve(cwd, given);
       const rel = relative(root, abs).split(sep).join('/');
       const kind = classify(root, rel, notes);
-      if (kind !== 'note') {
+      if (kind !== 'note' && kind !== 'unreadable') {
         io.stderr.write(`${fileLine(t, kind, given)}\n`);
         return EXIT.USAGE;
       }
@@ -304,7 +325,14 @@ function verifyUnderLock({ root, config, parsed, io, t, env, cwd, now, beforeWri
   let refused = false;
   for (const rel of stamped) {
     const abs = join(root, rel);
-    const original = readFileSync(abs);
+    let original;
+    try {
+      original = readFileSync(abs);
+    } catch (error) {
+      io.stderr.write(`${t('verify.unreadable', { path: rel, detail: error.code ?? error.message })}\n`);
+      refused = true;
+      continue;
+    }
     let text;
     try {
       text = decoder.decode(original);
@@ -359,9 +387,11 @@ function verifyUnderLock({ root, config, parsed, io, t, env, cwd, now, beforeWri
   const changed = runGit(root, ['diff-tree', '-r', '-z', '--no-commit-id', '--no-renames', '--name-only', 'HEAD^', 'HEAD'], { env });
   const changedPaths = changed.stdout.split('\0').filter((path) => path !== '').sort();
   const expected = rels.map((rel) => `${prefix}${rel}`).sort();
-  if (head === null || head === startSha || parent !== startSha || currentBranch(root, { env }) !== branch
+  const endBranch = currentBranch(root, { env });
+  if (head === null || head === startSha || parent !== startSha || endBranch !== branch
     || changed.status !== 0 || JSON.stringify(changedPaths) !== JSON.stringify(expected) || dirtyPaths(root, { env }).length > 0) {
-    io.stderr.write(`${t('verify.commit_unproven', { branch })}\n`);
+    const current = endBranch ?? `HEAD ${short(head ?? '')}`;
+    io.stderr.write(`${t('verify.commit_unproven', { branch, current })}\n`);
     return EXIT.FAILURE;
   }
 
@@ -374,10 +404,10 @@ function verifyUnderLock({ root, config, parsed, io, t, env, cwd, now, beforeWri
 
 // `gh pr view`, read and checked. Returns the list of paths, or an exit
 // code after saying why.
-function readPullRequest(root, pr, branch, io, t, env, timeout) {
+function readPullRequest(root, pr, branch, repo, io, t, env, timeout) {
   const ghEnv = gitEnv(env);
   delete ghEnv.GH_REPO;
-  const result = run('gh', ['pr', 'view', pr, '--json', 'state,baseRefName,files'], { cwd: root, env: ghEnv, timeout });
+  const result = run('gh', ['pr', 'view', pr, '--repo', repo, '--json', 'state,baseRefName,files,mergeCommit'], { cwd: root, env: ghEnv, timeout });
   if (result.status !== 0) {
     io.stderr.write(`${t('verify.gh_failed', { pr, detail: firstLine(result.stderr || result.stdout) })}\n`);
     return EXIT.FAILURE;
@@ -410,25 +440,39 @@ function readPullRequest(root, pr, branch, io, t, env, timeout) {
     io.stderr.write(`${t('verify.pr_too_many_files', { pr, count: view.files.length, limit: GH_FILE_LIMIT })}\n`);
     return EXIT.FAILURE;
   }
-  return [...new Set(view.files.map((file) => file.path))];
-}
-
-// The merge is in this checkout: the default branch, fetched from what it
-// tracks and the fetch proved, is not ahead of the local one. null when
-// proved, else an exit code after saying why.
-function proveMergeIsHere(root, found, upstream, io, t, env) {
-  if (upstream.local) {
-    io.stderr.write(`${t('verify.local_upstream', { branch: found.bare })}\n`);
+  const merge = view.mergeCommit;
+  if (merge === null || typeof merge !== 'object' || typeof merge.oid !== 'string' || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(merge.oid)) {
+    io.stderr.write(`${t('verify.gh_unreadable', { pr, detail: firstLine(result.stdout) })}\n`);
     return EXIT.FAILURE;
   }
+  return { paths: [...new Set(view.files.map((file) => file.path))], merge: merge.oid };
+}
+
+// The merge is in this checkout: the pull request's merge commit is an
+// ancestor of the local default branch (fix round 1, I3: a pull request gh
+// reports as merged but absent from this history is never stamped), and
+// the default branch, fetched from what it tracks and the fetch proved, is
+// not ahead of the local one. null when proved, else an exit code after
+// saying why.
+function proveMergeIsHere(root, found, upstream, { pr, repo, merge }, io, t, env) {
   const fetched = fetch(root, upstream.remote, { branch: upstream.branch, env });
   if (fetched.status !== 'fetched') {
     io.stderr.write(`${t('verify.remote_unproven', { remote: upstream.remote, branch: upstream.branch, detail: fetched.detail ?? fetched.status })}\n`);
     return EXIT.FAILURE;
   }
-  const { behind } = aheadBehind(root, `refs/heads/${found.bare}`, fetched.ref, { env });
+  const local = `refs/heads/${found.bare}`;
+  const tracking = `${upstream.remote}/${upstream.branch}`;
+  if (!isAncestor(root, merge, local, env)) {
+    const tip = short(resolveCommit(root, local, { env }) ?? '');
+    if (isAncestor(root, merge, fetched.ref, env)) {
+      io.stderr.write(`${t('verify.merge_not_pulled', { pr, sha: short(merge), branch: found.bare, tip, upstream: tracking })}\n`);
+    } else {
+      io.stderr.write(`${t('verify.merge_not_here', { pr, repo, sha: short(merge), branch: found.bare, tip, upstream: tracking })}\n`);
+    }
+    return EXIT.FAILURE;
+  }
+  const { behind } = aheadBehind(root, local, fetched.ref, { env });
   if (behind > 0) {
-    const tracking = `${upstream.remote}/${upstream.branch}`;
     io.stderr.write(`${t('verify.behind', { branch: found.bare, upstream: tracking, behind })}\n`);
     return EXIT.FAILURE;
   }
@@ -450,9 +494,46 @@ function classify(root, rel, notes) {
     st = lstatSync(join(root, rel));
   } catch (error) {
     if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return 'gone';
-    throw error;
+    return 'unreadable'; // EACCES and the rest: there, but not readable here
   }
   return st.isFile() && notes.has(rel) ? 'note' : 'not_note';
+}
+
+// `a` is `b` or an ancestor of it. Anything but a yes (not an ancestor,
+// an object this repository does not have, a git that fails) is a no.
+function isAncestor(root, a, b, env) {
+  return runGit(root, ['merge-base', '--is-ancestor', a, b], { env }).status === 0;
+}
+
+// remote.<name>.url as written in the configuration (before any insteadOf
+// rewriting), or null.
+function remoteUrl(root, remote, env) {
+  const result = runGit(root, ['config', '--get', `remote.${remote}.url`], { env });
+  const url = result.stdout.replace(/\n$/, '');
+  return result.status === 0 && url !== '' ? url : null;
+}
+
+// "host/owner/name", the form `gh --repo` takes, from a remote URL:
+// https://host/owner/name(.git), ssh://[user@]host[:port]/owner/name(.git),
+// git://..., or scp-like [user@]host:owner/name(.git). null for anything
+// else (a local path, a file:// URL, a path with more or fewer segments).
+const REPO_PART = '[A-Za-z0-9_][A-Za-z0-9._-]*?';
+const URL_FORMS = [
+  new RegExp(`^(?:https?|ssh|git)://(?:[^@/]+@)?([A-Za-z0-9][A-Za-z0-9.-]*)(?::\\d+)?/(${REPO_PART})/(${REPO_PART})(?:\\.git)?/?$`),
+  new RegExp(`^(?:[^@/:]+@)?([A-Za-z0-9][A-Za-z0-9.-]*):(${REPO_PART})/(${REPO_PART})(?:\\.git)?/?$`),
+];
+function githubRepoOf(url) {
+  if (typeof url !== 'string') return null;
+  for (const form of URL_FORMS) {
+    const match = form.exec(url);
+    if (match) return `${match[1].toLowerCase()}/${match[2]}/${match[3]}`;
+  }
+  return null;
+}
+
+// A URL with any user or token before "@" removed, for naming it.
+function withoutCredentials(url) {
+  return url.replace(/^([a-z+]+:\/\/)[^@/]*@/i, '$1');
 }
 
 // The vault's path inside the repository ("" at its top, "sub/" below).
