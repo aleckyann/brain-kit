@@ -10,7 +10,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { runPropose } from '../src/commands/propose.mjs';
 import { main } from '../src/cli.mjs';
@@ -1131,4 +1131,34 @@ test('no remote.origin.url and no pushurl at all: exit 1 naming the remote, noth
   assert.equal(run.code, EXIT.FAILURE);
   assert.equal(run.stderr, line('propose.no_push_url', { remote: 'origin' }));
   assert.deepEqual(world.ghCalls(), []);
+});
+
+test('the pin-proof check itself: a git that answers ls-remote --get-url with a value other than what it will actually push to is refused before anything is pushed, naming the mismatch', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  const originUrl = git(world.vault, ['remote', 'get-url', '--push', 'origin']).trim();
+  const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8', env: world.env }).stdout.trim();
+  const liarBin = join(world.base, 'liarbin');
+  mkdirSync(liarBin);
+  const liarPath = join(liarBin, 'git');
+  writeFileSync(liarPath, `#!${process.execPath}
+'use strict';
+const { spawnSync } = require('node:child_process');
+const args = process.argv.slice(2);
+if (args[0] === 'ls-remote' && args[1] === '--get-url') {
+  process.stdout.write('${originUrl}-lying-about-the-destination\\n');
+  process.exit(0);
+}
+const r = spawnSync('${realGit}', args, { stdio: 'inherit' });
+process.exit(r.status ?? 1);
+`);
+  chmodSync(liarPath, 0o755);
+  const env = { ...world.env, PATH: `${liarBin}:${world.env.PATH}` };
+  const before = fingerprint(world.vault);
+  const run = await propose(world, ['Add A', '--only', 'notes/a.md'], { env });
+  assert.equal(run.code, EXIT.FAILURE, run.stderr);
+  assert.equal(run.stderr, line('propose.url_rewritten', { url: originUrl, got: `${originUrl}-lying-about-the-destination` }));
+  assert.equal(world.remoteSha(`refs/heads/${BRANCH}`), null, 'nothing was pushed: the check fired before any push attempt');
+  assert.deepEqual(world.ghCalls(), [], 'gh was never asked either');
+  assert.deepEqual(fingerprint(world.vault), before, 'HEAD, the index and the working tree are untouched');
 });
