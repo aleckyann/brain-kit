@@ -205,7 +205,7 @@ const PARITY_CONFIG = {
   },
   hooks: { stop: true, session_start: true, session_start_fetch: false, block_on_inherited_dirt: false, timeout_seconds: 15 },
   curate: {
-    enabled: true, schedule: ['06:00', '12:00', '18:00'], prompt: '.brain-kit/prompts/curate.md', signature: 'Curador do segundo cerebro (exemplo)',
+    enabled: true, schedule: ['09:30', '14:00', '20:00'], prompt: '.brain-kit/prompts/curate.md', signature: 'Curador do segundo cerebro (exemplo)',
     max_turns: 100, budget_usd: 5, network_min_wait_ms: 100,
     caps: { transcripts: 20, search_docs_opened: 3, attached_notes_opened: 6, new_pending_items: 5 },
     promotion_map: {

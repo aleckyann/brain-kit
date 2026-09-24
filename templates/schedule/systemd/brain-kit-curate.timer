@@ -1,0 +1,12 @@
+# Written by brain-kit schedule for the vault {{VAULT_ID}}.
+# Run `brain-kit schedule install` again rather than editing this file.
+[Unit]
+Description=brain-kit curate windows, vault {{VAULT_ID}}
+
+[Timer]
+{{ON_CALENDAR}}
+Persistent=false
+Unit={{NAME}}.service
+
+[Install]
+WantedBy=timers.target

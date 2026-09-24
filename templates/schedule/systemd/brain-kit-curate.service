@@ -1,0 +1,11 @@
+# Written by brain-kit schedule for the vault {{VAULT_ID}}.
+# Run `brain-kit schedule install` again rather than editing this file.
+[Unit]
+Description=brain-kit curate, vault {{VAULT_ID}}
+
+[Service]
+Type=oneshot
+Environment={{PATH_ASSIGNMENT}}
+Environment=LC_ALL=C.UTF-8
+Environment={{TZ_ASSIGNMENT}}
+ExecStart={{EXEC_START}}

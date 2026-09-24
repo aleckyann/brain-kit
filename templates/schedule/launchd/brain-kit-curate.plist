@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Written by brain-kit schedule for the vault {{VAULT_ID}}. Run brain-kit schedule install again rather than editing this file. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{{NAME}}</string>
+  <key>ProgramArguments</key>
+  <array>
+{{PROGRAM_ARGUMENTS}}
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>{{PATH}}</string>
+    <key>LC_ALL</key>
+    <string>C.UTF-8</string>
+    <key>TZ</key>
+    <string>{{TZ}}</string>
+  </dict>
+  <key>StartCalendarInterval</key>
+  <array>
+{{CALENDAR}}
+  </array>
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

@@ -96,7 +96,7 @@ function isExecutableFile(path) {
   }
 }
 
-function expandHome(path, env) {
+export function expandHome(path, env) {
   if (path === '~') return env.HOME || homedir();
   if (path.startsWith('~/')) return join(env.HOME || homedir(), path.slice(2));
   return path;
@@ -579,7 +579,7 @@ function ghPresent(ctx) {
 // the directories a scheduled run adds to PATH so it finds what a login
 // shell would. A value with a slash in it is a path, resolved from the
 // vault, never from wherever doctor was started.
-function resolveClaude(bin, extra, env, root) {
+export function resolveClaude(bin, extra, env, root) {
   const expanded = expandHome(bin, env);
   if (expanded.includes('/')) {
     const candidate = resolve(root, expanded);
