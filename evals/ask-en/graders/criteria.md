@@ -3,4 +3,4 @@ type: llm
 weight: 1
 ---
 
-A right response starts at `index.md`, follows links only to the notes it needs, names the paths it relied on, flags notes that are unverified or past `stale_after`, and when the answer is not there says which state applies (not verified, not found, don't know) instead of inventing one.
+The model loads the matching skill. It reads from `index.md` down, only the notes it needs, and answers with the paths it relied on, flagging notes that are unverified or past `stale_after`. When the answer is not there, it says which state applies (not verified, not found, don't know) instead of inventing one.

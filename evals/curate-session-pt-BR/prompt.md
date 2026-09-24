@@ -1,6 +1,6 @@
 ---
 name: curate-session-pt-BR
-description: pt-BR request that should trigger the curate-session skill without naming it.
+description: Fechar o dia levando para o vault, por um pull request, o que a conversa concluiu.
 tags: [curate-session, pt-BR]
 runs: 1
 max_turns: 6

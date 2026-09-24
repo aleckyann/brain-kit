@@ -1,6 +1,6 @@
 ---
 name: setup-en
-description: en request that should trigger the setup skill without naming it.
+description: Start a second brain in markdown on this laptop, with the machine checked first.
 tags: [setup, en]
 runs: 1
 max_turns: 6

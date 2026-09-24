@@ -1,6 +1,6 @@
 ---
 name: setup-pt-BR
-description: pt-BR request that should trigger the setup skill without naming it.
+description: Começar um segundo cérebro em markdown neste notebook, conferindo a máquina antes.
 tags: [setup, pt-BR]
 runs: 1
 max_turns: 6

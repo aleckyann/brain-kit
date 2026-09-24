@@ -1,6 +1,6 @@
 ---
 name: lint-en
-description: en request that should trigger the lint skill without naming it.
+description: Understand the problems the validator reported in the vault, orphan notes among them, and how to fix them.
 tags: [lint, en]
 runs: 1
 max_turns: 6

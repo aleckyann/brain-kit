@@ -1,6 +1,6 @@
 ---
 name: lint-pt-BR
-description: pt-BR request that should trigger the lint skill without naming it.
+description: Entender os problemas que o validador apontou no vault, nota órfã entre eles, e como resolver.
 tags: [lint, pt-BR]
 runs: 1
 max_turns: 6

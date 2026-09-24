@@ -1,6 +1,6 @@
 ---
 name: review-stale-pt-BR
-description: pt-BR request that should trigger the review-stale skill without naming it.
+description: Achar as notas do vault que ficaram desatualizadas e colocá-las em dia.
 tags: [review-stale, pt-BR]
 runs: 1
 max_turns: 6

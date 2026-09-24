@@ -63,6 +63,13 @@
 // guarded by the whole-repository scan at the bottom of this file, which
 // excludes neither.
 //
+// Slice E, task 4: the plugin's surface joins the scanned set. The
+// English skill bodies (lang/en/skills/) are what an English speaker's
+// model reads in place of a SKILL.md, and skills/ and agents/ hold the
+// frontmatter that decides when a skill or the subagent is picked, so
+// all three are scanned like the English pack. lang/pt-BR/skills/ stays
+// out for the same reason as the rest of the Portuguese pack.
+//
 // Two independent checks, since either alone misses a real leak: a
 // non-ASCII byte catches every accented word ("não", "situação",
 // "vazio" has none but "criação" does) and the em dash itself; the
@@ -101,7 +108,7 @@ import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 
-const SCANNED = ['src', 'bin', 'lang/en/messages.json', 'lang/en/vault', 'lang/en/config.defaults.json'];
+const SCANNED = ['src', 'bin', 'lang/en/messages.json', 'lang/en/vault', 'lang/en/config.defaults.json', 'lang/en/skills', 'skills', 'agents'];
 
 // Deliberately NOT scanned, each for the reason in this file's header. Named
 // here, and checked below to exist and to sit outside SCANNED, so that a
@@ -224,7 +231,7 @@ test('every deliberate exclusion names a real path, outside the scanned set', ()
   }
 });
 
-test('no file under src/, bin/, or the English language pack, vault skeleton and defaults contains a non-ASCII byte', () => {
+test('no file under src/, bin/, skills/, agents/, or the English language pack, vault skeleton, defaults and skill bodies contains a non-ASCII byte', () => {
   const files = collectFiles(SCANNED);
   assert.ok(files.length >= MINIMUM_EXPECTED_FILES, 'the scan must not be empty for this assertion to mean anything');
   const violations = findNonAsciiViolations(files);
@@ -235,7 +242,7 @@ test('no file under src/, bin/, or the English language pack, vault skeleton and
   );
 });
 
-test('no file under src/, bin/, or the English language pack, vault skeleton and defaults contains a word from the fixed Portuguese list', () => {
+test('no file under src/, bin/, skills/, agents/, or the English language pack, vault skeleton, defaults and skill bodies contains a word from the fixed Portuguese list', () => {
   const files = collectFiles(SCANNED);
   assert.ok(files.length >= MINIMUM_EXPECTED_FILES, 'the scan must not be empty for this assertion to mean anything');
   const violations = findWordListViolations(files, wordPattern());

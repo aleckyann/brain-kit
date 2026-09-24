@@ -1,6 +1,6 @@
 ---
 name: ask-pt-BR
-description: pt-BR request that should trigger the ask skill without naming it.
+description: Saber o que o vault guarda sobre a Ana e o que já foi decidido com ela.
 tags: [ask, pt-BR]
 runs: 1
 max_turns: 6

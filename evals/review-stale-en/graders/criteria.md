@@ -3,4 +3,4 @@ type: llm
 weight: 1
 ---
 
-A right response uses the kit's validate to list the notes whose `stale_after` has passed, reads each one and its sources, updates only what changed, re-stamps `generated` and `stale_after` by the vault's `stale_policy`, never writes `verified`, and proposes with `--only` naming only the reviewed notes.
+The model loads the matching skill. Its response states the steps: `validate --json` for the notes whose `stale_after` has passed; read each one and its sources; update only what changed; re-stamp `generated` and `stale_after` by the vault's `stale_policy`; never write `verified`; leave stale a note whose source could not be read; `propose "<summary>" --only <paths>` with only the reviewed notes. It does not claim to have edited notes it had no tool to edit.

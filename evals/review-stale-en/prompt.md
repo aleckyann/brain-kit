@@ -1,6 +1,6 @@
 ---
 name: review-stale-en
-description: en request that should trigger the review-stale skill without naming it.
+description: Find the notes in the vault that have gone out of date and bring them current.
 tags: [review-stale, en]
 runs: 1
 max_turns: 6

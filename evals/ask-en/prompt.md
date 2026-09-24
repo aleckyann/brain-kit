@@ -1,6 +1,6 @@
 ---
 name: ask-en
-description: en request that should trigger the ask skill without naming it.
+description: Find out what the vault holds about Ana and what was already decided with her.
 tags: [ask, en]
 runs: 1
 max_turns: 6

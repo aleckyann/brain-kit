@@ -1,6 +1,6 @@
 ---
 name: capture-pt-BR
-description: pt-BR request that should trigger the capture skill without naming it.
+description: Registrar na hora que a Ana adiou o projeto X para outubro.
 tags: [capture, pt-BR]
 runs: 1
 max_turns: 6

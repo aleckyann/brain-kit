@@ -174,3 +174,38 @@ test('no eval prompt names its own skill, and no eval file keeps the blank templ
 test('evals stay out of the npm package', () => {
   assert.ok(!pkg.files.some((entry) => entry.startsWith('evals')));
 });
+
+test('the seven SKILL.md descriptions are exactly the agreed text', () => {
+  const expected = {
+    setup: 'Use when the person wants to start a second brain with brain-kit, adopt an existing markdown vault, or check that the kit, git, gh and the plugin are ready on this machine.',
+    'curate-session': "Use at the end of a working session in a brain-kit vault, or when asked to curate: sync, capture what was learned, compile it into notes, validate, lint and open a pull request with only this session's files.",
+    capture: 'Use when the person says something new, changes their mind, or a fact conflicts with the brain-kit vault, and it should be written down now as a dated entry in the vault log without compiling notes.',
+    ask: "Use when the person asks a question the brain-kit vault may answer: read from the root index down, only the notes needed, and answer with the vault's closed uncertainty states.",
+    lint: 'Use when brain-kit validate or lint reported problems, or the person asks what a lint rule means and how to fix what it found.',
+    'review-stale': 'Use when notes in the brain-kit vault are past their stale_after date, or the person asks to review what may be out of date.',
+    approve: 'Use after the owner merged a brain-kit pull request and wants the merged notes stamped verified.',
+  };
+  for (const name of SKILL_NAMES) {
+    assert.equal(frontmatterOf(readFileSync(join(SKILLS_DIR, name, 'SKILL.md'), 'utf8')).fields.description, expected[name], name);
+  }
+});
+
+test('no eval case description names its skill', () => {
+  for (const skill of SKILL_NAMES) {
+    const word = new RegExp(`(^|[^\\w-])${skill.replace(/-/g, '\\-')}($|[^\\w-])`, 'i');
+    for (const lang of EVAL_LANGS) {
+      assert.doesNotMatch(frontmatterOf(evalFile(skill, lang, 'prompt.md')).fields.description, word, `${skill}-${lang}`);
+    }
+  }
+});
+
+test('the setup body runs init from an answers file, never interactively', () => {
+  for (const lang of ['en', 'pt-BR']) {
+    const body = readFileSync(join(KIT_ROOT, 'lang', lang, 'skills', 'setup.md'), 'utf8');
+    assert.match(body, /\{\{kit\}\} init <dir> --from-answers /, lang);
+    assert.match(body, /\{\{kit\}\} init --adopt <dir> --from-answers /, lang);
+    for (const key of ['lang', 'name', 'handle', 'title', 'repo', 'private', 'timezone']) assert.match(body, new RegExp(`"${key}"`), `${lang}: ${key}`);
+    assert.match(body, /\.githooks\/pre-push/, lang);
+    assert.match(body, /core\.hooksPath/, lang);
+  }
+});

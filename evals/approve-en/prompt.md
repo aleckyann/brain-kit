@@ -1,6 +1,6 @@
 ---
 name: approve-en
-description: en request that should trigger the approve skill without naming it.
+description: Stamp the notes from a just-merged vault pull request (number 12) as confirmed by the owner.
 tags: [approve, en]
 runs: 1
 max_turns: 6

@@ -1,6 +1,6 @@
 ---
 name: curate-session-en
-description: en request that should trigger the curate-session skill without naming it.
+description: Close the day by putting what this conversation worked out into the vault through a pull request.
 tags: [curate-session, en]
 runs: 1
 max_turns: 6

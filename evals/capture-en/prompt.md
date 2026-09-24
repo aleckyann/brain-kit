@@ -1,6 +1,6 @@
 ---
 name: capture-en
-description: en request that should trigger the capture skill without naming it.
+description: Write down right away that Ana pushed project X back to October.
 tags: [capture, en]
 runs: 1
 max_turns: 6

@@ -3,4 +3,4 @@ type: llm
 weight: 1
 ---
 
-Uma resposta certa usa o validate do kit para listar as notas cujo `stale_after` passou, lê cada uma e as fontes dela, atualiza só o que mudou, carimba de novo `generated` e `stale_after` pelo `stale_policy` do vault, nunca escreve `verified`, e propõe com `--only` só as notas revisadas.
+O modelo carrega a skill certa. A resposta apresenta os passos: `validate --json` para as notas cujo `stale_after` passou; ler cada uma e as fontes dela; atualizar só o que mudou; carimbar de novo `generated` e `stale_after` pelo `stale_policy` do vault; nunca escrever `verified`; deixar vencida a nota cuja fonte não pôde ser lida; `propose "<resumo>" --only <caminhos>` só com as notas revisadas. Não afirma ter editado notas que não tinha ferramenta para editar.
