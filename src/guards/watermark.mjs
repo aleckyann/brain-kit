@@ -1,0 +1,286 @@
+// The high water mark: per source, the last day the scheduled curator swept.
+//
+// docs/incidents.md, 17/09/2026: the mark holds the last target day swept
+// (yesterday, on a healthy day) and reopens the window from there, so a
+// machine suspended for days loses no day in silence. And 20/08/2026: a
+// round that never read its sources exited 0 and wrote the previous day into
+// the mark, closing a day nobody read. So the mark is kept per source, and it
+// advances only when the model exited 0, the source's read evidence (taken
+// from the round record, src/guards/read-evidence.mjs) is ok, and the model's
+// final `BRAIN_KIT_SOURCES:` line reports the source. The agent's exit code
+// alone never moves it.
+//
+// The file is STATE_FILES.WATERMARK in the vault's state directory:
+//
+//   { "sources": { "<source id>": "YYYY-MM-DD" } }
+//
+// A missing file means every source is unset. A file that cannot be read or
+// has another shape is an error, never read as "unset": unset reopens only
+// yesterday, and guessing it over a damaged file would skip days.
+//
+// Days are calendar days in the vault's time zone (config `vault.timezone`,
+// an IANA name), computed with Intl alone. The window a round reads is
+// [from, to): from local midnight of the first open day to local midnight of
+// today, as Date instants.
+import { existsSync, readFileSync, renameSync, writeFileSync, unlinkSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { join } from 'node:path';
+import { isValidIsoDate } from '../dates.mjs';
+import { ensureStateDir, STATE_FILES } from '../state.mjs';
+
+export const DEFAULT_MAX_DAYS = 7;
+export const SOURCES_LINE_PREFIX = 'BRAIN_KIT_SOURCES:';
+
+export class WatermarkError extends Error {
+  constructor(file, detail) {
+    super(`cannot read the watermark file ${file}: ${detail}`);
+    this.name = 'WatermarkError';
+    this.code = 'WATERMARK_UNREADABLE';
+    this.file = file;
+    this.detail = detail;
+  }
+}
+
+// ---------------------------------------------------------------- calendar
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function splitDay(day) {
+  const [y, m, d] = day.split('-').map(Number);
+  return { y, m, d };
+}
+
+function pad(n, width = 2) {
+  return String(n).padStart(width, '0');
+}
+
+// The day `n` days after `day` (n may be negative). Pure calendar
+// arithmetic, no time zone involved.
+export function addDays(day, n) {
+  const { y, m, d } = splitDay(day);
+  const t = new Date(Date.UTC(y, m - 1, d) + n * DAY_MS);
+  return `${pad(t.getUTCFullYear(), 4)}-${pad(t.getUTCMonth() + 1)}-${pad(t.getUTCDate())}`;
+}
+
+// Whole days from `a` to `b` (positive when b is later).
+export function daysBetween(a, b) {
+  const pa = splitDay(a);
+  const pb = splitDay(b);
+  return Math.round((Date.UTC(pb.y, pb.m - 1, pb.d) - Date.UTC(pa.y, pa.m - 1, pa.d)) / DAY_MS);
+}
+
+const formatters = new Map();
+function formatterFor(tz) {
+  let f = formatters.get(tz);
+  if (f === undefined) {
+    // Throws a RangeError for a name that is not a time zone, which is what
+    // the caller should see: a vault with a broken time zone has no days.
+    f = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+    formatters.set(tz, f);
+  }
+  return f;
+}
+
+function wallClock(ms, tz) {
+  const parts = {};
+  for (const p of formatterFor(tz).formatToParts(new Date(ms))) parts[p.type] = p.value;
+  return {
+    y: Number(parts.year), m: Number(parts.month), d: Number(parts.day),
+    h: Number(parts.hour), min: Number(parts.minute), s: Number(parts.second),
+  };
+}
+
+// The calendar day an instant falls on in `tz`.
+export function localDay(instant, tz) {
+  const w = wallClock(instant instanceof Date ? instant.getTime() : instant, tz);
+  return `${pad(w.y, 4)}-${pad(w.m)}-${pad(w.d)}`;
+}
+
+// How far `tz`'s wall clock is ahead of UTC at instant `ms`, in ms.
+function offsetAt(ms, tz) {
+  const whole = Math.floor(ms / 1000) * 1000;
+  const w = wallClock(whole, tz);
+  return Date.UTC(w.y, w.m - 1, w.d, w.h, w.min, w.s) - whole;
+}
+
+// The first instant of `day` in `tz`. Usually local 00:00; where a
+// daylight saving change skips midnight (the clock jumps from 23:59:59 to
+// 01:00), the day starts at the jump, so it is found by bisection between
+// the two offsets around it.
+export function startOfDay(day, tz) {
+  const { y, m, d } = splitDay(day);
+  const guess = Date.UTC(y, m - 1, d);
+  const first = guess - offsetAt(guess, tz);
+  const second = guess - offsetAt(first, tz);
+  for (const candidate of [second, first]) {
+    const w = wallClock(candidate, tz);
+    if (localDay(candidate, tz) === day && w.h === 0 && w.min === 0 && w.s === 0) return new Date(candidate);
+  }
+  // No instant reads 00:00:00 on `day`: find the earliest instant whose
+  // local day is `day` or later, between the two candidates widened by a
+  // day on each side (the local day is monotonic across one change).
+  let lo = Math.min(first, second) - DAY_MS;
+  let hi = Math.max(first, second) + DAY_MS;
+  const atOrAfter = (ms) => localDay(ms, tz) >= day;
+  while (atOrAfter(lo)) lo -= DAY_MS;
+  while (!atOrAfter(hi)) hi += DAY_MS;
+  while (hi - lo > 1) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (atOrAfter(mid)) hi = mid;
+    else lo = mid;
+  }
+  return new Date(hi);
+}
+
+// `today` is a Date (the instant now) or a 'YYYY-MM-DD' already in `tz`.
+function todayIn(today, tz) {
+  if (today instanceof Date) return localDay(today, tz);
+  if (typeof today === 'string' && isValidIsoDate(today)) return today;
+  throw new TypeError('today must be a Date or a YYYY-MM-DD string');
+}
+
+// The days a round reads: from the day after `mark` (yesterday when the
+// mark is unset) to yesterday, inclusive, in `tz`. `to` is today's first
+// instant (exclusive); `from` the first instant of the first open day.
+// More than `maxDays` open days keeps the most recent `maxDays`, and
+// `clipped` says so. An empty `days` means the mark already covers
+// yesterday; then `from` equals `to`.
+export function windowFor(mark, today, tz, { maxDays = DEFAULT_MAX_DAYS } = {}) {
+  if (mark !== null && mark !== undefined && !isValidIsoDate(mark)) {
+    throw new TypeError(`mark must be null or a YYYY-MM-DD string, got ${JSON.stringify(mark)}`);
+  }
+  if (!Number.isInteger(maxDays) || maxDays < 1) throw new TypeError('maxDays must be a positive integer');
+  const current = todayIn(today, tz);
+  const yesterday = addDays(current, -1);
+  const first = mark ? addDays(mark, 1) : yesterday;
+  const days = [];
+  for (let day = first; day <= yesterday; day = addDays(day, 1)) days.push(day);
+  const clipped = days.length > maxDays;
+  const kept = clipped ? days.slice(days.length - maxDays) : days;
+  const to = startOfDay(current, tz);
+  const from = kept.length > 0 ? startOfDay(kept[0], tz) : to;
+  return { from, to, days: kept, clipped, skipped: clipped ? days.slice(0, days.length - maxDays) : [] };
+}
+
+// ---------------------------------------------------------------- the file
+
+export function watermarkFile(stateDir) {
+  return join(stateDir, STATE_FILES.WATERMARK);
+}
+
+export function readWatermark(stateDir) {
+  const file = watermarkFile(stateDir);
+  if (!existsSync(file)) return { sources: {} };
+  let value;
+  try {
+    value = JSON.parse(readFileSync(file, 'utf8'));
+  } catch (error) {
+    throw new WatermarkError(file, error.message);
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)
+    || value.sources === null || typeof value.sources !== 'object' || Array.isArray(value.sources)) {
+    throw new WatermarkError(file, 'expected { "sources": { "<id>": "YYYY-MM-DD" } }');
+  }
+  const sources = {};
+  for (const [id, day] of Object.entries(value.sources)) {
+    if (typeof day !== 'string' || !isValidIsoDate(day)) {
+      throw new WatermarkError(file, `source ${id} holds ${JSON.stringify(day)}, not a YYYY-MM-DD date`);
+    }
+    sources[id] = day;
+  }
+  return { sources };
+}
+
+// Temp file in the same directory, mode 0600, then rename: a reader sees
+// the old file or the new one, never half of one.
+function writeAtomically(stateDir, mark) {
+  ensureStateDir(stateDir);
+  const file = watermarkFile(stateDir);
+  const temp = join(stateDir, `.${STATE_FILES.WATERMARK}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`);
+  try {
+    writeFileSync(temp, `${JSON.stringify(mark, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+    renameSync(temp, file);
+  } catch (error) {
+    try { unlinkSync(temp); } catch { /* already gone */ }
+    throw error;
+  }
+}
+
+// The owner's write (`brain-kit watermark set|reopen|assume-covered`): no
+// condition but a valid day. Returns the previous day, or null.
+export function setWatermark(stateDir, sourceId, day) {
+  if (typeof sourceId !== 'string' || sourceId === '') throw new TypeError('sourceId must be a non-empty string');
+  if (typeof day !== 'string' || !isValidIsoDate(day)) throw new TypeError(`day must be a YYYY-MM-DD date, got ${JSON.stringify(day)}`);
+  const mark = readWatermark(stateDir);
+  const previous = mark.sources[sourceId] ?? null;
+  writeAtomically(stateDir, { sources: { ...mark.sources, [sourceId]: day } });
+  return previous;
+}
+
+// The round's write. Moves the mark of `sourceId` to `day` only when:
+//   - with `vacuous: true` (the empty window, no model ran): the source's
+//     evidence says it expected nothing (evidence.expected === 0);
+//   - otherwise: the model exited 0, AND the source's read evidence is ok,
+//     AND the model's sources line reports the source `ok`, or `empty`
+//     with evidence.expected === 0 (it said it found nothing, and the plan
+//     indeed offered nothing).
+// Never moves the mark backwards or onto the day it already holds.
+// Returns { advanced: true, previous } or { advanced: false, reason }, and
+// writes nothing in the second case.
+export function advanceWatermark(stateDir, sourceId, day, { modelExit, evidence, sourcesLine, vacuous = false } = {}) {
+  if (typeof sourceId !== 'string' || sourceId === '') throw new TypeError('sourceId must be a non-empty string');
+  if (typeof day !== 'string' || !isValidIsoDate(day)) throw new TypeError(`day must be a YYYY-MM-DD date, got ${JSON.stringify(day)}`);
+  const hasEvidence = evidence !== null && typeof evidence === 'object';
+  if (vacuous === true) {
+    if (!hasEvidence || evidence.expected !== 0) return { advanced: false, reason: 'not_vacuous' };
+  } else {
+    if (modelExit !== 0) return { advanced: false, reason: 'model_exit' };
+    if (!hasEvidence || evidence.ok !== true) return { advanced: false, reason: 'no_evidence' };
+    if (sourcesLine === null || typeof sourcesLine !== 'object') return { advanced: false, reason: 'no_sources_line' };
+    const state = Object.hasOwn(sourcesLine, sourceId) ? sourcesLine[sourceId] : undefined;
+    if (state === undefined) return { advanced: false, reason: 'not_reported' };
+    if (state === 'empty') {
+      if (evidence.expected !== 0) return { advanced: false, reason: 'empty_with_files' };
+    } else if (state !== 'ok') {
+      return { advanced: false, reason: 'reported_failed' };
+    }
+  }
+  const mark = readWatermark(stateDir);
+  const previous = mark.sources[sourceId] ?? null;
+  if (previous !== null && previous >= day) return { advanced: false, reason: 'not_later' };
+  writeAtomically(stateDir, { sources: { ...mark.sources, [sourceId]: day } });
+  return { advanced: true, previous };
+}
+
+// ---------------------------------------------------------------- the model's report
+
+// The LAST line of the model's final text that starts with
+// `BRAIN_KIT_SOURCES:`, read as space-separated `id=state` pairs, e.g.
+// `BRAIN_KIT_SOURCES: transcripts=ok calendar=empty`. States are kept as
+// written (`ok`, `empty`, `failed`, or anything else, which never counts as
+// ok). A token without `=` is ignored. No such line: null.
+export function parseSourcesLine(text) {
+  if (typeof text !== 'string') return null;
+  let found = null;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line.startsWith(SOURCES_LINE_PREFIX)) found = line;
+  }
+  if (found === null) return null;
+  const states = {};
+  for (const token of found.slice(SOURCES_LINE_PREFIX.length).trim().split(/\s+/)) {
+    const eq = token.indexOf('=');
+    if (eq <= 0 || eq === token.length - 1) continue;
+    states[token.slice(0, eq)] = token.slice(eq + 1);
+  }
+  return states;
+}

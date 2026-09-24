@@ -14,6 +14,7 @@ import { runMachine } from './commands/machine.mjs';
 import { runVerify } from './commands/verify.mjs';
 import { runPropose } from './commands/propose.mjs';
 import { runPrompt } from './commands/prompt.mjs';
+import { runWatermark } from './commands/watermark.mjs';
 import { walkVault } from './vault.mjs';
 import { ConfigError } from './config.mjs';
 
@@ -58,6 +59,7 @@ const BUILTIN_COMMANDS = new Map([
   ['verify', (argv, io, t) => runVerify(argv, io, t)],
   ['propose', (argv, io, t) => runPropose(argv, io, t, { walkVault })],
   ['prompt', (argv, io, t) => runPrompt(argv, io, t)],
+  ['watermark', (argv, io, t) => runWatermark(argv, io, t)],
   ['scan-blobs', (argv, io) => runScanBlobs(argv, io)],
   ['push-gate', (argv, io) => runPushGate(argv, io, createTranslator(GATE_LANG, {
     warn: (message) => io.stderr.write(`${message}\n`),
