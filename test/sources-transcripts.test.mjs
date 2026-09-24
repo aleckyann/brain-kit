@@ -4,13 +4,14 @@
 // carries have their own files under test/incidents/.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { machineValueErrors } from '../src/config.mjs';
 import { validateSource } from '../src/sources/index.mjs';
-import { transcriptsSource, SAMPLE_BYTES } from '../src/sources/transcripts-claude-code.mjs';
+import { transcriptsSource, DEFAULT_LIMITS, SAMPLE_BYTES } from '../src/sources/transcripts-claude-code.mjs';
 import {
   FROM, TO, NOW, INSIDE, WEEKS_AGO, PROJECT, OTHER_PROJECT,
-  assistant, customTitle, lastPrompt, makeWorld, mode, paths, system, toolResult, user,
+  assistant, customTitle, lastPrompt, makeWorld, mode, paths, system, toolResult, user, userBlocks,
 } from './helpers/transcripts-world.mjs';
 
 test('the transcripts source implements the source interface', () => {
@@ -170,13 +171,29 @@ test('only .jsonl files directly inside a project directory are candidates', () 
   assert.deepEqual(paths(world.collect()), [kept]);
 });
 
-test('sampleFrom is where the last 64 KB begin, 0 for a smaller file, and sampleLine is the first whole line from there', () => {
+// The line that holds byte `offset`: 1 + the newlines strictly before it,
+// counted on the file's own bytes.
+function lineHolding(file, offset) {
+  const bytes = readFileSync(file);
+  let line = 1;
+  for (let i = 0; i < offset; i += 1) if (bytes[i] === 0x0a) line += 1;
+  return line;
+}
+
+function lineCount(file) {
+  const bytes = readFileSync(file);
+  let count = 0;
+  for (const byte of bytes) if (byte === 0x0a) count += 1;
+  return bytes.length && bytes[bytes.length - 1] !== 0x0a ? count + 1 : count;
+}
+
+test('sampleFrom is where the last 64 KB begin, 0 for a smaller file, and sampleLine is the line that holds that byte', () => {
   const world = makeWorld();
   world.write(PROJECT, 'small.jsonl', [user('Ana asks', INSIDE)]);
   const filler = 'x'.repeat(1000);
   const lines = [user('Ana starts', INSIDE)];
   for (let i = 0; i < 200; i += 1) lines.push(assistant(`${filler} ${i}`, INSIDE));
-  world.write(PROJECT, 'big.jsonl', lines);
+  const bigPath = world.write(PROJECT, 'big.jsonl', lines);
   const plan = world.collect();
   const small = plan.files.find((f) => f.path.endsWith('small.jsonl'));
   const big = plan.files.find((f) => f.path.endsWith('big.jsonl'));
@@ -185,16 +202,184 @@ test('sampleFrom is where the last 64 KB begin, 0 for a smaller file, and sample
   assert.equal(small.sampleLine, 1);
   assert.ok(big.bytes > SAMPLE_BYTES);
   assert.equal(big.sampleFrom, big.bytes - SAMPLE_BYTES);
-  // Every line of the fixture has the same length give or take the index,
-  // so the line holding sampleFrom is computable from the line lengths.
-  const lengths = lines.map((l) => Buffer.byteLength(`${JSON.stringify(l)}\n`));
-  let offset = 0;
-  let line = 1;
-  while (offset < big.sampleFrom) {
-    offset += lengths[line - 1];
-    line += 1;
+  assert.equal(big.sampleLine, lineHolding(bigPath, big.sampleFrom));
+  // The byte is inside a line, not at its start, in this fixture: the
+  // line that holds it is the one before the first line starting after it.
+  const starts = [0];
+  for (const l of lines) starts.push(starts[starts.length - 1] + Buffer.byteLength(`${JSON.stringify(l)}\n`));
+  assert.ok(starts[big.sampleLine - 1] <= big.sampleFrom && big.sampleFrom < starts[big.sampleLine]);
+});
+
+test('a last line longer than 64 KB: sampleLine is that last line, never past the end of the file', () => {
+  const world = makeWorld();
+  const file = world.write(PROJECT, 'tail.jsonl', [
+    user('Ana asks for the report', INSIDE),
+    assistant('reading', INSIDE),
+    userBlocks([{ type: 'tool_result', tool_use_id: 'toolu_fake_2', content: 'y'.repeat(100 * 1024) }], INSIDE),
+  ]);
+  const [kept] = world.collect().files;
+  assert.ok(kept.sampleFrom > 0);
+  assert.equal(lineCount(file), 3);
+  assert.equal(kept.sampleLine, 3);
+});
+
+// An assistant line whose JSON text, newline included, is exactly `total` bytes.
+function lineOfBytes(total, timestamp) {
+  const probe = JSON.stringify(assistant('', timestamp));
+  const text = 'p'.repeat(total - 1 - Buffer.byteLength(probe));
+  const line = JSON.stringify({ ...JSON.parse(probe), message: { role: 'assistant', content: [{ type: 'text', text }] } });
+  assert.equal(Buffer.byteLength(line) + 1, total);
+  return line;
+}
+
+test('sampleLine at the exact edges: sampleFrom on the first byte of a line, and on the newline that ends the line before', () => {
+  const world = makeWorld();
+  const head = user('Ana asks', INSIDE);
+  const atStart = world.write(PROJECT, 'at-start.jsonl', [head, lineOfBytes(SAMPLE_BYTES, INSIDE)]);
+  const onNewline = world.write(PROJECT, 'on-newline.jsonl', [head, lineOfBytes(SAMPLE_BYTES - 1, INSIDE)]);
+  const plan = world.collect();
+  const start = plan.files.find((f) => f.path === atStart);
+  const newline = plan.files.find((f) => f.path === onNewline);
+  const headBytes = Buffer.byteLength(`${JSON.stringify(head)}\n`);
+  assert.equal(start.sampleFrom, headBytes);
+  assert.equal(start.sampleLine, 2);
+  assert.equal(newline.sampleFrom, headBytes - 1);
+  assert.equal(newline.sampleLine, 1);
+});
+
+test('a file that is one line longer than 64 KB has sampleLine 1, with or without a final newline', () => {
+  const world = makeWorld();
+  const one = world.write(PROJECT, 'one.jsonl', [user(`Ana pastes ${'z'.repeat(80 * 1024)}`, INSIDE)]);
+  const bare = join(world.root, PROJECT, 'bare.jsonl');
+  writeFileSync(bare, JSON.stringify(user(`Ana pastes ${'z'.repeat(80 * 1024)}`, INSIDE)));
+  const plan = world.collect();
+  for (const path of [one, bare]) {
+    const file = plan.files.find((f) => f.path === path);
+    assert.ok(file, path);
+    assert.ok(file.sampleFrom > 0);
+    assert.equal(file.sampleLine, 1);
   }
-  assert.equal(big.sampleLine, line);
+});
+
+test('a scan in tiny chunks gives the same plan as the default, across multi-byte characters and a split signature', () => {
+  const world = makeWorld({ extraSignatures: ['Revisão ação'] });
+  world.write(PROJECT, 'round.jsonl', [user('Second brain curator: janela de avaliação', INSIDE), assistant('lendo', INSIDE)]);
+  world.write(PROJECT, 'accented-round.jsonl', [user('Revisão ação da manhã', INSIDE)]);
+  const filler = 'ç'.repeat(700);
+  const lines = [user('Ana começa a sessão', '2026-09-23T09:00:00.000Z')];
+  for (let i = 0; i < 120; i += 1) lines.push(assistant(`${filler} ${i}`, `2026-09-23T10:${String(i % 60).padStart(2, '0')}:00.000Z`));
+  lines.push(user('Ana termina', '2026-09-23T20:00:00.000Z'));
+  world.write(PROJECT, 'accents.jsonl', lines);
+  const expected = world.collect();
+  for (const chunkBytes of [1, 7, 4093]) {
+    const plan = transcriptsSource.collect({
+      window: { from: FROM, to: TO }, config: world.config, machine: world.machine, now: NOW,
+      limits: { chunkBytes, maxLineChars: DEFAULT_LIMITS.maxLineChars },
+    });
+    assert.deepEqual(plan.files, expected.files, `chunkBytes ${chunkBytes}`);
+    assert.deepEqual(plan.dropped, expected.dropped, `chunkBytes ${chunkBytes}`);
+  }
+  assert.equal(expected.dropped.selfTrace, 2);
+  assert.equal(expected.files[0].firstAt, '2026-09-23T09:00:00.000Z');
+  assert.equal(expected.files[0].lastAt, '2026-09-23T20:00:00.000Z');
+});
+
+test('a line longer than maxLineChars is skipped like a malformed one, and the next line is still read', () => {
+  const world = makeWorld();
+  world.write(PROJECT, 'a.jsonl', [
+    user('Ana asks', '2026-09-23T09:00:00.000Z'),
+    assistant('w'.repeat(5000), '2026-09-23T21:00:00.000Z'),
+    assistant('short', '2026-09-23T12:00:00.000Z'),
+  ]);
+  const plan = transcriptsSource.collect({
+    window: { from: FROM, to: TO }, config: world.config, machine: world.machine, now: NOW,
+    limits: { chunkBytes: 64, maxLineChars: 1000 },
+  });
+  assert.equal(plan.files.length, 1);
+  assert.equal(plan.files[0].firstAt, '2026-09-23T09:00:00.000Z');
+  assert.equal(plan.files[0].lastAt, '2026-09-23T12:00:00.000Z');
+});
+
+test('the rest of an overlong line is never read as a line of its own, even when it is valid JSON', () => {
+  const world = makeWorld();
+  // 1024 bytes of padding are 16 chunks of 64: the carry passes 1000
+  // characters exactly where the JSON begins, so only the skip flag keeps
+  // that JSON (a message at 21:00) out.
+  const tail = JSON.stringify(assistant('hidden', '2026-09-23T21:00:00.000Z'));
+  world.write(PROJECT, 'a.jsonl', [
+    `${'w'.repeat(1024)}${tail}`,
+    user('Ana asks', '2026-09-23T09:00:00.000Z'),
+    assistant('short', '2026-09-23T12:00:00.000Z'),
+  ]);
+  const plan = transcriptsSource.collect({
+    window: { from: FROM, to: TO }, config: world.config, machine: world.machine, now: NOW,
+    limits: { chunkBytes: 64, maxLineChars: 1000 },
+  });
+  assert.equal(plan.files[0].lastAt, '2026-09-23T12:00:00.000Z');
+});
+
+test('a read error while scanning lists the file as unreadable and never throws out of collect', () => {
+  const world = makeWorld();
+  const broken = world.write(PROJECT, 'broken.jsonl', [user('Ana asks', INSIDE)]);
+  const fine = world.write(PROJECT, 'fine.jsonl', [user('Ana asks again', INSIDE)]);
+  const opened = new Map();
+  const io = {
+    openSync: (path, flags) => {
+      const fd = openSync(path, flags);
+      opened.set(fd, path);
+      return fd;
+    },
+    closeSync,
+    readSync: (fd, ...rest) => {
+      if (opened.get(fd) === broken) {
+        const error = new Error('Cannot create a string longer than 0x1fffffe8 characters');
+        error.code = 'ERR_STRING_TOO_LONG';
+        throw error;
+      }
+      return readSync(fd, ...rest);
+    },
+  };
+  let plan;
+  assert.doesNotThrow(() => {
+    plan = transcriptsSource.collect({ window: { from: FROM, to: TO }, config: world.config, machine: world.machine, now: NOW, io });
+  });
+  assert.deepEqual(paths(plan), [fine]);
+  assert.deepEqual(plan.unreadable.map((u) => u.path), [broken]);
+  assert.equal(plan.dropped.unreadable, 1);
+  assert.ok(plan.promptBlock.includes(broken));
+});
+
+test('an unlistable project or transcripts directory is a problem, never an exception', { skip: process.getuid?.() === 0 ? 'root lists any directory' : false }, () => {
+  const world = makeWorld({ include: [PROJECT, OTHER_PROJECT] });
+  const kept = world.write(PROJECT, 'a.jsonl', [user('Ana asks', INSIDE)]);
+  world.write(OTHER_PROJECT, 'b.jsonl', [user('Ana codes', INSIDE)]);
+  const locked = join(world.root, OTHER_PROJECT);
+  chmodSync(locked, 0o000);
+  try {
+    const plan = world.collect();
+    assert.deepEqual(paths(plan), [kept]);
+    assert.deepEqual(plan.problems, [{ code: 'project_unreadable', detail: OTHER_PROJECT }]);
+    assert.equal(plan.misconfigured, false);
+    assert.match(plan.promptBlock, /could not be listed/);
+  } finally {
+    chmodSync(locked, 0o755);
+  }
+  chmodSync(world.root, 0o300);
+  try {
+    const plan = world.collect();
+    assert.deepEqual(plan.problems.map((p) => p.code), ['root_unreadable']);
+    assert.equal(plan.misconfigured, true);
+    assert.ok(plan.promptBlock.includes(world.root));
+  } finally {
+    chmodSync(world.root, 0o755);
+  }
+});
+
+test('a relative transcripts_dir is refused by the machine check; absolute and ~/ pass', () => {
+  assert.deepEqual(machineValueErrors({ transcripts_dir: 'projects' }), ['$.transcripts_dir: must be an absolute directory or start with ~/']);
+  assert.deepEqual(machineValueErrors({ transcripts_dir: './projects' }).length, 1);
+  assert.deepEqual(machineValueErrors({ transcripts_dir: '/home/ana/.claude/projects' }), []);
+  assert.deepEqual(machineValueErrors({ transcripts_dir: '~/.claude/projects' }), []);
 });
 
 test('the prompt block lists each file with project, window span, size and sample offset, and only non-zero counters', () => {
@@ -214,6 +399,21 @@ test('the prompt block lists each file with project, window span, size and sampl
   assert.doesNotMatch(plan.promptBlock, /exclude_path_patterns/);
   assert.doesNotMatch(plan.promptBlock, /own runs/);
   assert.match(plan.promptBlock, /never the whole file/);
+  assert.match(plan.promptBlock, /Every time here is UTC/);
+  assert.doesNotMatch(plan.promptBlock, /not opened/);
+});
+
+test('each kept file carries its session, the first 8 characters of its file name, at the start of its prompt line', () => {
+  const world = makeWorld({ lang: 'pt-BR' });
+  const uuid = world.write(PROJECT, '3f2a9c1e-5b7d-4e8f-9a0b-1c2d3e4f5a6b.jsonl', [user('Ana asks', INSIDE)]);
+  const short = world.write(PROJECT, 'abc.jsonl', [user('Ana asks again', '2026-09-23T15:00:00.000Z')]);
+  const plan = world.collect();
+  const byPath = Object.fromEntries(plan.files.map((f) => [f.path, f]));
+  assert.equal(byPath[uuid].session, '3f2a9c1e');
+  assert.equal(byPath[short].session, 'abc');
+  const lines = plan.promptBlock.split('\n');
+  assert.ok(lines.some((l) => l.startsWith(`session 3f2a9c1e: ${uuid} `)), plan.promptBlock);
+  assert.ok(lines.some((l) => l.startsWith(`session abc: ${short} `)), plan.promptBlock);
 });
 
 test('an empty window says so in the prompt block', () => {

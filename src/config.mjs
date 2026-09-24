@@ -115,7 +115,11 @@ export function machineSchema() {
 //     program with no name;
 //   - a path_extra entry that is neither absolute nor under `~/`: resolved
 //     against whatever directory a run starts in, it names a different
-//     directory every time.
+//     directory every time;
+//   - a transcripts_dir that is neither absolute nor under `~/`, for the
+//     same reason, and because the round's read evidence compares the
+//     absolute path the model reads with the path the plan listed: a
+//     relative root makes every transcript unreadable as evidence.
 const MACHINE_PATH_KEYS = Object.freeze(['canonical_path', 'claude_bin', 'state_dir', 'transcripts_dir']);
 const MACHINE_ARGV_KEYS = Object.freeze(['network_check', 'notify_command']);
 
@@ -128,6 +132,10 @@ export function machineValueErrors(machine) {
   const errors = [];
   for (const key of MACHINE_PATH_KEYS) {
     if (isBlank(machine[key])) errors.push(`$.${key}: must not be empty`);
+  }
+  const transcripts = machine.transcripts_dir;
+  if (typeof transcripts === 'string' && !isBlank(transcripts) && !isAbsolute(transcripts) && transcripts !== '~' && !transcripts.startsWith('~/')) {
+    errors.push('$.transcripts_dir: must be an absolute directory or start with ~/');
   }
   if (isBlank(machine.model)) errors.push('$.model: must not be empty (null asks for the default model)');
   const paths = machine.paths;

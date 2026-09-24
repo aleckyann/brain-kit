@@ -458,8 +458,9 @@ selected as if it belonged to the day, and the round wrote its content up as new
 fact. It happened twice before anyone noticed that the "new" material was weeks old.
 **Rule.** Select a transcript by the timestamps of the messages inside the window,
 never by when the file was last written. Modification time is only a cheap
-pre-filter: a file last modified before the window opened cannot hold a message
-inside it and is not opened. The recency cap sorts by the last message inside the
+pre-filter: a file last modified before the window opened, with a margin for a
+clock that disagrees, is not opened, and is counted as not opened rather than as
+holding no message in the window. The recency cap sorts by the last message inside the
 window for the same reason, which replaces the modification time order of the
 11/08/2026 entry above.
 **Where it lives in brain-kit.** `src/sources/transcripts-claude-code.mjs`,

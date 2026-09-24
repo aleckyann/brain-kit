@@ -654,8 +654,8 @@
   "prompt.check_pack_mismatch": "{name}: has a body in {lang} but not in {other}.",
   "prompt.check_body_unreadable": "{name} ({lang}): the body could not be read ({detail}).",
   "prompt.check_unknown_placeholder": "{name} ({lang}): unknown placeholder \"{placeholder}\".",
-  "sources.transcripts.heading": "Transcripts with a message between {from} and {to}: {count} files, newest first. Read each one from its sample offset (the last {sample} KB) and earlier slices only if needed, never the whole file:",
-  "sources.transcripts.file_line": "- {path} (project {project}, messages {firstAt}..{lastAt}, {bytes} bytes, read from byte {sampleFrom}, line {sampleLine})",
+  "sources.transcripts.heading": "Transcripts with a message between {from} and {to}: {count} files, newest first. Every time here is UTC; convert to the vault's time zone before dating anything. Read each one from its sample line (the line holding the start of the last {sample} KB) and earlier slices only if needed, never the whole file:",
+  "sources.transcripts.file_line": "session {session}: {path} (project {project}, messages {firstAt}..{lastAt}, {bytes} bytes, read from byte {sampleFrom}, line {sampleLine})",
   "sources.transcripts.none_in_window": "No transcript has a message inside the window {from} to {to}.",
   "sources.transcripts.unreadable_line": "- {path} (project {project}, {bytes} bytes): could not be read or holds no message timestamp; reported here rather than dropped.",
   "sources.transcripts.dropped_by_cap": "{count} transcripts left out by the cap of {cap}.",
@@ -665,5 +665,8 @@
   "sources.transcripts.dropped_unreadable": "{count} transcripts could not be read (listed above).",
   "sources.transcripts.problem_no_projects": "No project is listed in sources.transcripts.include_projects, so no transcript was read. List the project directories to read (their names under the transcripts directory).",
   "sources.transcripts.problem_root_missing": "The transcripts directory {root} does not exist, so no transcript was read.",
-  "sources.transcripts.problem_project_missing": "The project {project} listed in sources.transcripts.include_projects has no directory under {root}."
+  "sources.transcripts.problem_project_missing": "The project {project} listed in sources.transcripts.include_projects has no directory under {root}.",
+  "sources.transcripts.dropped_modified_before_window": "{count} transcripts not opened because they were last modified before the window opened.",
+  "sources.transcripts.problem_root_unreadable": "The transcripts directory {root} exists but could not be listed, so no transcript was read.",
+  "sources.transcripts.problem_project_unreadable": "The project {project} listed in sources.transcripts.include_projects exists under {root} but could not be listed, so none of its transcripts was read."
 }

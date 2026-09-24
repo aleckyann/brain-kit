@@ -9,6 +9,7 @@
 // when one of its messages falls inside [from, to).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { MTIME_SLACK_MS } from '../../src/sources/transcripts-claude-code.mjs';
 import {
   FROM, NOW, PROJECT, WEEKS_AGO, assistant, customTitle, lastPrompt, makeWorld, paths, user,
 } from '../helpers/transcripts-world.mjs';
@@ -49,12 +50,24 @@ test('the order of the kept files follows their last message, not their mtime', 
   assert.deepEqual(paths(plan), [recentMessage, touchedLater]);
 });
 
-test('mtime is only a pre-filter: a file last modified before the window opened is not opened', () => {
-  // A real transcript cannot hold a message written after its own mtime;
-  // this fixture forces it to show the file is skipped on mtime alone.
+test('mtime is only a pre-filter: a file last modified well before the window opened is not opened, and is counted as such', () => {
+  // On one clock a transcript cannot hold a message written after its own
+  // mtime; this fixture forces it to show the file is skipped on mtime
+  // alone, and that the count says "not opened", not "no message".
   const world = makeWorld();
-  world.write(PROJECT, 'rewound.jsonl', [user('Ana', '2026-09-23T10:00:00.000Z')], { mtime: new Date(FROM.getTime() - 1000) });
+  world.write(PROJECT, 'rewound.jsonl', [user('Ana', '2026-09-23T10:00:00.000Z')], { mtime: new Date(FROM.getTime() - MTIME_SLACK_MS - 1000) });
   const plan = world.collect();
   assert.deepEqual(plan.files, []);
-  assert.equal(plan.dropped.outOfWindow, 1);
+  assert.equal(plan.dropped.modifiedBeforeWindow, 1);
+  assert.equal(plan.dropped.outOfWindow, 0);
+  assert.match(plan.promptBlock, /1 transcripts? not opened because they were last modified before the window opened/);
+  assert.doesNotMatch(plan.promptBlock, /no message falls inside the window/);
+});
+
+test('the pre-filter leaves a margin for a clock that is behind: an mtime just before the window still opens the file', () => {
+  const world = makeWorld();
+  const skewed = world.write(PROJECT, 'skewed.jsonl', [user('Ana', '2026-09-23T10:00:00.000Z')], { mtime: new Date(FROM.getTime() - MTIME_SLACK_MS + 60_000) });
+  const plan = world.collect();
+  assert.deepEqual(paths(plan), [skewed]);
+  assert.equal(MTIME_SLACK_MS, 15 * 60 * 1000);
 });
