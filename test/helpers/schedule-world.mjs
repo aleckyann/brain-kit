@@ -24,6 +24,7 @@ case "$*" in
   *show-environment*) exit "\${FAKE_SYSTEMCTL_PROBE:-0}" ;;
   *is-enabled*) if [ -n "$FAKE_SYSTEMCTL_DISABLED" ]; then echo disabled; exit 1; fi; echo enabled; exit 0 ;;
   *is-active*) echo active; exit 0 ;;
+  *disable*) exit "\${FAKE_DISABLE_STATUS:-\${FAKE_SYSTEMCTL_STATUS:-0}}" ;;
 esac
 exit "\${FAKE_SYSTEMCTL_STATUS:-0}"
 `;
@@ -161,10 +162,15 @@ export function systemdWords(value, { exec }) {
     }
     words.push(word);
   }
-  // A lone `%` is a specifier systemd expands (or rejects), and in
-  // ExecStart a `$` before a name or a brace is a variable it expands: a
-  // value that reaches either unescaped is not the value that was meant.
-  return words.map((w) => {
+  // A lone `%` is a specifier systemd expands (or rejects), and in an
+  // ExecStart argument a `$` before a name or a brace is a variable it
+  // expands: a value that reaches either unescaped is not the value that
+  // was meant. The program itself (ExecStart's first word) is read by other
+  // rules: specifiers yes, variables no (so `$$` there stays two dollar
+  // signs), and a quote or a backslash anywhere in it is a fatal error
+  // ("Executable path contains special characters").
+  return words.map((w, index) => {
+    const program = exec && index === 0;
     let out = '';
     for (let j = 0; j < w.length; j++) {
       const c = w[j];
@@ -172,6 +178,9 @@ export function systemdWords(value, { exec }) {
         if (w[j + 1] !== '%') throw new Error(`unescaped specifier in ${w}`);
         out += '%';
         j++;
+      } else if (program) {
+        if (/['"\\]/.test(c)) throw new Error(`special character in the executable path ${w}`);
+        out += c;
       } else if (exec && c === '$') {
         if (w[j + 1] === '$') { out += '$'; j++; } else if (/[A-Za-z_{]/.test(w[j + 1] ?? '')) throw new Error(`unescaped variable in ${w}`);
         else out += '$';

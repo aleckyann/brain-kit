@@ -48,8 +48,8 @@
 // exit 0 only when the entry is installed, current and enabled.
 //
 // `deps` hands in the environment, the working directory, the operating
-// system, the user id, the machine's time zone, the clock and the node
-// binary, for the tests. Production passes nothing.
+// system, the user id, the machine's time zone, the clock, the node binary
+// and the kit's entry point, for the tests. Production passes nothing.
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
@@ -67,6 +67,13 @@ export const PLATFORMS = Object.freeze(['systemd', 'launchd', 'cron']);
 export const DAYTIME_FROM = '07:00';
 export const DAYTIME_UNTIL = '23:00';
 const SYSTEM_PATH = Object.freeze(['/usr/local/bin', '/usr/bin', '/bin']);
+const HALF_YEAR_DAYS = 182;
+// Vixie cron (Debian, Ubuntu) and macOS cron cap a command near 1000 bytes
+// and refuse the whole crontab above it; the kit refuses first, in its own
+// words, with room to spare.
+export const CRON_LINE_LIMIT = 900;
+const PINNED_MARKERS = Object.freeze(['/_npx/', '/.nvm/versions/', '/fnm/node-versions/', '/.fnm/', '/.asdf/installs/', '/mise/installs/', '/.volta/tools/image/']);
+const CRON_ENV_LINE = /^\s*(CRON_TZ|TZ|SHELL)\s*=/;
 const TEMPLATES = join(KIT_ROOT, 'templates', 'schedule');
 
 function parseArgs(argv) {
@@ -89,9 +96,10 @@ function parseArgs(argv) {
 }
 
 // A value written into a unit file as one systemd word: `%` doubled, since
-// systemd expands specifiers there; in ExecStart also `$` doubled, since
-// systemd expands variables there; then backslash and double quote escaped
-// and the whole wrapped in double quotes.
+// systemd expands specifiers there; in an ExecStart argument (never the
+// program, which systemd does not expand) also `$` doubled, since systemd
+// expands variables there; then backslash and double quote escaped and the
+// whole wrapped in double quotes.
 function systemdQuote(value, { exec }) {
   let text = value.replace(/%/g, '%%');
   if (exec) text = text.replace(/\$/g, '$$$$');
@@ -140,13 +148,43 @@ function isValidTimeZone(zone) {
 }
 
 // Characters no scheduler file can carry safely: control characters break
-// every format; a colon cannot sit inside a PATH entry; and cron cannot
-// carry a backslash at all (in front of a percent sign cronie keeps the
-// percent and drops the backslash, whatever the quoting).
-function unsafeFor(value, { pathEntry = false, platform }) {
+// every format; a colon cannot sit inside a PATH entry; cron cannot carry a
+// backslash at all (in front of a percent sign cronie keeps the percent and
+// drops the backslash, whatever the quoting); and systemd refuses a single
+// quote, a double quote or a backslash anywhere in the program ExecStart
+// runs, quoted or not ("Executable path contains special characters", a
+// unit with a fatal error that the timer would still start every window).
+// The kit's own path is held to the same rule as node's: it is the other
+// program path the entry names.
+function unsafeFor(value, { pathEntry = false, program = false, platform }) {
   if ([...value].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127)) return true;
   if (pathEntry && value.includes(':')) return true;
+  if (program && platform === 'systemd' && /['"\\]/.test(value)) return true;
   return platform === 'cron' && value.includes('\\');
+}
+
+// A zone's offset from UTC at one moment, as Intl spells it ("-03:00").
+function utcOffset(zone, at) {
+  const name = new Intl.DateTimeFormat('en-US', { timeZone: zone, timeZoneName: 'longOffset' })
+    .formatToParts(at).find((part) => part.type === 'timeZoneName').value;
+  return name === 'GMT' ? '+00:00' : name.slice(3);
+}
+
+// Whether two zones keep the same clock: the same UTC offset now and half a
+// year from now, so a difference that only daylight saving time opens is
+// caught, and two names for the same clock (Asia/Calcutta and Asia/Kolkata,
+// or two cities of one country on one offset) are not a difference.
+export function sameClock(a, b, now) {
+  const later = new Date(now.getTime() + HALF_YEAR_DAYS * 24 * 60 * 60 * 1000);
+  return [now, later].every((at) => utcOffset(a, at) === utcOffset(b, at));
+}
+
+// Where a program path sits in a directory that a version manager or the
+// npx cache replaces or evicts: the entry records the absolute path, so it
+// stops starting the day that directory goes (docs/incidents.md,
+// 27/08/2026, for node or the kit instead of claude).
+function pinnedByManager(path) {
+  return PINNED_MARKERS.some((marker) => path.includes(marker));
 }
 
 function detectPlatform(env, os) {
@@ -231,7 +269,8 @@ export async function runSchedule(argv, io, t, deps = {}) {
   }
 
   const node = deps.node ?? process.execPath;
-  const argvOfRound = [node, join(KIT_ROOT, 'bin', 'brain-kit.mjs'), 'curate', root];
+  const kit = deps.kit ?? join(KIT_ROOT, 'bin', 'brain-kit.mjs');
+  const argvOfRound = [node, kit, 'curate', root];
   const windows = dedupe(config.curate.schedule).sort();
   if (os === 'win32') {
     const command = argvOfRound.map((arg) => `"${arg}"`).join(' ');
@@ -247,7 +286,7 @@ export async function runSchedule(argv, io, t, deps = {}) {
     launchd: join(home, 'Library', 'LaunchAgents'),
   };
   const uid = deps.uid ?? process.getuid?.() ?? 0;
-  const context = { env, t, say, complain, name, platform, where, uid, dry: parsed.dry };
+  const context = { env, t, say, complain, name, platform, where, uid, dry: parsed.dry, detected: parsed.platform === null };
 
   if (parsed.action === 'uninstall') return uninstall(context);
 
@@ -276,8 +315,8 @@ export async function runSchedule(argv, io, t, deps = {}) {
     return EXIT.USAGE;
   }
   const pathDirs = dedupe([...extra.map((dir) => expandHome(String(dir), env)), dirname(claude), dirname(node), ...SYSTEM_PATH]);
-  for (const value of [...argvOfRound, timezone]) {
-    if (unsafeFor(value, { platform })) {
+  for (const [index, value] of [...argvOfRound, timezone].entries()) {
+    if (unsafeFor(value, { platform, program: index < 2 })) {
       complain(t('schedule.unsafe_path', { path: value }));
       return EXIT.USAGE;
     }
@@ -294,8 +333,20 @@ export async function runSchedule(argv, io, t, deps = {}) {
     const lastRun = machine.paths?.last_run ?? join(stateDir, STATE_FILES.LAST_RUN);
     return status(context, rendered, windows, lastRun, deps.now ?? new Date());
   }
+  if (rendered.block !== undefined) {
+    const longest = Math.max(...rendered.block.split('\n').map((line) => Buffer.byteLength(line)));
+    if (longest > CRON_LINE_LIMIT) {
+      complain(t('schedule.cron_line_too_long', { bytes: longest, limit: CRON_LINE_LIMIT }));
+      return EXIT.USAGE;
+    }
+  }
   const localZone = deps.localZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
-  if (localZone !== timezone) complain(t('schedule.timezone_differs', { local: localZone, vault: timezone }));
+  if (isValidTimeZone(localZone) && !sameClock(localZone, timezone, deps.now ?? new Date())) {
+    complain(t('schedule.timezone_differs', { local: localZone, vault: timezone }));
+  }
+  for (const path of argvOfRound.slice(0, 2)) {
+    if (pinnedByManager(path)) complain(t('schedule.pinned_path', { path }));
+  }
   return install(context, rendered, windows);
 }
 
@@ -307,7 +358,9 @@ function render({ platform, name, where, vaultId, argv, path, timezone, windows 
       VAULT_ID: vaultId,
       PATH_ASSIGNMENT: systemdQuote(`PATH=${path}`, { exec: false }),
       TZ_ASSIGNMENT: systemdQuote(`TZ=${timezone}`, { exec: false }),
-      EXEC_START: argv.map((arg) => systemdQuote(arg, { exec: true })).join(' '),
+      // The program itself is not variable-expanded by systemd, so its `$`
+      // stays single; only the arguments after it have `$` doubled.
+      EXEC_START: argv.map((arg, index) => systemdQuote(arg, { exec: index > 0 })).join(' '),
     });
     const timer = fill('systemd/brain-kit-curate.timer', {
       VAULT_ID: vaultId,
@@ -385,14 +438,41 @@ function readCrontab(context) {
   }
   const lines = text.split('\n');
   if (lines[lines.length - 1] === '') lines.pop();
-  const begin = lines.findIndex((line) => line === `# BEGIN ${name}` || line.startsWith(`# BEGIN ${name}:`));
+  const begin = lines.findIndex((line) => opensBlock(line, name));
   if (begin === -1) return { before: lines, block: null, after: [] };
   const end = lines.findIndex((line, i) => i > begin && line === `# END ${name}`);
   if (end === -1) {
     complain(t('schedule.crontab_broken', { name }));
     return null;
   }
+  // A second copy of the block (pasted by hand) would sit among the lines
+  // kept as the person's own, and keep firing after every install and
+  // uninstall; refused, like a block with no end.
+  if (lines.slice(end + 1).some((line) => opensBlock(line, name))) {
+    complain(t('schedule.crontab_duplicate', { name }));
+    return null;
+  }
   return { before: lines.slice(0, begin), block: `${lines.slice(begin, end + 1).join('\n')}\n`, after: lines.slice(end + 1) };
+}
+
+function opensBlock(line, name) {
+  return line === `# BEGIN ${name}` || line.startsWith(`# BEGIN ${name}:`);
+}
+
+// The other platforms holding an entry for this vault, when a command that
+// detected its platform finds none there: an entry installed with
+// `--platform cron` on a machine where systemd answers keeps firing, and
+// "not installed" or "nothing to remove" would hide it.
+function installedElsewhere(context) {
+  const { env, name, platform, where } = context;
+  const found = [];
+  if (platform !== 'systemd' && ['service', 'timer'].some((kind) => existsSync(join(where.systemd, `${name}.${kind}`)))) found.push('systemd');
+  if (platform !== 'launchd' && existsSync(join(where.launchd, `${name}.plist`))) found.push('launchd');
+  if (platform !== 'cron') {
+    const result = run('crontab', ['-l'], { env });
+    if (result.status === 0 && result.stdout.split('\n').some((line) => opensBlock(line, name))) found.push('cron');
+  }
+  return found;
 }
 
 function writeCrontab(context, lines) {
@@ -411,6 +491,10 @@ function install(context, rendered, windows) {
     }
     const current = readCrontab(context);
     if (current === null) return EXIT.FAILURE;
+    // The block goes at the end, below every line of the person's own, so an
+    // environment line of theirs (CRON_TZ, TZ, SHELL) applies to it too.
+    const environment = [...current.before, ...current.after].filter((line) => CRON_ENV_LINE.test(line));
+    if (environment.length > 0) context.complain(t('schedule.crontab_foreign_env', { lines: environment }));
     const block = rendered.block.replace(/\n$/, '').split('\n');
     if (!writeCrontab(context, [...current.before, ...current.after, ...block])) return EXIT.FAILURE;
     say(t('schedule.installed', { name, platform, windows }));
@@ -456,10 +540,7 @@ function uninstall(context) {
     }
     const current = readCrontab(context);
     if (current === null) return EXIT.FAILURE;
-    if (current.block === null) {
-      say(t('schedule.nothing_installed', { name, platform }));
-      return EXIT.OK;
-    }
+    if (current.block === null) return nothingToRemove(context);
     if (!writeCrontab(context, [...current.before, ...current.after])) return EXIT.FAILURE;
     say(t('schedule.uninstalled', { name, platform }));
     return EXIT.OK;
@@ -473,17 +554,32 @@ function uninstall(context) {
     showSteps(context, reload);
     return EXIT.OK;
   }
-  if (present.length === 0) {
-    say(t('schedule.nothing_installed', { name, platform }));
-    return EXIT.OK;
-  }
-  if (!runSteps(context, stop)) return EXIT.FAILURE;
+  if (present.length === 0) return nothingToRemove(context);
+  // A disable that fails (no user bus over SSH, a unit never loaded) still
+  // lets the files go: otherwise the kit could never remove its own files.
+  // The failure is said, and the run is exit 1, never a quiet success.
+  const stopped = runSteps(context, stop);
   for (const file of present) {
     rmSync(file, { force: true });
     say(t('schedule.removed', { path: file }));
   }
-  if (!runSteps(context, reload)) return EXIT.FAILURE;
+  const reloaded = runSteps(context, reload);
+  if (!stopped || !reloaded) {
+    context.complain(t('schedule.uninstall_unconfirmed', { name, platform }));
+    return EXIT.FAILURE;
+  }
   say(t('schedule.uninstalled', { name, platform }));
+  return EXIT.OK;
+}
+
+function nothingToRemove(context) {
+  const { t, say, name, platform } = context;
+  const elsewhere = context.detected ? installedElsewhere(context) : [];
+  if (elsewhere.length > 0) {
+    context.complain(t('schedule.found_elsewhere', { name, platform, platforms: elsewhere }));
+    return EXIT.FAILURE;
+  }
+  say(t('schedule.nothing_installed', { name, platform }));
   return EXIT.OK;
 }
 
@@ -543,8 +639,11 @@ function status(context, rendered, windows, lastRun, now) {
   const { t, say, name, platform } = context;
   const found = installedState(context, rendered);
   if (found.state === 'unreadable') return EXIT.FAILURE;
-  if (found.state === 'absent') say(t('schedule.status_not_installed', { name, platform }));
-  else if (found.state === 'outdated') say(t('schedule.status_outdated', { name, platform }));
+  if (found.state === 'absent') {
+    say(t('schedule.status_not_installed', { name, platform }));
+    const elsewhere = context.detected ? installedElsewhere(context) : [];
+    if (elsewhere.length > 0) say(t('schedule.found_elsewhere', { name, platform, platforms: elsewhere }));
+  } else if (found.state === 'outdated') say(t('schedule.status_outdated', { name, platform }));
   else if (found.state === 'inactive') say(t('schedule.status_inactive', { name, platform, detail: found.detail }));
   else {
     say(t('schedule.status_active', { name, platform }));

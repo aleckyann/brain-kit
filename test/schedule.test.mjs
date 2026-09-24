@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
-import { nextFireTimes } from '../src/commands/schedule.mjs';
+import { CRON_LINE_LIMIT, nextFireTimes, sameClock } from '../src/commands/schedule.mjs';
 import {
   ACCENTED, VAULT_ID, cronCommand, dryFiles, makeScheduleWorld, systemdWords, unitValues, xmlText,
 } from './helpers/schedule-world.mjs';
@@ -59,9 +59,29 @@ test('quoting survives a vault path with a space, an accent, quotes, a percent s
   writeFileSync(node, `#!/bin/sh\nprintf '%s\\n' "$@" > '${out}'\nprintf 'PATH=%s\\nLC_ALL=%s\\nTZ=%s\\n' "$PATH" "$LC_ALL" "$TZ" >> '${out}'\n`, { mode: 0o755 });
   const argv = [node, KIT_BIN, 'curate', world.vault];
 
-  const systemd = dryFiles((await world.run(['install', '--platform', 'systemd', '--dry'], { node })).stdout);
-  const service = systemd[join(world.unitDir, `${world.name}.service`)];
-  assert.deepEqual(systemdWords(unitValues(service, 'ExecStart')[0], { exec: true }), argv);
+  assert.throws(() => systemdWords(`"${node.replace(/%/g, '%%')}" "curate"`, { exec: true }), /special character in the executable path/, 'the helper holds the program to systemd\'s own rule');
+
+  // systemd cannot run a program whose path holds a quote or a backslash,
+  // however it is quoted: refused before anything is written.
+  const quoted = await world.run(['install', '--platform', 'systemd'], { node });
+  assert.deepEqual([quoted.status, quoted.stderr], [2, `${world.t('schedule.unsafe_path', { path: node })}\n`]);
+  assert.equal(existsSync(world.unitDir), false);
+  // A dollar sign, a percent sign and a space in the program path are fine:
+  // `%` doubled, `$` left single (systemd expands no variable there), and
+  // the vault argument keeps every hostile character.
+  const plainNode = join(world.base, 'n o %d d$e', 'node');
+  mkdirSync(dirname(plainNode), { recursive: true });
+  writeFileSync(plainNode, '#!/bin/sh\n', { mode: 0o755 });
+  const systemdRun = await world.run(['install', '--platform', 'systemd', '--dry'], { node: plainNode });
+  assert.equal(systemdRun.status, 0, systemdRun.stderr);
+  const service = dryFiles(systemdRun.stdout)[join(world.unitDir, `${world.name}.service`)];
+  const execStart = unitValues(service, 'ExecStart')[0];
+  assert.ok(execStart.startsWith(`"${plainNode.replace(/%/g, '%%')}" `), execStart);
+  assert.deepEqual(systemdWords(execStart, { exec: true }), [plainNode, KIT_BIN, 'curate', world.vault]);
+  // The kit's own path is the other program path: held to the same rule.
+  const kit = join(world.base, 'kit "x"', 'bin', 'brain-kit.mjs');
+  const kitRun = await world.run(['install', '--platform', 'systemd', '--dry'], { kit });
+  assert.deepEqual([kitRun.status, kitRun.stderr], [2, `${world.t('schedule.unsafe_path', { path: kit })}\n`]);
 
   const launchd = dryFiles((await world.run(['install', '--platform', 'launchd', '--dry'], { node })).stdout);
   const plist = launchd[join(world.agentsDir, `${world.name}.plist`)];
@@ -73,7 +93,10 @@ test('quoting survives a vault path with a space, an accent, quotes, a percent s
   // A vault path with a backslash is refused on cron (cronie cannot carry
   // a backslash in front of a percent sign), so the cron run uses a vault
   // with every other character.
-  const cronWorld = makeScheduleWorld({ vaultName: `it's 100% "$HOME" & <b> vault` });
+  // No path_extra here: every path in this world sits under the temporary
+  // directory, repeated in the PATH, and a long TMPDIR would otherwise push
+  // the line past the kit's cron length limit, which has its own test.
+  const cronWorld = makeScheduleWorld({ vaultName: `it's 100% "$HOME" & <b> vault`, machine: { path_extra: [] } });
   const cronNode = join(cronWorld.base, `n'o %d $e`, 'node');
   mkdirSync(dirname(cronNode), { recursive: true });
   writeFileSync(cronNode, readFileSync(node, 'utf8'), { mode: 0o755 });
@@ -88,7 +111,8 @@ test('quoting survives a vault path with a space, an accent, quotes, a percent s
   // arguments it received and the environment the line gave it.
   const got = readFileSync(out, 'utf8').split('\n');
   assert.deepEqual(got.slice(0, 3), [KIT_BIN, 'curate', cronWorld.vault]);
-  assert.deepEqual(got.slice(3, 6), [`PATH=${expectedPath(cronWorld, cronNode)}`, 'LC_ALL=C.UTF-8', 'TZ=America/Sao_Paulo']);
+  const cronPath = [...new Set([cronWorld.claudeDir, dirname(cronNode), '/usr/local/bin', '/usr/bin', '/bin'])].join(':');
+  assert.deepEqual(got.slice(3, 6), [`PATH=${cronPath}`, 'LC_ALL=C.UTF-8', 'TZ=America/Sao_Paulo']);
 
   const refused = await world.run(['install', '--platform', 'cron', '--dry'], { node });
   assert.equal(refused.status, 2);
@@ -339,11 +363,101 @@ test('a bare claude_bin found on PATH puts its own directory on the unit PATH', 
   assert.deepEqual(systemdWords(unitValues(service, 'Environment')[0], { exec: false }), [`PATH=${expectedPath(world)}`]);
 });
 
-test('a machine timezone other than the vault\'s is said, since the scheduler fires on the machine\'s clock', async () => {
+test('a machine clock that differs from the vault\'s, now or half a year from now, is said; another name for the same clock is not', async () => {
   const world = makeScheduleWorld();
-  const r = await world.run(['install', '--platform', 'systemd', '--dry'], { localZone: 'Europe/Lisbon' });
+  const september = new Date(Date.UTC(2026, 8, 24, 12));
+  const r = await world.run(['install', '--platform', 'systemd', '--dry'], { localZone: 'Europe/Lisbon', now: september });
   assert.equal(r.status, 0);
   assert.equal(r.stderr, `${world.t('schedule.timezone_differs', { local: 'Europe/Lisbon', vault: 'America/Sao_Paulo' })}\n`);
+
+  const alias = await world.run(['install', '--platform', 'systemd', '--dry'], { localZone: 'America/Recife', now: september });
+  assert.deepEqual([alias.status, alias.stderr], [0, '']);
+
+  // In January London and UTC read the same; in July they do not.
+  const london = makeScheduleWorld({ timezone: 'Europe/London' });
+  const january = new Date(Date.UTC(2026, 0, 15, 12));
+  const winter = await london.run(['install', '--platform', 'systemd', '--dry'], { localZone: 'UTC', now: january });
+  assert.equal(winter.stderr, `${london.t('schedule.timezone_differs', { local: 'UTC', vault: 'Europe/London' })}\n`);
+  assert.equal(sameClock('UTC', 'Europe/London', january), false);
+  assert.equal(sameClock('Etc/UTC', 'UTC', january), true);
+});
+
+test('a cron line longer than the kit allows is refused in its own words, before the crontab is read', async () => {
+  const world = makeScheduleWorld();
+  world.setMachine({ path_extra: [`/opt/${'deep/'.repeat(180)}bin`] });
+  const r = await world.run(['install', '--platform', 'cron']);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, new RegExp(`^${world.t('schedule.cron_line_too_long', { bytes: 'BYTES', limit: CRON_LINE_LIMIT }).replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace('BYTES', '(\\d+)')}\\n$`));
+  assert.ok(Number(/(\d+) bytes/.exec(r.stderr)[1]) > CRON_LINE_LIMIT);
+  assert.deepEqual(world.commands(), []);
+  assert.equal((await world.run(['install', '--platform', 'systemd', '--dry'])).status, 0, 'systemd has no such limit');
+});
+
+test('a systemd uninstall whose disable fails still removes its own files, says so, and is exit 1', async () => {
+  const world = makeScheduleWorld();
+  assert.equal((await world.run(['install', '--platform', 'systemd'])).status, 0);
+  const r = await world.run(['uninstall', '--platform', 'systemd'], { env: { FAKE_SYSTEMCTL_STATUS: '1' } });
+  assert.equal(r.status, 1);
+  assert.deepEqual(readdirSync(world.unitDir), []);
+  assert.equal(r.stderr, [
+    world.t('schedule.command_failed', { command: `systemctl --user disable --now ${world.name}.timer`, status: 1, detail: world.t('schedule.no_output') }),
+    world.t('schedule.command_failed', { command: 'systemctl --user daemon-reload', status: 1, detail: world.t('schedule.no_output') }),
+    world.t('schedule.uninstall_unconfirmed', { name: world.name, platform: 'systemd' }),
+    '',
+  ].join('\n'));
+
+  // The disable alone failing, the reload succeeding: still exit 1.
+  const alone = makeScheduleWorld();
+  assert.equal((await alone.run(['install', '--platform', 'systemd'])).status, 0);
+  const a = await alone.run(['uninstall', '--platform', 'systemd'], { env: { FAKE_DISABLE_STATUS: '1' } });
+  assert.equal(a.status, 1);
+  assert.deepEqual(readdirSync(alone.unitDir), []);
+  assert.equal(alone.commands().at(-1), 'systemctl --user daemon-reload');
+  assert.equal(a.stderr, [
+    alone.t('schedule.command_failed', { command: `systemctl --user disable --now ${alone.name}.timer`, status: 1, detail: alone.t('schedule.no_output') }),
+    alone.t('schedule.uninstall_unconfirmed', { name: alone.name, platform: 'systemd' }),
+    '',
+  ].join('\n'));
+});
+
+test('a second copy of this vault\'s cron block is refused; foreign environment lines above the block are said', async () => {
+  const world = makeScheduleWorld();
+  assert.equal((await world.run(['install', '--platform', 'cron'])).status, 0);
+  const once = readFileSync(world.crontab, 'utf8');
+  writeFileSync(world.crontab, `${once}${once}`);
+  const r = await world.run(['uninstall', '--platform', 'cron']);
+  assert.deepEqual([r.status, r.stderr], [1, `${world.t('schedule.crontab_duplicate', { name: world.name })}\n`]);
+  assert.equal(readFileSync(world.crontab, 'utf8'), `${once}${once}`);
+
+  const env = makeScheduleWorld();
+  writeFileSync(env.crontab, 'CRON_TZ=UTC\nSHELL=/bin/zsh\nMAILTO=ana@example.invalid\n0 3 * * * /usr/bin/true\n');
+  const e = await env.run(['install', '--platform', 'cron']);
+  assert.equal(e.status, 0);
+  assert.equal(e.stderr, `${env.t('schedule.crontab_foreign_env', { lines: ['CRON_TZ=UTC', 'SHELL=/bin/zsh'] })}\n`);
+});
+
+test('status and uninstall that detect their platform name an entry installed under another one, never "nothing to remove"', async () => {
+  const world = makeScheduleWorld();
+  assert.equal((await world.run(['install', '--platform', 'cron'])).status, 0);
+  const s = await world.run(['status']);
+  assert.equal(s.status, 1);
+  assert.ok(s.stdout.includes(world.t('schedule.found_elsewhere', { name: world.name, platform: 'systemd', platforms: ['cron'] })), s.stdout);
+  const u = await world.run(['uninstall']);
+  assert.deepEqual([u.status, u.stderr], [1, `${world.t('schedule.found_elsewhere', { name: world.name, platform: 'systemd', platforms: ['cron'] })}\n`]);
+  assert.match(readFileSync(world.crontab, 'utf8'), new RegExp(`# BEGIN ${world.name}:`));
+  const explicit = await world.run(['uninstall', '--platform', 'systemd']);
+  assert.deepEqual([explicit.status, explicit.stdout], [0, `${world.t('schedule.nothing_installed', { name: world.name, platform: 'systemd' })}\n`]);
+});
+
+test('a node or kit under a version manager or the npx cache is said at install', async () => {
+  const world = makeScheduleWorld();
+  const node = '/home/ana/.nvm/versions/node/v24.1.0/bin/node';
+  const kit = '/home/ana/.npm/_npx/0123abcd/node_modules/second-brain-kit/bin/brain-kit.mjs';
+  const r = await world.run(['install', '--platform', 'systemd', '--dry'], { node, kit });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stderr, `${world.t('schedule.pinned_path', { path: node })}\n${world.t('schedule.pinned_path', { path: kit })}\n`);
+  const plain = await world.run(['install', '--platform', 'systemd', '--dry']);
+  assert.equal(plain.stderr, '');
 });
 
 test('usage errors are exit 2: no action, an unknown action, an unknown platform, --platform with no value, --dry on status, an extra argument', async () => {
