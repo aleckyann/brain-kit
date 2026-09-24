@@ -12,7 +12,7 @@
 
 1. **The prompt is written from scratch, domain neutral.** The kit serves people with other jobs, routines and vocabulary than the original vault's owner. The design's "literal copy of the original prompt with two declared edits" is dropped; nothing is read from the private reference vault. The rules that prompt paid for in incidents are kept as a contract (Task 4), taken from `docs/incidents.md` and `docs/rationale.md`. A vault may override the prompt with `.brain-kit/prompts/curate.md`; `update` never overwrites it.
 2. **The acceptance criterion changes.** Not "differs from the original prompt only in the parameters block", but: every tool the prompt names is in the round's allowlist; every contract rule is present in the rendered prompt in both languages; and one real round against a throwaway vault opens a pull request from inside the round and records its cost.
-3. **The model runs isolated from the person's own Claude Code settings.** Measured in the spike of 24/09/2026 (Task 1 turns its findings into tests): a default `claude -p` inherits the user's permission mode (`auto` on the maintainer's machine), user hooks, user allow rules and every MCP server; under that, a command in `--disallowedTools` and a command outside the allowlist both ran, with exit 0 and no denial reported. With `--permission-mode dontAsk`, a user hook that rewrites commands (`curl` into `rtk curl`) plus a user allow rule for the rewritten form still let a disallowed command run. What held: `--setting-sources project --strict-mcp-config --permission-mode dontAsk --permission-prompts none`: no hooks, no user rules, no MCP servers, the disallowed command denied and listed in `permission_denials`, OAuth login still working. `--bare` is not an option: it reads only `ANTHROPIC_API_KEY`, which leaves out subscription users.
+3. **The model runs isolated from the person's own Claude Code settings.** Measured in the spike of 24/09/2026 (Task 1 turns its findings into tests): a default `claude -p` inherits the user's permission mode (`auto` on the maintainer's machine), user hooks, user allow rules and every MCP server; under that, a command in `--disallowedTools` and a command outside the allowlist both ran, with exit 0 and no denial reported. With `--permission-mode dontAsk`, a user hook that rewrites commands (`curl` into `rtk curl`) plus a user allow rule for the rewritten form still let a disallowed command run. What held: `--setting-sources '' --strict-mcp-config --permission-mode dontAsk --permission-prompts none`, the argument after `--setting-sources` being the empty string (no user, project or local settings file is loaded): no hooks, no user rules, no MCP servers, the disallowed command denied and listed in `permission_denials`, OAuth login still working. `--setting-sources project` is NOT enough: a `SessionStart` hook in the project's `.claude/settings.json` ran even in a workspace never trusted (only the project's allow rules were ignored), and the `.claude/settings.json` that `init` seeds in every vault enables the brain-kit plugin, whose hooks would then run inside the round. Also measured: the round's environment reaches the commands the model runs through Bash (a variable set for `claude` was seen by the kit run by the model), and in one of two runs the model put `node` in front of the kit command on its own. `--bare` is not an option: it reads only `ANTHROPIC_API_KEY`, which leaves out subscription users.
 4. **Transcripts are selected by the timestamps of their messages, not by file modification time.** Lesson of 24/09/2026 from the original vault's curation: selecting by mtime made a session from weeks before read as new twice, and the round wrote it up as new fact. Modification time is only a cheap pre-filter.
 
 Phase 1 is on `main` at `3ee7910`.
@@ -46,9 +46,10 @@ Clause-by-clause mutation is mandatory where a deleted clause could: let the mod
 
 1. **Isolation.** The argument vector always carries the four isolation flags; the round aborts before the model does any work when the init event reports a permission mode other than `dontAsk`, any hook event, or any MCP server the round did not ask for. Owner: Task 1.
 2. **Selection by message time.** A file touched today whose messages are all from weeks ago stays out; a file whose last message is inside the window comes in even if its mtime is older; the curator's own runs are dropped only by the first user message. Owner: Task 2.
-3. **The watermark.** It advances only with exit 0 from the model, read evidence for every required source, and a `BRAIN_KIT_SOURCES` line; a partial round, a denial on a required read, or a missing final line leaves the day open. Owner: Task 3 and Task 5.
-4. **The order of `curate`.** sentinel and machine file, `--dry` exit, lock, network, sync, then config and prompt, window, dirty tree, CLI, model. A test asserts the order by the side effects each step leaves. Owner: Task 5.
-5. **Loud failure.** Every non-zero exit writes the reason in the log and in `last-run.json`, and calls the notify command when one is configured; a green round lasting seconds with no model turns is reported as dead by `doctor`. Owner: Task 5 and Task 7.
+3. **The watermark.** It advances only with exit 0 from the model, read evidence for every required source, and a `BRAIN_KIT_SOURCES` line; a partial round, a denial on a required read, or a missing final line leaves the day open. Owner: Task 3 and Task 6.
+4. **The order of `curate`.** sentinel and machine file, `--dry` exit, lock, network, sync, then config and prompt, window, dirty tree, CLI, model. A test asserts the order by the side effects each step leaves. Owner: Task 6.
+5. **Loud failure.** Every non-zero exit writes the reason in the log and in `last-run.json`, and calls the notify command when one is configured; a green round lasting seconds with no model turns is reported as dead by `doctor`. Owner: Task 6 and Task 8.
+6. **The round's own lock and its leftovers.** The `propose` the model runs joins the lock the round holds instead of being refused; after the model, the files it proposed that are byte-identical to what was pushed are brought back to the default branch's content, so the next round does not stop on a dirty tree; anything else the round left is reported, exits 1 and keeps the day open. Owner: Task 5 and Task 6.
 
 ## What earlier phases established, which this phase reuses
 
@@ -66,7 +67,7 @@ Clause-by-clause mutation is mandatory where a deleted clause could: let the mod
 - The briefing and `preflight`: phase 4.
 - Migrating the original vault: phase 5. `watermark import` is not built here.
 - macOS launchd and cron are rendered and tested with `--dry` only; systemd user units are the reference, installed for real only in the opt-in E2E.
-- `--restricted`: measured to work too, but it removes Bash unless `--tools` names it; `--setting-sources project` is the chosen isolation. Recorded in `docs/security.md`.
+- `--restricted`: measured to work too, but it removes Bash unless `--tools` names it; `--setting-sources ''` is the chosen isolation. Recorded in `docs/security.md`.
 
 ## File Structure
 
@@ -84,7 +85,9 @@ Clause-by-clause mutation is mandatory where a deleted clause could: let the mod
 | `src/sources/index.mjs` | the source interface |
 | `src/sources/transcripts-claude-code.mjs` | discovery, time window, self-trace, cap, sampling plan |
 | `lang/<code>/prompts/curate.md` | the generic prompt |
-| `src/commands/curate.mjs` | the fixed order, exit codes, last-run, notify |
+| `src/curate/tools.mjs` | the round's allowlist and denylist, the kit command |
+| `src/guards/lock.mjs`, `src/commands/propose.mjs`, `src/commands/sync.mjs` (modify) | round token, joining the round's lock, the round record, `syncUnderLock` exported |
+| `src/commands/curate.mjs` | the fixed order, cleanup, exit codes, last-run, notify |
 | `src/commands/watermark.mjs` | `show|set|reopen|assume-covered` |
 | `src/commands/schedule.mjs`, `templates/schedule/{systemd,launchd,cron}/*` | install, uninstall, status, `--dry` |
 | `src/doctor/checks.mjs` (modify) | curate-related checks |
@@ -102,7 +105,7 @@ Clause-by-clause mutation is mandatory where a deleted clause could: let the mod
 - Modify: both `messages.json`
 
 **Interfaces:**
-- Produces: `buildArgv({ model, maxTurns, budgetUsd, allowed, disallowed }) -> string[]`. Always, in this order: `-p --verbose --output-format stream-json --permission-mode dontAsk --permission-prompts none --setting-sources project --strict-mcp-config --no-session-persistence`, then `--model <m>` when set, `--max-turns <n>`, `--max-budget-usd <x>`, `--allowedTools` followed by each allowed rule as its own argument, `--disallowedTools` followed by each denied rule, then `--` and nothing after it (the prompt goes on stdin).
+- Produces: `buildArgv({ model, maxTurns, budgetUsd, allowed, disallowed }) -> string[]`. Always, in this order: `-p --verbose --output-format stream-json --permission-mode dontAsk --permission-prompts none --setting-sources '' --strict-mcp-config --no-session-persistence` (the argument after `--setting-sources` is the empty string, its own element of the vector), then `--model <m>` when set, `--max-turns <n>`, `--max-budget-usd <x>`, `--allowedTools` followed by each allowed rule as its own argument, `--disallowedTools` followed by each denied rule, then `--` and nothing after it (the prompt goes on stdin).
 - Produces: `parseStream(lines) -> { init, events, toolUses: [{ id, name, input }], toolResults: [{ toolUseId, isError }], denials: [{ toolName, toolUseId, input }], result: { subtype, isError, costUsd, numTurns, terminalReason } | null, hookEvents: number, unknownTypes: string[], invalidLines: number }`. Unknown `type` or `subtype` values are counted, never fatal. A line that is not JSON is counted in `invalidLines`.
 - Produces: `runModel({ claudeBin, argv, prompt, cwd, env, timeoutMs, onLine }) -> { exitCode, signal, record, stderrTail, durationMs }` using `spawn`, prompt written to stdin then closed, stdout consumed line by line; the exit code is taken from the child's own `close` event and nowhere else (incident 29/07/2026 and 21/08/2026).
 - Produces: `checkIsolation(record, { allowMcp = [] }) -> { ok, problems: [code] }` with codes `permission_mode` (init `permissionMode` is not `dontAsk`), `hooks` (any `hook_started` / `hook_response` system event), `mcp` (any MCP server in init not in `allowMcp`), `no_init`.
@@ -112,11 +115,12 @@ Facts to encode, measured on 24/09/2026 with Claude Code 2.1.281:
 - `claude -p --output-format stream-json` without `--verbose` exits 1 with `Error: When using --print, --output-format=stream-json requires --verbose`. The fake reproduces it.
 - Event shapes: `system/init { permissionMode, tools[], mcp_servers[{ name, status }], model, cwd, ... }`; `assistant` message content `tool_use { id, name, input }`; `user` message content `tool_result { tool_use_id, is_error, content }`; `result { subtype, is_error, total_cost_usd, num_turns, permission_denials[{ tool_name, tool_use_id, tool_input }], terminal_reason }`. Also seen, to be ignored: `system` subtypes `hook_started`, `hook_response`, `thinking_tokens`, `commands_changed`, `task_summary`, `post_turn_summary`, and a top-level `rate_limit_event`.
 - A denied command comes back as a `tool_result` with `is_error: true` and content `Permission to use Bash with command <cmd> has been denied.`, and appears in `result.permission_denials`.
+- A result with `subtype: "error_max_turns"` carries `is_error: true`.
 - Read-only commands (`git status`, `cat`) run in `dontAsk` without an allow rule: the allowlist limits what the model can do, not what it can read. `docs/security.md` (Task 7) says so.
 
 **Fixtures:** the controller copies the spike's raw streams into the task's scratch directory; the implementer anonymizes them (every absolute path, cwd, session id and uuid replaced; user text replaced by neutral text) into the three fixture files, and a test asserts no fixture contains `/home/` other than `/home/ana/`, no `/tmp/claude-`, and no string matching the maintainer's leak patterns (the gate checks the latter on push).
 
-**Fake claude:** `test/helpers/fake-claude.mjs` reads a scenario from `FAKE_CLAUDE_SCENARIO` (a JSON file path): it validates its argv (refuses stream-json without `--verbose` with the real message; records argv and stdin to files named in the scenario), then prints a fixture stream, optionally rewritten (for example, a permission mode, an added hook event), and exits with the scenario's code after an optional delay. `--version` prints the scenario's version text.
+**Fake claude:** `test/helpers/fake-claude.mjs` reads a scenario from `FAKE_CLAUDE_SCENARIO` (a JSON file path): it validates its argv (refuses stream-json without `--verbose` with the real message; records argv and stdin to files named in the scenario), then performs the scenario's `actions` in its working directory, in order, with its own environment (so a variable the caller set, such as the round token, reaches them): `{ "write": { "path": "<relative>", "content": "..." } }` writes a file, `{ "run": ["<argv>", ...] }` runs a command and records its exit code and output to the scenario's record file; then prints a fixture stream, optionally rewritten (for example, a permission mode, an added hook event, a final text with a `BRAIN_KIT_SOURCES` line, tool uses naming given file paths), and exits with the scenario's code after an optional delay. This is what lets `curate` be tested end to end without a model: the fake writes a log entry and runs the real `propose` the way the model would. `--version` prints the scenario's version text.
 
 - [ ] **Step 1:** tests for `buildArgv` (exact order; every isolation flag present; each rule its own argument; nothing after `--`), `parseStream` against the three fixtures (counts, cost, denials, unknown types tolerated, invalid lines counted), `runModel` with the fake (stdin carries the prompt; exit code of the child; a delay then kill on timeout reports the signal), `checkIsolation` (each problem alone, from rewritten fixtures), `checkCli` (a 500 byte file, a `--version` printing error text, a good fake).
 - [ ] **Step 2:** incident test `2026-09-24-inherited-settings`: the default-run fixture (permission mode `auto`, a hook event, MCP servers) fails isolation with all three problems; the isolated-run fixture passes.
@@ -160,7 +164,7 @@ New `docs/incidents.md` entry under "Headless runs, network and scheduling", dat
 
 **Interfaces:**
 - `readWatermark(stateDir) -> { sources: { [id]: 'YYYY-MM-DD' } }` (missing file: every source unset); `windowFor(mark, today, tz, { maxDays = 7 }) -> { from, to, days: ['YYYY-MM-DD'], clipped }`: from the day after the mark (or yesterday when unset) to yesterday inclusive, `to` exclusive at today 00:00 in `tz`; more than `maxDays` days is clipped to the most recent `maxDays` and `clipped` says so. An empty `days` means the mark is already at yesterday.
-- `advanceWatermark(stateDir, sourceId, day, { modelExit, evidence, sourcesLine })` writes only when `modelExit === 0 && evidence.ok && sourcesLine?.[sourceId] === 'ok'`; otherwise it returns `{ advanced: false, reason }` and writes nothing. Written atomically (temp file plus rename), mode 0600.
+- `advanceWatermark(stateDir, sourceId, day, { modelExit, evidence, sourcesLine, vacuous = false })` writes only when `modelExit === 0 && evidence.ok` and the sources line says `ok` for this source, or says `empty` with `evidence.expected === 0`; with `vacuous: true` (the empty window path, where no model ran) it writes only when `evidence.expected === 0`; otherwise it returns `{ advanced: false, reason }` and writes nothing. Written atomically (temp file plus rename), mode 0600.
 - `parseSourcesLine(text) -> { [id]: 'ok'|'empty'|'failed'|string } | null`: the LAST line of the model's final text that starts with `BRAIN_KIT_SOURCES:` followed by `id=state` pairs separated by spaces. `empty` counts as ok for advancing only when the source's evidence also shows it looked (read >= 0 with no kept files).
 - `waitForNetwork(check, { timeoutMs, minWaitMs = 100 }) -> { ok, waitedMs, warning: 'did_not_wait'|null }`: `check` is `machine.network_check` (an argv) or, when unset, a TCP connect to `api.anthropic.com:443` retried every second; a check that returns success in under `minWaitMs` on its FIRST try is accepted but reported `did_not_wait` (incident 29/08/2026). No network within `timeoutMs`: `ok: false` (curate exits 69).
 - `checkDirtyTree(root, snapshot?) -> { ok, files: [{ path, mtime }] }`: any dirty path not ignored makes it not ok; files listed with mtimes; the caller exits 75 (incident 13/09/2026).
@@ -175,6 +179,8 @@ New `docs/incidents.md` entry under "Headless runs, network and scheduling", dat
 
 **Files:**
 - Create: `lang/pt-BR/prompts/curate.md`, `lang/en/prompts/curate.md`, `test/prompt-curate.test.mjs`
+- Create also: `src/curate/tools.mjs`: `KIT_SUBCOMMANDS = ['validate', 'lint', 'propose']`, `kitCommand()` (the kit's own `bin/brain-kit.mjs` as a double-quoted absolute path, the same string `{{kit}}` renders to in this prompt), `allowedTools(extra = [])` and `disallowedTools(extra = [])` exactly as Task 6 lists them. Task 6 consumes it; this task's contract test uses it.
+- Also export `renderCuratePrompt({ vaultRoot, config, lang, parameters })` for Task 6; `brain-kit prompt curate` standalone renders `{{parameters}}` as one translated line saying the block is filled in by `brain-kit curate` at run time.
 - Modify: `src/commands/prompt.mjs` (`brain-kit prompt curate [--vault <dir>]`, and `--check` covers prompts), `test/parity.test.mjs`, both `messages.json`
 
 **Content:** written from scratch, second person, domain neutral: it must read right for a teacher, a lawyer, a developer or a researcher; no company, team, calendar or meeting vocabulary; examples use Ana and neutral topics. It is the policy; the mechanics are the kit's. It has these sections, in both languages, and the placeholders `{{parameters}}` (the block the round computes: days, window, sources with their plan blocks, caps, the kit command, the signature line to print last), `{{kit}}`, `{{log}}`, `{{capture_marker}}`, `{{agent}}`, `{{today_iso}}`:
@@ -186,10 +192,10 @@ New `docs/incidents.md` entry under "Headless runs, network and scheduling", dat
 5. Compile: turn captures into new or changed notes, with `generated: { by: {{agent}}, at }`, `sources` pointing at the log; never write `verified`; a fact seen in only one session and not confirmed stays a capture.
 6. What you never do: invent; state that a document or session is empty without having opened it in this round; copy a transcript into the vault; record anything about a third party's private life; run any command other than the kit's.
 7. Uncertainty, closed vocabulary: not verified (a source you could not read), not found (you looked and it is not there), don't know (not in the vault).
-8. Finish: `{{kit}} validate`, `{{kit}} lint --base worktree`, fix until both pass, then `{{kit}} propose "<summary>" --only <paths>` with only the files this round changed; if there is nothing worth proposing, say so and propose nothing.
+8. Finish (every kit command exactly as written here, never with `node` or anything else in front of it): `{{kit}} validate`, `{{kit}} lint --base worktree`, fix until both pass, then `{{kit}} propose "<summary>" --only <paths>` with only the files this round changed; if there is nothing worth proposing, say so and propose nothing.
 9. The last line of your final message, exactly: `BRAIN_KIT_SOURCES: transcripts=<ok|empty|failed>`, with `failed` when any listed transcript could not be read.
 
-**Contract test** (the acceptance criterion of decision 2): for each language, the rendered prompt contains each of these, by a stable marker the test checks (an HTML comment `<!-- rule:<id> -->` before each rule, kept in both packs): `read-index-first`, `sample-from-end`, `log-before-note`, `never-verified`, `never-empty-unopened`, `closed-uncertainty`, `only-kit-commands`, `propose-only`, `sources-line`. And: every command the prompt tells the model to run is built from `{{kit}}` and a subcommand that Task 5's allowlist grants; no rendered prompt contains a placeholder left unresolved.
+**Contract test** (the acceptance criterion of decision 2): for each language, the rendered prompt contains each of these, by a stable marker the test checks (an HTML comment `<!-- rule:<id> -->` before each rule, kept in both packs): `read-index-first`, `sample-from-end`, `log-before-note`, `never-verified`, `never-empty-unopened`, `closed-uncertainty`, `only-kit-commands`, `propose-only`, `sources-line`. And: every command the prompt tells the model to run is built from `{{kit}}` and one of `KIT_SUBCOMMANDS`, and `allowedTools()` grants it; no rendered prompt contains a placeholder left unresolved.
 
 Overlay: when `.brain-kit/prompts/curate.md` exists in the vault, `prompt curate` renders it instead, and `--check` warns (does not fail) when the overlay lacks a contract marker.
 
@@ -197,7 +203,26 @@ Overlay: when `.brain-kit/prompts/curate.md` exists in the vault, `prompt curate
 - [ ] **Step 2:** read both rendered prompts end to end once as a person from another field would; fix anything that assumes a job or a routine.
 - [ ] **Step 3:** commit `feat: a domain-neutral curate prompt with its contract rules tested`.
 
-### Task 5: `brain-kit curate`
+### Task 5: the round's plumbing in the lock, propose and sync
+
+**Files:**
+- Modify: `src/guards/lock.mjs`, `src/commands/propose.mjs`, `src/commands/sync.mjs`, `test/lock.test.mjs`, `test/propose.test.mjs`, `test/sync.test.mjs`, both `messages.json` if a message is added
+- Create: `test/incidents/2026-09-24-round-lock-and-leftovers.test.mjs`
+
+**Why:** found while planning, 24/09/2026. `propose` and `sync` each take the vault lock, so the `propose` the model runs inside a round, which holds the lock, would be refused with 75. And a successful `propose` leaves the proposed files in the working tree by design (slice C), so the next scheduled round would stop on its dirty tree guard with 75, day after day: the shape of the four silent days of 13/09/2026. This task gives the round a way in; Task 6 cleans up after it.
+
+**Interfaces:**
+- `acquireLock` records a `token` in the holder, 32 lowercase hex characters from `randomBytes(16)`, and returns it: `{ holder, lockPath, release, token }`. A lock file written before this change (no `token`) still reads, and is never joinable. The token is never printed, logged or put in a message: `describeHolder` and every caller that prints a holder leave it out.
+- `joinOrAcquire(root, { command, env, now })`: when `env.BRAIN_KIT_ROUND_TOKEN` is 32 lowercase hex characters, the lock file exists, its holder's `token` equals it, and the holder is not stale by the existing rule, it returns `{ joined: true, holder, lockPath, token, release: () => false }`: a joined command never releases the round's lock. In every other case it behaves exactly as `acquireLock`; a token in the environment that matches nothing is ignored, never trusted.
+- `propose` takes the lock with `joinOrAcquire`. When joined, and only after it pushed a commit (pull request opened, or degraded with the commit pushed), it writes `<git dir>/brain-kit-round-<token>.json` atomically, mode 0600: `{ "format": 1, "opened": true|false, "remote": "<name>", "branch": "<pushed branch>", "commit": "<sha>", "paths": ["<vault-relative posix path>", ...] }`, `paths` being exactly the paths the commit changed. Not joined, nothing is written and nothing else changes.
+- `sync.mjs` exports `syncUnderLock(root, io, t, env)` (the existing function) so `curate`, which already holds the lock, runs the same code in process. `runSync` is unchanged.
+
+- [ ] **Step 1:** tests: join with the right token (no second lock, the lock byte-identical after `propose` returns); a wrong token, a malformed token, the right token on a stale holder, and an old-format lock each fall back to acquiring (refused with 75 while a live holder holds it); the record written only when joined and only after a push, with exactly the commit's paths; the token absent from stdout and stderr of a joined and of a refused `propose`; `syncUnderLock` exported and unchanged in behaviour. Incident test: a throwaway vault, a bare remote, a fake `gh`; hold the lock as a round would, run `propose --only` with the token in the environment: the pull request is opened, the record names the paths, the lock is still the round's.
+- [ ] **Step 2:** run, see them fail; implement; whole suite.
+- [ ] **Step 3:** mutation, mandatory, over every clause of `joinOrAcquire` (each deleted clause must either let a foreign command in or keep the round's own command out) and the "only when joined and pushed" condition of the record.
+- [ ] **Step 4:** commit `feat: a round's propose joins the lock the round holds and records what it pushed`.
+
+### Task 6: `brain-kit curate`
 
 **Files:**
 - Create: `src/commands/curate.mjs`, `test/curate.test.mjs`, incident tests `2026-09-14-order-network-sync`, `2026-07-29-exit-code`, `2026-08-21-expired-token`
@@ -205,34 +230,36 @@ Overlay: when `.brain-kit/prompts/curate.md` exists in the vault, `prompt curate
 
 **Interfaces:**
 - `brain-kit curate [dir] [--dry] [--check] [--keep-stream]`.
-- The allowlist the round passes (and the only commands the model can run): `Read`, `Glob`, `Grep`, `Edit`, `Write`, and `Bash(<kit> validate:*)`, `Bash(<kit> lint:*)`, `Bash(<kit> propose:*)`, where `<kit>` is the kit's own `bin/brain-kit.mjs` as a double-quoted absolute path (measured on 24/09/2026: a quoted path with a space matches per subcommand; another subcommand of the same executable is denied), plus `curate.allowed_tools_extra`. The denylist: `Bash(node:*)`, `Bash(git push:*)`, `Bash(git commit:*)`, `Bash(gh:*)`, `Bash(curl:*)`, `Bash(wget:*)`, `Bash(rm:*)`, `WebFetch`, `WebSearch`, plus `curate.disallowed_tools_extra`. `{{kit}}` in the prompt renders as the same quoted path.
+- The allowlist the round passes, from `src/curate/tools.mjs` (Task 4), and the only things the model can do besides reading: `Read`, `Glob`, `Grep`, `Edit`, `Write`, and for each of `validate`, `lint`, `propose` both `Bash(<kit> <sub>:*)` and `Bash(node <kit> <sub>:*)`, where `<kit>` is the kit's own `bin/brain-kit.mjs` as a double-quoted absolute path (measured on 24/09/2026: a quoted path with a space matches per subcommand, another subcommand of the same executable is denied, and the model once put `node` in front on its own), plus `curate.allowed_tools_extra`. The denylist: `Bash(git push:*)`, `Bash(git commit:*)`, `Bash(gh:*)`, `Bash(curl:*)`, `Bash(wget:*)`, `Bash(rm:*)`, `WebFetch`, `WebSearch`, plus `curate.disallowed_tools_extra`. There is no `Bash(node:*)` in it: a deny rule wins over an allow rule, so it would also block the allowed `node <kit>` form, and `dontAsk` already denies every `node` command no rule allows. `{{kit}}` in the prompt renders as the same quoted path.
 
 The fixed order (each step's side effect is what the order test observes):
 
 1. Find the vault (sentinel) and load `machine.json`; missing: exit 2.
 2. `--dry`: print what the round would do (window, sources, plan counts, argv without the prompt) and exit 0, taking no lock and writing no state.
-3. Take the vault lock (`acquireLock(root, { command: 'curate' })`); held by a live holder: exit 75 naming it.
+3. Take the vault lock (`acquireLock(root, { command: 'curate' })`); held by a live holder: exit 75 naming it. The model's environment gets `BRAIN_KIT_ROUND_TOKEN=<token>` (Task 5) and nothing in the log or `last-run.json` carries the token.
 4. Network wait; no network: exit 69.
-5. `sync`; a diverged base: exit 75 with sync's message; a sync failure: exit 1.
+5. `syncUnderLock` in process (Task 5; the round already holds the lock); a diverged base: exit 75 with sync's message; a sync failure: exit 1.
 6. Only now load the configuration and render the prompt (so a synced config is what runs; incident 14/09/2026).
 7. Compute the window from the watermark; empty `days`: exit 0, "already up to date".
 8. Dirty tree: exit 75 listing files.
 9. Take the round's own snapshot (`session: "curate-<ISO>"`).
 10. `checkCli`; not usable: exit 1 with the problem.
-11. Collect sources; `emptyWindow`: advance where vacuous, exit 0.
+11. Collect sources. A required source that is misconfigured (`include_projects` empty, the transcripts root missing, or every listed project missing): exit 1 naming the setting, and no watermark moves; a listed project that is missing while others exist is a warning in the log and in `last-run.json`. Then `emptyWindow`: advance vacuously (Task 3) and exit 0.
 12. `--check`: stop here, print the full plan and the rendered prompt's size, exit 0.
 13. Run the model with the harness; abort (kill the child) as soon as the init event fails `checkIsolation`, exit 1 naming the problems.
-14. Compute evidence and parse the sources line; advance each source's watermark by the rule.
-15. Exit: model exit non-zero or `result.isError`: exit 69 when the stderr tail or result shows an API or authentication error (`API Error`, `401`, `authentication`), else 1; a required source without evidence: 4; otherwise 0.
-16. Always, whatever the exit: write `last-run.json` (`{ at, durationMs, exit, reason, window, sources: { id: { kept, read, advanced } }, costUsd, numTurns, denials, isolation }`), append the log (`logs/curate-<date>.log`, never containing tool result content or transcript text; `--keep-stream` also keeps the raw stream in the state dir), release the lock, and on any non-zero exit run `machine.notify_command` with the reason as its last argument when configured.
+14. After the model: compute each source's evidence, parse the sources line, and read the round record `<git dir>/brain-kit-round-<token>.json` if `propose` wrote one (Task 5).
+15. Clean up what the round proposed: for each path in the record whose working-tree bytes equal the file in the record's `commit` (or that is absent from both), bring it back to its content at `HEAD`, the default branch the round synced to: a path `HEAD` has is restored from it, one `HEAD` does not have is deleted (git called without the caller's git environment, paths passed as NUL-separated bytes, never as arguments). A path whose content differs is left alone and reported. Then list what is still dirty and not ignored.
+16. Exit, first match wins: isolation failed: 1; model exit non-zero or `result.isError`: 69 when the stderr tail or the result shows an API or authentication error (`API Error`, `401`, `authentication`), else 1, the reason naming `result.subtype` (`error_max_turns` included); a required source without evidence: 4; anything still dirty after the cleanup: 1, the reason listing the paths (the round's unproposed work stays in the tree for a person to see, and the next round postpones on it, loudly); a record with `opened: false`: 3; otherwise 0.
+17. Advance each source's watermark by Task 3's rule, and only when the exit is 0 or 3 (3 means the work is on a pushed branch, and `propose` already said what to run).
+18. Always, whatever the exit: remove the round record, write `last-run.json` (`{ at, durationMs, exit, reason, window, sources: { id: { kept, read, advanced } }, costUsd, numTurns, denials, isolation, proposed: { opened, branch, paths } | null, leftovers: [paths] }`), append the log (`logs/curate-<date>.log`, never containing tool result content or transcript text; `--keep-stream` also keeps the raw stream in the state dir), release the lock, and on any non-zero exit run `machine.notify_command` with the reason as its last argument when configured.
 
-- [ ] **Step 1:** tests with the fake claude and a throwaway vault with a bare remote and a fake `gh`: a full round (the fake cannot run tools, so the test asserts argv, stdin, isolation, evidence from the replayed stream and the bookkeeping after it; `propose` itself is already tested in phase 1 and exercised for real in Task 7's end-to-end run); each exit code from its cause; the order test (make step N fail and assert steps after it left no trace); `--dry` leaves no lock and no state; `--check` does not call the model; a round whose stream shows `permissionMode: auto` is killed and exits 1; the log never contains a sentinel string planted in a fixture tool result; notify called on non-zero with the reason.
+- [ ] **Step 1:** tests with the fake claude and a throwaway vault with a bare remote and a fake `gh`: a full round where the fake, as the model would, writes a log entry and runs the real `propose --only` with the environment it was given: the fake `gh` sees the pull request against the default branch, the record is read and removed, the tree is clean afterwards, the watermark advanced and `last-run.json` names the branch and paths; a round whose fake writes a file and does not propose: exit 1, the file still there, the watermark not advanced; a proposed path edited again after the push is left and reported; each exit code from its cause; the order test (make step N fail and assert steps after it left no trace); `--dry` leaves no lock and no state; `--check` does not call the model; a round whose stream shows `permissionMode: auto` is killed and exits 1; the log never contains a sentinel string planted in a fixture tool result; notify called on non-zero with the reason.
 - [ ] **Step 2:** incident tests; run, see them fail; implement; whole suite.
-- [ ] **Step 3:** mutation, mandatory: every step of the order, every exit mapping, the isolation abort, the watermark call.
+- [ ] **Step 3:** mutation, mandatory: every step of the order, every exit mapping, the isolation abort, the cleanup's byte comparison, the watermark call.
 - [ ] **Step 4:** the two questions, answered with real runs of `curate` against the fake.
 - [ ] **Step 5:** commit `feat: brain-kit curate runs the round in a fixed order and fails loudly`.
 
-### Task 6: `brain-kit schedule`
+### Task 7: `brain-kit schedule`
 
 **Files:**
 - Create: `src/commands/schedule.mjs`, `templates/schedule/systemd/brain-kit-curate.service`, `templates/schedule/systemd/brain-kit-curate.timer`, `templates/schedule/launchd/brain-kit-curate.plist`, `templates/schedule/cron/brain-kit-curate.cron`, `test/schedule.test.mjs`, incident tests `2026-08-28-user-scope-target`, `2026-09-14-nightly-never-ran`, `2026-08-27-binary-moved`
@@ -249,7 +276,7 @@ The fixed order (each step's side effect is what the order test observes):
 - [ ] **Step 3:** mutation over the network-target absence, `Persistent=false` and the PATH composition.
 - [ ] **Step 4:** commit `feat: brain-kit schedule installs the curator by function, in daytime windows, with no network target`.
 
-### Task 7: doctor, docs and the opt-in end-to-end run
+### Task 8: doctor, docs and the opt-in end-to-end run
 
 **Files:**
 - Modify: `src/doctor/checks.mjs`, `test/doctor.test.mjs`, both `messages.json`, `README.md`, `README.pt-BR.md`, `CHANGELOG.md`
