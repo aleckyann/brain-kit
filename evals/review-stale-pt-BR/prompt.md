@@ -4,7 +4,7 @@ description: Achar as notas do vault que ficaram desatualizadas e colocá-las em
 tags: [review-stale, pt-BR]
 runs: 1
 max_turns: 6
-allowed_tools: [Read, Glob, Grep, Skill]
+allowed_tools: [Read, Glob, Grep, Skill, "Bash(node:*)"]
 ---
 
 Acho que tem nota vencida no meu vault, coisa que não é revisada faz meses. Dá uma olhada no que precisa ser atualizado?

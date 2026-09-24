@@ -97,7 +97,13 @@ test('every SKILL.md names its directory, describes itself in ASCII English and 
     assert.match(fields.description, /^[\x20-\x7e]+$/, `${name}: description must be printable ASCII`);
     assert.match(fields.description, /^Use (when|at|after) /, `${name}: description must start with "Use when", "Use at" or "Use after"`);
     const lines = body.split('\n').filter((line) => line.trim() !== '');
-    assert.deepEqual(lines, [`!\`node "\${CLAUDE_PLUGIN_ROOT}/bin/brain-kit.mjs" prompt skill ${name}\``], `${name}: the body must be the single ! line`);
+    const command = `node "\${CLAUDE_PLUGIN_ROOT}/bin/brain-kit.mjs" prompt skill ${name}`;
+    assert.deepEqual(lines, [`!\`${command}\``], `${name}: the body must be the single ! line`);
+    // Without this grant the ! line is not run before the model reads the
+    // skill: Claude Code hands the model "run this first" instead, and in a
+    // session where Bash is not allowed (the first eval run, 24/09/2026)
+    // the model got no body at all. The grant is the one command, exactly.
+    assert.equal(fields['allowed-tools'], `Bash(${command})`, `${name}: allowed-tools must grant exactly its own ! command`);
   }
 });
 
@@ -144,7 +150,7 @@ test('every eval case has prompt.md with the agreed frontmatter and both graders
       for (const key of Object.keys(fields)) assert.ok(PROMPT_KEYS.has(key), `${where}: unknown prompt.md key ${key}`);
       assert.equal(fields.max_turns, '6', where);
       assert.equal(fields.runs, '1', where);
-      assert.equal(fields.allowed_tools, '[Read, Glob, Grep, Skill]', where);
+      assert.equal(fields.allowed_tools, '[Read, Glob, Grep, Skill, "Bash(node:*)"]', where);
       assert.equal(fields.tags, `[${skill}, ${lang}]`, where);
       assert.notEqual(body.trim(), '', `${where}: empty prompt`);
 
