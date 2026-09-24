@@ -1,11 +1,10 @@
-Placeholder body for the "capture" skill (task 3). Task 4 replaces this
-with the real instructions; this text exists only to prove every
-placeholder resolves.
+# Capture
 
-Today is {{today}} ({{today_iso}} for a log heading).
-Vault: {{vault}}
-Log file: {{log}}
-Capture marker: {{capture_marker}}
-Human actor: {{human}}
-Agent actor: {{agent}}
-Run the kit with: {{kit}}
+Today is {{today}}; today's log heading is `## {{today_iso}}`. Vault: {{vault}}.
+
+The person just said something that should be written down now: a new fact, a change of mind, or something that conflicts with what the vault holds. Write only the log entry. Do not create or edit any note, do not compile, do not propose.
+
+1. Open `{{log}}`.
+2. Find the heading `## {{today_iso}}`. If it is missing, create it above every older heading (most recent first).
+3. Add one entry right under that heading, above today's older entries, starting with the bold marker **{{capture_marker}}**. Write the fact in the person's own terms, with who said it and any date they gave. If it contradicts a note, name that note's path.
+4. Tell the person in one line what you captured.

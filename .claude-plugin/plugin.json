@@ -2,7 +2,7 @@
   "name": "brain-kit",
   "displayName": "Brain Kit",
   "version": "0.0.1",
-  "description": "Second brain in OKF markdown, curated by Claude through pull requests: validator, PR loop, Stop hook, scheduled curation and morning briefing. Phase 0: engine skeleton and hook wiring.",
+  "description": "Second brain in OKF markdown, curated by Claude through pull requests: validator, pull request loop, Stop and SessionStart hooks, and skills to set up, capture, curate, ask, lint, review stale notes and approve.",
   "author": {
     "name": "Aleck Yann",
     "url": "https://github.com/aleckyann"

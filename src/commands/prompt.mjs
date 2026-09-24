@@ -19,11 +19,10 @@
 // 4): the two packs carry the same set of skill files (which is what
 // "every skill has a body in every supported language" comes down to,
 // with exactly two supported languages), and no body anywhere uses a
-// placeholder this command does not know how to fill. It exits 0 when
-// both hold, 1 otherwise, and never touches a vault. It never checks
-// against SKILL_NAMES: that would fail on the real packs the moment a
-// skill named there has not been written yet, which is task 4's own job
-// for six of the seven, not what an outdated pack looks like.
+// placeholder this command does not know how to fill, and every name in
+// SKILL_NAMES has a body in every supported language (task 4 wrote all
+// seven, so a missing one is now a broken pack, not unfinished work). It
+// exits 0 when all three hold, 1 otherwise, and never touches a vault.
 //
 // `deps.packsDir` is the one seam this module offers: production always
 // reads lang/<code>/skills/ under KIT_ROOT, and a test pointing `--check`
@@ -38,8 +37,8 @@ import { createTranslator, resolveLang, SUPPORTED_LANGS } from '../lang.mjs';
 import { findVaultRoot } from '../vault.mjs';
 import { loadConfig, ConfigError } from '../config.mjs';
 
-// The seven skills the plugin ships (task 4 writes six of these bodies;
-// this task writes only `capture`, as a placeholder both packs share).
+// The seven skills the plugin ships, one skills/<name>/SKILL.md each,
+// and one body per name in every language pack.
 export const SKILL_NAMES = Object.freeze(['setup', 'curate-session', 'capture', 'ask', 'lint', 'review-stale', 'approve']);
 
 // Every placeholder a body may use. Anything else left in a body's text
@@ -236,13 +235,19 @@ function runCheck(t, io, packsDir) {
     }
   }
 
-  // "Every skill has a body in every supported language" and "the two
-  // packs carry the same set of skill files" are the same requirement
-  // restated: with exactly two supported languages, whichever file set
-  // is checked against the other says both. Checking against SKILL_NAMES
-  // instead would fail this command on the real packs the moment a skill
-  // named there has not been written yet (task 4's own job for six of
-  // the seven), which is not what an outdated pack looks like.
+  // Every skill the plugin ships needs a body in every supported
+  // language, checked against SKILL_NAMES directly: two packs in parity
+  // could still both lack the same body.
+  for (const lang of SUPPORTED_LANGS) {
+    const present = new Set(filesByLang[lang]);
+    for (const name of SKILL_NAMES) {
+      if (!present.has(name)) problems.push(t('prompt.check_missing_body', { name, lang }));
+    }
+  }
+
+  // And the two packs carry the same set of skill files, so a body that
+  // exists in one language only is reported even when its name is not
+  // (yet) in SKILL_NAMES.
   const [langA, langB] = SUPPORTED_LANGS;
   const setA = new Set(filesByLang[langA]);
   const setB = new Set(filesByLang[langB]);

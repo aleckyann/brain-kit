@@ -629,7 +629,7 @@
   "propose.url_rewritten": "A url de push {url} não continua a mesma quando o git é perguntado sobre ela (resolve para \"{got}\"), então não dá para provar onde a proposta chegaria. Nada foi mudado.",
   "propose.destination_unreadable": "Não foi possível perguntar à url de push {url} quais branches ela tem, então nenhum nome de branch pode ser escolhido com segurança. Nada foi mudado.",
   "propose.branch_exhausted": "{branch} e todo sufixo até -9 já existem no destino do push. Nada foi mudado; rode de novo daqui a um segundo.",
-  "prompt.usage": "Uso: brain-kit prompt skill <nome> [--vault <dir>]\n     brain-kit prompt --check\n\nImprime o corpo de uma skill, no idioma do vault, para as SKILL.md do plugin rodarem pela linha \"!\". --check confere se os dois pacotes de idioma têm o mesmo conjunto de arquivos de skill e se todo placeholder usado em qualquer corpo é conhecido.",
+  "prompt.usage": "Uso: brain-kit prompt skill <nome> [--vault <dir>]\n     brain-kit prompt --check\n\nImprime o corpo de uma skill, no idioma do vault, para as SKILL.md do plugin rodarem pela linha \"!\". --check confere se toda skill que o plugin distribui tem corpo nos dois pacotes de idioma, se os dois pacotes têm o mesmo conjunto de arquivos de skill e se todo placeholder usado em qualquer corpo é conhecido.",
   "prompt.skill_name_missing": "brain-kit prompt: \"skill\" precisa de um nome.",
   "prompt.vault_value_missing": "brain-kit prompt: \"--vault\" precisa de um valor.",
   "prompt.bad_argument": "brain-kit prompt: argumento não reconhecido \"{arg}\".",
@@ -638,6 +638,7 @@
   "prompt.body_unreadable": "O corpo da skill \"{name}\" não pôde ser carregado. Rode brain-kit doctor.",
   "prompt.check_ok": "brain-kit prompt --check: toda skill tem corpo em todo idioma suportado, os dois pacotes concordam, e todo placeholder usado é conhecido.",
   "prompt.check_dir_unreadable": "{lang}: o diretório de skills não pôde ser lido ({dir}).",
+  "prompt.check_missing_body": "{name} ({lang}): sem corpo, e o plugin distribui esta skill.",
   "prompt.check_pack_mismatch": "{name}: tem corpo em {lang} mas não em {other}.",
   "prompt.check_body_unreadable": "{name} ({lang}): o corpo não pôde ser lido ({detail}).",
   "prompt.check_unknown_placeholder": "{name} ({lang}): placeholder desconhecido \"{placeholder}\"."

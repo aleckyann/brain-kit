@@ -533,3 +533,25 @@ test(
     assert.deepEqual(listingAfter, listingBefore, 'the reference vault changed during this test');
   },
 );
+
+// --- skill body parity between the two language packs (slice E, task 4) --
+//
+// Unlike the two tests above, these never touch a private vault and are
+// never skipped: they compare the kit's own lang/pt-BR/skills and
+// lang/en/skills, which ship in every copy of the repository.
+
+const PACK_SKILLS = (lang) => join(KIT_ROOT, 'lang', lang, 'skills');
+const skillFiles = (lang) => readdirSync(PACK_SKILLS(lang)).filter((name) => name.endsWith('.md')).sort();
+const placeholdersIn = (text) => [...new Set([...text.matchAll(/\{\{(\w+)\}\}/g)].map((m) => m[1]))].sort();
+
+test('the pt-BR and en packs carry the same skills/*.md set', () => {
+  assert.deepEqual(skillFiles('pt-BR'), skillFiles('en'));
+});
+
+test('each skill body uses the same placeholders in pt-BR and en', () => {
+  for (const file of skillFiles('en')) {
+    const en = placeholdersIn(readFileSync(join(PACK_SKILLS('en'), file), 'utf8'));
+    const pt = placeholdersIn(readFileSync(join(PACK_SKILLS('pt-BR'), file), 'utf8'));
+    assert.deepEqual(pt, en, `${file}: placeholders differ between pt-BR and en`);
+  }
+});

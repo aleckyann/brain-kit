@@ -82,8 +82,6 @@ test('renders the capture skill in pt-BR inside a pt-BR vault', async () => {
   assert.match(c.stdout, new RegExp(vault.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(c.stdout, /memoria\/log\.md/);
   assert.match(c.stdout, /Captura/);
-  assert.match(c.stdout, /human:ana/);
-  assert.match(c.stdout, /brain-kit-curator\/<model>/);
 });
 
 test('renders the capture skill in en inside an en vault', async () => {
@@ -96,8 +94,24 @@ test('renders the capture skill in en inside an en vault', async () => {
   assert.match(c.stdout, /Today is/);
   assert.match(c.stdout, /memory\/log\.md/);
   assert.match(c.stdout, /Capture/);
-  assert.match(c.stdout, /human:ana/);
-  assert.match(c.stdout, /brain-kit-curator\/<model>/);
+});
+
+test('every skill renders in both languages inside a vault with every placeholder resolved, and the actors come from the vault', async () => {
+  for (const lang of ['pt-BR', 'en']) {
+    const { vault, state } = freshVault(lang);
+    let all = '';
+    for (const name of SKILL_NAMES) {
+      const c = collector();
+      const code = await runPrompt(['skill', name], c.io, noopT(), { cwd: vault, env: testEnv(state) });
+      assert.equal(code, EXIT.OK, `${lang} ${name}: ${c.stdout}${c.stderr}`);
+      assert.equal(c.stderr, '');
+      assertEveryPlaceholderResolved(c.stdout);
+      assert.doesNotMatch(c.stdout, /\{\{\w+\}\}/, `${lang} ${name}: unresolved placeholder`);
+      all += c.stdout;
+    }
+    assert.match(all, /human:ana/, lang);
+    assert.match(all, /brain-kit-curator\/<model>/, lang);
+  }
 });
 
 test('renders outside a vault, by the locale, falling back to pack defaults', async () => {
@@ -132,7 +146,7 @@ test('{{kit}} names an existing file, quoted, and survives a path with a space',
   const spacedBase = mkdtempSync(join(tmpdir(), 'brain kit prompt '));
   try {
     const c = collector();
-    const code = await runPrompt(['skill', 'capture'], c.io, noopT(), {
+    const code = await runPrompt(['skill', 'setup'], c.io, noopT(), {
       cwd: spacedBase, env: { ...process.env, BRAIN_KIT_LANG: 'en' },
     });
     assert.equal(code, EXIT.OK, c.stdout + c.stderr);
@@ -209,6 +223,17 @@ test('--check fails on a scratch copy with an unknown placeholder', async () => 
   const code = await runPrompt(['--check'], c.io, noopT('en'), { packsDir: dir });
   assert.equal(code, EXIT.FAILURE);
   assert.match(c.stdout, /placeholder_desconhecido/);
+});
+
+test('--check fails when a skill in SKILL_NAMES has no body in either pack, even with the packs in parity', async () => {
+  const dir = buildScratchPacks();
+  rmSync(join(dir, 'en', 'skills', 'approve.md'));
+  rmSync(join(dir, 'pt-BR', 'skills', 'approve.md'));
+  const c = collector();
+  const code = await runPrompt(['--check'], c.io, noopT('en'), { packsDir: dir });
+  assert.equal(code, EXIT.FAILURE);
+  assert.match(c.stdout, /approve \(en\)/);
+  assert.match(c.stdout, /approve \(pt-BR\)/);
 });
 
 test('--check never touches the real packs even when it reports a problem', async () => {
