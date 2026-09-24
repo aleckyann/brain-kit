@@ -346,3 +346,127 @@ test('the stream fixtures carry no path of a real machine: no /home/ but /home/a
     }
   }
 });
+
+// --- the process group (ruling R9) -------------------------------------------------
+//
+// These runs spawn plain node scripts, not a claude of any kind: `claudeBin`
+// is this node binary and the script is on the argument vector.
+
+// A parent that starts a grandchild holding the parent's standard output
+// and standard error open (as a Bash command the model started would), and
+// writes the grandchild's pid to `pidFile`. Then the parent exits at once,
+// or sleeps.
+function familyScript(pidFile, { parentSleeps, holdsOutput = true }) {
+  const stdio = holdsOutput ? "['ignore', 'inherit', 'inherit']" : "'ignore'";
+  return [
+    "const { spawn } = require('node:child_process');",
+    "const fs = require('node:fs');",
+    `const g = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: ${stdio} });`,
+    `fs.writeFileSync(${JSON.stringify(pidFile)}, String(g.pid));`,
+    "process.stdout.write('{\"type\":\"system\",\"subtype\":\"init\",\"permissionMode\":\"dontAsk\",\"mcp_servers\":[]}\\n');",
+    parentSleeps ? 'setTimeout(() => {}, 60000);' : 'process.exitCode = 0; g.unref();',
+  ].join('\n');
+}
+
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === 'EPERM';
+  }
+}
+
+async function gone(pid, withinMs = 5000) {
+  const until = Date.now() + withinMs;
+  while (Date.now() < until) {
+    if (!alive(pid)) return true;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return !alive(pid);
+}
+
+test('runModel ends a run whose CLI exited while a grandchild still holds its output, and kills that grandchild', { timeout: 60000 }, async () => {
+  const dir = makeTempDir('brain-kit-harness-');
+  const pidFile = join(dir, 'grandchild.pid');
+  const started = Date.now();
+  const out = await runModel({
+    claudeBin: process.execPath, argv: ['-e', familyScript(pidFile, { parentSleeps: false })], prompt: '', cwd: dir, timeoutMs: 30000, drainGraceMs: 300,
+  });
+  const grandchild = Number(readFileSync(pidFile, 'utf8'));
+  try {
+    assert.ok(Date.now() - started < 10000, 'the run ended well before the grandchild would have');
+    assert.equal(out.exitCode, 0);
+    assert.equal(out.timedOut, false);
+    assert.equal(out.record.init.permissionMode, 'dontAsk');
+    assert.equal(await gone(grandchild), true, 'the grandchild is dead');
+  } finally {
+    try { process.kill(grandchild, 'SIGKILL'); } catch { /* gone */ }
+  }
+});
+
+test('runModel on timeout kills the whole process group, the grandchild holding stdout included, and says it timed out', { timeout: 60000 }, async () => {
+  const dir = makeTempDir('brain-kit-harness-');
+  const pidFile = join(dir, 'grandchild.pid');
+  const out = await runModel({
+    claudeBin: process.execPath, argv: ['-e', familyScript(pidFile, { parentSleeps: true })], prompt: '', cwd: dir, timeoutMs: 800, killGraceMs: 500,
+  });
+  const grandchild = Number(readFileSync(pidFile, 'utf8'));
+  try {
+    assert.equal(out.timedOut, true);
+    assert.equal(out.exitCode, null);
+    assert.equal(await gone(grandchild), true, 'the grandchild is dead');
+  } finally {
+    try { process.kill(grandchild, 'SIGKILL'); } catch { /* gone */ }
+  }
+});
+
+test('runModel aborted through its signal kills the group and reports the reason; an onLine that throws aborts the same way', { timeout: 60000 }, async () => {
+  const dir = makeTempDir('brain-kit-harness-');
+  const pidFile = join(dir, 'grandchild.pid');
+  const controller = new AbortController();
+  const pending = runModel({
+    claudeBin: process.execPath, argv: ['-e', familyScript(pidFile, { parentSleeps: true })], prompt: '', cwd: dir, timeoutMs: 30000, killGraceMs: 500,
+    abortSignal: controller.signal, onLine: () => controller.abort('isolation'),
+  });
+  const out = await pending;
+  const grandchild = Number(readFileSync(pidFile, 'utf8'));
+  try {
+    assert.equal(out.aborted, 'isolation');
+    assert.equal(out.timedOut, false);
+    assert.equal(await gone(grandchild), true);
+  } finally {
+    try { process.kill(grandchild, 'SIGKILL'); } catch { /* gone */ }
+  }
+
+  const pidFile2 = join(dir, 'grandchild2.pid');
+  const boom = new Error('bad init');
+  const started2 = Date.now();
+  const out2 = await runModel({
+    claudeBin: process.execPath, argv: ['-e', familyScript(pidFile2, { parentSleeps: true })], prompt: '', cwd: dir, timeoutMs: 30000, killGraceMs: 500,
+    onLine: () => { throw boom; },
+  });
+  const grandchild2 = Number(readFileSync(pidFile2, 'utf8'));
+  try {
+    assert.equal(out2.aborted, boom);
+    assert.ok(Date.now() - started2 < 10000, 'stopped at once, not at the timeout');
+    assert.equal(await gone(grandchild2), true);
+  } finally {
+    try { process.kill(grandchild2, 'SIGKILL'); } catch { /* gone */ }
+  }
+});
+
+test('runModel kills a grandchild that holds nothing open once the CLI has closed', { timeout: 60000 }, async () => {
+  const dir = makeTempDir('brain-kit-harness-');
+  const pidFile = join(dir, 'grandchild.pid');
+  const out = await runModel({
+    claudeBin: process.execPath, argv: ['-e', familyScript(pidFile, { parentSleeps: false, holdsOutput: false })], prompt: '', cwd: dir, timeoutMs: 30000,
+  });
+  const grandchild = Number(readFileSync(pidFile, 'utf8'));
+  try {
+    assert.equal(out.exitCode, 0);
+    assert.equal(await gone(grandchild, 3000), true, 'the grandchild is dead');
+  } finally {
+    try { process.kill(grandchild, 'SIGKILL'); } catch { /* gone */ }
+  }
+});

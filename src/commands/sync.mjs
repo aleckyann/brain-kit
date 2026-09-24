@@ -147,8 +147,10 @@ export async function runSync(argv, io, t, deps = {}) {
 // The sync itself, for a caller that already holds the vault's lock
 // (`curate`, which takes it for the whole round): runSync is this plus the
 // lock. An unexpected git failure throws; runSync turns it into exit 1
-// (sync.git_failed), and so must any other caller.
-export function syncUnderLock(root, io, t, env) {
+// (sync.git_failed), and so must any other caller. `outcome`, when given,
+// is filled with `{ diverged: true }` for the one exit 1 a caller may want
+// to tell from the others (`curate` postpones on it, exit 75).
+export function syncUnderLock(root, io, t, env, outcome = {}) {
   const operation = operationInProgress(root, { env });
   if (operation !== null) {
     io.stderr.write(`${t('sync.operation_in_progress', { operation })}\n`);
@@ -219,6 +221,7 @@ export function syncUnderLock(root, io, t, env) {
   const { ahead, behind } = aheadBehind(root, localRef, fetched.ref, { env });
   if (ahead > 0 && behind > 0) {
     io.stderr.write(`${t('sync.diverged', { branch, upstream, ahead, behind })}\n`);
+    outcome.diverged = true;
     return EXIT.FAILURE;
   }
   if (behind === 0) {

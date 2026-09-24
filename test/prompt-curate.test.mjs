@@ -10,7 +10,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { makeTempDir } from './helpers/tmp.mjs';
 import { KIT_ROOT } from '../src/version.mjs';
@@ -409,4 +409,34 @@ test('--check warns when the overlay does not start with the signature, and abou
   assert.match(c.stderr, /does not start with \{\{signature\}\}; a round will put the signature line in front of it/);
   assert.match(c.stderr, /"\{\{today\}\}", which a round does not fill/);
   assert.doesNotMatch(c.stderr, /contract marker/);
+});
+
+// --- ruling M5: a curate.prompt outside the vault ------------------------------
+
+test('--check fails, naming the path, when the vault\'s curate.prompt points outside the vault; a path inside passes', async () => {
+  const { vault, state } = freshVault('en');
+  const file = join(vault, 'brain-kit.config.json');
+  const config = JSON.parse(readFileSync(file, 'utf8'));
+  for (const setting of ['../outside.md', '/tmp/outside.md']) {
+    writeFileSync(file, `${JSON.stringify({ ...config, curate: { ...config.curate, prompt: setting } }, null, 2)}\n`);
+    const c = collector();
+    const code = await runPrompt(['--check', '--vault', vault], c.io, createTranslator('en'), { cwd: vault, env: testEnv(state) });
+    assert.equal(code, EXIT.FAILURE, setting);
+    assert.match(c.stdout + c.stderr, /outside the vault/);
+  }
+  writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
+  const c = collector();
+  assert.equal(await runPrompt(['--check', '--vault', vault], c.io, createTranslator('en'), { cwd: vault, env: testEnv(state) }), EXIT.OK, c.stdout + c.stderr);
+});
+
+test('--check fails when the curate prompt inside the vault is a link leading outside it', async () => {
+  const { vault, state } = freshVault('en');
+  const outside = join(makeTempDir('brain-kit-outside-'), 'curate.md');
+  writeFileSync(outside, '{{signature}}\nSomething else.\n');
+  mkdirSync(join(vault, '.brain-kit', 'prompts'), { recursive: true });
+  symlinkSync(outside, join(vault, '.brain-kit', 'prompts', 'curate.md'));
+  const c = collector();
+  const code = await runPrompt(['--check', '--vault', vault], c.io, createTranslator('en'), { cwd: vault, env: testEnv(state) });
+  assert.equal(code, EXIT.FAILURE);
+  assert.match(c.stdout + c.stderr, /outside the vault/);
 });

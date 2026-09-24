@@ -47,13 +47,13 @@
 // at a scratch copy of the packs (to prove a missing body or an unknown
 // placeholder is actually caught) passes a different directory here,
 // never editing the real packs to do it.
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { EXIT } from '../exit-codes.mjs';
 import { KIT_ROOT } from '../version.mjs';
 import { createTranslator, resolveLang, SUPPORTED_LANGS } from '../lang.mjs';
 import { findVaultRoot } from '../vault.mjs';
-import { loadConfig, ConfigError } from '../config.mjs';
+import { CONFIG_FILENAME, loadConfig, ConfigError } from '../config.mjs';
 import { kitCommand } from '../curate/tools.mjs';
 
 // The seven skills the plugin ships, one skills/<name>/SKILL.md each,
@@ -224,6 +224,30 @@ export function vaultClock(now, timeZone) {
   const offset = `${sign}${pad2(Math.floor(Math.abs(minutes) / 60))}:${pad2(Math.abs(minutes) % 60)}`;
   const date = todayISO(now);
   return { date, iso: `${date}T${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(now.getSeconds())}${offset}` };
+}
+
+// Ruling M5 (task 4): the prompt a round runs must be a file of the
+// reviewed tree. A versioned configuration pointing it outside the vault (an
+// absolute path, `..`, or a link leading out) is refused: `curate` exits
+// 2 on it and `prompt --check` reports it as an error. The path outside,
+// or null.
+export function promptOutsideVault(root, config) {
+  const setting = config.curate?.prompt;
+  if (typeof setting !== 'string' || setting === '') return null;
+  const target = resolve(root, setting);
+  const inside = (base, path) => {
+    const rel = relative(base, path);
+    return rel !== '' && !rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel);
+  };
+  if (!inside(root, target)) return target;
+  if (existsSync(target)) {
+    try {
+      if (!inside(realpathSync(root), realpathSync(target))) return target;
+    } catch {
+      return target;
+    }
+  }
+  return null;
 }
 
 function firstNonEmptyLine(text) {
@@ -404,7 +428,7 @@ function listSkillFiles(dir) {
 function runCheck(t, io, packsDir, startDir) {
   const problems = [];
   checkPrompts(t, packsDir, problems);
-  checkOverlay(t, io, startDir);
+  checkOverlay(t, io, startDir, problems);
   const filesByLang = {};
   for (const lang of SUPPORTED_LANGS) {
     const names = listSkillFiles(skillsDir(packsDir, lang));
@@ -523,9 +547,16 @@ function checkPrompts(t, packsDir, problems) {
 // marker, a first line that is not the signature (the round puts it in
 // front) and a placeholder the round does not fill are each a warning on
 // stderr, never a failure, because the overlay is the owner's to write.
-function checkOverlay(t, io, startDir) {
+// A curate.prompt that points outside the vault is a problem (ruling M5):
+// the round refuses to run it.
+function checkOverlay(t, io, startDir, problems) {
   const { root, config } = resolveVault(startDir);
   if (!root) return;
+  const outside = config ? promptOutsideVault(root, config) : null;
+  if (outside !== null) {
+    problems.push(t('prompt.check_prompt_outside', { path: outside, file: CONFIG_FILENAME }));
+    return;
+  }
   const { path, overlay } = curatePromptSource({ vaultRoot: root, config, lang: SUPPORTED_LANGS[0] });
   if (!overlay) return;
   let text;

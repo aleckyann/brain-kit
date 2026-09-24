@@ -73,6 +73,26 @@ export function buildArgv({ model, maxTurns, budgetUsd, allowed = [], disallowed
 
 const STDERR_TAIL_BYTES = 4096;
 const KILL_GRACE_MS = 5000;
+// After the CLI itself has exited, how long its standard output may stay
+// open (a child of its own still writing, or holding the pipe) before the
+// whole process group is killed so the round can finish.
+const DRAIN_GRACE_MS = 2000;
+
+// The child runs in a process group of its own (detached), and every kill
+// is sent to the whole group: the commands the model runs through Bash are
+// the CLI's children, and a round that ends, times out or is aborted must
+// not leave one alive, least of all a `propose` still pushing after the
+// round released the vault's lock (src/guards/lock.mjs, "THE ROUND'S
+// TOKEN"). A group that is already gone is not an error.
+function killGroup(child, signal) {
+  if (child.pid === undefined) return;
+  try {
+    if (process.platform === 'win32') child.kill(signal);
+    else process.kill(-child.pid, signal);
+  } catch {
+    try { child.kill(signal); } catch { /* already gone */ }
+  }
+}
 
 // Spawns the CLI and resolves when the child has closed. The exit code is
 // the child's own, from its `close` event, and from nowhere else: a round
@@ -81,26 +101,50 @@ const KILL_GRACE_MS = 5000;
 // the child died by a signal (then `signal` names it) or never started
 // (then `spawnError` holds the error code).
 //
-// On timeout the child gets SIGTERM, then SIGKILL after a grace period;
-// `timedOut` says the kill was ours.
-export function runModel({ claudeBin, argv, prompt, cwd, env = process.env, timeoutMs, onLine, killGraceMs = KILL_GRACE_MS }) {
+// On timeout, or when `abortSignal` fires, the child's process group gets
+// SIGTERM, then SIGKILL after a grace period; `timedOut` says the timeout
+// was ours, `aborted` holds the abort's reason (null when not aborted). A
+// caller must read either as a failed run whatever exit code came with it:
+// a CLI that catches SIGTERM may still exit 0. When the child closes, the
+// group is killed once more with SIGKILL, so no grandchild outlives the
+// run; and a grandchild that holds standard output open after the CLI
+// exited is killed after DRAIN_GRACE_MS, so the run still ends.
+// An `onLine` that throws aborts the run with that error as the reason.
+export function runModel({
+  claudeBin, argv, prompt, cwd, env = process.env, timeoutMs, onLine, killGraceMs = KILL_GRACE_MS, abortSignal, drainGraceMs = DRAIN_GRACE_MS,
+}) {
   return new Promise((resolve) => {
     const started = Date.now();
     const parser = createStreamParser();
     let stderrTail = '';
     let timedOut = false;
+    let aborted = null;
     let settled = false;
     let timer = null;
     let graceTimer = null;
+    let drainTimer = null;
 
-    const child = spawn(claudeBin, argv, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(claudeBin, argv, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
+
+    const stop = () => {
+      if (graceTimer !== null) return;
+      killGroup(child, 'SIGTERM');
+      graceTimer = setTimeout(() => killGroup(child, 'SIGKILL'), killGraceMs);
+    };
+    const onAbort = () => {
+      if (aborted === null) aborted = abortSignal.reason ?? 'aborted';
+      stop();
+    };
 
     const finish = (fields) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       clearTimeout(graceTimer);
-      resolve({ record: parser.record(), stderrTail, durationMs: Date.now() - started, timedOut, ...fields });
+      clearTimeout(drainTimer);
+      if (abortSignal) abortSignal.removeEventListener('abort', onAbort);
+      if (fields.spawnError === null) killGroup(child, 'SIGKILL');
+      resolve({ record: parser.record(), stderrTail, durationMs: Date.now() - started, timedOut, aborted, pid: child.pid ?? null, ...fields });
     };
 
     const decoder = new StringDecoder('utf8');
@@ -108,7 +152,14 @@ export function runModel({ claudeBin, argv, prompt, cwd, env = process.env, time
     const take = (line) => {
       const clean = line.endsWith('\r') ? line.slice(0, -1) : line;
       parser.push(clean);
-      if (onLine) onLine(clean);
+      if (onLine && aborted === null) {
+        try {
+          onLine(clean);
+        } catch (error) {
+          aborted = error;
+          stop();
+        }
+      }
     };
     child.stdout.on('data', (chunk) => {
       pending += decoder.write(chunk);
@@ -130,6 +181,9 @@ export function runModel({ claudeBin, argv, prompt, cwd, env = process.env, time
       // Never started (ENOENT, EACCES): no close event will carry a code.
       if (child.pid === undefined) finish({ exitCode: null, signal: null, spawnError: error.code ?? String(error) });
     });
+    child.on('exit', () => {
+      drainTimer = setTimeout(() => killGroup(child, 'SIGKILL'), drainGraceMs);
+    });
     child.on('close', (code, signal) => {
       pending += decoder.end();
       if (pending !== '') take(pending);
@@ -140,9 +194,12 @@ export function runModel({ claudeBin, argv, prompt, cwd, env = process.env, time
     if (timeoutMs !== undefined && timeoutMs !== null) {
       timer = setTimeout(() => {
         timedOut = true;
-        child.kill('SIGTERM');
-        graceTimer = setTimeout(() => child.kill('SIGKILL'), killGraceMs);
+        stop();
       }, timeoutMs);
+    }
+    if (abortSignal) {
+      if (abortSignal.aborted) onAbort();
+      else abortSignal.addEventListener('abort', onAbort, { once: true });
     }
 
     if (child.pid !== undefined) child.stdin.end(prompt ?? '');

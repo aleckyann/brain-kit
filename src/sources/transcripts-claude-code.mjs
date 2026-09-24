@@ -342,6 +342,10 @@ function collect({ window, config, machine, home = homedir(), io = fs, limits = 
 // record holds a Read tool use whose input `file_path` is exactly the
 // file's path and whose tool result is not an error. Record shape read
 // here: { toolUses: [{ id, name, input }], toolResults: [{ toolUseId, isError }] }.
+// The source counts as read only when EVERY kept file was read (ruling
+// R13, 24/09/2026): a day read in part stays open, and the round's report
+// says "read x of y", so the next round reads it again instead of closing
+// a day whose unread sessions nobody will ever look at.
 function readEvidence(record, plan) {
   const failed = new Set();
   const answered = new Set();
@@ -356,7 +360,7 @@ function readEvidence(record, plan) {
   }
   const expected = plan.files.length;
   const read = plan.files.filter((file) => readPaths.has(file.path)).length;
-  return { read, expected, ok: expected === 0 || read > 0 };
+  return { read, expected, ok: read === expected };
 }
 
 export const transcriptsSource = Object.freeze({

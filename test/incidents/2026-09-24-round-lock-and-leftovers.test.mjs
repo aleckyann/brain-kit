@@ -9,7 +9,9 @@
 //
 // Phase 2, task 5 (this file): the round's `propose` joins the lock the
 // round holds, never releases it, and records what it pushed, so the round
-// can clean up after it (task 6 adds the cleanup to this file's story).
+// can clean up after it. Task 6 (the last test): `curate` reads the record,
+// brings what was pushed back to the default branch's content, and the
+// next round finds a clean tree instead of postponing on its own work.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -20,6 +22,7 @@ import { EXIT } from '../../src/exit-codes.mjs';
 import { GUARD_FILES } from '../../src/guards/location.mjs';
 import { KIT_ROOT } from '../../src/version.mjs';
 import { makeProposeWorld, note } from '../helpers/propose-world.mjs';
+import { makeCurateWorld } from '../helpers/curate-world.mjs';
 
 const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
 
@@ -76,4 +79,16 @@ test('the round\'s own propose, run as a separate process with the round\'s toke
   } finally {
     assert.equal(round.release(), true, 'the round releases its own lock');
   }
+});
+
+test('a curate round cleans up after its own propose, so the next round is not postponed on a dirty tree', () => {
+  const w = makeCurateWorld();
+  w.scenario({ actions: [{ write: { path: 'notes/meeting.md', content: note('Meeting') } }, w.proposeAction('notes/meeting.md')] });
+  const first = w.curate();
+  assert.equal(first.status, EXIT.OK, first.stderr);
+  assert.equal(w.status(), '');
+  assert.deepEqual(w.roundFiles(), []);
+  const second = w.curate();
+  assert.equal(second.status, EXIT.OK, second.stderr);
+  assert.match(second.stdout, /already up to date/);
 });

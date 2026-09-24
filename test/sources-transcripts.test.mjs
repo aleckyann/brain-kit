@@ -456,8 +456,18 @@ test('readEvidence counts a kept file as read only by a successful Read of exact
   assert.deepEqual(transcriptsSource.readEvidence(record([{ path: a, isError: true }]), plan), { read: 0, expected: 2, ok: false });
   assert.deepEqual(transcriptsSource.readEvidence(record([{ path: `${a}.bak` }]), plan), { read: 0, expected: 2, ok: false });
   assert.deepEqual(transcriptsSource.readEvidence(record([{ path: a, name: 'Grep' }]), plan), { read: 0, expected: 2, ok: false });
-  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: a }, { path: a }]), plan), { read: 1, expected: 2, ok: true });
+  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: a }, { path: a }]), plan), { read: 1, expected: 2, ok: false });
   assert.deepEqual(transcriptsSource.readEvidence(record([{ path: a }, { path: b }]), plan), { read: 2, expected: 2, ok: true });
+});
+
+test('readEvidence is ok only when every kept file was read: one of two leaves the day open (ruling R13)', () => {
+  const world = makeWorld();
+  const a = world.write(PROJECT, 'a.jsonl', [user('Ana asks', INSIDE)]);
+  const b = world.write(PROJECT, 'b.jsonl', [user('Ana asks again', INSIDE)]);
+  const plan = world.collect();
+  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: b }]), plan), { read: 1, expected: 2, ok: false });
+  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: b }, { path: a, isError: true }]), plan), { read: 1, expected: 2, ok: false });
+  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: b }, { path: a }]), plan), { read: 2, expected: 2, ok: true });
 });
 
 test('readEvidence is ok with nothing read when the plan kept no file', () => {
