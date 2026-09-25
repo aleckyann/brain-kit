@@ -347,7 +347,7 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   apostrophes and runs of whitespace. `prompt --check` warns about a curate overlay without
   `{{sources_line}}`.
 
-### Phase 4: the morning briefing (in review)
+### Phase 4: the morning briefing
 
 - `brain-kit preflight [dir] [--json]` computes every fact the briefing states, in the
   vault's time zone, and only reads (no lock, no fetch, no write): today and its weekday;

@@ -6,8 +6,8 @@
 > from a clone of this repository. Phase 2 is complete too: the scheduled curator (`curate`,
 > `watermark`, `schedule`) reads your recent Claude Code sessions and opens a pull request
 > from an unattended round. Phase 3 is complete as well: the round also reads your calendar and
-> meeting notes through the claude.ai connectors, once you turn them on. Phase 4 is in
-> review: the morning briefing (`preflight`, `questions`, the `briefing` skill and its
+> meeting notes through the claude.ai connectors, once you turn them on. Phase 4 is
+> complete: the morning briefing (`preflight`, `questions`, the `briefing` skill and its
 > desktop task). The package on npm is still the Phase 0 skeleton. Follow the repository
 > for the first usable release.
 
@@ -261,7 +261,7 @@ marketplace. Inside a vault:
 | 1 | Validator, lint, propose (PR loop), Stop hook, init, doctor, skills | done |
 | 2 | Scheduled curator over local transcripts, scheduler templates | done |
 | 3 | Calendar and meeting-notes sources (best effort by design) | done |
-| 4 | Morning briefing | in review |
+| 4 | Morning briefing | done |
 | 5 | Migration of the original vault onto the kit | planned |
 | 6 | 0.1.0 release | planned |
 | 7 | Other forges, other harnesses, more sources, each only when a second real case needs it | planned |

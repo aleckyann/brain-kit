@@ -7,8 +7,8 @@
 > concluída: o curador agendado (`curate`, `watermark`, `schedule`) lê as suas sessões
 > recentes do Claude Code e abre um pull request a partir de uma rodada sem ninguém por
 > perto. A fase 3 também está concluída: a rodada lê ainda a sua agenda e as suas notas de
-> reunião pelos conectores do claude.ai, depois que você os liga. A fase 4 está em
-> revisão: o briefing matinal (`preflight`, `questions`, a skill `briefing` e a tarefa dela
+> reunião pelos conectores do claude.ai, depois que você os liga. A fase 4 também está
+> concluída: o briefing matinal (`preflight`, `questions`, a skill `briefing` e a tarefa dela
 > no aplicativo para desktop). O pacote no npm ainda é o esqueleto da fase 0. Acompanhe o
 > repositório para a primeira versão usável.
 
@@ -268,7 +268,7 @@ A pasta `evals/` traz um caso de `claude plugin eval` por skill e idioma; veja
 | 1 | Validador, lint, propose (loop de PR), hook Stop, init, doctor, skills | concluída |
 | 2 | Curador agendado sobre transcripts locais, templates de agendamento | concluída |
 | 3 | Fontes de agenda e notas de reunião (best effort por desenho) | concluída |
-| 4 | Briefing matinal | em revisão |
+| 4 | Briefing matinal | concluída |
 | 5 | Migração do vault original para o kit | planejada |
 | 6 | Publicação 0.1.0 | planejada |
 | 7 | Outras forjas, outros harnesses, mais fontes, cada um só quando um segundo caso real precisar | planejada |
