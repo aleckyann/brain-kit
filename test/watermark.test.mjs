@@ -4,8 +4,8 @@
 // only on exit 0 plus read evidence plus the model's sources line.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { chmodSync, existsSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
 import { createTranslator } from '../src/lang.mjs';
@@ -16,6 +16,7 @@ import {
   addDays, advanceWatermark, parseSourcesLine, readWatermark, setWatermark, startOfDay, windowFor, WatermarkError,
 } from '../src/guards/watermark.mjs';
 import { CLEAN_ENV, makeRepo } from './helpers/git-repo.mjs';
+import { withConnectors } from './helpers/curate-world.mjs';
 import { makeTempDir } from './helpers/tmp.mjs';
 
 const OK_LINE = { transcripts: 'ok' };
@@ -341,9 +342,10 @@ test('parseSourcesLine: one layer of markdown around the line is removed', () =>
 
 // ------------------------------------------------------------ the command
 
-function vaultRepo(timezone = 'UTC') {
+function vaultRepo(timezone = 'UTC', edit = () => {}) {
   const config = JSON.parse(readFileSync(join(KIT_ROOT, 'test', 'fixtures', 'config', 'valid.json'), 'utf8'));
   config.vault.timezone = timezone;
+  edit(config);
   return makeRepo({ 'brain-kit.config.json': `${JSON.stringify(config, null, 2)}\n`, 'index.md': '# Index\n' }, 'brain-kit-watermark-');
 }
 
@@ -494,7 +496,9 @@ test('watermark on a damaged file exits 1 and changes nothing', async () => {
   const root = vaultRepo();
   const state = stateDir();
   writeFileSync(join(state, 'watermark.json'), '{oops');
-  for (const argv of [['show'], ['assume-covered', 'transcripts']]) {
+  const legacy = join(makeTempDir('brain-kit-watermark-legacy-'), 'last-day-swept');
+  writeFileSync(legacy, '2026-09-20\n');
+  for (const argv of [['show'], ['assume-covered', 'transcripts'], ['import', '--from', legacy]]) {
     const r = await run(root, argv, { state });
     assert.equal(r.code, EXIT.FAILURE);
     assert.match(r.stderr, /cannot be read/);
@@ -519,4 +523,442 @@ test('the CLI dispatches watermark, and the usage lists it', async () => {
   stdout = '';
   assert.equal(await main(['--help'], io), EXIT.OK);
   assert.match(stdout, /watermark show\|set\|reopen\|assume-covered/);
+});
+
+// ------------------------------------------------------------ import
+//
+// Phase 5a, task 1: `watermark import --from <file> [--sources <id,...>]`
+// carries a legacy setup's watermark (one line, YYYY-MM-DD) over into the
+// marks of the enabled sources, through set's own path.
+
+// What each language says, in the lines and refusals of an import.
+const SAYS = Object.freeze({
+  en: {
+    set: 'last day swept set to', previous: 'previous', none: 'none', unchanged: 'unchanged, the last day swept is already',
+    badLine: 'must hold exactly one line, a day written as YYYY-MM-DD', badDay: 'which is not a day of the calendar',
+    future: 'has not ended yet in', notEnabled: 'not an enabled source of this vault:', noEnabled: 'no source of this vault is enabled',
+    nothing: 'Nothing was changed.', cut: '(its first 80 characters)', notFound: 'does not exist', notFile: 'is not a regular file',
+    needsValue: 'needs a value', needsFrom: '--from <file> is required', emptySource: 'has an empty one',
+  },
+  'pt-BR': {
+    set: 'último dia varrido definido como', previous: 'anterior', none: 'nenhum', unchanged: 'inalterado, o último dia varrido já é',
+    badLine: 'precisa guardar exatamente uma linha, um dia escrito como AAAA-MM-DD', badDay: 'que não é um dia do calendário',
+    future: 'ainda não terminou no fuso', notEnabled: 'não é uma fonte ligada deste vault:', noEnabled: 'nenhuma fonte deste vault está ligada',
+    nothing: 'Nada foi alterado.', cut: '(os primeiros 80 caracteres)', notFound: 'não existe', notFile: 'não é um arquivo comum',
+    needsValue: 'precisa de um valor', needsFrom: '--from <arquivo> é obrigatório', emptySource: 'tem um vazio',
+  },
+});
+const LANGS = Object.keys(SAYS);
+const ALL_ON = ['transcripts', 'calendar', 'meeting_notes'];
+
+// A legacy watermark file as a legacy setup's own script leaves it, with an
+// mtime in the past, so that any write to it shows.
+const LEGACY_MTIME = new Date('2026-01-02T03:04:05Z');
+function legacyFile(content, name = 'last-day-swept') {
+  const file = join(makeTempDir('brain-kit-watermark-legacy-'), name);
+  writeFileSync(file, content);
+  utimesSync(file, LEGACY_MTIME, LEGACY_MTIME);
+  return file;
+}
+
+// What an import leaves exactly as it was: the bytes, the inode (a
+// replacement by rename is a move) and the mtime.
+function fingerprint(file) {
+  const stat = statSync(file);
+  return { bytes: readFileSync(file).toString('hex'), ino: stat.ino, mtime: stat.mtimeMs };
+}
+
+function lines(text) {
+  return text.split('\n').filter((line) => line !== '');
+}
+
+function marksBytes(state) {
+  const file = join(state, 'watermark.json');
+  return existsSync(file) ? readFileSync(file, 'utf8') : null;
+}
+
+function shownDay(day) {
+  return day.split('-').reverse().join('/');
+}
+
+test('watermark import writes the legacy day into every enabled source, one line each with the day and the previous mark, in both languages', async () => {
+  const root = vaultRepo('UTC', withConnectors());
+  const file = legacyFile('2026-09-20\n');
+  for (const lang of LANGS) {
+    const say = SAYS[lang];
+    const state = stateDir();
+    setWatermark(state, 'calendar', '2026-09-10');
+    const r = await run(root, ['import', '--from', file], { state, lang });
+    assert.equal(r.code, EXIT.OK, r.stderr);
+    assert.equal(r.stderr, '');
+    assert.deepEqual(readWatermark(state).sources, { transcripts: '2026-09-20', calendar: '2026-09-20', meeting_notes: '2026-09-20' });
+    assert.deepEqual(lines(r.stdout), [
+      `transcripts: ${say.set} 20/09/2026 (${say.previous}: ${say.none}).`,
+      `calendar: ${say.set} 20/09/2026 (${say.previous}: 10/09/2026).`,
+      `meeting_notes: ${say.set} 20/09/2026 (${say.previous}: ${say.none}).`,
+    ], lang);
+  }
+});
+
+test('watermark import defaults to the enabled sources alone: a listed source that is off, or a configured one no list names, keeps its mark', async () => {
+  // The fixture lists calendar and meeting_notes and leaves both off.
+  const off = vaultRepo();
+  let state = stateDir();
+  let r = await run(off, ['import', '--from', legacyFile('2026-09-20')], { state });
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  assert.deepEqual(readWatermark(state).sources, { transcripts: '2026-09-20' });
+  assert.deepEqual(lines(r.stdout), ['transcripts: last day swept set to 20/09/2026 (previous: none).']);
+  // The calendar configured and on, but in neither list: no round reads it.
+  const unlisted = vaultRepo('UTC', (c) => {
+    withConnectors()(c);
+    c.curate.sources.best_effort = ['meeting_notes'];
+  });
+  state = stateDir();
+  r = await run(unlisted, ['import', '--from', legacyFile('2026-09-20')], { state });
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  assert.deepEqual(readWatermark(state).sources, { transcripts: '2026-09-20', meeting_notes: '2026-09-20' });
+});
+
+test('watermark import --sources writes only the sources named, in the order named, a name given twice once', async () => {
+  const root = vaultRepo('UTC', withConnectors());
+  const file = legacyFile('2026-09-20\r\n');
+  let state = stateDir();
+  setWatermark(state, 'calendar', '2026-09-01');
+  let r = await run(root, ['import', '--sources', 'meeting_notes,transcripts, meeting_notes', '--from', file], { state });
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  assert.deepEqual(readWatermark(state).sources, { calendar: '2026-09-01', meeting_notes: '2026-09-20', transcripts: '2026-09-20' });
+  assert.deepEqual(lines(r.stdout).map((line) => line.split(':')[0]), ['meeting_notes', 'transcripts']);
+  state = stateDir();
+  r = await run(root, ['import', `--from=${file}`, '--sources=calendar'], { state });
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  assert.deepEqual(readWatermark(state).sources, { calendar: '2026-09-20' });
+});
+
+test('watermark import refuses with 2 a named source that is not enabled, before anything is written, listing the enabled ones, in both languages', async () => {
+  // transcripts on; calendar and meeting_notes listed and off.
+  const fixture = vaultRepo();
+  // A listed id this version does not know.
+  const unknown = vaultRepo('UTC', (c) => { c.curate.sources.best_effort = ['calendar', 'meeting_notes', 'slack']; });
+  // The calendar configured and on, but in neither list.
+  const unlisted = vaultRepo('UTC', (c) => {
+    withConnectors()(c);
+    c.curate.sources.best_effort = ['meeting_notes'];
+  });
+  const file = legacyFile('2026-09-20\n');
+  const cases = [
+    [fixture, 'calendar', 'calendar', 'transcripts'],
+    [fixture, 'nope', 'nope', 'transcripts'],
+    // One enabled and one not: the enabled one is not written either.
+    [fixture, 'transcripts,calendar', 'calendar', 'transcripts'],
+    [fixture, 'calendar,nope,transcripts', 'calendar, nope', 'transcripts'],
+    // An id is its exact spelling: no round reads a mark kept under another.
+    [fixture, 'Transcripts', 'Transcripts', 'transcripts'],
+    [unknown, 'slack', 'slack', 'transcripts'],
+    [unlisted, 'transcripts,calendar', 'calendar', 'transcripts, meeting_notes'],
+  ];
+  for (const lang of LANGS) {
+    const say = SAYS[lang];
+    for (const [vault, ids, named, enabled] of cases) {
+      const state = stateDir();
+      setWatermark(state, 'transcripts', '2026-09-10');
+      const before = marksBytes(state);
+      const r = await run(vault, ['import', '--from', file, '--sources', ids], { state, lang });
+      assert.equal(r.code, EXIT.USAGE, `${lang} ${ids}`);
+      assert.equal(r.stdout, '');
+      assert.ok(r.stderr.includes(`${say.notEnabled} ${named}.`), `${lang} ${ids}: ${r.stderr}`);
+      assert.ok(r.stderr.includes(`: ${enabled}. ${say.nothing}`), `${lang} ${ids}: ${r.stderr}`);
+      assert.equal(marksBytes(state), before, `${lang} ${ids}: nothing was written`);
+    }
+  }
+});
+
+test('watermark import with no enabled source refuses with 2 rather than write nothing in silence, in both languages', async () => {
+  const none = vaultRepo('UTC', (c) => {
+    c.curate.sources.required = [];
+    c.curate.sources.best_effort = ['calendar'];
+  });
+  const file = legacyFile('2026-09-20\n');
+  for (const lang of LANGS) {
+    for (const extra of [[], ['--sources', 'calendar']]) {
+      const state = stateDir();
+      const r = await run(none, ['import', '--from', file, ...extra], { state, lang });
+      assert.equal(r.code, EXIT.USAGE, `${lang} ${extra}`);
+      assert.equal(r.stdout, '');
+      assert.ok(r.stderr.includes(SAYS[lang].noEnabled), r.stderr);
+      assert.ok(r.stderr.includes(SAYS[lang].nothing), r.stderr);
+      assert.equal(existsSync(join(state, 'watermark.json')), false);
+    }
+  }
+});
+
+test('watermark import accepts exactly one line YYYY-MM-DD, with or without a final LF or CRLF', async () => {
+  const root = vaultRepo();
+  for (const content of ['2026-09-20', '2026-09-20\n', '2026-09-20\r\n']) {
+    const state = stateDir();
+    const r = await run(root, ['import', '--from', legacyFile(content)], { state });
+    assert.equal(r.code, EXIT.OK, `${JSON.stringify(content)}: ${r.stderr}`);
+    assert.equal(readWatermark(state).sources.transcripts, '2026-09-20');
+  }
+});
+
+test('watermark import refuses with 2 every other shape of file, quoting what it read and changing nothing, in both languages', async () => {
+  const root = vaultRepo();
+  const shapes = [
+    ['', '""'],
+    ['\n', '"\\n"'],
+    ['\r\n', '"\\r\\n"'],
+    ['2026-09-20\n2026-09-21\n', '"2026-09-20\\n2026-09-21\\n"'],
+    ['2026-09-20\n\n', '"2026-09-20\\n\\n"'],
+    ['2026-09-20\n\r\n', '"2026-09-20\\n\\r\\n"'],
+    ['\n2026-09-20\n', '"\\n2026-09-20\\n"'],
+    ['2026-09-20\r', '"2026-09-20\\r"'],
+    ['2026-09-20\n\r', '"2026-09-20\\n\\r"'],
+    [' 2026-09-20\n', '" 2026-09-20\\n"'],
+    ['2026-09-20 \n', '"2026-09-20 \\n"'],
+    ['2026-09-20\t\n', '"2026-09-20\\t\\n"'],
+    ['yesterday\n', '"yesterday\\n"'],
+    ['20/09/2026\n', '"20/09/2026\\n"'],
+    ['2026-9-20\n', '"2026-9-20\\n"'],
+    ['2026-09-20T09:30:00Z\n', '"2026-09-20T09:30:00Z\\n"'],
+    ['last="2026-09-20"\n', '"last=\\"2026-09-20\\"\\n"'],
+    // Characters that print as nothing are named, so a file that looks
+    // right shows why it is refused: a byte order mark, a no-break space.
+    [`${String.fromCodePoint(0xfeff)}2026-09-20\n`, '"<U+FEFF>2026-09-20\\n"'],
+    [`2026-09-20${String.fromCodePoint(0xa0)}\n`, '"2026-09-20<U+00A0>\\n"'],
+  ];
+  for (const lang of LANGS) {
+    const say = SAYS[lang];
+    for (const [content, quote] of shapes) {
+      const state = stateDir();
+      const file = legacyFile(content);
+      const r = await run(root, ['import', '--from', file], { state, lang });
+      assert.equal(r.code, EXIT.USAGE, `${lang} ${quote}`);
+      assert.equal(r.stdout, '');
+      assert.ok(r.stderr.includes(say.badLine), `${lang} ${quote}: ${r.stderr}`);
+      assert.ok(r.stderr.includes(file), `${lang} ${quote}: ${r.stderr}`);
+      assert.ok(r.stderr.includes(` ${quote}. ${say.nothing}`), `${lang} ${quote}: ${r.stderr}`);
+      assert.equal(existsSync(join(state, 'watermark.json')), false);
+    }
+  }
+});
+
+test('watermark import refuses with 2 a date the calendar does not have, quoting it; a real leap day is written', async () => {
+  const root = vaultRepo();
+  for (const lang of LANGS) {
+    for (const day of ['2026-02-30', '2026-04-31', '2026-13-01', '2026-00-10', '2026-09-00', '2025-02-29', '1900-02-29']) {
+      const state = stateDir();
+      const r = await run(root, ['import', '--from', legacyFile(`${day}\n`)], { state, lang });
+      assert.equal(r.code, EXIT.USAGE, `${lang} ${day}`);
+      assert.equal(r.stdout, '');
+      assert.ok(r.stderr.includes(`"${day}\\n", ${SAYS[lang].badDay}. ${SAYS[lang].nothing}`), `${lang} ${day}: ${r.stderr}`);
+      assert.equal(existsSync(join(state, 'watermark.json')), false);
+    }
+  }
+  const state = stateDir();
+  const leap = await run(root, ['import', '--from', legacyFile('2024-02-29\n')], { state });
+  assert.equal(leap.code, EXIT.OK, leap.stderr);
+  assert.equal(readWatermark(state).sources.transcripts, '2024-02-29');
+});
+
+test('watermark import refuses with 2 a day after yesterday in the vault time zone, quoting it; yesterday itself is written', async () => {
+  // run()'s clock: 24/09/2026 12:00 UTC, so yesterday was 23/09/2026.
+  const utc = vaultRepo();
+  for (const lang of LANGS) {
+    const say = SAYS[lang];
+    for (const day of ['2026-09-24', '2026-09-25', '2099-01-01']) {
+      const state = stateDir();
+      const r = await run(utc, ['import', '--from', legacyFile(`${day}\n`)], { state, lang });
+      assert.equal(r.code, EXIT.USAGE, `${lang} ${day}`);
+      assert.equal(r.stdout, '');
+      assert.ok(r.stderr.includes(`"${day}\\n"`), `${lang} ${day}: ${r.stderr}`);
+      assert.ok(r.stderr.includes(`${shownDay(day)} ${say.future} UTC;`), `${lang} ${day}: ${r.stderr}`);
+      assert.ok(r.stderr.includes('23/09/2026'), `${lang} ${day}: ${r.stderr}`);
+      assert.equal(existsSync(join(state, 'watermark.json')), false);
+    }
+  }
+  let state = stateDir();
+  assert.equal((await run(utc, ['import', '--from', legacyFile('2026-09-23\n')], { state })).code, EXIT.OK);
+  assert.equal(readWatermark(state).sources.transcripts, '2026-09-23');
+  // At 22:00 of 23/09 at UTC-3 that day has not ended there, though it has in UTC.
+  const now = new Date('2026-09-24T01:00:00Z');
+  const west = vaultRepo('America/Argentina/Buenos_Aires');
+  for (const lang of LANGS) {
+    state = stateDir();
+    const r = await run(west, ['import', '--from', legacyFile('2026-09-23\n')], { state, now, lang });
+    assert.equal(r.code, EXIT.USAGE, lang);
+    assert.ok(r.stderr.includes(`23/09/2026 ${SAYS[lang].future} America/Argentina/Buenos_Aires;`), `${lang}: ${r.stderr}`);
+    assert.ok(r.stderr.includes('22/09/2026'), `${lang}: ${r.stderr}`);
+    assert.equal(existsSync(join(state, 'watermark.json')), false);
+  }
+  state = stateDir();
+  assert.equal((await run(west, ['import', '--from', legacyFile('2026-09-22\n')], { state, now })).code, EXIT.OK);
+  assert.equal(readWatermark(state).sources.transcripts, '2026-09-22');
+  state = stateDir();
+  assert.equal((await run(utc, ['import', '--from', legacyFile('2026-09-23\n')], { state, now })).code, EXIT.OK, 'in UTC, 23/09 has ended');
+});
+
+test('watermark import quotes a long file by its first 80 characters, counted as characters, in both languages', async () => {
+  const root = vaultRepo();
+  const clef = String.fromCodePoint(0x1d11e);
+  for (const lang of LANGS) {
+    const cut = SAYS[lang].cut;
+    for (const [content, quote] of [
+      ['x'.repeat(81), 'x'.repeat(80)],
+      ['x'.repeat(10000), 'x'.repeat(80)],
+      ['ã'.repeat(100), 'ã'.repeat(80)],
+      [clef.repeat(100), clef.repeat(80)],
+    ]) {
+      const r = await run(root, ['import', '--from', legacyFile(content)], { state: stateDir(), lang });
+      assert.equal(r.code, EXIT.USAGE);
+      assert.ok(r.stderr.includes(`"${quote}" ${cut}. ${SAYS[lang].nothing}`), `${lang}: ${r.stderr.slice(0, 300)}`);
+      assert.ok(!r.stderr.includes(quote + Array.from(quote)[0]), 'never more than 80 characters');
+    }
+    const whole = await run(root, ['import', '--from', legacyFile('y'.repeat(80))], { state: stateDir(), lang });
+    assert.ok(whole.stderr.includes(`"${'y'.repeat(80)}". ${SAYS[lang].nothing}`), whole.stderr);
+    assert.ok(!whole.stderr.includes(cut), 'exactly 80 characters are quoted whole');
+  }
+});
+
+test('watermark import refuses with 2 a --from that is missing, not a file or not given, and a bad --sources, in both languages', async () => {
+  const root = vaultRepo();
+  const dir = makeTempDir('brain-kit-watermark-legacy-dir-');
+  const file = legacyFile('2026-09-20');
+  for (const lang of LANGS) {
+    const say = SAYS[lang];
+    const state = stateDir();
+    const cases = [
+      [['import', '--from', join(dir, 'absent')], say.notFound],
+      [['import', '--from', join(file, 'below-a-file')], say.notFound],
+      [['import', '--from', dir], say.notFile],
+      [['import', '--from'], `--from ${say.needsValue}`],
+      [['import', '--from='], `--from ${say.needsValue}`],
+      [['import'], say.needsFrom],
+      [['import', root], say.needsFrom],
+      [['import', '--from', file, '--sources'], `--sources ${say.needsValue}`],
+      [['import', '--from', file, '--sources', ''], `--sources ${say.needsValue}`],
+      [['import', '--from', file, '--sources', 'transcripts,,calendar'], say.emptySource],
+      [['import', '--from', file, '--sources=,'], say.emptySource],
+    ];
+    for (const [argv, expected] of cases) {
+      const r = await run(root, argv, { state, lang });
+      assert.equal(r.code, EXIT.USAGE, `${lang} ${argv.join(' ')}`);
+      assert.equal(r.stdout, '');
+      assert.ok(r.stderr.includes(expected), `${lang} ${argv.join(' ')}: ${r.stderr}`);
+    }
+    assert.equal(existsSync(join(state, 'watermark.json')), false);
+  }
+});
+
+test('watermark import refuses with 2 a file it cannot read, naming the error, in both languages', { skip: process.getuid?.() === 0 && 'root reads a file whatever its mode' }, async () => {
+  const root = vaultRepo();
+  const file = legacyFile('2026-09-20\n');
+  chmodSync(file, 0o000);
+  try {
+    for (const [lang, says] of [['en', 'cannot be read (EACCES)'], ['pt-BR', 'não foi possível ler']]) {
+      const state = stateDir();
+      const r = await run(root, ['import', '--from', file], { state, lang });
+      assert.equal(r.code, EXIT.USAGE, lang);
+      assert.ok(r.stderr.includes(says), `${lang}: ${r.stderr}`);
+      assert.ok(r.stderr.includes('EACCES'), `${lang}: ${r.stderr}`);
+      assert.equal(existsSync(join(state, 'watermark.json')), false);
+    }
+  } finally {
+    chmodSync(file, 0o600);
+  }
+});
+
+test('watermark import never changes, moves or removes the file it reads: same bytes, inode and mtime after an import, a second import and a refusal', async () => {
+  const root = vaultRepo('UTC', withConnectors());
+  const state = stateDir();
+  const file = legacyFile('2026-09-20\n');
+  const before = fingerprint(file);
+  assert.equal((await run(root, ['import', '--from', file], { state })).code, EXIT.OK);
+  assert.deepEqual(fingerprint(file), before);
+  assert.equal((await run(root, ['import', '--from', file], { state })).code, EXIT.OK);
+  assert.deepEqual(fingerprint(file), before);
+  assert.deepEqual(readdirSync(dirname(file)), ['last-day-swept'], 'nothing is written beside it');
+  const future = legacyFile('2026-09-24\n');
+  const futureBefore = fingerprint(future);
+  assert.equal((await run(root, ['import', '--from', future], { state })).code, EXIT.USAGE);
+  assert.deepEqual(fingerprint(future), futureBefore);
+});
+
+test('watermark import of the same file twice: the second run prints unchanged per source and writes nothing, in both languages', async () => {
+  const root = vaultRepo('UTC', withConnectors());
+  const file = legacyFile('2026-09-20\n');
+  for (const lang of LANGS) {
+    const state = stateDir();
+    assert.equal((await run(root, ['import', '--from', file], { state, lang })).code, EXIT.OK);
+    const marks = join(state, 'watermark.json');
+    utimesSync(marks, LEGACY_MTIME, LEGACY_MTIME);
+    const before = fingerprint(marks);
+    const again = await run(root, ['import', '--from', file], { state, lang });
+    assert.equal(again.code, EXIT.OK, again.stderr);
+    assert.equal(again.stderr, '');
+    assert.deepEqual(lines(again.stdout), ALL_ON.map((source) => `${source}: ${SAYS[lang].unchanged} 20/09/2026.`), lang);
+    assert.deepEqual(fingerprint(marks), before, 'the marks file is not written again');
+  }
+});
+
+test('watermark import writes through set\'s own path: a held vault lock postpones it with 75 and nothing moves; then set finds the same file', async () => {
+  const root = vaultRepo('UTC', withConnectors());
+  const state = stateDir();
+  setWatermark(state, 'transcripts', '2026-09-10');
+  const before = marksBytes(state);
+  const file = legacyFile('2026-09-20\n');
+  const lock = acquireLock(root, { command: 'curate', env: CLEAN_ENV });
+  try {
+    const r = await run(root, ['import', '--from', file], { state });
+    assert.equal(r.code, EXIT.TEMPFAIL);
+    assert.match(r.stderr, /curate/);
+    assert.equal(r.stdout, '');
+  } finally {
+    lock.release();
+  }
+  assert.equal(marksBytes(state), before);
+  assert.equal((await run(root, ['import', '--from', file], { state })).code, EXIT.OK);
+  assert.equal(statSync(join(state, 'watermark.json')).mode & 0o777, 0o600);
+  assert.deepEqual(readdirSync(state), ['watermark.json'], 'no temporary file is left behind');
+  for (const source of ALL_ON) {
+    const set = await run(root, ['set', source, '2026-09-20'], { state });
+    assert.equal(set.code, EXIT.OK, set.stderr);
+    assert.match(set.stdout, /already 20\/09\/2026/, source);
+  }
+});
+
+test('watermark import reads a relative --from from the working directory, and takes the vault as [dir]', async () => {
+  const root = vaultRepo();
+  const file = legacyFile('2026-09-20\n');
+  const state = stateDir();
+  const r = await run(dirname(file), ['import', '--from', 'last-day-swept', root], { state });
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  assert.equal(readWatermark(state).sources.transcripts, '2026-09-20');
+});
+
+test('watermark import is in the usage of both languages and in the CLI help; its options belong to it alone', async () => {
+  const root = vaultRepo();
+  const en = await run(root, ['--help'], { state: stateDir() });
+  assert.match(en.stdout, /brain-kit watermark import --from <file> \[--sources <source,source,\.\.\.>\] \[dir\]/);
+  const pt = await run(root, ['--help'], { state: stateDir(), lang: 'pt-BR' });
+  assert.match(pt.stdout, /brain-kit watermark import --from <arquivo> \[--sources <fonte,fonte,\.\.\.>\] \[dir\]/);
+  let stdout = '';
+  const io = { stdout: { write: (s) => { stdout += s; } }, stderr: { write: () => {} } };
+  assert.equal(await main(['--help'], io), EXIT.OK);
+  assert.match(stdout, /\n {2}watermark import --from </);
+  const state = stateDir();
+  const file = legacyFile('2026-09-20');
+  for (const argv of [
+    ['set', 'transcripts', '2026-09-20', '--from', file],
+    ['show', '--sources', 'transcripts'],
+    ['assume-covered', 'transcripts', `--from=${file}`],
+    ['import', '--from', file, '--from', file],
+    ['import', '--from', file, '--sources', 'transcripts', '--sources=transcripts'],
+    ['import', '--from', file, root, 'extra'],
+    ['import', '--from', file, '--force'],
+  ]) {
+    const r = await run(root, argv, { state });
+    assert.equal(r.code, EXIT.USAGE, argv.join(' '));
+    assert.match(r.stderr, /unrecognized argument/, argv.join(' '));
+  }
+  assert.equal(existsSync(join(state, 'watermark.json')), false);
 });

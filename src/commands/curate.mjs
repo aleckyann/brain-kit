@@ -245,8 +245,9 @@ function writePrivate(file, text) {
 // The sources this round runs, the listed ones that are off, and the
 // configured ids it cannot read. A listed source runs only when it is
 // configured (a source with no isConfigured always is): a connector source
-// is off until the person names what it reads (decision D6).
-function sourcesOf(config) {
+// is off until the person names what it reads (decision D6). `active` is
+// also what `watermark import` calls the enabled sources.
+export function sourcesOf(config) {
   const required = [...new Set(config.curate?.sources?.required ?? [])];
   const bestEffort = [...new Set(config.curate?.sources?.best_effort ?? [])].filter((id) => !required.includes(id));
   const known = [...required, ...bestEffort].filter((id) => Object.hasOwn(SOURCES, id)).map((id) => SOURCES[id]);
