@@ -37,12 +37,13 @@
 //       read, the person's user settings are read and mirrored; connector
 //       mode unless a rule refuses it (every connector source is then
 //       blocked_by_user_rules, and the round runs isolated); --check: print
-//       the plan, the mode and the prompt's size, exit 0
-//   13. run the model; an init event that fails the isolation check of its
-//       mode kills it at once: exit 1; in connector mode, an init event
-//       where a connector source is not there (decision D4, ruling R-B1)
-//       kills it before its first turn, and the round launches once more
-//       without those sources, never twice
+//       the plan, the mode, the cost cap and the prompt's size, exit 0
+//   13. run the model, with no --max-budget-usd when curate.budget_usd is
+//       null (roundBudget); an init event that fails the isolation check
+//       of its mode kills it at once: exit 1; in connector mode, an init
+//       event where a connector source is not there (decision D4, ruling
+//       R-B1) kills it before its first turn, and the round launches once
+//       more without those sources, never twice
 //   14. read evidence, the sources line and the round record
 //   15. bring what the round proposed back to HEAD's content, byte-proved
 //   16. the exit code, first match wins: isolation 1; model failure 69 or
@@ -107,10 +108,14 @@ const ROOT_INDEX = 'index.md';
 // measured (minutes) and well inside the gap between two windows.
 export const ROUND_TIMEOUT_MS = 60 * 60 * 1000;
 
-// Used only when the configuration does not set them (ruling R10: a round
-// always runs bounded).
+// Used only when the configuration leaves the key out (ruling R10: a round
+// the owner said nothing about runs bounded). `curate.budget_usd: null` is
+// not leaving it out: it is the owner asking for no cost cap at all (phase
+// 5a), and the round then passes no --max-budget-usd (roundBudget).
 const FALLBACK_MAX_TURNS = 100;
 const FALLBACK_BUDGET_USD = 5;
+// The setting of the cost cap, as a person finds it.
+const BUDGET_SETTING = `${CONFIG_FILENAME} curate.budget_usd`;
 const NOTIFY_TIMEOUT_MS = 30000;
 // The setting a vault adds allow rules with, as a person finds it.
 const ALLOWED_EXTRA_SETTING = `${CONFIG_FILENAME} curate.allowed_tools_extra`;
@@ -638,12 +643,30 @@ function blockedMessage(t, source, config, entry) {
   return t('curate.user_rules.denies_source', { rules: entry.rules.join(', '), connector: source.serverSpec(config).serverDisplayName, tools: source.toolRules(config).allow.join(', ') });
 }
 
+// The round's cost cap in USD: the number curate.budget_usd sets; null when
+// it is null, the owner asking for no cap, so the round passes no
+// --max-budget-usd at all; the fallback only when the key is absent. The
+// round, --check, --dry and doctor's cost-cap all read the cap here, so
+// they cannot disagree about it.
+export function roundBudget(config) {
+  const configured = config?.curate?.budget_usd;
+  return configured === undefined ? FALLBACK_BUDGET_USD : configured;
+}
+
+// What the round, --check and --dry say about the cost cap.
+function budgetLine(t, config) {
+  const usd = roundBudget(config);
+  if (usd === null) return t('curate.cost_cap_none', { setting: BUDGET_SETTING });
+  if (config.curate?.budget_usd === undefined) return t('curate.cost_cap_default', { usd, setting: BUDGET_SETTING });
+  return t('curate.cost_cap', { usd, setting: BUDGET_SETTING });
+}
+
 function modelArgv(config, machine, tools, mode = 'isolated') {
   return buildArgv({
     mode,
     model: machine.model ?? undefined,
     maxTurns: config.curate?.max_turns ?? FALLBACK_MAX_TURNS,
-    budgetUsd: config.curate?.budget_usd ?? FALLBACK_BUDGET_USD,
+    budgetUsd: roundBudget(config),
     allowed: tools.allowed,
     disallowed: tools.disallowed,
   });
@@ -785,9 +808,11 @@ export async function runCurate(argv, io, t, deps = {}) {
   // connector states it knew are carried forward and compared with this
   // round's (step 18).
   const previousRun = readLastRun(stateDir);
+  // `budgetUsd` stays undefined, so out of last-run.json, until the model
+  // is launched: then the cap it runs under, a number or null for none.
   const run = {
     at: now.toISOString(), durationMs: null, exit: null, reasonCode: null, reason: null, window: null, network: null,
-    sources: {}, warnings: [], remainingDays: 0, deferredDays: [], costUsd: null, numTurns: null, denials: [], isolation: null, proposed: null, leftovers: [],
+    sources: {}, warnings: [], remainingDays: 0, deferredDays: [], costUsd: null, budgetUsd: undefined, numTurns: null, denials: [], isolation: null, proposed: null, leftovers: [],
     mode: null, relaunched: false, notConfigured: [], userRules: null, connectorStates: knownStates(previousRun),
   };
   // The notifications this round owes besides the one for a non-zero exit:
@@ -1170,6 +1195,7 @@ export async function runCurate(argv, io, t, deps = {}) {
       for (const line of modeLines(t, choice)) io.stdout.write(`${line}\n`);
       for (const line of sourceLines(t, { active, plans, days, unavailable, config, blocks: true })) io.stdout.write(`${line}\n`);
       io.stdout.write(`${t('curate.check_argv', { bin: claudeBin, argv: JSON.stringify(argvList) })}\n`);
+      io.stdout.write(`${budgetLine(t, config)}\n`);
       io.stdout.write(`${t('curate.check_prompt', { chars: prompt.length, bytes: Buffer.byteLength(prompt) })}\n`);
       run.exit = EXIT.OK;
       run.reasonCode = 'check';
@@ -1187,7 +1213,11 @@ export async function runCurate(argv, io, t, deps = {}) {
     let isolationAbort = null;
     let launchMode = choice.mode;
     let launchTools = choice.tools;
-    if (!nothingLeft()) io.stdout.write(`${t('curate.model_start', { days: window.days.map(shown).join(', ') })}\n`);
+    if (!nothingLeft()) {
+      io.stdout.write(`${t('curate.model_start', { days: window.days.map(shown).join(', ') })}\n`);
+      io.stdout.write(`${budgetLine(t, config)}\n`);
+      run.budgetUsd = roundBudget(config);
+    }
     for (let launch = 1; !nothingLeft(); launch += 1) {
       const launchSources = choice.available;
       const specs = launchSources.map((source) => source.serverSpec(config));
@@ -1674,5 +1704,6 @@ function dryRun({ root, stateDir, machine, claudeBin, io, env, now }) {
   for (const line of sourceLines(t, { active, plans, days, unavailable, config, blocks: false })) io.stdout.write(`${line}\n`);
   const argv = modelArgv(config, machine, choice.tools, choice.mode);
   io.stdout.write(`${t('curate.check_argv', { bin: claudeBin, argv: JSON.stringify(argv) })}\n`);
+  io.stdout.write(`${budgetLine(t, config)}\n`);
   return EXIT.OK;
 }

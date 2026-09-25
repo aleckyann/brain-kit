@@ -136,6 +136,21 @@ test('buildArgv leaves out what was not set and refuses a rule that would read a
   assert.throws(() => buildArgv({ budgetUsd: -1 }), TypeError);
 });
 
+// Phase 5a: a round with no cost cap is a vector with no --max-budget-usd
+// at all, in either mode; a number is passed as it is.
+test('buildArgv passes --max-budget-usd with a number, and none at all with null or nothing given, in both modes', () => {
+  const capped = buildArgv({ maxTurns: 40, budgetUsd: 2.5 });
+  assert.deepEqual(capped, [...ISOLATION_ARGS, '--max-turns', '40', '--max-budget-usd', '2.5', '--']);
+  for (const budgetUsd of [null, undefined]) {
+    assert.deepEqual(buildArgv({ maxTurns: 40, budgetUsd }), [...ISOLATION_ARGS, '--max-turns', '40', '--'], String(budgetUsd));
+    assert.deepEqual(buildArgv({ mode: 'connectors', maxTurns: 40, budgetUsd }), [...CONNECTOR_ARGS, '--max-turns', '40', '--'], String(budgetUsd));
+  }
+  // A cap no CLI run could use is refused, never passed on.
+  for (const budgetUsd of [0, -1, '5', Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.throws(() => buildArgv({ budgetUsd }), TypeError, String(budgetUsd));
+  }
+});
+
 test('buildArgv refuses to allow a path or command tool with no scope, alone or inside a list the CLI splits, and accepts it scoped', () => {
   for (const tool of ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash']) {
     assert.throws(() => buildArgv({ allowed: [tool] }), (error) => error instanceof TypeError && error.message.includes(tool), tool);

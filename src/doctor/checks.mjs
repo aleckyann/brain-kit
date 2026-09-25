@@ -74,7 +74,7 @@ import { signatureProblems } from '../sources/transcripts-claude-code.mjs';
 // here: the connectors check asks the round's own choice of launch mode
 // (chooseMode) and its own reading of a source that is off, so doctor and
 // the round cannot disagree.
-import { BLOCKED_BY_USER_RULES, chooseMode, offOnPurpose, offProblems, problemText, SECOND_DOOR, WAITING_FOR_CALENDAR } from '../commands/curate.mjs';
+import { BLOCKED_BY_USER_RULES, chooseMode, offOnPurpose, offProblems, problemText, roundBudget, SECOND_DOOR, WAITING_FOR_CALENDAR } from '../commands/curate.mjs';
 
 export const MINIMUM_NODE_MAJOR = 24;
 export const HOOKS_DIR = '.githooks';
@@ -1295,6 +1295,28 @@ function roundScope(ctx) {
   return { id, status: 'ok', messageKey: 'doctor.round_scope.ok', params: {} };
 }
 
+// The cost cap every round runs under, read the way the round reads it
+// (roundBudget, src/commands/curate.mjs): the number curate.budget_usd
+// sets, the default when the key is absent, or no cap at all when it is
+// null (phase 5a). The three are said apart, so an owner who removed the
+// key to lift the cap learns that the default still applies. A value no
+// round can run with fails: 0, which the harness refuses before the model
+// starts, and anything the schema refuses, on which every round stops.
+function costCap(ctx) {
+  const id = 'cost-cap';
+  const inputs = curateInputs(ctx, id);
+  if (inputs.result) return inputs.result;
+  if (inputs.disabled) return curateDisabled(ctx, id);
+  const setting = 'curate.budget_usd';
+  const usd = roundBudget(inputs.config);
+  if (usd !== null && !(typeof usd === 'number' && Number.isFinite(usd) && usd > 0)) {
+    return { id, status: 'fail', messageKey: 'doctor.cost_cap.unusable', params: { setting, file: CONFIG_FILENAME, value: JSON.stringify(usd) } };
+  }
+  if (usd === null) return { id, status: 'ok', messageKey: 'doctor.cost_cap.none', params: { setting, file: CONFIG_FILENAME } };
+  if (inputs.config.curate?.budget_usd === undefined) return { id, status: 'ok', messageKey: 'doctor.cost_cap.default', params: { usd, setting, file: CONFIG_FILENAME } };
+  return { id, status: 'ok', messageKey: 'doctor.cost_cap.set', params: { usd, setting, file: CONFIG_FILENAME } };
+}
+
 // --- connectors ------------------------------------------------------------------
 //
 // The two connector sources, calendar and meeting notes, are best effort
@@ -1526,8 +1548,8 @@ function probeEnv(ctx, machine) {
 
 // `brain-kit doctor --probe`: the round's own connector-mode launch (its
 // flags, its allow and deny lists, the person's user rules mirrored), with
-// a one-line prompt, one turn at most and a small budget, killed at its init
-// event before any model call (measured, Part A3), and each available
+// a one-line prompt and no turn limit or cost cap of its own, killed at its
+// init event before any model call (measured, Part A3), and each available
 // source's connector state read from that event exactly as a round reads it
 // (src/guards/connectors.mjs). A hook event, which a round treats as a
 // breach, stops it too. Nothing is written: no last-run.json, no log, no
@@ -1678,6 +1700,7 @@ export const CHECKS = new Map([
   ['claude-real', claudeReal],
   ['claude-isolation-flags', claudeIsolationFlags],
   ['round-scope', roundScope],
+  ['cost-cap', costCap],
   ['include-projects', includeProjects],
   ['connectors', connectorsCheck],
   ['watermark', watermarkCheck],

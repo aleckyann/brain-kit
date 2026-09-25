@@ -178,7 +178,10 @@ function checkScoped(allowed) {
 
 // `mode` is 'isolated' (no settings file of any kind, phase 2) or
 // 'connectors' (the user settings, neutralised, for the claude.ai
-// connectors); anything else throws.
+// connectors); anything else throws. A `budgetUsd` of null, like one left
+// out, passes no --max-budget-usd: a round with no cost cap. Telling an
+// absent setting from a null one is the caller's (src/commands/curate.mjs,
+// roundBudget: absent is the default cap, null is none).
 export function buildArgv({ mode = 'isolated', model, maxTurns, budgetUsd, allowed = [], disallowed = [] } = {}) {
   if (typeof mode !== 'string' || !Object.hasOwn(MODE_ARGS, mode)) throw new TypeError(`not a launch mode: ${JSON.stringify(mode)} (isolated or connectors)`);
   checkRules('allowed', allowed);

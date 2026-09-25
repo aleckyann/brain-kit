@@ -364,11 +364,11 @@ test('a ready vault under a path with a space, an accented letter and both quote
   assert.deepEqual(report.counts, { ok: CHECK_IDS.length + 1, warn: 0, fail: 0 });
 });
 
-test('the check table is exactly the phase 1, 2, 3 and 4 set, each named by what it prevents', () => {
+test('the check table is exactly the phase 1, 2, 3, 4 and 5a set, each named by what it prevents', () => {
   assert.deepEqual(CHECK_IDS, [
     'node-version', 'git-present', 'default-branch-known', 'hooks-path', 'brain-kit-on-path', 'config-valid', 'manifest-valid', 'machine-valid',
     'state-dir-resolves', 'state-dir-mode', 'legacy-lock', 'kit-version', 'gh-present', 'claude-present', 'gitignore-node-modules', 'privacy-keywords',
-    'claude-real', 'claude-isolation-flags', 'round-scope', 'include-projects', 'connectors', 'watermark', 'last-run', 'schedule', 'notify',
+    'claude-real', 'claude-isolation-flags', 'round-scope', 'cost-cap', 'include-projects', 'connectors', 'watermark', 'last-run', 'schedule', 'notify',
     'briefing',
   ]);
 });
@@ -2310,6 +2310,66 @@ test('round-scope: in connector mode a user read rule the round records instead 
   const off = setup();
   ({ report } = await doctor(off, ['--only', 'round-scope'], { env: userSettings(off, { permissions: { allow: ['Read(//etc/**)'] } }) }));
   assertCheck(report, 'round-scope', 'ok', 'doctor.round_scope.ok');
+});
+
+// --- cost-cap (phase 5a) -------------------------------------------------------
+
+const BUDGET_PARAMS = Object.freeze({ setting: 'curate.budget_usd', file: 'brain-kit.config.json' });
+
+test('cost-cap: a number is the cap, a key left out is the default said as such, and null is no cap; each passes', async () => {
+  const fx = setup();
+  const file = join(fx.root, 'brain-kit.config.json');
+  let c = assertCheck((await doctor(fx, ['--only', 'cost-cap'])).report, 'cost-cap', 'ok', 'doctor.cost_cap.set');
+  assert.deepEqual(c.params, { usd: 5, ...BUDGET_PARAMS });
+  assert.equal(c.message, 'each round is capped at 5 USD (curate.budget_usd in brain-kit.config.json)');
+  editJson(file, (config) => { delete config.curate.budget_usd; });
+  c = assertCheck((await doctor(fx, ['--only', 'cost-cap'])).report, 'cost-cap', 'ok', 'doctor.cost_cap.default');
+  assert.deepEqual(c.params, { usd: 5, ...BUDGET_PARAMS });
+  assert.equal(c.message, 'each round is capped at 5 USD, the default: curate.budget_usd is not set in brain-kit.config.json (null would run rounds with no cap)');
+  editJson(file, (config) => { config.curate.budget_usd = null; });
+  const r = await doctor(fx, ['--only', 'cost-cap']);
+  c = assertCheck(r.report, 'cost-cap', 'ok', 'doctor.cost_cap.none');
+  assert.deepEqual(c.params, { ...BUDGET_PARAMS });
+  assert.equal(c.message, 'no cost cap: curate.budget_usd is null in brain-kit.config.json, so a round passes no --max-budget-usd');
+  assert.equal(r.code, EXIT.OK);
+});
+
+test('cost-cap: a cap no round can run with fails, naming the value: 0, which the harness refuses, and anything the schema refuses', async () => {
+  const fx = setup();
+  const file = join(fx.root, 'brain-kit.config.json');
+  for (const [value, shown] of [[0, '0'], [-1, '-1'], ['5', '"5"'], [true, 'true']]) {
+    editJson(file, (config) => { config.curate.budget_usd = value; });
+    const { report, code } = await doctor(fx, ['--only', 'cost-cap']);
+    const c = assertCheck(report, 'cost-cap', 'fail', 'doctor.cost_cap.unusable');
+    assert.deepEqual(c.params, { ...BUDGET_PARAMS, value: shown });
+    assert.equal(c.message, `curate.budget_usd in brain-kit.config.json is ${shown}, and no round runs with that cap: set a positive number of USD, or null for no cap.`);
+    assert.equal(code, EXIT.FAILURE);
+  }
+});
+
+test('cost-cap: curate.enabled false passes saying so; a configuration doctor cannot read warns', async () => {
+  let fx = setup({ config: configWith((c) => { c.curate.enabled = false; c.curate.budget_usd = 0; }) });
+  assertCheck((await doctor(fx, ['--only', 'cost-cap'])).report, 'cost-cap', 'ok', 'doctor.curate.disabled');
+  fx = setup({ configText: '{ not json' });
+  assertCheck((await doctor(fx, ['--only', 'cost-cap'])).report, 'cost-cap', 'warn', 'doctor.curate.config_unknown');
+});
+
+test('cost-cap: the Portuguese pack says each case, no cap for null, with nothing left unfilled', async () => {
+  const fx = setup();
+  const file = join(fx.root, 'brain-kit.config.json');
+  const said = async () => {
+    const f = fakeIo();
+    await runDoctor([fx.root, '--only', 'cost-cap'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
+    assert.doesNotMatch(f.stdout(), /\{[a-z_]+\}|\[object Object\]/);
+    return f.stdout();
+  };
+  assert.ok((await said()).includes('cada rodada tem teto de 5 USD (curate.budget_usd em brain-kit.config.json)'));
+  editJson(file, (config) => { delete config.curate.budget_usd; });
+  assert.ok((await said()).includes('cada rodada tem teto de 5 USD, o padrão: curate.budget_usd não está definido em brain-kit.config.json (null faria as rodadas rodarem sem teto)'));
+  editJson(file, (config) => { config.curate.budget_usd = null; });
+  assert.ok((await said()).includes('sem teto de custo: curate.budget_usd é null em brain-kit.config.json, então uma rodada não passa --max-budget-usd'));
+  editJson(file, (config) => { config.curate.budget_usd = 0; });
+  assert.ok((await said()).includes('curate.budget_usd em brain-kit.config.json é 0, e nenhuma rodada roda com esse teto: ponha um número positivo de USD, ou null para rodar sem teto.'));
 });
 
 test('connectors: no connector source listed in curate.sources is one ok line', async () => {

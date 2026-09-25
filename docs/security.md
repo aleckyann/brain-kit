@@ -176,10 +176,12 @@ Within that, what limits how much the model reads is not the permission system:
   reading it.
 - **The prompt.** It tells the model to sample a long transcript from its end and then in
   slices, never whole, and states what it may not carry into the vault.
-- **The cost ceiling.** Every round runs with `--max-turns` and `--max-budget-usd`
-  (`curate.max_turns`, default 100, and `curate.budget_usd`, default 5 USD); a
-  configuration that leaves them out still gets the same limits. The model is also stopped
-  after 60 minutes.
+- **The cost ceiling.** Every round runs with `--max-turns` (`curate.max_turns`, default
+  100) and `--max-budget-usd` (`curate.budget_usd`, default 5 USD); a configuration that
+  leaves either key out still gets its default. `"budget_usd": null` is how an owner asks
+  for no cost cap at all: the round then passes no `--max-budget-usd`, and `curate
+  --check`, `curate --dry`, the round's own output and `doctor` (check `cost-cap`) say so,
+  as they say which cap applies otherwise. The model is also stopped after 60 minutes.
 
 What can still widen reads, each said by `doctor` or here:
 

@@ -135,6 +135,27 @@ test('unknown top-level keys and bad enums are reported', () => {
   assert.ok(errors.includes('$.surprise: unknown key'), errors.join('\n'));
 });
 
+// Phase 5a: curate.budget_usd null is the owner asking for no cost cap, so
+// the schema takes it beside a number; a negative number or a string is
+// still refused, and a configuration that leaves the key out stays valid
+// (a round then gets the default cap).
+test('curate.budget_usd takes a non-negative number or null, refuses a negative number or a string, and may be left out', () => {
+  for (const value of [5, 0.5, 0, null]) {
+    const config = fixture('config/valid.json');
+    config.curate.budget_usd = value;
+    assert.deepEqual(validateConfig(config), [], JSON.stringify(value));
+  }
+  const absent = fixture('config/valid.json');
+  delete absent.curate.budget_usd;
+  assert.deepEqual(validateConfig(absent), []);
+  for (const value of [-1, -0.01, '5', 'none', true, [], {}]) {
+    const config = fixture('config/valid.json');
+    config.curate.budget_usd = value;
+    const errors = validateConfig(config);
+    assert.ok(errors.some((e) => e.startsWith('$.curate.budget_usd:')), `${JSON.stringify(value)}: ${errors.join('\n')}`);
+  }
+});
+
 test('curate.schedule entries must be HH:MM', () => {
   const config = fixture('config/valid.json');
   config.curate.schedule = ['9h30'];

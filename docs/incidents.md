@@ -1109,10 +1109,12 @@ whole. Video recordings and full transcriptions are never downloaded. Cost and p
 are rules in the prompt, not left to the model's good sense.
 **Where it lives in brain-kit.** `src/sources/transcripts-claude-code.mjs` (the plan
 gives each transcript's size and the line to start reading from, near its end, and caps
-how many are offered), the curate prompt, `--max-turns` and `--max-budget-usd` on every
-round (`curate.max_turns`, `curate.budget_usd`) (Phase 2); for meeting notes, the source's
-prompt block, which checks an attached document's metadata first and never opens a
-recording or a full transcription (`src/sources/meeting-notes-google-drive.mjs`) (Phase 3).
+how many are offered), the curate prompt, `--max-turns` on every round and
+`--max-budget-usd` unless the owner sets `curate.budget_usd` to null for no cap
+(`curate.max_turns`, `curate.budget_usd`) (Phase 2; null since Phase 5a); for meeting
+notes, the source's prompt block, which checks an attached document's metadata first and
+never opens a recording or a full transcription
+(`src/sources/meeting-notes-google-drive.mjs`) (Phase 3).
 
 ### Undated: a colleague's medical appointment was in the calendar window
 **What happened.** While calibrating the prompt against real calendar data, a

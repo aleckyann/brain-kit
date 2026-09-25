@@ -8,9 +8,10 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { constants as osConstants } from 'node:os';
-import { runCurate } from '../src/commands/curate.mjs';
+import { roundBudget, runCurate } from '../src/commands/curate.mjs';
 import { acquireLock } from '../src/guards/lock.mjs';
-import { createTranslator } from '../src/lang.mjs';
+import { createTranslator, SUPPORTED_LANGS } from '../src/lang.mjs';
+import { KIT_ROOT } from '../src/version.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
 import { git } from './helpers/git-repo.mjs';
 import {
@@ -628,6 +629,90 @@ test('the model runs in the vault with the round token, path_extra first on PATH
   assert.deepEqual(argv.slice(argv.indexOf('--max-budget-usd'), argv.indexOf('--max-budget-usd') + 2), ['--max-budget-usd', '1.5']);
   assert.deepEqual(argv.slice(argv.indexOf('--model'), argv.indexOf('--model') + 2), ['--model', 'claude-opus-5-5']);
   assert.equal(argv.at(-1), '--');
+});
+
+// Phase 5a: curate.budget_usd null is the owner asking for no cost cap, and
+// the round then passes no --max-budget-usd at all; a key left out keeps the
+// default cap; a number is passed as it is. The round, --check and --dry say
+// which in the vault's language, and last-run.json records the cap the model
+// ran under.
+const BUDGET_CASES = Object.freeze([
+  { name: 'null', edit: (c) => { c.curate.budget_usd = null; }, flag: null, recorded: null },
+  { name: 'absent', edit: (c) => { delete c.curate.budget_usd; }, flag: '5', recorded: 5 },
+  { name: 'a number', edit: (c) => { c.curate.budget_usd = 2.5; }, flag: '2.5', recorded: 2.5 },
+]);
+const BUDGET_LINES = Object.freeze({
+  en: {
+    null: 'Cost cap: none, brain-kit.config.json curate.budget_usd is null (no --max-budget-usd)',
+    absent: 'Cost cap: 5 USD per round, the default, since brain-kit.config.json curate.budget_usd is not set (null runs with no cap)',
+    'a number': 'Cost cap: 2.5 USD per round (brain-kit.config.json curate.budget_usd)',
+  },
+  'pt-BR': {
+    null: 'Teto de custo: nenhum, brain-kit.config.json curate.budget_usd é null (sem --max-budget-usd)',
+    absent: 'Teto de custo: 5 USD por rodada, o padrão, porque brain-kit.config.json curate.budget_usd não está definido (null roda sem teto)',
+    'a number': 'Teto de custo: 2.5 USD por rodada (brain-kit.config.json curate.budget_usd)',
+  },
+});
+
+// Every value that follows --max-budget-usd in an argument vector.
+function budgetFlags(argv) {
+  return argv.flatMap((arg, i) => (arg === '--max-budget-usd' ? [argv[i + 1]] : []));
+}
+
+test('roundBudget: the configured number, null when it is null, and the default cap of both language packs when the key is left out', () => {
+  assert.equal(roundBudget({ curate: { budget_usd: 2.5 } }), 2.5);
+  assert.equal(roundBudget({ curate: { budget_usd: null } }), null);
+  for (const lang of SUPPORTED_LANGS) {
+    const pack = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', lang, 'config.defaults.json'), 'utf8'));
+    assert.equal(typeof pack.curate.budget_usd, 'number', lang);
+    assert.equal(roundBudget({ curate: {} }), pack.curate.budget_usd, `${lang}: a key left out gets the pack's own default`);
+  }
+  assert.equal(roundBudget({}), roundBudget({ curate: {} }));
+});
+
+test('curate.budget_usd: null runs the model with no --max-budget-usd, a key left out passes the default 5, a number passes itself; the round says which and last-run records it', () => {
+  for (const { name, edit, flag, recorded } of BUDGET_CASES) {
+    const w = makeCurateWorld({ config: edit });
+    const r = w.curate();
+    assert.equal(r.status, EXIT.OK, `${name}: ${r.stderr}`);
+    const argv = JSON.parse(readFileSync(w.files.argvFile, 'utf8'));
+    assert.deepEqual(budgetFlags(argv), flag === null ? [] : [flag], name);
+    // The turn limit is the configuration's whatever the cost cap.
+    assert.equal(argv[argv.indexOf('--max-turns') + 1], '100', name);
+    assert.ok(r.stdout.split('\n').includes(BUDGET_LINES.en[name]), `${name}: ${r.stdout}`);
+    const last = w.lastRun();
+    assert.ok(Object.hasOwn(last, 'budgetUsd'), name);
+    assert.equal(last.budgetUsd, recorded, name);
+  }
+});
+
+test('--check and --dry say the cost cap in the vault\'s language, and their command line carries --max-budget-usd only when there is a cap', () => {
+  for (const lang of ['en', 'pt-BR']) {
+    for (const { name, edit, flag } of BUDGET_CASES) {
+      const w = makeCurateWorld({ config: (c) => { c.lang = lang; edit(c); } });
+      for (const mode of ['--dry', '--check']) {
+        const r = w.curate([mode]);
+        const label = `${lang}, ${name}, ${mode}`;
+        assert.equal(r.status, EXIT.OK, `${label}: ${r.stderr}`);
+        const lines = r.stdout.split('\n');
+        assert.ok(lines.includes(BUDGET_LINES[lang][name]), `${label}: ${r.stdout}`);
+        const command = lines.find((line) => line.startsWith(lang === 'en' ? 'Command: ' : 'Comando: '));
+        assert.ok(command, `${label}: ${r.stdout}`);
+        assert.deepEqual(budgetFlags(JSON.parse(command.slice(command.indexOf('["')))), flag === null ? [] : [flag], label);
+      }
+      assert.equal(w.lastRun(), null, 'neither --dry nor --check writes last-run.json');
+    }
+  }
+});
+
+test('a round that ends before the model records no cost cap in last-run.json', () => {
+  const w = makeCurateWorld({ config: (c) => { c.curate.budget_usd = null; } });
+  writeFileSync(join(w.state, 'watermark.json'), JSON.stringify({ sources: { transcripts: utcDay(-1) } }));
+  const r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  const last = w.lastRun();
+  assert.equal(last.reasonCode, 'up_to_date');
+  assert.equal(Object.hasOwn(last, 'budgetUsd'), false);
 });
 
 // Phase 3, task 1: every round runs with the exact built-in tools, no
