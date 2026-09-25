@@ -282,6 +282,7 @@
         "meeting_notes": {
           "type": "object", "additionalProperties": false, "required": ["provider", "server_display_name", "tool_prefix", "tool_suffixes", "search_title_contains"],
           "properties": {
+            "enabled": { "type": "boolean" },
             "provider": { "type": "string" }, "server_display_name": { "type": "string" }, "tool_prefix": { "type": "string" },
             "tool_suffixes": { "type": "array", "items": { "type": "string" } },
             "search_title_contains": { "type": "string" }, "attached_title_prefix": { "type": "string" },

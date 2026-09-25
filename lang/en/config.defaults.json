@@ -340,15 +340,17 @@
       "focus_blocks_as_ruler": true
     },
     "meeting_notes": {
+      "enabled": false,
       "provider": "claude-connector-google-drive",
       "server_display_name": "claude.ai Google Drive",
       "tool_prefix": "mcp__claude_ai_Google_Drive__",
       "tool_suffixes": [
         "search_files",
-        "read_file_content"
+        "read_file_content",
+        "get_file_metadata"
       ],
-      "search_title_contains": "Meeting notes",
-      "attached_title_prefix": "Notes - ",
+      "search_title_contains": "Notes by Gemini",
+      "attached_title_prefix": "",
       "window_hours_before_day": 12,
       "dedup_by": "literal-title-in-log",
       "never_download": [

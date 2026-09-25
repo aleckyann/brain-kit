@@ -196,6 +196,7 @@ function allSites() {
     ...extractTranslatorCallSites(readSrc('src/commands/schedule.mjs'), 'src/commands/schedule.mjs'),
     ...extractTranslatorCallSites(readSrc('src/commands/curate.mjs'), 'src/commands/curate.mjs'),
     ...extractTranslatorCallSites(readSrc('src/init/skeleton.mjs'), 'src/init/skeleton.mjs'),
+    ...extractTranslatorCallSites(readSrc('src/sources/meeting-notes-google-drive.mjs'), 'src/sources/meeting-notes-google-drive.mjs'),
     ...extractTranslatorCallSites(readSrc('src/sources/transcripts-claude-code.mjs'), 'src/sources/transcripts-claude-code.mjs'),
     ...extractTranslatorCallSites(readSrc('src/commands/prompt.mjs'), 'src/commands/prompt.mjs'),
     ...extractTranslatorCallSites(readSrc('src/sources/calendar-google.mjs'), 'src/sources/calendar-google.mjs'),
