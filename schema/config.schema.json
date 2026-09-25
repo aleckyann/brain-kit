@@ -190,6 +190,8 @@
         "confidential_field": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$" },
         "require_private_repo": { "type": "boolean" },
         "secret_patterns": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "third_party_keywords": { "type": "array", "items": { "type": "string", "pattern": "^\\S(.*\\S)?$" } },
+        "keyword_exempt_paths": { "type": "array", "items": { "type": "string", "minLength": 1 } },
         "third_party_data_acknowledged": { "type": "boolean" },
         "retention_note": { "type": "string" },
         "audiences": { "type": "object" }

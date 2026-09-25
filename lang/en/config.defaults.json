@@ -225,6 +225,17 @@
       "AKIA[0-9A-Z]{16}",
       "xox[baprs]-[A-Za-z0-9-]{10,}"
     ],
+    "third_party_keywords": [
+      "medical appointment",
+      "doctor's appointment",
+      "sick leave",
+      "teleconsultation",
+      "therapy session",
+      "medical exam",
+      "hospital stay",
+      "pregnancy"
+    ],
+    "keyword_exempt_paths": [],
     "third_party_data_acknowledged": false,
     "retention_note": "people/ holds personal data about third parties; removal on request: see SECURITY.md",
     "audiences": {}

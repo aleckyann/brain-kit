@@ -119,6 +119,7 @@
   "lint.secrets.pattern_is_a_credential": "uma entrada de privacy.secret_patterns tem ela mesma o formato de uma credencial real; essa lista é para padrões de DETECÇÃO, nunca para o segredo que você quer detectar, então revogue essa credencial agora, remova ela da configuração e siga o SECURITY.md",
   "lint.privacy.linked_into_confidential": "este arquivo está fora de todo diretório confidencial, mas linka para um (\"{target}\"), expondo uma nota confidencial a partir de um lugar pensado para ser compartilhado mais amplamente",
   "lint.privacy.confidential_outside": "esta nota carrega {field}: true, mas fica fora de todo diretório que a configuração marca como confidencial",
+  "lint.privacy.third_party_keyword": "esta linha contém \"{keyword}\", um termo listado em privacy.third_party_keywords: a saúde ou a vida privada de outra pessoa nunca é conteúdo; reescreva a linha sem ele ou, se esta nota deve mesmo guardá-lo, liste o caminho dela em privacy.keyword_exempt_paths",
   "lint.attribution.missing_source_id": "sources[{index}] não tem id, então nenhuma nota de rodapé pode ancorar uma afirmação a ela",
   "lint.attribution.unknown_footnote": "esta chave de nota de rodapé (\"{key}\") não corresponde a nenhum id declarado em sources; uma nota de rodapé serve para ancorar uma afirmação a um dos ids listados ali",
   "lint.attribution.source_not_anchored": "sources declara o id \"{id}\", mas nenhuma nota de rodapé no corpo cita esse id; quando uma nota usa mais de uma fonte, esta checagem espera que cada uma seja ancorada em algum ponto do corpo",

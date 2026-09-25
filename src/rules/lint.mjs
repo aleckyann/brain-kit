@@ -21,10 +21,12 @@
 // The three rules in this task judge the VAULT AS A WHOLE, not a
 // change: every one of them reads the full `files` argument and ignores
 // the `scope` argument entirely. TWO rules read it instead: tables and
-// style. That count has been wrong twice in this file's own life. It
-// said two when three rules read the scope, was corrected to three, and
-// is now two again because fix round 3 took the scope away from
-// `secrets` on purpose (that rule's own header says why). Both times
+// style, plus ONE CLAUSE of a third, privacy's third-party keywords
+// (phase 3; its other two clauses still judge the whole vault, see
+// "--- privacy"). That count has been wrong twice in this file's own
+// life. It said two when three rules read the scope, was corrected to
+// three, and went back to two because fix round 3 took the scope away
+// from `secrets` on purpose (that rule's own header says why). Both times
 // the count was wrong it was wrong in the direction that matters: a
 // reader who believes secrets sweeps the whole vault does not expect a
 // committed secret to print as no findings under a narrowed scope. It
@@ -262,7 +264,9 @@
 // notes (see its own header for how that set is drawn), and defaults to
 // 'error' where every other rule defaults to 'warn'. `privacy` reads
 // `privacy.confidential_dirs` and judges the whole vault, like
-// index-completeness, orphans and columns. `attribution` is the only
+// index-completeness, orphans and columns, except for its third clause
+// (phase 3), which judges only the lines a change added, like style.
+// `attribution` is the only
 // rule in this file that cites the Open Knowledge Format directly
 // (section 5.1), and also judges the whole vault.
 import { posix } from 'node:path';
@@ -272,6 +276,7 @@ import { stripCode } from '../markdown.mjs';
 import { CONFIG_FILENAME } from '../config.mjs';
 import { classifyTargetPath, isUnderPath } from '../vault.mjs';
 import { OVERALL_SCAN_TIMEOUT_MS, PERSONAL_PATTERN_LABEL, SCAN_TIMEOUT, loadPatterns, scanText } from '../leak.mjs';
+import { firstKeyword, isKeywordExempt, keywordExemptPaths, keywordMatchers } from './privacy-keywords.mjs';
 
 const RESERVED_FILENAMES = Object.freeze(['index.md', 'log.md']);
 
@@ -678,8 +683,9 @@ const columns = {
 // (this slice's own plan, "the awk check for a split table"), which read
 // a whole tracked file every run with no notion of which line was old
 // and which was new. This is one of three rules in LINT_RULES that
-// reads `scope` at all (style and secrets, below, are the other two),
-// for the identical reason style needs it: a vault that adopts this kit
+// reads `scope` at all (style and privacy's keyword clause, below, are the
+// other two; secrets read it once and no longer does), for the identical
+// reason style needs it: a vault that adopts this kit
 // arrives with
 // tables written under no such rule, and a table check that reports
 // every old table on its first run is exactly the linter someone
@@ -1673,7 +1679,9 @@ const secrets = {
 // careful.
 //
 // Both clauses read the FULL vault, like index-completeness, orphans
-// and columns (this file's own header): "is this note's own directory,
+// and columns (this file's own header); clause 3, the third-party
+// keywords (see thirdPartyKeywordFindings below), is the one that reads
+// the scope, and says why. "is this note's own directory,
 // or the directory of whatever it links to, inside the boundary" is a
 // question about the vault's whole shape, not about what one change
 // happened to touch, and scoping either clause to added lines would let
@@ -1806,6 +1814,57 @@ function isConfidentialContent(path, confidentialDirs) {
   });
 }
 
+// Clause 3 (phase 3, task 6): no line a change ADDS holds a word
+// `privacy.third_party_keywords` lists (src/rules/privacy-keywords.mjs says
+// how a word matches). Unlike clauses 1 and 2, this one reads the scope,
+// and reads it exactly as the style rule above does: `scope.addedLines`
+// per file, `null` meaning every line of the file (the `all` base, or a
+// file git has never seen), a set meaning only those lines. A keyword is a
+// word in prose, not a structural leak like a link or a marking, and a
+// vault that adopts this kit arrives with years of prose written under no
+// such rule; the reasoning that scopes style leaves that prose alone here
+// too. Under `--base all` every line is "added", so a run over the whole
+// vault (the vault's own pre-push hook runs one) judges every line, as
+// style does.
+//
+// A note inside a confidential directory is judged like any other: the
+// boundary decides where a note may be linked from, not what may be
+// written in it, so this clause runs before, and whatever, clauses 1 and 2
+// decide about the boundary, including when none is declared. Only
+// `privacy.keyword_exempt_paths` exempts a note, a key a pull request shows.
+// Frontmatter and code are lines like any other here, unlike in style: a
+// keyword inside a code span is still on the page.
+//
+// One finding per line, naming the keyword firstKeyword returns. With no
+// keyword configured the scope is never asked at all, so a caller that has
+// no scope to hand (src/init/adopt.mjs asks this rule about its boundary
+// with a configuration that lists no keyword) is never refused for it.
+function thirdPartyKeywordFindings(files, context, scope) {
+  const matchers = keywordMatchers(context.config);
+  if (matchers.length === 0) return [];
+  const exemptPaths = keywordExemptPaths(context.config);
+  const findings = [];
+  for (const file of files) {
+    if (isKeywordExempt(file, exemptPaths)) continue;
+    const added = scope.addedLines(file);
+    const lines = context.readFile(file).split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const lineNumber = i + 1;
+      if (added !== null && !added.has(lineNumber)) continue;
+      const keyword = firstKeyword(lines[i], matchers);
+      if (keyword === null) continue;
+      findings.push({
+        file,
+        line: lineNumber,
+        check: 'third-party-keyword',
+        messageKey: 'lint.privacy.third_party_keyword',
+        params: { keyword },
+      });
+    }
+  }
+  return findings;
+}
+
 function reportLinkIntoConfidential(findings, file, target, line) {
   findings.push({
     file,
@@ -1863,8 +1922,8 @@ function confidentialFields(config) {
 const privacy = {
   id: 'privacy',
   settingKey: 'privacy',
-  check(files, context) {
-    const findings = [];
+  check(files, context, scope) {
+    const findings = thirdPartyKeywordFindings(files, context, scope);
     const configuredDirs = context.config?.privacy?.confidential_dirs;
     // Fix round 2 (CRITICAL, restoring a guard a previous round removed
     // as provably dead, and it was not dead). That round's argument was
@@ -1898,7 +1957,7 @@ const privacy = {
     // (templates_dir); that is a larger, riskier change than this task
     // owns, so it is disclosed here rather than attempted.
     const confidentialDirs = Array.isArray(configuredDirs) ? configuredDirs.filter((d) => typeof d === 'string' && d.length > 0) : [];
-    if (confidentialDirs.length === 0) return findings; // nothing declared confidential: nothing for either clause to check against
+    if (confidentialDirs.length === 0) return findings; // nothing declared confidential: nothing for clause 1 or 2 to check against (clause 3's findings stand)
     const fields = confidentialFields(context.config);
 
     for (const file of files) {
@@ -2184,8 +2243,8 @@ export function severityFor(rule, config) {
 // `scope` is accepted and handed to every rule uniformly, exactly as
 // HOUSE_RULES and SPEC_RULES hand every rule the same `context`: the
 // three rules from task 3 never read it (see this file's own header),
-// while tables and style (above) do, and the runner does not need to
-// know which is which for either to work.
+// while tables, style and privacy's keyword clause (above) do, and the
+// runner does not need to know which is which for either to work.
 //
 // A finding may carry its OWN `severity`, read in preference to the one
 // rule-level severity this function otherwise stamps on everything a

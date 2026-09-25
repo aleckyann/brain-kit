@@ -292,6 +292,49 @@ test('a lint failure: exit 1 with its report, nothing pushed', async () => {
   assert.deepEqual(world.ghCalls(), []);
 });
 
+// Phase 3, task 6: privacy.third_party_keywords, as the English pack ships
+// it, published on the remote so the tree the gate judges carries it (the
+// example configuration lists no keyword of its own).
+function publishPackKeywords(world) {
+  const file = join(world.vault, 'brain-kit.config.json');
+  const config = JSON.parse(readFileSync(file, 'utf8'));
+  const { privacy } = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', 'en', 'config.defaults.json'), 'utf8'));
+  config.privacy.third_party_keywords = privacy.third_party_keywords;
+  config.privacy.keyword_exempt_paths = privacy.keyword_exempt_paths;
+  writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
+  git(world.vault, ['commit', '-q', '-am', 'keywords']);
+  git(world.vault, ['push', '-q', 'origin', 'main']);
+}
+
+test('a note whose added line holds a privacy keyword is refused at the gate: exit 1 naming the file, the line and the keyword, nothing published, nothing local moves', async () => {
+  const world = makeProposeWorld();
+  publishPackKeywords(world);
+  world.write('notes/week.md', `${note('Week')}\nBruno is on sick leave until Friday.\n`);
+  const refs = world.remoteRefs();
+  const before = fingerprint(world.vault);
+  const run = await propose(world, ['Week', '--only', 'notes/week.md']);
+  assert.equal(run.code, EXIT.FAILURE, run.stderr);
+  assert.ok(run.stderr.includes(`notes/week.md:12  privacy  ${t('lint.privacy.third_party_keyword', { keyword: 'sick leave' })}\n`), run.stderr);
+  assert.ok(run.stderr.endsWith(line('propose.lint_failed', { code: EXIT.FAILURE })), run.stderr);
+  assert.equal(world.remoteRefs(), refs);
+  assert.deepEqual(world.ghCalls(), []);
+  assert.deepEqual(fingerprint(world.vault), before);
+});
+
+test('a keyword already on the default branch never blocks a proposal that adds none: only a line the proposal adds is judged', async () => {
+  const world = makeProposeWorld();
+  publishPackKeywords(world);
+  world.write('notes/week.md', `${note('Week')}\nBruno is on sick leave until Friday.\n`);
+  git(world.vault, ['add', 'notes/week.md']);
+  git(world.vault, ['commit', '-q', '-m', 'an older note, written before the rule']);
+  git(world.vault, ['push', '-q', 'origin', 'main']);
+  world.write('notes/week.md', `${note('Week')}\nBruno is on sick leave until Friday.\nTuesday: review with Ana.\n`);
+  const run = await propose(world, ['Week', '--only', 'notes/week.md']);
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  const commit = world.remoteSha(`refs/heads/${BRANCH}`);
+  assert.deepEqual(world.changedIn(commit), ['M\tnotes/week.md']);
+});
+
 test('a push the remote refuses: exit 1, nothing published, and nothing local moves', async () => {
   const world = makeProposeWorld();
   writeFileSync(join(world.remote, 'hooks', 'pre-receive'), '#!/bin/sh\necho refused by the remote >&2\nexit 1\n', { mode: 0o755 });

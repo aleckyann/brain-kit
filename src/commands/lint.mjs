@@ -29,9 +29,10 @@
 // And a change's SCOPE - which lines count as "added" - comes from
 // src/git.mjs and a requested `--base`, printed as one line up front,
 // because a person who does not know what was in scope cannot read a
-// report that only judges added lines for two of its eight rules (tables
-// and style; see src/rules/lint.mjs's own header for why the other six
-// judge the whole vault regardless of scope).
+// report that only judges added lines for two of its eight rules and one
+// clause of a third (tables, style, and privacy's third-party keywords;
+// see src/rules/lint.mjs's own header for why everything else judges the
+// whole vault regardless of scope).
 //
 // `--rule` restricts which rule ids this run considers. The restriction is
 // applied by forcing every EXCLUDED rule's own `lint.<rule>` setting to
@@ -738,12 +739,21 @@ export async function runLint(argv, io, t, walkVault) {
   // src/git.mjs's OWN exported `addedLines(root, base, relPath)` does NOT
   // return that shape: it returns `Array<{ line, text }> | null` (every
   // added line's text alongside its number, for a caller that needs the
-  // text too), never a bare Set<number>. tables and style (src/rules/
-  // lint.mjs) both call `.has(lineNumber)` and read `.size` on whatever
-  // this function returns, so handing the raw array straight through
-  // would fail the very first scoped file a real run touches; the map to
-  // line numbers, wrapped in a Set, is what actually builds the contract
-  // runLintRules was promised, not merely something shaped similarly to it.
+  // text too), never a bare Set<number>. tables, style and privacy's
+  // keyword clause (src/rules/lint.mjs) call `.has(lineNumber)` and read
+  // `.size` on whatever this function returns, so handing the raw array
+  // straight through would fail the very first scoped file a real run
+  // touches; the map to line numbers, wrapped in a Set, is what actually
+  // builds the contract runLintRules was promised, not merely something
+  // shaped similarly to it.
+  //
+  // Asked once per file and kept (phase 3, task 6): three readers now ask
+  // about the same file, and each answer costs git processes. Keeping the
+  // first answer also means every reader judges the very same set of
+  // lines. Removing the cache changes no finding, only the number of git
+  // processes a run spawns, so no test can see it go; this sentence is the
+  // disclosure.
+  const addedByFile = new Map();
   const scope = {
     // Fix round 3 (finding H): `changedPaths` now returns VAULT-relative
     // paths (src/git.mjs, `--relative`), so `scope.files` finally speaks
@@ -754,8 +764,11 @@ export async function runLint(argv, io, t, walkVault) {
     // inherited the mismatch in silence, since no rule reads it today.
     files: changedPaths(root, base),
     addedLines: (relPath) => {
-      const raw = addedLines(root, base, relPath);
-      return raw === null ? null : new Set(raw.map((entry) => entry.line));
+      if (!addedByFile.has(relPath)) {
+        const raw = addedLines(root, base, relPath);
+        addedByFile.set(relPath, raw === null ? null : new Set(raw.map((entry) => entry.line)));
+      }
+      return addedByFile.get(relPath);
     },
   };
 

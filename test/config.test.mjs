@@ -240,6 +240,26 @@ test('lint.secrets.exclude_paths is accepted as a list of paths and refuses an e
   assert.ok(validateConfig(config).some((e) => e.startsWith('$.lint.secrets.exclude_paths')));
 });
 
+// Phase 3, task 6: the privacy rule's keywords and the paths exempt from
+// them. A blank keyword would match almost every line once bounded on both
+// sides, and a keyword with a space at either end would silently miss a
+// word at the start or the end of a line, so the schema refuses both.
+test('privacy.third_party_keywords and privacy.keyword_exempt_paths are accepted as lists; a blank or space-padded keyword and an empty path are refused', () => {
+  const config = fixture('config/valid.json');
+  config.privacy.third_party_keywords = ['sick leave', 'x', 'consulta médica'];
+  config.privacy.keyword_exempt_paths = ['journal/', 'notes/health.md'];
+  assert.deepEqual(validateConfig(config), []);
+  for (const bad of ['', '   ', ' sick leave', 'sick leave ', 'sick\nleave']) {
+    config.privacy.third_party_keywords = ['pregnancy', bad];
+    assert.ok(validateConfig(config).some((e) => e.startsWith('$.privacy.third_party_keywords[1]')), JSON.stringify(bad));
+  }
+  config.privacy.third_party_keywords = 'sick leave';
+  assert.ok(validateConfig(config).some((e) => e.startsWith('$.privacy.third_party_keywords')));
+  config.privacy.third_party_keywords = [];
+  config.privacy.keyword_exempt_paths = [''];
+  assert.ok(validateConfig(config).some((e) => e.startsWith('$.privacy.keyword_exempt_paths[0]')));
+});
+
 test('machine.json names no lock and no snapshot: a new file without them is valid, and paths still requires the state files', () => {
   const machine = fixture('machine/valid.json');
   assert.equal('lock' in machine.paths, false);
