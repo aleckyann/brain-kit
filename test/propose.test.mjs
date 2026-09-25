@@ -1675,3 +1675,17 @@ test('inside a round: propose writes no ledger (the round record is its record) 
     round.release();
   }
 });
+
+test('not joined: a partial publish records the commit one url holds in the ledger, with opened false', async () => {
+  const world = makeProposeWorld();
+  const first = bareCloneOf(world, 'first.git');
+  const second = bareCloneOf(world, 'second.git');
+  git(world.vault, ['config', '--add', 'remote.origin.pushurl', first]);
+  git(world.vault, ['config', '--add', 'remote.origin.pushurl', second]);
+  writeFileSync(join(second, 'hooks', 'pre-receive'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  world.write('notes/a.md', note('A'));
+  const run = await propose(world, ['A', '--only', 'notes/a.md']);
+  assert.equal(run.code, EXIT.DEGRADED, run.stderr);
+  const commit = git(first, ['rev-parse', `refs/heads/${BRANCH}`]).trim();
+  assert.deepEqual(readLedgerOf(world).proposals, [{ opened: false, remote: 'origin', branch: BRANCH, commit, paths: ['notes/a.md'] }]);
+});

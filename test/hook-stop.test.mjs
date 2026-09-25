@@ -502,3 +502,13 @@ test('a proposed deletion counts too: a path absent from both the proposal and t
   writeLedger(fx, [proposalOf(fx, ['gone.md'])]);
   assertReleased(stop(fx), /already proposed \(1 path\(s\)/);
 });
+
+test('an entry whose path is clean (its proposal merged and pulled) is not counted: only the session\'s dirty proposed paths are', () => {
+  const fx = sessionWithWork();
+  writeFileSync(join(fx.root, 'merged.md'), 'merged\n');
+  const merged = proposalOf(fx, ['merged.md'], 'bot/merged');
+  git(fx.root, ['add', 'merged.md']);
+  git(fx.root, ['commit', '-q', '-m', 'merged and pulled']);
+  writeLedger(fx, [merged, proposalOf(fx, ['mine.md'])]);
+  assertReleased(stop(fx), /already proposed \(1 path\(s\) whose content is exactly what was pushed to bot\/2026-09-25-09-00-00;/);
+});
