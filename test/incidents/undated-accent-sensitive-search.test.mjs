@@ -71,4 +71,7 @@ test('pt-BR: the prompt block hands the model the accented query whole, and says
   const t = createTranslator('pt-BR');
   assert.ok(plan.promptBlock.split('\n').includes(t('sources.meeting_notes.search', { tool: SEARCH, query: plan.query })));
   assert.ok(plan.promptBlock.includes(`\`${plan.query}\``));
+  for (const why of ['incluindo aspas e acentos', 'Nunca encurte, traduza, corrija nem reescreva a query', 'a busca diferencia acentos', 'uma letra trocada não devolve nenhum documento nem erro']) {
+    assert.ok(plan.promptBlock.includes(why), why);
+  }
 });

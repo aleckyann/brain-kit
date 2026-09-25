@@ -10,10 +10,14 @@
 // Where it lives: the meeting-notes source. Its prompt block names both
 // doors in the vault's language, and both packs default to any attached
 // document (attached_title_prefix ""), so a free-form title is never the
-// reason a minute is missed. The kit's evidence stays the title search
-// alone (decision D7): it cannot know how many documents hang on the
-// window's events, so it counts the documents opened and asks nothing of
-// them. Example data only.
+// reason a minute is missed. The one exception (fix round 1 of task 4,
+// ruling I1): an event can also carry the meeting's recording and its full
+// transcription, so every attachment is checked with get_file_metadata
+// first, and an audio or video file, or a document marked as a recording or
+// a transcription, is never opened, only listed by title as not read. The
+// kit's evidence stays the title search alone (decision D7): it cannot know
+// how many documents hang on the window's events, so it counts the
+// documents opened and asks nothing of them. Example data only.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -23,7 +27,15 @@ import { createTranslator } from '../../src/lang.mjs';
 import { meetingNotesSource } from '../../src/sources/meeting-notes-google-drive.mjs';
 
 const PREFIX = 'mcp__claude_ai_Google_Drive__';
+const METADATA = `${PREFIX}get_file_metadata`;
 const WINDOW = Object.freeze({ from: new Date('2026-08-10T03:00:00Z'), to: new Date('2026-08-11T03:00:00Z') });
+
+// The exception of the second door, in each language's own words: the
+// metadata check, what is never opened, and what is written instead.
+const EXCEPTION = {
+  en: [`check it with ${METADATA}:`, 'never open an audio or video file', 'a recording or a full transcription', '"Transcript"', 'in the log by title as not read'],
+  'pt-BR': [`confira-o com ${METADATA}:`, 'nunca abra um arquivo de áudio ou vídeo', 'gravação ou transcrição completa', '"Transcrição"', 'no log pelo título, como não lidos'],
+};
 
 function turnedOn(lang, overrides = {}) {
   const defaults = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', lang, 'config.defaults.json'), 'utf8'));
@@ -32,24 +44,28 @@ function turnedOn(lang, overrides = {}) {
 }
 
 for (const lang of ['en', 'pt-BR']) {
-  test(`${lang}: the prompt block names both doors, and the pack takes every attached document, whatever its title`, () => {
+  test(`${lang}: the prompt block names both doors, and the pack takes every attached document, whatever its title, recordings and transcriptions excepted`, () => {
     const { defaults, plan } = turnedOn(lang);
     assert.equal(defaults.sources.meeting_notes.attached_title_prefix, '', 'no title prefix: a hand-written minute is found through its attachment alone');
+    assert.ok(defaults.sources.meeting_notes.tool_suffixes.includes('get_file_metadata'), 'the pack allows the metadata check the second door asks for');
     const t = createTranslator(lang);
     const lines = plan.promptBlock.split('\n');
     assert.ok(lines.includes(t('sources.meeting_notes.search', { tool: `${PREFIX}search_files`, query: plan.query })), 'first door: the title search, with its exact query');
-    const second = t('sources.meeting_notes.attachments_any');
+    const second = t('sources.meeting_notes.attachments_any', { metadata: METADATA });
     assert.ok(lines.includes(second), 'second door: every document attached to an event of the window');
     assert.ok(second.includes('/d/'), 'an attachment gives a file URL and a title only, and the second door says where the document id is');
+    for (const token of EXCEPTION[lang]) assert.ok(second.includes(token), `the exception: ${token}`);
     assert.ok(lines.includes(t('sources.meeting_notes.distill')), 'one distillation per literal title, whichever door it came through');
   });
 
-  test(`${lang}: a title prefix narrows the second door and never closes it, and the first door stays`, () => {
+  test(`${lang}: a title prefix narrows the second door and never closes it, keeps its exception, and the first door stays`, () => {
     const { plan } = turnedOn(lang, { attached_title_prefix: 'Minutes - ' });
     const t = createTranslator(lang);
     const lines = plan.promptBlock.split('\n');
     assert.ok(lines.includes(t('sources.meeting_notes.search', { tool: `${PREFIX}search_files`, query: plan.query })));
-    assert.ok(lines.includes(t('sources.meeting_notes.attachments_prefix', { prefix: 'Minutes - ' })));
+    const second = t('sources.meeting_notes.attachments_prefix', { prefix: 'Minutes - ', metadata: METADATA });
+    assert.ok(lines.includes(second));
+    for (const token of EXCEPTION[lang]) assert.ok(second.includes(token), `the exception: ${token}`);
   });
 }
 
