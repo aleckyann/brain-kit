@@ -20,6 +20,16 @@
 // line that is not a JSON object is counted in `invalidLines`. Deciding
 // whether an unknown shape matters is the caller's job; this reader only
 // refuses to hide it.
+//
+// A claude.ai connector's tool result (the controller's capture of
+// 24/09/2026, test/fixtures/stream/connectors-connected.jsonl) carries its
+// answer as a string of compact JSON in `content`, with the same text in a
+// top-level `tool_use_result`; a list or a search that has more pages holds
+// `"nextPageToken":"<token>"` in that text, and its last page has no such
+// key. Every entry of `toolResults` says whether its text holds a
+// non-empty token (`hasNextPage`, ruling R-B3; a content given as blocks is
+// read from its text blocks, joined), so a source can tell a first page
+// from every page. The text itself is never kept in the record.
 
 const KNOWN_SYSTEM_SUBTYPES = new Set([
   'init',
@@ -45,6 +55,19 @@ function isObject(value) {
 function contentBlocks(event) {
   const content = isObject(event.message) ? event.message.content : undefined;
   return Array.isArray(content) ? content.filter(isObject) : [];
+}
+
+// A next-page token in the form the capture showed. Inside the JSON text a
+// quote that belongs to a string value is escaped, so a description that
+// merely mentions a token does not match.
+const NEXT_PAGE_TOKEN = /"nextPageToken"\s*:\s*"[^"]+"/;
+
+// The text of a tool result: its content when that is a string, the text
+// of its text blocks when it is a list, nothing otherwise.
+function resultText(content) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content.filter((block) => isObject(block) && block.type === 'text' && typeof block.text === 'string').map((block) => block.text).join('');
 }
 
 // An incremental reader: `push` one line at a time (runModel feeds it as the
@@ -123,7 +146,9 @@ export function createStreamParser() {
       }
     } else if (type === 'user') {
       for (const block of contentBlocks(event)) {
-        if (block.type === 'tool_result') toolResults.push({ toolUseId: block.tool_use_id, isError: block.is_error === true });
+        if (block.type === 'tool_result') {
+          toolResults.push({ toolUseId: block.tool_use_id, isError: block.is_error === true, hasNextPage: NEXT_PAGE_TOKEN.test(resultText(block.content)) });
+        }
       }
     }
   }

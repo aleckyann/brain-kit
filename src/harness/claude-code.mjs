@@ -32,6 +32,27 @@
 // capture of 24/09/2026). src/guards/isolation.mjs checks, from the init
 // event, that the built-in tools are exactly ROUND_TOOLS.
 //
+// CONNECTOR MODE (phase 3, decisions D1 and D3 of
+// docs/superpowers/plans/2026-09-24-phase-3-connector-sources.md). Measured
+// on 24/09/2026 with Claude Code 2.1.281: the isolated mode sees no
+// claude.ai connector at all (`--setting-sources ''` gives zero MCP servers,
+// with or without --strict-mcp-config, and no flag or environment variable
+// brings them back), and a claude.ai connector cannot be declared in
+// --mcp-config either. `--setting-sources user` brings them, and with them
+// the person's hooks, plugins, skills, agents, the default built-in tools
+// and every user permission rule. What neutralised that, measured one by
+// one: `--settings '{"disableAllHooks":true}'` gave zero hook events with
+// the connectors still connected; `--disable-slash-commands` and `--tools`
+// as above; the user allow rules stay active, and a rule mirrored into
+// --disallowedTools is denied (a deny wins over an allow).
+// src/curate/user-rules.mjs mirrors every user allow rule that way except
+// the ones that grant nothing beyond the round's own, and the read rules,
+// which it records as widening reads; a rule it cannot mirror refuses this
+// mode. There is no --strict-mcp-config: it would drop the connectors. The
+// person's MCP servers still start; under dontAsk their tools run only
+// where an allow rule the round keeps says so. src/guards/connectors.mjs
+// reads each connector's state from the same init event.
+//
 // `--verbose` is required: `-p --output-format stream-json` without it
 // exits 1 ("When using --print, --output-format=stream-json requires
 // --verbose"). The prompt never goes on the argument vector: `--` closes it
@@ -54,6 +75,23 @@ export const ISOLATION_ARGS = Object.freeze([
   '--tools', ROUND_TOOLS.join(','),
   '--no-session-persistence',
 ]);
+
+export const CONNECTOR_ARGS = Object.freeze([
+  '-p',
+  '--verbose',
+  '--output-format', 'stream-json',
+  '--permission-mode', 'dontAsk',
+  '--permission-prompts', 'none',
+  '--setting-sources', 'user',
+  '--settings', '{"disableAllHooks":true}',
+  '--disable-slash-commands',
+  '--tools', ROUND_TOOLS.join(','),
+  '--no-session-persistence',
+]);
+
+// The flags each launch mode starts with. A mode not listed here is a
+// caller's mistake, never a default.
+const MODE_ARGS = Object.freeze({ isolated: ISOLATION_ARGS, connectors: CONNECTOR_ARGS });
 
 // Built-in tools whose rule takes a scope, a path or a command. Allowed by
 // its bare name, such a tool is granted on every file or every command:
@@ -125,11 +163,15 @@ function checkScoped(allowed) {
   throw new TypeError(`allowed: ${JSON.stringify(rule)} would grant the tool on every file or command; a round allows it only with a scope, such as ${example}`);
 }
 
-export function buildArgv({ model, maxTurns, budgetUsd, allowed = [], disallowed = [] } = {}) {
+// `mode` is 'isolated' (no settings file of any kind, phase 2) or
+// 'connectors' (the user settings, neutralised, for the claude.ai
+// connectors); anything else throws.
+export function buildArgv({ mode = 'isolated', model, maxTurns, budgetUsd, allowed = [], disallowed = [] } = {}) {
+  if (typeof mode !== 'string' || !Object.hasOwn(MODE_ARGS, mode)) throw new TypeError(`not a launch mode: ${JSON.stringify(mode)} (isolated or connectors)`);
   checkRules('allowed', allowed);
   checkRules('disallowed', disallowed);
   checkScoped(allowed);
-  const argv = [...ISOLATION_ARGS];
+  const argv = [...MODE_ARGS[mode]];
   if (model !== undefined && model !== null) {
     if (typeof model !== 'string' || model === '' || model.startsWith('-')) throw new TypeError(`not a model name: ${JSON.stringify(model)}`);
     argv.push('--model', model);

@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildArgv, ISOLATION_ARGS, ROUND_TOOLS, runModel, unscopedRules } from '../src/harness/claude-code.mjs';
+import { buildArgv, CONNECTOR_ARGS, ISOLATION_ARGS, ROUND_TOOLS, runModel, unscopedRules } from '../src/harness/claude-code.mjs';
 import { parseStream } from '../src/harness/stream.mjs';
 import { checkIsolation } from '../src/guards/isolation.mjs';
 import { checkCli } from '../src/guards/cli.mjs';
@@ -79,6 +79,55 @@ test('ROUND_TOOLS is the pinned built-in set, frozen, and --tools carries it onc
   assert.ok(!argv.includes('ToolSearch'));
 });
 
+test('buildArgv in connector mode: the user setting source with every hook off, no --strict-mcp-config, skills off, the pinned tools, then the same tail', () => {
+  const allowed = ['Read(./**)', 'mcp__claude_ai_Google_Calendar__list_events'];
+  const disallowed = ['Bash(curl:*)', 'Bash(rtk curl *)', 'mcp__claude_ai_Google_Calendar__create_event'];
+  const argv = buildArgv({ mode: 'connectors', model: 'claude-opus-5-5', maxTurns: 40, budgetUsd: 1.5, allowed, disallowed });
+  assert.deepEqual(argv, [
+    '-p', '--verbose', '--output-format', 'stream-json', '--permission-mode', 'dontAsk', '--permission-prompts', 'none',
+    '--setting-sources', 'user', '--settings', '{"disableAllHooks":true}', '--disable-slash-commands', '--tools', 'Read,Glob,Grep,Edit,Write,Bash,ToolSearch',
+    '--no-session-persistence',
+    '--model', 'claude-opus-5-5', '--max-turns', '40', '--max-budget-usd', '1.5',
+    '--allowedTools', ...allowed,
+    '--disallowedTools', ...disallowed,
+    '--',
+  ]);
+  assert.deepEqual(buildArgv({ mode: 'connectors' }), [...CONNECTOR_ARGS, '--']);
+});
+
+test('CONNECTOR_ARGS is frozen and differs from ISOLATION_ARGS only where connectors need it: user settings, hooks off, no --strict-mcp-config', () => {
+  assert.ok(Object.isFrozen(CONNECTOR_ARGS));
+  assert.deepEqual([...CONNECTOR_ARGS], [
+    '-p', '--verbose', '--output-format', 'stream-json', '--permission-mode', 'dontAsk', '--permission-prompts', 'none',
+    '--setting-sources', 'user', '--settings', '{"disableAllHooks":true}', '--disable-slash-commands', '--tools', ROUND_TOOLS.join(','),
+    '--no-session-persistence',
+  ]);
+  assert.equal(CONNECTOR_ARGS.includes('--strict-mcp-config'), false);
+  assert.deepEqual(JSON.parse(CONNECTOR_ARGS[CONNECTOR_ARGS.indexOf('--settings') + 1]), { disableAllHooks: true });
+  // Everything else is the isolated mode's, flag for flag and in order.
+  const expected = [];
+  for (let i = 0; i < ISOLATION_ARGS.length; i++) {
+    if (ISOLATION_ARGS[i] === '--strict-mcp-config') continue;
+    if (ISOLATION_ARGS[i] === '--setting-sources') {
+      expected.push('--setting-sources', 'user', '--settings', '{"disableAllHooks":true}');
+      i += 1;
+      continue;
+    }
+    expected.push(ISOLATION_ARGS[i]);
+  }
+  assert.deepEqual([...CONNECTOR_ARGS], expected);
+});
+
+test('buildArgv runs isolated unless asked for connectors, and refuses any other mode', () => {
+  assert.deepEqual(buildArgv({ allowed: ['Read(./**)'] }), buildArgv({ mode: 'isolated', allowed: ['Read(./**)'] }));
+  assert.deepEqual(buildArgv({ mode: undefined }), [...ISOLATION_ARGS, '--']);
+  for (const mode of ['connector', 'Connectors', 'user', '', null, 1, true, {}, 'constructor', '__proto__', 'toString']) {
+    assert.throws(() => buildArgv({ mode }), (error) => error instanceof TypeError && error.message.startsWith('not a launch mode: '), String(mode));
+  }
+  // The scope guard holds in connector mode too.
+  assert.throws(() => buildArgv({ mode: 'connectors', allowed: ['Bash'] }), TypeError);
+});
+
 test('buildArgv leaves out what was not set and refuses a rule that would read as an option', () => {
   assert.deepEqual(buildArgv({}), [...ISOLATION_ARGS, '--']);
   assert.throws(() => buildArgv({ allowed: ['--dangerously-skip-permissions'] }), TypeError);
@@ -147,17 +196,36 @@ test('parseStream reads the isolated run: dontAsk, no hooks, no MCP server, the 
   assert.deepEqual(r.init.mcp_servers, []);
   assert.equal(r.hookEvents, 0);
   assert.deepEqual(r.toolUses.map((u) => [u.name, u.input.command]), [['Bash', '/opt/brain-kit/bin/brain-kit.mjs propose example']]);
-  assert.deepEqual(r.toolResults, [{ toolUseId: r.toolUses[0].id, isError: false }]);
+  assert.deepEqual(r.toolResults, [{ toolUseId: r.toolUses[0].id, isError: false, hasNextPage: false }]);
   assert.equal(r.result.costUsd, 0.041879);
   assert.equal(r.result.numTurns, 2);
   assert.deepEqual(r.denials, []);
+});
+
+test('parseStream reads the connector run: deferred tools loaded first, every call with its input, and which results advertise a next page', () => {
+  const r = parseStream(fixture('connectors-connected'));
+  assert.equal(r.init.permissionMode, 'dontAsk');
+  assert.deepEqual(r.toolUses.map((u) => u.name), [
+    'ToolSearch', 'mcp__claude_ai_Google_Calendar__list_events', 'mcp__claude_ai_Google_Calendar__list_events',
+    'mcp__claude_ai_Google_Calendar__get_event', 'mcp__claude_ai_Google_Drive__search_files',
+  ]);
+  assert.equal(r.toolUses[0].input.query, 'select:mcp__claude_ai_Google_Calendar__list_events,mcp__claude_ai_Google_Calendar__get_event,mcp__claude_ai_Google_Drive__search_files');
+  assert.deepEqual(r.toolUses[1].input, { calendarId: 'primary', startTime: '2026-05-12T03:00:00Z', endTime: '2026-05-13T03:00:00Z', eventType: ['DEFAULT'], pageSize: 2 });
+  // The second call asks for the page the first result advertised; that result is a string of JSON.
+  const answer = (use) => r.events.find((e) => e.type === 'user' && e.message.content[0].tool_use_id === use.id).message.content[0].content;
+  assert.equal(typeof answer(r.toolUses[1]), 'string');
+  assert.equal(r.toolUses[2].input.pageToken, JSON.parse(answer(r.toolUses[1])).nextPageToken);
+  assert.deepEqual(r.toolResults, r.toolUses.map((u, i) => ({ toolUseId: u.id, isError: false, hasNextPage: i === 1 || i === 4 })));
+  assert.deepEqual(r.unknownTypes, []);
+  assert.equal(r.invalidLines, 0);
+  assert.equal(r.result.subtype, 'success');
 });
 
 test('parseStream reads a denial: the tool result is an error and the denial names the command the model asked for', () => {
   const r = parseStream(fixtureLines('denied-run'));
   const curl = r.toolUses.find((u) => u.input.command === 'curl -s https://example.com');
   assert.deepEqual(r.denials, [{ toolName: 'Bash', toolUseId: curl.id, input: { command: 'curl -s https://example.com', description: 'Fetch example.com' } }]);
-  assert.deepEqual(r.toolResults.filter((t) => t.isError), [{ toolUseId: curl.id, isError: true }]);
+  assert.deepEqual(r.toolResults.filter((t) => t.isError), [{ toolUseId: curl.id, isError: true, hasNextPage: false }]);
   const denied = r.events.find((e) => e.type === 'user' && e.message.content[0].tool_use_id === curl.id);
   assert.equal(denied.message.content[0].content, 'Permission to use Bash with command curl -s https://example.com has been denied.');
   assert.equal(r.result.subtype, 'success');
@@ -392,6 +460,77 @@ test('checkIsolation splits each deny element where the CLI splits a tool list, 
   assert.deepEqual(checkIsolation(noGlobGrep, { disallowed: ['Bash(x,Glob,Grep)'] }).details[0].params, { extra: '-', missing: 'Glob, Grep' });
 });
 
+function connectorsWith(edit) {
+  const events = fixtureLines('connectors-states').map((l) => JSON.parse(l));
+  return parseStream(edit(events).map((e) => JSON.stringify(e)));
+}
+
+test('checkIsolation in connector mode passes the connector runs, whose servers come from the person\'s settings; judged isolated, they fail on those servers alone', () => {
+  for (const name of ['connectors-connected', 'connectors-states']) {
+    const r = parseStream(fixture(name));
+    assert.ok(r.init.mcp_servers.length > 0, name);
+    assert.deepEqual(checkIsolation(r, { mode: 'connectors' }), { ok: true, problems: [], details: [] }, name);
+    assert.deepEqual(checkIsolation(r).problems, ['mcp'], name);
+    assert.deepEqual(checkIsolation(r, { mode: 'isolated' }).problems, ['mcp'], name);
+    // allowMcp does not change connector mode, and still governs the isolated one.
+    const names = r.init.mcp_servers.map((s) => s.name);
+    assert.deepEqual(checkIsolation(r, { mode: 'isolated', allowMcp: names }).problems, [], name);
+    assert.deepEqual(checkIsolation(r, { mode: 'connectors', allowMcp: [] }).problems, [], name);
+  }
+});
+
+test('checkIsolation in connector mode still reports the permission mode, hooks, built-in tools and a missing init, each alone', () => {
+  const cases = {
+    permission_mode: (ev) => { initOf(ev).permissionMode = 'auto'; return ev; },
+    hooks: (ev) => [{ type: 'system', subtype: 'hook_started', hook_event: 'SessionStart' }, ...ev],
+    builtin_tools: (ev) => { initOf(ev).tools.push('Skill'); return ev; },
+    no_init: (ev) => ev.filter((e) => e.subtype !== 'init'),
+  };
+  for (const [code, edit] of Object.entries(cases)) {
+    assert.deepEqual(checkIsolation(connectorsWith(edit), { mode: 'connectors' }).problems, [code], code);
+  }
+  // A missing permission mode or tool list still fails closed; the server list is connectorStates' business.
+  assert.deepEqual(checkIsolation(connectorsWith((ev) => { delete initOf(ev).permissionMode; return ev; }), { mode: 'connectors' }).problems, ['permission_mode']);
+  assert.deepEqual(checkIsolation(connectorsWith((ev) => { delete initOf(ev).tools; return ev; }), { mode: 'connectors' }).problems, ['builtin_tools']);
+  assert.deepEqual(checkIsolation(connectorsWith((ev) => { delete initOf(ev).mcp_servers; return ev; }), { mode: 'connectors' }).problems, []);
+  // R-B4 holds in connector mode: a built-in the round denies by bare name is expected absent.
+  const noGlob = connectorsWith((ev) => { initOf(ev).tools = initOf(ev).tools.filter((n) => n !== 'Glob'); return ev; });
+  assert.deepEqual(checkIsolation(noGlob, { mode: 'connectors', disallowed: ['Glob'] }).problems, []);
+  assert.deepEqual(checkIsolation(noGlob, { mode: 'connectors' }).details[0].params, { extra: '-', missing: 'Glob' });
+});
+
+// Some of the built-in tools a connector-mode run listed on 24/09/2026 when
+// it loaded the user settings with no --tools and no --disable-slash-commands
+// (it also ran a user hook before its init event): the MCP resource tools
+// come with the connectors, and Skill with the person's skills.
+const USER_SETTINGS_BUILTINS = [
+  'Task', 'Bash', 'Edit', 'ListMcpResourcesTool', 'NotebookEdit', 'Read', 'ReadMcpResourceTool', 'Skill', 'ToolSearch', 'WebFetch', 'WebSearch', 'Write',
+];
+
+test('checkIsolation in connector mode stops a run that loaded the user settings without neutralising them: the hook and every tool beyond the pinned set', () => {
+  const r = connectorsWith((ev) => {
+    const init = initOf(ev);
+    init.tools = [...USER_SETTINGS_BUILTINS, ...init.tools.filter((n) => n.startsWith('mcp__'))];
+    const hook = { type: 'system', subtype: 'hook_started', hook_id: '00000000-0000-4000-a000-000000000001', hook_name: 'SessionStart:startup', hook_event: 'SessionStart', session_id: init.session_id };
+    return [hook, { ...hook, subtype: 'hook_response', output: '', stdout: '', stderr: '', exit_code: 0, outcome: 'success' }, ...ev];
+  });
+  const out = checkIsolation(r, { mode: 'connectors' });
+  assert.deepEqual(out.problems, ['builtin_tools', 'hooks']);
+  assert.deepEqual(out.details.map((d) => [d.code, d.params]), [
+    ['builtin_tools', { extra: 'Task, ListMcpResourcesTool, NotebookEdit, ReadMcpResourceTool, Skill, WebFetch, WebSearch', missing: 'Glob, Grep' }],
+    ['hooks', { count: 2 }],
+  ]);
+});
+
+test('checkIsolation refuses a mode it does not know, rather than guessing which checks apply', () => {
+  const record = parseStream(fixture('isolated-run'));
+  assert.deepEqual(checkIsolation(record, { mode: 'isolated' }).problems, []);
+  assert.deepEqual(checkIsolation(record, {}).problems, []);
+  for (const mode of ['connector', 'Connectors', '', null, 0, 'constructor', '__proto__']) {
+    assert.throws(() => checkIsolation(record, { mode }), (error) => error instanceof TypeError && error.message.startsWith('checkIsolation: not a launch mode: '), String(mode));
+  }
+});
+
 // --- checkCli ------------------------------------------------------------------
 
 test('checkCli: a missing file, a --version that prints error text or fails, and the good fake', () => {
@@ -457,9 +596,17 @@ test('the pinned fixtures list exactly ROUND_TOOLS as a set, and the default run
   });
 });
 
+// The connector runs list the pinned built-ins in the order Claude Code
+// listed them under --tools (measured on 24/09/2026), then MCP tools only:
+// the two Google connectors' own names, and one neutral server's.
+const CONNECTOR_BUILTINS = ['Bash', 'Edit', 'Glob', 'Grep', 'Read', 'ToolSearch', 'Write'];
+const CONNECTOR_TOOL_PREFIXES = ['mcp__claude_ai_Google_Calendar__', 'mcp__claude_ai_Google_Drive__', 'mcp__plugin_example_', 'mcp__claude_ai_Example_'];
+
 test('the stream fixtures carry no path of a real machine: no /home/ but /home/ana/, no /tmp/claude-, no -home-', () => {
   const files = readdirSync(FIXTURES).filter((f) => f.endsWith('.jsonl'));
-  assert.deepEqual(files.sort(), ['default-run.jsonl', 'denied-run.jsonl', 'isolated-run.jsonl', 'max-turns.jsonl']);
+  assert.deepEqual(files.sort(), [
+    'connectors-connected.jsonl', 'connectors-states.jsonl', 'default-run.jsonl', 'denied-run.jsonl', 'isolated-run.jsonl', 'max-turns.jsonl',
+  ]);
   for (const file of files) {
     const text = readFileSync(join(FIXTURES, file), 'utf8');
     assert.doesNotMatch(text.replaceAll('/home/ana/', ''), /\/home\//, file);
@@ -470,9 +617,16 @@ test('the stream fixtures carry no path of a real machine: no /home/ but /home/a
       if (event.session_id !== undefined) assert.match(event.session_id, /^00000000-0000-4000-8000-00000000000\d$/, file);
       if (event.subtype === 'init') {
         // The default run lists the default built-in set (measured on
-        // 24/09/2026); every other fixture lists the pinned set.
-        const expected = file === 'default-run.jsonl' ? DEFAULT_TOOLS : ['Bash', 'Read', 'Glob', 'Grep', 'Edit', 'Write', 'ToolSearch'];
-        assert.deepEqual(event.tools, expected, file);
+        // 24/09/2026); the connector runs, the pinned set and MCP tools;
+        // every other fixture, the pinned set.
+        if (file.startsWith('connectors-')) {
+          const firstMcp = event.tools.findIndex((name) => name.startsWith('mcp__'));
+          assert.deepEqual(event.tools.slice(0, firstMcp), CONNECTOR_BUILTINS, file);
+          for (const name of event.tools.slice(firstMcp)) assert.ok(CONNECTOR_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix)), `${file}: ${name}`);
+        } else {
+          const expected = file === 'default-run.jsonl' ? DEFAULT_TOOLS : ['Bash', 'Read', 'Glob', 'Grep', 'Edit', 'Write', 'ToolSearch'];
+          assert.deepEqual(event.tools, expected, file);
+        }
         assert.equal(event.cwd, '/home/ana/vault', file);
       }
     }

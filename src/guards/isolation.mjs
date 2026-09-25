@@ -14,12 +14,25 @@
 //                    (`hookEventsAfterInit` > 0 picks the message for one
 //                    that ran after the model started)
 //   mcp              any MCP server in init the round did not ask for
+//                    (isolated mode only, see below)
 //   builtin_tools    the init event's built-in tools (every name in its
 //                    `tools` list that does not start with `mcp__`) are not
 //                    exactly ROUND_TOOLS as a set: one more (the default set
 //                    adds Task, Workflow, CronCreate and more, measured on
 //                    24/09/2026) or one missing, each named in the detail
 //   no_init          no init event at all, so nothing above can be proved
+//
+// Two launch modes (src/harness/claude-code.mjs). In 'isolated' every check
+// above applies. In 'connectors' the round loads the person's user
+// settings on purpose, because that is what brings the claude.ai
+// connectors, so the servers listed are theirs and `mcp` does not apply:
+// each connector's state is read from the same init event by
+// src/guards/connectors.mjs, and the servers' tools are reachable only
+// through the round's own allow rules under dontAsk. The permission mode,
+// the hooks (every one of the person's is switched off in that mode, and
+// one that runs means the switch failed) and the built-in tools are
+// checked in both modes. A mode that is neither throws: guessing which
+// checks apply is how a check goes missing.
 //
 // A built-in tool the round itself denies by its bare name is removed from
 // the session by the CLI (measured on 24/09/2026: a bare "Bash" in
@@ -47,7 +60,10 @@ function builtinToolsDiff(tools, disallowed) {
   };
 }
 
-export function checkIsolation(record, { allowMcp = [], disallowed = [] } = {}) {
+const MODES = Object.freeze(['isolated', 'connectors']);
+
+export function checkIsolation(record, { mode = 'isolated', allowMcp = [], disallowed = [] } = {}) {
+  if (!MODES.includes(mode)) throw new TypeError(`checkIsolation: not a launch mode: ${JSON.stringify(mode)} (isolated or connectors)`);
   const problems = [];
   const details = [];
   const init = record ? record.init : null;
@@ -56,18 +72,20 @@ export function checkIsolation(record, { allowMcp = [], disallowed = [] } = {}) 
     details.push({ code: 'no_init', messageKey: 'harness.isolation.no_init', params: {} });
   } else {
     if (init.permissionMode !== 'dontAsk') {
-      const mode = String(init.permissionMode);
+      const reported = String(init.permissionMode);
       problems.push('permission_mode');
-      details.push({ code: 'permission_mode', messageKey: 'harness.isolation.permission_mode', params: { mode } });
+      details.push({ code: 'permission_mode', messageKey: 'harness.isolation.permission_mode', params: { mode: reported } });
     }
-    const listed = init.mcp_servers;
-    const extra = Array.isArray(listed)
-      ? listed.map((s) => (s && typeof s.name === 'string' ? s.name : String(s))).filter((name) => !allowMcp.includes(name))
-      : ['(unreadable mcp_servers)'];
-    if (extra.length > 0) {
-      const servers = extra.join(', ');
-      problems.push('mcp');
-      details.push({ code: 'mcp', messageKey: 'harness.isolation.mcp', params: { servers } });
+    if (mode === 'isolated') {
+      const listed = init.mcp_servers;
+      const extra = Array.isArray(listed)
+        ? listed.map((s) => (s && typeof s.name === 'string' ? s.name : String(s))).filter((name) => !allowMcp.includes(name))
+        : ['(unreadable mcp_servers)'];
+      if (extra.length > 0) {
+        const servers = extra.join(', ');
+        problems.push('mcp');
+        details.push({ code: 'mcp', messageKey: 'harness.isolation.mcp', params: { servers } });
+      }
     }
     const diff = builtinToolsDiff(init.tools, disallowed);
     if (diff.extra.length > 0 || diff.missing.length > 0) {

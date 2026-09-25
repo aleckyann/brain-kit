@@ -867,5 +867,17 @@
   "doctor.brain_kit_on_path.unit_missing_installed": "the hook runs {bin}, version {version}, but the PATH of the installed scheduled round ({file}: {path}) does not reach {commands}: a round's propose could not push through the gate or open the pull request. Run brain-kit schedule install again; it adds the directories where your shell finds them, or refuses naming what to install.",
   "doctor.brain_kit_on_path.unit_missing_computed": "the hook runs {bin}, version {version}, but the PATH a scheduled round would run with ({path}) does not reach {commands}, and neither does your shell's PATH: brain-kit schedule install would refuse, and a round's propose could not push or open the pull request. Install what is missing, or add its directory to path_extra with brain-kit machine set path_extra.",
   "curate.dry_cap_exceeded": "A round now would stop before the model: {day} alone holds {count} transcripts, more than {setting} ({cap}), and a round reads whole days only.",
-  "curate.dry_days_deferred": "A round now would read through {last} and leave {count} day(s) ({days}) for the next round, to stay within {setting} ({cap})."
+  "curate.dry_days_deferred": "A round now would read through {last} and leave {count} day(s) ({days}) for the next round, to stay within {setting} ({cap}).",
+  "harness.connectors.connected": "{connector} is connected, with the tools the source needs in the session.",
+  "harness.connectors.needs_auth": "{connector} needs authentication (status needs-auth): reconnect it in the claude.ai connector settings.",
+  "harness.connectors.failed": "{connector} failed to connect (status failed).",
+  "harness.connectors.pending": "{connector} was still connecting when the session started (status pending).",
+  "harness.connectors.absent": "{connector} is not in the session's server list: it is not connected in claude.ai, or it is disabled for Claude Code, and the two cannot be told apart.",
+  "harness.connectors.tools_missing": "{connector} is listed as connected, but the tools the source needs are not in the session under {prefix}.",
+  "harness.connectors.tools_elsewhere": "{connector} is listed as connected, but its tools are in the session under {observed}, not under {prefix}.",
+  "harness.connectors.unknown": "{connector} reported the status {status}, which this version of brain-kit does not know.",
+  "curate.user_rules.unreadable": "The Claude Code user settings file {file} cannot be read as JSON whose permissions.allow is a list of rules, so what it allows cannot be mirrored: connector mode is refused for this round.",
+  "curate.user_rules.unreadable_rule": "The rule {rule} in the allow list of {file} is not one rule of the form Tool or Tool(scope), so it cannot be mirrored as a deny: connector mode is refused for this round.",
+  "curate.user_rules.covers_vault": "The rule {rule} in the allow list of {file} lets the model write in the vault or in a folder that holds it: denied, it would also deny the round's own edits, and kept, it would let the model write outside the vault. Connector mode is refused for this round.",
+  "curate.user_rules.covers_kit": "The rule {rule} in the allow list of {file} lets the model run every command, or one of the kit's own: denied, it would also deny the round's own commands, and kept, it would let the model run more than the kit allows. Connector mode is refused for this round."
 }
