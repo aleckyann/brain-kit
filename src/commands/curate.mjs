@@ -262,8 +262,9 @@ function sourcesOf(config) {
 
 // Why a listed source is off: the problems its own plan names, from a plan
 // collected over an empty window (a connector source's collect reads
-// nothing, it only says what stands in the way).
-function offProblems(source, config, now, tz) {
+// nothing, it only says what stands in the way). This and offOnPurpose are
+// also what doctor's `connectors` check says about a source that is off.
+export function offProblems(source, config, now, tz) {
   try {
     const plan = source.collect({ window: { from: now, to: now, days: [], timezone: tz }, config, now });
     return Array.isArray(plan?.problems) ? plan.problems.filter((p) => p !== null && typeof p === 'object' && typeof p.code === 'string') : [];
@@ -276,7 +277,7 @@ function offProblems(source, config, now, tz) {
 // or its own problems say it is disabled) is only recorded in last-run;
 // one that is off for any other reason is half configured, and the round
 // says so (ruling R-E1): a best-effort source is never dropped in silence.
-function offOnPurpose(source, config, problems) {
+export function offOnPurpose(source, config, problems) {
   return config?.sources?.[source.id]?.enabled === false || problems.some((p) => p.code === 'disabled');
 }
 
@@ -409,7 +410,7 @@ function settingFor(code) {
   return `${CONFIG_FILENAME} sources.transcripts.include_projects`;
 }
 
-function problemText(problems) {
+export function problemText(problems) {
   return problems.map((p) => (p.detail ? `${p.code} (${p.detail})` : p.code)).join(', ');
 }
 
@@ -511,8 +512,10 @@ function deniesTool(rule, tool) {
 // mirrored rule covers them) plus each available source's read tools, and
 // denies the round's own denies, every mirrored rule and every configured
 // connector source's write tools; with no candidate left, the round runs
-// isolated. `blocked` maps an id to what blocked it.
-function chooseMode({ config, root, env, readFiles, candidates, connectorDenies }) {
+// isolated. `blocked` maps an id to what blocked it. `brain-kit doctor`
+// (check `connectors`, and `--probe`) asks this same function, so doctor
+// and the round cannot disagree on which rule refuses connector mode.
+export function chooseMode({ config, root, env, readFiles, candidates, connectorDenies }) {
   const base = roundTools(config, readFiles);
   if (candidates.length === 0) return { mode: 'isolated', tools: base, available: [], blocked: new Map(), userRules: null };
   const files = userSettingsFiles(env);

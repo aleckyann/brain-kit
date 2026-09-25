@@ -6,9 +6,10 @@
 > leitura) já funcionam hoje, a partir de um clone deste repositório. A fase 2 também está
 > concluída: o curador agendado (`curate`, `watermark`, `schedule`) lê as suas sessões
 > recentes do Claude Code e abre um pull request a partir de uma rodada sem ninguém por
-> perto. As fontes de agenda e de notas de reunião e o briefing matinal ainda estão por
-> vir, e o pacote no npm ainda é o esqueleto da fase 0. Acompanhe o
-> repositório para a primeira versão usável.
+> perto. A fase 3 está em revisão: a rodada também lê a sua agenda e as suas notas de
+> reunião pelos conectores do claude.ai, depois que você os liga. O briefing matinal ainda
+> está por vir, e o pacote no npm ainda é o esqueleto da fase 0. Acompanhe o repositório
+> para a primeira versão usável.
 
 Um segundo cérebro em markdown puro, no Open Knowledge Format (OKF) v0.2, mantido por um
 agente de IA que o lê por um índice, o alimenta todo dia a partir do seu próprio trabalho
@@ -22,7 +23,7 @@ O brain-kit é um repositório que pretende ser, ao mesmo tempo:
   arquivos do próprio kit, confere a máquina com o `doctor`, valida e aplica lint a um
   vault, roda o loop de pull request (`sync`, `propose`, `verify`) e roda o curador
   agendado (`curate`, `watermark`, `schedule`); o pré-voo do briefing ainda está por vir;
-- um plugin do Claude Code (sete skills, os hooks Stop e SessionStart, um subagente
+- um plugin do Claude Code (oito skills, os hooks Stop e SessionStart, um subagente
   somente leitura) que chama o mesmo motor;
 - um marketplace de um plugin só, para que `claude plugin marketplace add aleckyann/brain-kit`
   seguido de `claude plugin install brain-kit@brain-kit` o instale.
@@ -88,8 +89,14 @@ manifesto, o `machine.json` e o diretório de estado dele, a versão do kit, o `
 a CLI de verdade e conhece todas as flags que isolam uma rodada, os projetos de onde vêm os
 transcripts, quantos dias de atraso tem a marca d'água de cada fonte, a última rodada (uma
 rodada que sai com 0 em segundos sem nenhum turno do modelo é apontada como morta), o timer
-e os próximos disparos, e se uma rodada que falha chega até você ou fica só no log. Cada
-falha nomeia o comando que a corrige.
+e os próximos disparos, e se uma rodada que falha chega até você ou fica só no log; e,
+desde a fase 3, se o lint tem palavras-chave de privacidade para recusar nas linhas
+acrescentadas, tudo o que uma rodada pode alcançar além do vault, e cada fonte por
+conector: desligada ou ligada, o estado que a última rodada viu com a data dela, um
+prefixo de ferramenta que não confere, agendas de outras pessoas sem o consentimento
+registrado, e uma regra de usuário que recusa o modo com conectores. O `doctor --probe`
+pergunta agora à CLI o estado de cada conector, sem rodada. Cada falha nomeia o comando que
+a corrige.
 
 O `validate` confere o vault contra o OKF v0.2 e reporta duas réguas separadas: a
 conformidade do próprio formato e as regras da casa do vault, que são mais estritas de
@@ -107,7 +114,7 @@ O `lint` confere a saúde do vault com oito regras:
 | `tables` | forma da tabela: a linha em branco antes dela, linhas duplicadas, células longas demais |
 | `style` | caracteres que a configuração proíbe, nas linhas que uma mudança acrescentou |
 | `secrets` | formatos de credencial e padrões configurados, em todo arquivo que um push poderia publicar, incluindo arquivos com ponto como o `.env` |
-| `privacy` | notas confidenciais ficam em diretórios confidenciais e não recebem link de diretórios compartilhados |
+| `privacy` | notas confidenciais ficam em diretórios confidenciais e não recebem link de diretórios compartilhados, e uma linha que uma mudança acrescenta não tem nenhum dos termos de `privacy.third_party_keywords` (a saúde ou a vida privada de outra pessoa) |
 | `attribution` | as fontes de uma nota e as notas de rodapé dela se ancoram umas nas outras |
 
 `--rule` restringe a rodada às regras nomeadas, `--base` escolhe o que conta como a
@@ -130,19 +137,20 @@ O `curate` roda uma rodada: lê as sessões do Claude Code dos projetos que a su
 configuração lista, escolhidas pelo horário das mensagens, e as entrega a um modelo que só
 consegue agir pelos próprios `validate`, `lint` e `propose` do kit. A rodada termina num
 pull request contra o seu vault. O modelo roda isolado das suas próprias configurações do
-Claude Code: nenhum arquivo de configuração seu ou do projeto é carregado, nenhum hook e
-nenhum servidor MCP, e tudo o que as regras da própria rodada não permitem é negado. A
-rodada confere o isolamento pelo primeiro evento da CLI e para o modelo se ele não se
-confirmar. Os passos rodam numa ordem fixa e testada (lock, rede, sync, e só então a
+Claude Code: nenhum arquivo de configuração seu ou do projeto é carregado, nenhum hook,
+nenhum servidor MCP, nenhuma skill e nenhuma ferramenta nativa além das sete de que ele
+precisa; ele lê só o vault e os transcripts que a rodada lista, e tudo o que as regras da
+própria rodada não permitem é negado. A rodada confere o isolamento pelo primeiro evento
+da CLI e para o modelo se ele não se confirmar. Os passos rodam numa ordem fixa e testada (lock, rede, sync, e só então a
 configuração já sincronizada), e toda forma de uma rodada falhar termina com uma saída
 diferente de zero, um motivo no `last-run.json` e no log, e o seu comando de notificação. O
 `--dry` mostra o que uma rodada faria e o `--check` roda todos os passos até o modelo.
 
-O `watermark` mostra e move o último dia varrido de cada fonte. Uma rodada lê os dias
-seguintes, os mais antigos primeiro e inteiros (quantos couberem em
-`curate.caps.transcripts`; os demais ficam para a próxima rodada), e só move a marca
-quando todo arquivo oferecido foi lido e o modelo informou a fonte; nenhum dia é fechado
-sem ter sido lido. O
+O `watermark` mostra e move o último dia varrido de cada fonte. Cada fonte lê os dias
+seguintes à própria marca, os mais antigos primeiro e inteiros (quantos couberem em
+`curate.caps.transcripts`; os demais ficam para a próxima rodada), e a marca dela só anda
+quando o registro da rodada mostra a fonte lida e o modelo a informou; nenhum dia é
+fechado sem ter sido lido. O
 `schedule install|uninstall|status` instala a rodada em janelas diurnas (09:30, 14:00 e
 20:00 por padrão), com um nome que diz o que ela faz e sem depender de nenhum alvo de rede:
 os timers de usuário do systemd são a referência, e launchd e cron também são gerados.
@@ -151,6 +159,35 @@ O [docs/scheduling.md](docs/scheduling.md) explica a rodada passo a passo, as ja
 marca d'água, os códigos de saída e o que fazer em cada um. O
 [docs/security.md](docs/security.md) explica o que isola o modelo e as medições por trás
 disso.
+
+## Agenda e notas de reunião
+
+Uma rodada também pode ler a sua agenda, pelo conector Google Calendar do claude.ai, e as
+suas notas de reunião, pelo conector Google Drive do claude.ai. As duas fontes ficam
+desligadas até você ligá-las: a agenda, nomeando as agendas a ler; as notas de reunião,
+copiando de um documento seu o título literal das suas notas automáticas, com os acentos.
+As duas são best effort: uma rodada que não consegue ler uma delas deixa o dia dessa fonte
+aberto e ainda cura e propõe o resto, e nenhuma das duas consegue escrever nada pelo seu
+conector.
+
+Para chegar aos conectores, a rodada carrega as suas configurações de usuário do Claude
+Code e desliga tudo o que elas trazem além dos conectores: os seus hooks, as suas skills,
+toda ferramenta nativa além do conjunto fixo, e cada regra de permissão sua, espelhada
+como uma negação (uma regra que não dá para espelhar recusa esse modo, e a rodada roda só
+com os transcripts). O estado de cada conector vem do primeiro evento da própria rodada:
+um conector que precisa de autenticação, que falhou, que está ausente (nunca conectado, ou
+desativado para o Claude Code) ou que está sem as ferramentas faz a rodada parar o modelo
+antes do primeiro turno e lançar mais uma vez sem ele. O que conta como fonte lida é o
+registro das chamadas que o modelo fez, nunca a palavra dele: cada agenda listada na janela
+inteira, com o filtro de eventos privados e todas as páginas, e a busca pelo título
+literal com o seu limite de data. Um estado que muda é avisado uma vez pelo seu comando de
+notificação, e a linha de status da sessão nomeia um conector que não estava conectado na
+última rodada.
+
+A skill `seed-rituals` preenche a tabela do ritmo semanal do vault a partir da sua agenda,
+na sua própria sessão, com a sua confirmação para cada linha. O
+[docs/connectors.md](docs/connectors.md) explica o que cada fonte lê, como ligá-la, os
+estados e o que fazer em cada um, e a política de privacidade.
 
 ## O plugin do Claude Code
 
@@ -162,8 +199,8 @@ pelo marketplace. Dentro de um vault:
 - o hook `Stop` pede à sessão que cure só o que ela mesma mudou. Ele nunca bloqueia fora
   de um vault, numa cópia longe do caminho registrado do vault, enquanto outro processo
   segura o lock, nem duas vezes seguidas;
-- sete skills conduzem o motor no idioma do próprio vault: `setup`, `curate-session`,
-  `capture`, `ask`, `lint`, `review-stale` e `approve`;
+- oito skills conduzem o motor no idioma do próprio vault: `setup`, `curate-session`,
+  `capture`, `ask`, `lint`, `review-stale`, `approve` e `seed-rituals`;
 - o subagente `vault-reader` lê notas só com Read, Grep e Glob.
 
 A pasta `evals/` traz um caso de `claude plugin eval` por skill e idioma; veja
@@ -176,7 +213,7 @@ A pasta `evals/` traz um caso de `claude plugin eval` por skill e idioma; veja
 | 0 | Esqueleto, códigos de saída, packs de idioma, schemas de config, trava anti-vazamento, CI, docs | concluída, 0.0.1 no npm |
 | 1 | Validador, lint, propose (loop de PR), hook Stop, init, doctor, skills | concluída |
 | 2 | Curador agendado sobre transcripts locais, templates de agendamento | concluída |
-| 3 | Fontes de agenda e notas de reunião (best effort por desenho) | planejada |
+| 3 | Fontes de agenda e notas de reunião (best effort por desenho) | em revisão |
 | 4 | Briefing matinal | planejada |
 | 5 | Migração do vault original para o kit | planejada |
 | 6 | Publicação 0.1.0 | planejada |
@@ -217,7 +254,9 @@ Leia [docs/rationale.md](docs/rationale.md) para o raciocínio e
 
 ## Requisitos (alvo)
 
-Node.js >= 24, git, a CLI do GitHub (`gh`) autenticada e o Claude Code. Linux é a
+Node.js >= 24, git, a CLI do GitHub (`gh`) autenticada e o Claude Code; para as fontes de
+agenda e de notas de reunião, os conectores Google Calendar e Google Drive do claude.ai,
+conectados no claude.ai e ativados para o Claude Code. Linux é a
 plataforma de referência para agendamento (timers de usuário do systemd, que precisam de
 `loginctl enable-linger` para rodar com você deslogado); as entradas de macOS (launchd) e
 cron são geradas e testadas sem que a suíte de testes as instale; Windows fica fora do

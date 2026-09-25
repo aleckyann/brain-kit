@@ -22,7 +22,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
-  chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync,
+  chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { delimiter, dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -30,14 +30,16 @@ import { makeTempDir } from './helpers/tmp.mjs';
 import { KIT_ROOT, kitVersion } from '../src/version.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { stateDirFor } from '../src/state.mjs';
-import { runDoctor } from '../src/commands/doctor.mjs';
+import { renderMessage, runDoctor } from '../src/commands/doctor.mjs';
 import { CHECK_IDS, exitCodeFor, roundFlags, runChecks } from '../src/doctor/checks.mjs';
 import { runScheduleSync } from '../src/commands/schedule.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
 import { LOCAL_GIT_VARS, localGitVarNames } from '../src/git-env.mjs';
 import { TEMPLATE_HOOK as SHIPPED_HOOK } from '../src/init/skeleton.mjs';
+import { ROUND_TOOLS } from '../src/harness/claude-code.mjs';
 
 const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
+const PACK_KEYWORDS = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', 'en', 'config.defaults.json'), 'utf8')).privacy.third_party_keywords;
 const TEMPLATE_HOOK = join(KIT_ROOT, 'templates', 'githooks', 'pre-push');
 const A_ACUTE = String.fromCodePoint(0xc1);
 // A localised desktop folder, and a vault name carrying both quotes.
@@ -147,9 +149,16 @@ function fixtureGit(cwd, args, home) {
   return r;
 }
 
+// The fixture configuration, made ready for phase 3: the connector sources
+// are off on purpose (the fixture's calendar lists a calendar with no
+// `enabled`, the upgrade case a round reports as half configured), and the
+// privacy keywords are the en pack's.
 function baseConfig() {
   const config = JSON.parse(readFileSync(join(KIT_ROOT, 'test', 'fixtures', 'config', 'valid.json'), 'utf8'));
   config.kit_version = kitVersion();
+  config.sources.calendar.enabled = false;
+  config.sources.meeting_notes.enabled = false;
+  config.privacy.third_party_keywords = [...PACK_KEYWORDS];
   return config;
 }
 
@@ -297,9 +306,11 @@ function fakeIo() {
 
 const t = createTranslator('en');
 
-async function doctor(fixture, argv = [], { nodeVersion = process.versions.node, env = fixture.env, cwd = fixture.root, now } = {}) {
+async function doctor(fixture, argv = [], { nodeVersion = process.versions.node, env = fixture.env, cwd = fixture.root, now, probeTimeoutMs } = {}) {
   const f = fakeIo();
-  const code = await runDoctor(['--json', ...argv, fixture.root], f.io, t, { env, cwd, nodeVersion, ...(now ? { now } : {}) });
+  const code = await runDoctor(['--json', ...argv, fixture.root], f.io, t, {
+    env, cwd, nodeVersion, ...(now ? { now } : {}), ...(probeTimeoutMs !== undefined ? { probeTimeoutMs } : {}),
+  });
   let report = null;
   if (f.stdout()) report = JSON.parse(f.stdout());
   return { code, report, stdout: f.stdout(), stderr: f.stderr() };
@@ -324,18 +335,20 @@ test('a ready vault under a path with a space, an accented letter and both quote
   const fx = setup();
   assert.ok(fx.root.includes(A_ACUTE) && fx.root.includes(' ') && fx.root.includes('"') && fx.root.includes("'"));
   const { code, report } = await doctor(fx);
-  assert.deepEqual(report.checks.map((c) => c.id), CHECK_IDS);
+  // Every check in table order; connectors says one line per connector
+  // source the configuration lists, both off here.
+  assert.deepEqual(report.checks.map((c) => c.id), CHECK_IDS.flatMap((id) => (id === 'connectors' ? [id, id] : [id])));
   for (const c of report.checks) assert.equal(c.status, 'ok', JSON.stringify(c));
   assert.equal(code, EXIT.OK);
   assert.equal(report.vault, fx.root);
-  assert.deepEqual(report.counts, { ok: CHECK_IDS.length, warn: 0, fail: 0 });
+  assert.deepEqual(report.counts, { ok: CHECK_IDS.length + 1, warn: 0, fail: 0 });
 });
 
-test('the check table is exactly the phase 1 and phase 2 set, each named by what it prevents', () => {
+test('the check table is exactly the phase 1, 2 and 3 set, each named by what it prevents', () => {
   assert.deepEqual(CHECK_IDS, [
     'node-version', 'git-present', 'default-branch-known', 'hooks-path', 'brain-kit-on-path', 'config-valid', 'manifest-valid', 'machine-valid',
-    'state-dir-resolves', 'state-dir-mode', 'kit-version', 'gh-present', 'claude-present', 'gitignore-node-modules',
-    'claude-real', 'claude-isolation-flags', 'include-projects', 'watermark', 'last-run', 'schedule', 'notify',
+    'state-dir-resolves', 'state-dir-mode', 'kit-version', 'gh-present', 'claude-present', 'gitignore-node-modules', 'privacy-keywords',
+    'claude-real', 'claude-isolation-flags', 'round-scope', 'include-projects', 'connectors', 'watermark', 'last-run', 'schedule', 'notify',
   ]);
 });
 
@@ -1647,12 +1660,12 @@ test('--json prints one parseable object on one line, carrying each check\'s mes
   assert.equal(out.trimEnd().includes('\n'), false, 'exactly one line');
   const report = JSON.parse(out);
   assert.equal(report.version, 'brain-kit.doctor/1');
-  assert.equal(report.checks.length, CHECK_IDS.length);
+  assert.deepEqual([...new Set(report.checks.map((c) => c.id))], CHECK_IDS);
   for (const c of report.checks) {
     assert.deepEqual(Object.keys(c).sort(), ['id', 'message', 'messageKey', 'params', 'status']);
-    assert.equal(c.message, t(c.messageKey, c.params));
+    assert.equal(c.message, renderMessage(t, c.messageKey, c.params));
   }
-  assert.deepEqual(report.counts, { ok: CHECK_IDS.length - 1, warn: 1, fail: 0 });
+  assert.deepEqual(report.counts, { ok: report.checks.length - 1, warn: 1, fail: 0 });
   assert.equal(report.exitCode, code);
 });
 
@@ -1665,7 +1678,8 @@ test('the human report names every check, its status and message, and a summary 
   assert.ok(out.includes(fx.root));
   for (const id of CHECK_IDS) assert.match(out, new RegExp(`\\b${id}\\b`));
   assert.match(out, /warn\s+gh-present/);
-  assert.match(out, new RegExp(`${CHECK_IDS.length - 1} ok, 1 warn, 0 fail`));
+  // connectors says one line per connector source listed, two here.
+  assert.match(out, new RegExp(`${CHECK_IDS.length} ok, 1 warn, 0 fail`));
 });
 
 test('the Portuguese pack renders the report', async () => {
@@ -1722,6 +1736,8 @@ test('curator: roundFlags is every option buildArgv puts on a round, the isolati
     '-p', '--verbose', '--output-format', '--permission-mode', '--permission-prompts', '--setting-sources', '--strict-mcp-config',
     '--disable-slash-commands', '--tools',
     '--no-session-persistence', '--model', '--max-turns', '--max-budget-usd', '--allowedTools', '--disallowedTools',
+    // connector mode (phase 3) adds one: the JSON after it is a value.
+    '--settings',
   ]);
 });
 
@@ -2153,6 +2169,517 @@ test('notify: none configured warns that failures are only in the log; one that 
   r = await doctor(fx, ['--only', 'notify']);
   c = assertCheck(r.report, 'notify', 'warn', 'doctor.notify.not_found');
   assert.equal(c.params.program, 'no-such-notifier');
+});
+
+// --- phase 3: privacy-keywords, round-scope, connectors and --probe ----------
+
+const CAL_PREFIX = 'mcp__claude_ai_Google_Calendar__';
+const DRIVE_PREFIX = 'mcp__claude_ai_Google_Drive__';
+const CAL_TOOLS = ['list_events', 'get_event', 'list_calendars'].map((tool) => CAL_PREFIX + tool);
+const DRIVE_TOOLS = ['search_files', 'read_file_content', 'get_file_metadata'].map((tool) => DRIVE_PREFIX + tool);
+const CAL_SERVER = 'claude.ai Google Calendar';
+const DRIVE_SERVER = 'claude.ai Google Drive';
+const REAL_CAT = findOnPath('cat');
+const REAL_SLEEP = findOnPath('sleep');
+
+// Both connector sources on, as a person turns them on (docs/connectors.md):
+// the calendar with the owner's main calendar, the meeting notes with the en
+// pack's literal and the three tools the source needs.
+function connectorConfig(edit = () => {}) {
+  return configWith((c) => {
+    c.sources.calendar.enabled = true;
+    c.sources.calendar.calendars = ['primary'];
+    c.sources.calendar.tool_suffixes = ['list_events', 'get_event', 'list_calendars'];
+    c.sources.meeting_notes.enabled = true;
+    c.sources.meeting_notes.search_title_contains = 'Notes by Gemini';
+    c.sources.meeting_notes.tool_suffixes = ['search_files', 'read_file_content', 'get_file_metadata'];
+    edit(c);
+  });
+}
+
+// A scratch CLAUDE_CONFIG_DIR holding the user settings a round in
+// connector mode would load; never the machine's own.
+function userSettings(fx, settings) {
+  const dir = join(fx.base, 'claude-config');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'settings.json'), JSON.stringify(settings));
+  return { ...fx.env, CLAUDE_CONFIG_DIR: dir };
+}
+
+// A last round with these fields laid over a healthy one.
+function writeRoundWith(fx, fields) {
+  writeLastRun(fx, lastRun(fields));
+}
+
+function connectorLines(report) {
+  return report.checks.filter((c) => c.id === 'connectors');
+}
+
+function byKey(report, messageKey) {
+  const found = connectorLines(report).filter((c) => c.messageKey === messageKey);
+  assert.equal(found.length, 1, `${messageKey}: ${JSON.stringify(connectorLines(report))}`);
+  return found[0];
+}
+
+function lineFor(report, source, messageKey) {
+  const found = connectorLines(report).filter((c) => c.params.source === source && (messageKey === undefined || c.messageKey === messageKey));
+  assert.equal(found.length, 1, `${source} ${messageKey}: ${JSON.stringify(connectorLines(report))}`);
+  return found[0];
+}
+
+test('privacy-keywords: the fixture\'s list passes, naming how many keywords lint refuses on added lines', async () => {
+  const fx = setup();
+  const { report } = await doctor(fx, ['--only', 'privacy-keywords']);
+  const c = assertCheck(report, 'privacy-keywords', 'ok', 'doctor.privacy_keywords.ok');
+  assert.deepEqual(c.params, { count: PACK_KEYWORDS.length, setting: 'privacy.third_party_keywords' });
+});
+
+test('privacy-keywords: no list, an empty one, or only blank entries warns and names the list the vault\'s language pack ships', async () => {
+  for (const keywords of [undefined, [], ['   ', '']]) {
+    const config = configWith((c) => {
+      if (keywords === undefined) delete c.privacy.third_party_keywords;
+      else c.privacy.third_party_keywords = keywords;
+    });
+    const fx = setup({ config });
+    const { report, code } = await doctor(fx, ['--only', 'privacy-keywords']);
+    const c = assertCheck(report, 'privacy-keywords', 'warn', 'doctor.privacy_keywords.none');
+    assert.deepEqual(c.params, { setting: 'privacy.third_party_keywords', file: 'brain-kit.config.json', defaults: join(KIT_ROOT, 'lang', 'en', 'config.defaults.json') });
+    assert.equal(code, EXIT.OK, 'a warning, never a failure');
+  }
+  const pt = setup({ config: configWith((c) => { c.lang = 'pt-BR'; c.privacy.third_party_keywords = []; }) });
+  const c = check((await doctor(pt, ['--only', 'privacy-keywords'])).report, 'privacy-keywords');
+  assert.equal(c.params.defaults, join(KIT_ROOT, 'lang', 'pt-BR', 'config.defaults.json'));
+  const broken = setup({ configText: '{ not json' });
+  assertCheck((await doctor(broken, ['--only', 'privacy-keywords'])).report, 'privacy-keywords', 'warn', 'doctor.curate.config_unknown');
+});
+
+test('round-scope: with nothing added, a round reaches nothing beyond the vault and its plan', async () => {
+  const fx = setup();
+  const { report } = await doctor(fx, ['--only', 'round-scope']);
+  assertCheck(report, 'round-scope', 'ok', 'doctor.round_scope.ok');
+});
+
+test('round-scope: every allow rule the vault adds that reads or writes outside the vault, or runs a command, is named', async () => {
+  const fx = setup();
+  const inside = ['Read(./**)', 'Read(notes/**)', 'Glob(**)', 'Grep(*.md)', 'Edit(./drafts/**)', `Read(//${fx.root.slice(1)}/notes/**)`, 'ToolSearch', 'WebSearch', 'WebFetch(//example.com/**)'];
+  const beyond = ['Read(//**)', 'Read(~/notes/**)', 'Grep(/etc/**)', 'Read(../other/**)', 'Read(notes/*/../../../etc/**)', 'Glob({a,b}/**)', 'Edit(//tmp/elsewhere/**)', 'Write(~/x.md)', 'Bash(cat:*)', `Read(//${fx.root.slice(1)}*)`];
+  editJson(join(fx.root, 'brain-kit.config.json'), (c) => {
+    c.curate.allowed_tools_extra = [...inside, ...beyond.slice(0, -2), `${beyond.at(-2)} ${beyond.at(-1)}`];
+  });
+  const { report, code } = await doctor(fx, ['--only', 'round-scope']);
+  const c = assertCheck(report, 'round-scope', 'warn', 'doctor.round_scope.extra');
+  assert.deepEqual(c.params, { setting: 'curate.allowed_tools_extra', file: 'brain-kit.config.json', rules: beyond });
+  assert.equal(code, EXIT.OK);
+});
+
+test('round-scope: in connector mode a user read rule the round records instead of denying is named, with the settings file', async () => {
+  const fx = setup({ config: connectorConfig() });
+  const env = userSettings(fx, { permissions: { allow: ['Read(//etc/**)', 'Bash(rtk curl *)'] } });
+  let { report } = await doctor(fx, ['--only', 'round-scope'], { env });
+  const c = assertCheck(report, 'round-scope', 'warn', 'doctor.round_scope.user_reads');
+  assert.deepEqual(c.params, { rules: ['Read(//etc/**)'], files: [join(env.CLAUDE_CONFIG_DIR, 'settings.json')] });
+  // Connector mode refused (a bare Bash): the round runs isolated, and the
+  // read rule reaches nothing.
+  const refused = userSettings(fx, { permissions: { allow: ['Read(//etc/**)', 'Bash'] } });
+  ({ report } = await doctor(fx, ['--only', 'round-scope'], { env: refused }));
+  assertCheck(report, 'round-scope', 'ok', 'doctor.round_scope.ok');
+  // No connector source on: the user settings are never read.
+  const off = setup();
+  ({ report } = await doctor(off, ['--only', 'round-scope'], { env: userSettings(off, { permissions: { allow: ['Read(//etc/**)'] } }) }));
+  assertCheck(report, 'round-scope', 'ok', 'doctor.round_scope.ok');
+});
+
+test('connectors: no connector source listed in curate.sources is one ok line', async () => {
+  const fx = setup({ config: configWith((c) => { c.curate.sources.best_effort = []; }) });
+  const { report } = await doctor(fx, ['--only', 'connectors']);
+  assert.equal(connectorLines(report).length, 1);
+  assertCheck(report, 'connectors', 'ok', 'doctor.connectors.none');
+});
+
+test('connectors: a source off on purpose passes; one half configured warns naming its problems and the setting; a required one that is off fails', async () => {
+  let fx = setup();
+  let r = await doctor(fx, ['--only', 'connectors']);
+  assert.deepEqual(connectorLines(r.report).map((c) => [c.params.source, c.status, c.messageKey]), [
+    ['calendar', 'ok', 'doctor.connectors.off'], ['meeting_notes', 'ok', 'doctor.connectors.off'],
+  ]);
+  // The fixture's own calendar: a calendar listed, no `enabled` (a vault
+  // made before phase 3).
+  fx = setup({ config: configWith((c) => { delete c.sources.calendar.enabled; }) });
+  r = await doctor(fx, ['--only', 'connectors']);
+  const half = lineFor(r.report, 'calendar', 'doctor.connectors.half');
+  assert.equal(half.status, 'warn');
+  assert.deepEqual(half.params, { source: 'calendar', problems: 'not_enabled (1)', setting: 'sources.calendar' });
+  assert.equal(r.code, EXIT.OK);
+  fx = setup({ config: configWith((c) => { c.curate.sources.required = ['transcripts', 'calendar']; }) });
+  r = await doctor(fx, ['--only', 'connectors']);
+  const required = lineFor(r.report, 'calendar', 'doctor.connectors.required_off');
+  assert.equal(required.status, 'fail');
+  assert.equal(required.params.problems, 'not_enabled (1)');
+  assert.equal(r.code, EXIT.FAILURE);
+});
+
+test('connectors: a source on that no round has seen yet warns and names --probe', async () => {
+  const fx = setup({ config: connectorConfig() });
+  const { report } = await doctor(fx, ['--only', 'connectors']);
+  for (const source of ['calendar', 'meeting_notes']) {
+    const c = lineFor(report, source, 'doctor.connectors.unseen');
+    assert.equal(c.status, 'warn');
+    assert.equal(c.params.file, join(fx.stateDir, 'last-run.json'));
+    assert.match(c.message, /doctor --probe/);
+  }
+});
+
+test('connectors: the last round\'s state per source, with the round\'s day as DD/MM/YYYY in the vault\'s zone', async () => {
+  const fx = setup({ config: connectorConfig((c) => { c.vault.timezone = 'America/Argentina/Buenos_Aires'; }) });
+  const at = '2026-09-24T02:30:00.000Z';
+  writeRoundWith(fx, { at, connectorStates: { calendar: { state: 'connected', at }, meeting_notes: { state: 'needs_auth', at } } });
+  const { report, code } = await doctor(fx, ['--only', 'connectors']);
+  const calendar = lineFor(report, 'calendar', 'doctor.connectors.connected');
+  assert.equal(calendar.status, 'ok');
+  assert.equal(calendar.message, `calendar: ${CAL_SERVER} connected in the round of 23/09/2026, with the tools the source needs under ${CAL_PREFIX}`);
+  const notes = lineFor(report, 'meeting_notes', 'doctor.connectors.state');
+  assert.equal(notes.status, 'warn');
+  assert.equal(notes.params.state, 'needs_auth');
+  assert.match(notes.message, /^meeting_notes: needs_auth in the round of 23\/09\/2026\. claude\.ai Google Drive needs authentication/);
+  assert.match(notes.message, /docs\/connectors\.md/);
+  assert.equal(code, EXIT.OK, 'a best-effort source that is not connected is a warning');
+});
+
+test('connectors: a state other than connected fails only for a source in curate.sources.required', async () => {
+  const fx = setup({ config: connectorConfig((c) => { c.curate.sources.required = ['transcripts', 'meeting_notes']; }) });
+  const at = new Date().toISOString();
+  writeRoundWith(fx, { at, connectorStates: { calendar: { state: 'absent', at }, meeting_notes: { state: 'failed', at } } });
+  const { report, code } = await doctor(fx, ['--only', 'connectors']);
+  assert.equal(lineFor(report, 'calendar').status, 'warn');
+  assert.match(lineFor(report, 'calendar').message, /disabled for Claude Code/);
+  assert.equal(lineFor(report, 'meeting_notes').status, 'fail');
+  assert.equal(code, EXIT.FAILURE);
+});
+
+test('connectors: tools seen under another prefix name both prefixes and the setting; a prefix from an older round is not taken for this state', async () => {
+  const fx = setup({ config: connectorConfig() });
+  const at = new Date().toISOString();
+  writeRoundWith(fx, {
+    at,
+    connectorStates: { calendar: { state: 'tools_missing', at }, meeting_notes: { state: 'tools_missing', at: '2026-09-20T12:00:00.000Z' } },
+    sources: { calendar: { state: 'tools_missing', observedPrefix: 'mcp__claude_ai_Calendar__' }, meeting_notes: { state: 'pending', observedPrefix: 'mcp__other__' } },
+  });
+  const { report } = await doctor(fx, ['--only', 'connectors']);
+  const calendar = lineFor(report, 'calendar', 'doctor.connectors.prefix');
+  assert.equal(calendar.status, 'warn');
+  assert.deepEqual({ observed: calendar.params.observed, prefix: calendar.params.prefix, setting: calendar.params.setting }, { observed: 'mcp__claude_ai_Calendar__', prefix: CAL_PREFIX, setting: 'sources.calendar.tool_prefix' });
+  assert.match(calendar.message, /set sources\.calendar\.tool_prefix to that prefix/);
+  const notes = lineFor(report, 'meeting_notes', 'doctor.connectors.state');
+  assert.equal(notes.params.state, 'tools_missing');
+  assert.match(notes.message, /20\/09\/2026/);
+});
+
+test('connectors: a carried blocked_by_user_rules, and a state this version does not know, are said as such', async () => {
+  const fx = setup({ config: connectorConfig() });
+  const at = new Date().toISOString();
+  writeRoundWith(fx, { at, connectorStates: { calendar: { state: 'blocked_by_user_rules', at }, meeting_notes: { state: 'sleeping', at } } });
+  const { report } = await doctor(fx, ['--only', 'connectors']);
+  assert.match(lineFor(report, 'calendar').message, /refused connector mode in that round/);
+  assert.match(lineFor(report, 'meeting_notes').message, /does not know that state/);
+  assert.equal(lineFor(report, 'meeting_notes').status, 'warn');
+});
+
+test('connectors: a user rule that refuses connector mode is named with its file, once for every source, and no state is shown for them', async () => {
+  const fx = setup({ config: connectorConfig() });
+  const env = userSettings(fx, { permissions: { allow: ['Bash'] } });
+  const at = new Date().toISOString();
+  writeRoundWith(fx, { at, connectorStates: { calendar: { state: 'connected', at }, meeting_notes: { state: 'connected', at } } });
+  let r = await doctor(fx, ['--only', 'connectors'], { env });
+  const lines = connectorLines(r.report);
+  assert.equal(lines.length, 1, JSON.stringify(lines));
+  const [blocked] = lines;
+  assert.equal(blocked.messageKey, 'doctor.connectors.blocked');
+  assert.equal(blocked.status, 'warn');
+  assert.deepEqual(blocked.params.sources, ['calendar', 'meeting_notes']);
+  assert.deepEqual(blocked.params.detail, { messageKey: 'curate.user_rules.covers_kit', params: { rule: 'Bash', file: join(env.CLAUDE_CONFIG_DIR, 'settings.json') } });
+  assert.match(blocked.message, /refused for calendar, meeting_notes .*The rule Bash in .*settings\.json lets the model run every command/);
+  assert.equal(r.code, EXIT.OK);
+  const required = setup({ config: connectorConfig((c) => { c.curate.sources.required = ['transcripts', 'calendar']; }) });
+  r = await doctor(required, ['--only', 'connectors'], { env: userSettings(required, { permissions: { allow: ['Bash'] } }) });
+  assertCheck(r.report, 'connectors', 'fail', 'doctor.connectors.blocked');
+});
+
+test('connectors: a user rule for a source\'s whole server is named for that source only', async () => {
+  const fx = setup({ config: connectorConfig() });
+  const env = userSettings(fx, { permissions: { allow: ['mcp__claude_ai_Google_Calendar'] } });
+  const { report } = await doctor(fx, ['--only', 'connectors'], { env });
+  const denied = lineFor(report, 'calendar', 'doctor.connectors.denied');
+  assert.equal(denied.status, 'warn');
+  assert.equal(denied.params.detail.messageKey, 'curate.user_rules.denies_source');
+  assert.equal(denied.params.detail.params.rules, 'mcp__claude_ai_Google_Calendar');
+  assert.match(denied.message, /^calendar is not read by any round \(blocked_by_user_rules\)\. The user allow rule mcp__claude_ai_Google_Calendar covers the tools of claude\.ai Google Calendar/);
+  lineFor(report, 'meeting_notes', 'doctor.connectors.unseen');
+});
+
+test('connectors: other people\'s calendars without the recorded consent are named, with how many', async () => {
+  const fx = setup({ config: connectorConfig((c) => { c.sources.calendar.team_calendars = ['team@example.com', 'ana@example.com']; }) });
+  const { report } = await doctor(fx, ['--only', 'connectors']);
+  const consent = lineFor(report, 'calendar', 'doctor.connectors.consent');
+  assert.equal(consent.status, 'warn');
+  assert.deepEqual(consent.params.detail, { messageKey: 'sources.calendar.other_calendars_without_consent', params: { count: '2' } });
+  assert.match(consent.message, /team_calendars_consent_noted is true/);
+  const consented = setup({ config: connectorConfig((c) => { c.sources.calendar.team_calendars = ['team@example.com']; c.sources.calendar.team_calendars_consent_noted = true; }) });
+  assert.equal(connectorLines((await doctor(consented, ['--only', 'connectors'])).report).filter((c) => c.messageKey === 'doctor.connectors.consent').length, 0);
+});
+
+test('connectors: curate.enabled false passes; a configuration doctor cannot read warns', async () => {
+  let fx = setup({ config: connectorConfig((c) => { c.curate.enabled = false; }) });
+  const disabled = (await doctor(fx, ['--only', 'connectors,round-scope'])).report;
+  assertCheck(disabled, 'connectors', 'ok', 'doctor.curate.disabled');
+  assertCheck(disabled, 'round-scope', 'ok', 'doctor.curate.disabled');
+  fx = setup({ configText: '{ not json' });
+  const { report } = await doctor(fx, ['--only', 'connectors,round-scope']);
+  assertCheck(report, 'connectors', 'warn', 'doctor.curate.config_unknown');
+  assertCheck(report, 'round-scope', 'warn', 'doctor.curate.config_unknown');
+});
+
+test('connectors: the Portuguese pack renders every connector line with nothing left unfilled', async () => {
+  const fx = setup({ config: connectorConfig((c) => { c.sources.calendar.team_calendars = ['team@example.com']; }) });
+  const at = new Date().toISOString();
+  writeRoundWith(fx, { at, connectorStates: { calendar: { state: 'connected', at }, meeting_notes: { state: 'needs_auth', at } } });
+  const f = fakeIo();
+  await runDoctor([fx.root, '--only', 'connectors'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
+  assert.match(f.stdout(), /conectado na rodada de/);
+  assert.match(f.stdout(), /needs_auth na rodada de/);
+  assert.doesNotMatch(f.stdout(), /\{[a-z_]+\}|\[object Object\]/);
+});
+
+// --- --probe ------------------------------------------------------------------
+
+// An init event as Claude Code 2.1.281 printed one in connector mode on
+// 24/09/2026, reduced to the fields the kit reads, with neutral servers.
+function initLine({ calendar = 'connected', drive = 'connected', tools = [...ROUND_TOOLS, ...CAL_TOOLS, ...DRIVE_TOOLS], extra = {} } = {}) {
+  const servers = [{ name: 'plugin:example:tasks', status: 'connected' }];
+  if (calendar !== null) servers.push({ name: CAL_SERVER, status: calendar });
+  if (drive !== null) servers.push({ name: DRIVE_SERVER, status: drive });
+  return JSON.stringify({ type: 'system', subtype: 'init', session_id: '00000000-0000-4000-8000-000000000000', permissionMode: 'dontAsk', tools, mcp_servers: servers, ...extra });
+}
+
+const HOOK_LINE = JSON.stringify({ type: 'system', subtype: 'hook_started', hook_name: 'SessionStart:startup', hook_event: 'SessionStart', session_id: '00000000-0000-4000-8000-000000000000' });
+
+// A claude stand-in for the probe: a real CLI to claude-real and
+// claude-isolation-flags, and, launched with -p, it records its pid, its
+// arguments one per line, the two memory switches of its environment and
+// its standard input, prints `lines`, then waits 60 s to be killed (or
+// exits with `exitCode`).
+function probeClaude(fx, { lines = [initLine()], exitCode = null } = {}) {
+  const dir = join(fx.base, 'probe');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'stream.jsonl'), lines.map((line) => `${line}\n`).join(''));
+  const flags = roundFlags().map((flag) => `'  ${flag} <value>'`).join(' ');
+  const body = [
+    'case "$1" in',
+    `  --help) printf '%s\\n' 'Usage: claude [options]' ${flags}; exit 0 ;;`,
+    '  --version) echo "1.2.3 (Claude Code)"; exit 0 ;;',
+    'esac',
+    `echo $ > "${join(dir, 'pid')}"`,
+    `for a in "$@"; do printf '%s\\n' "$a"; done > "${join(dir, 'argv')}"`,
+    `printf '%s|%s\\n' "$CLAUDE_CODE_DISABLE_AUTO_MEMORY" "$CLAUDE_CODE_DISABLE_CLAUDE_MDS" > "${join(dir, 'env')}"`,
+    `printf '%s\\n%s\\n' "$PATH" "$GIT_DIR" > "${join(dir, 'paths')}"`,
+    `pwd -P > "${join(dir, 'cwd')}"`,
+    `"${REAL_CAT}" > "${join(dir, 'stdin')}"`,
+    `"${REAL_CAT}" "${join(dir, 'stream.jsonl')}"`,
+    exitCode === null ? `exec "${REAL_SLEEP}" 60` : `exit ${exitCode}`,
+  ].join('\n');
+  writeScript(join(fx.toolsDir, 'claude'), `${body}\n# ${'x'.repeat(2400)}`);
+  return {
+    dir,
+    launched: () => existsSync(join(dir, 'pid')),
+    pid: () => Number(readFileSync(join(dir, 'pid'), 'utf8').trim()),
+    argv: () => readFileSync(join(dir, 'argv'), 'utf8').split('\n').slice(0, -1),
+    env: () => readFileSync(join(dir, 'env'), 'utf8').trim(),
+    paths: () => readFileSync(join(dir, 'paths'), 'utf8').split('\n'),
+    cwd: () => readFileSync(join(dir, 'cwd'), 'utf8').trim(),
+    stdin: () => readFileSync(join(dir, 'stdin'), 'utf8'),
+  };
+}
+
+function isAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function stateSnapshot(fx) {
+  return Object.fromEntries(readdirSync(fx.stateDir).sort().map((name) => {
+    const path = join(fx.stateDir, name);
+    return [name, statSync(path).isFile() ? readFileSync(path, 'utf8') : 'dir'];
+  }));
+}
+
+// The values after each occurrence of a flag.
+function valuesAfter(argv, flag) {
+  const out = [];
+  argv.forEach((arg, i) => {
+    if (arg !== flag) return;
+    for (let j = i + 1; j < argv.length && !argv[j].startsWith('--'); j++) out.push(argv[j]);
+  });
+  return out;
+}
+
+test('--probe: launches the round\'s own connector mode, kills it at the init event, and reports each source\'s state from that event, writing nothing', async () => {
+  const fx = setup({ config: connectorConfig() });
+  const probe = probeClaude(fx, { lines: [initLine({ drive: 'needs-auth' }), JSON.stringify({ type: 'assistant', message: { content: [] } })] });
+  const before = stateSnapshot(fx);
+  const started = Date.now();
+  const { report, code } = await doctor(fx, ['--only', 'connectors', '--probe'], { env: { ...fx.env, GIT_DIR: join(fx.base, 'elsewhere.git') } });
+  assert.ok(Date.now() - started < 15000, 'killed at init, not waited out');
+  assert.equal(isAlive(probe.pid()), false, 'the stand-in is dead once doctor returns');
+  const calendar = lineFor(report, 'calendar', 'doctor.connectors.connected');
+  assert.equal(calendar.params.when.messageKey, 'doctor.connectors.when_probe');
+  assert.match(calendar.message, /connected now \(brain-kit doctor --probe\)/);
+  const notes = lineFor(report, 'meeting_notes', 'doctor.connectors.state');
+  assert.equal(notes.params.state, 'needs_auth');
+  assert.equal(notes.status, 'warn');
+  assert.equal(code, EXIT.OK);
+  // The argv is connector mode's, bounded, with the round's lists.
+  const argv = probe.argv();
+  assert.deepEqual(argv.slice(0, 16), ['-p', '--verbose', '--output-format', 'stream-json', '--permission-mode', 'dontAsk', '--permission-prompts', 'none', '--setting-sources', 'user', '--settings', '{"disableAllHooks":true}', '--disable-slash-commands', '--tools', ROUND_TOOLS.join(','), '--no-session-persistence']);
+  assert.ok(!argv.includes('--strict-mcp-config'));
+  assert.deepEqual(valuesAfter(argv, '--max-turns'), ['1']);
+  assert.deepEqual(valuesAfter(argv, '--max-budget-usd'), ['0.1']);
+  const allowed = valuesAfter(argv, '--allowedTools');
+  for (const tool of [...CAL_TOOLS, ...DRIVE_TOOLS]) assert.ok(allowed.includes(tool), tool);
+  const denied = valuesAfter(argv, '--disallowedTools');
+  for (const tool of [`${CAL_PREFIX}create_event`, `${CAL_PREFIX}delete_event`, `${DRIVE_PREFIX}share_file`, `${DRIVE_PREFIX}download_file_content`]) assert.ok(denied.includes(tool), tool);
+  assert.equal(argv.at(-1), '--');
+  assert.equal(probe.env(), '1|1', 'the memory switches every round runs with');
+  const [path, movedTo] = probe.paths();
+  assert.ok(path.startsWith(`${fx.roundTools}:`), `machine.path_extra comes first, as for a round: ${path}`);
+  assert.equal(movedTo, '', 'no variable that moves git elsewhere reaches the CLI');
+  assert.equal(probe.cwd(), realpathSync(fx.root), 'launched in the vault, as a round is');
+  assert.equal(probe.stdin(), t('doctor.connectors.probe_prompt'));
+  assert.deepEqual(stateSnapshot(fx), before, 'no last-run.json, no log, no mark');
+});
+
+test('--probe: the tools of a connected server under another prefix name the prefix to set', async () => {
+  const fx = setup({ config: connectorConfig() });
+  probeClaude(fx, { lines: [initLine({ tools: [...ROUND_TOOLS, ...CAL_TOOLS.map((tool) => tool.replace(CAL_PREFIX, 'mcp__claude_ai_Calendar__')), ...DRIVE_TOOLS] })] });
+  const { report } = await doctor(fx, ['--only', 'connectors', '--probe']);
+  const c = lineFor(report, 'calendar', 'doctor.connectors.prefix');
+  assert.equal(c.params.observed, 'mcp__claude_ai_Calendar__');
+  assert.match(c.message, /now \(brain-kit doctor --probe\)/);
+  lineFor(report, 'meeting_notes', 'doctor.connectors.connected');
+});
+
+test('--probe: a hook event before the init event, or a built-in tool beyond the pinned set, would stop every round in connector mode, and fails', async () => {
+  let fx = setup({ config: connectorConfig() });
+  const hooked = probeClaude(fx, { lines: [HOOK_LINE] });
+  const started = Date.now();
+  let r = await doctor(fx, ['--only', 'connectors', '--probe']);
+  assert.ok(Date.now() - started < 15000, 'killed at the hook event, not waited out');
+  assert.equal(isAlive(hooked.pid()), false);
+  const hooks = byKey(r.report, 'doctor.connectors.probe_isolation');
+  assert.equal(hooks.status, 'fail');
+  assert.deepEqual(hooks.params.problems.map((p) => p.code), ['hooks']);
+  assert.equal(byKey(r.report, 'doctor.connectors.probe_no_init').status, 'warn');
+  assert.equal(r.code, EXIT.FAILURE);
+  fx = setup({ config: connectorConfig() });
+  probeClaude(fx, { lines: [initLine({ tools: [...ROUND_TOOLS, 'Task', ...CAL_TOOLS, ...DRIVE_TOOLS] })] });
+  r = await doctor(fx, ['--only', 'connectors', '--probe']);
+  const tools = byKey(r.report, 'doctor.connectors.probe_isolation');
+  assert.deepEqual(tools.params.problems.map((p) => p.code), ['builtin_tools']);
+  assert.match(tools.message, /Task/);
+  lineFor(r.report, 'calendar', 'doctor.connectors.connected');
+  assert.equal(r.code, EXIT.FAILURE);
+});
+
+test('--probe: a CLI that prints no init event, exits or hangs, is a warning (a failure for a required source), and the last round\'s states are still said', async () => {
+  let fx = setup({ config: connectorConfig() });
+  const at = new Date().toISOString();
+  writeRoundWith(fx, { at, connectorStates: { calendar: { state: 'connected', at } } });
+  probeClaude(fx, { lines: [], exitCode: 1 });
+  let r = await doctor(fx, ['--only', 'connectors', '--probe']);
+  const none = byKey(r.report, 'doctor.connectors.probe_no_init');
+  assert.equal(none.status, 'warn');
+  assert.equal(none.params.code, '1');
+  assert.equal(none.params.bin, join(fx.toolsDir, 'claude'));
+  lineFor(r.report, 'calendar', 'doctor.connectors.connected');
+  lineFor(r.report, 'meeting_notes', 'doctor.connectors.unseen');
+  assert.equal(r.code, EXIT.OK);
+  fx = setup({ config: connectorConfig((c) => { c.curate.sources.required = ['transcripts', 'calendar']; }) });
+  const hung = probeClaude(fx, { lines: [] });
+  const started = Date.now();
+  r = await doctor(fx, ['--only', 'connectors', '--probe'], { probeTimeoutMs: 800 });
+  assert.ok(Date.now() - started < 15000);
+  assert.equal(isAlive(hung.pid()), false);
+  assert.equal(byKey(r.report, 'doctor.connectors.probe_no_init').status, 'fail');
+});
+
+test('--probe: nothing is launched when no connector source is on, or when a user rule refuses connector mode, as a round would launch nothing', async () => {
+  let fx = setup();
+  let probe = probeClaude(fx);
+  let r = await doctor(fx, ['--only', 'connectors', '--probe']);
+  assert.equal(probe.launched(), false);
+  assert.equal(byKey(r.report, 'doctor.connectors.probe_nothing').status, 'ok');
+  fx = setup({ config: connectorConfig() });
+  probe = probeClaude(fx);
+  r = await doctor(fx, ['--only', 'connectors', '--probe'], { env: userSettings(fx, { permissions: { allow: ['Edit(//**)'] } }) });
+  assert.equal(probe.launched(), false);
+  assert.equal(byKey(r.report, 'doctor.connectors.probe_blocked').status, 'ok');
+  assert.equal(byKey(r.report, 'doctor.connectors.blocked').status, 'warn');
+  assert.equal(byKey(r.report, 'doctor.connectors.blocked').params.detail.messageKey, 'curate.user_rules.covers_vault');
+  fx = setup({ config: configWith((c) => { c.curate.sources.best_effort = []; }) });
+  probe = probeClaude(fx);
+  r = await doctor(fx, ['--only', 'connectors', '--probe']);
+  assert.equal(probe.launched(), false);
+  assert.deepEqual(connectorLines(r.report).map((c) => c.messageKey), ['doctor.connectors.none', 'doctor.connectors.probe_nothing']);
+});
+
+test('--probe: a claude doctor may not run is never launched, and says why', async () => {
+  const fx = setup({ config: connectorConfig(), tools: { claude: 'absent' } });
+  const { report, code } = await doctor(fx, ['--only', 'connectors', '--probe']);
+  assertCheck(report, 'connectors', 'fail', 'doctor.claude_real.not_found');
+  assert.equal(code, EXIT.FAILURE);
+});
+
+test('--probe with --only that leaves connectors out is a usage error, and nothing is launched', async () => {
+  const fx = setup({ config: connectorConfig() });
+  const probe = probeClaude(fx);
+  const r = await doctor(fx, ['--only', 'node-version', '--probe']);
+  assert.equal(r.code, EXIT.USAGE);
+  assert.equal(r.stdout, '');
+  assert.match(r.stderr, /--probe feeds the connectors check/);
+  assert.equal(probe.launched(), false);
+});
+
+test('the real binary runs doctor --probe, and the usage names --probe', () => {
+  const fx = setup({ config: connectorConfig() });
+  probeClaude(fx);
+  const r = spawnSync(process.execPath, [BIN, 'doctor', fx.root, '--only', 'connectors', '--probe', '--json'], { cwd: fx.base, encoding: 'utf8', env: fx.env, timeout: 30000 });
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  const report = JSON.parse(r.stdout);
+  lineFor(report, 'calendar', 'doctor.connectors.connected');
+  lineFor(report, 'meeting_notes', 'doctor.connectors.connected');
+  const help = spawnSync(process.execPath, [BIN, '--help'], { encoding: 'utf8', env: { ...process.env, BRAIN_KIT_LANG: 'en' } });
+  assert.match(help.stdout, /doctor \[dir\] \[--json\] \[--only <id,\.\.\.>\] \[--probe\]/);
+});
+
+test('renderMessage renders a message given as a parameter, and a list of them, in place', () => {
+  const nested = { messageKey: 'doctor.connectors.when_round', params: { date: '24/09/2026' } };
+  assert.equal(renderMessage(t, 'doctor.connectors.connected', { source: 'calendar', connector: CAL_SERVER, when: nested, prefix: CAL_PREFIX }), `calendar: ${CAL_SERVER} connected in the round of 24/09/2026, with the tools the source needs under ${CAL_PREFIX}`);
+  const problems = [{ messageKey: 'harness.isolation.hooks', params: { count: 1 } }, { messageKey: 'harness.isolation.memory', params: { paths: '/x' } }];
+  const text = renderMessage(t, 'doctor.connectors.probe_isolation', { bin: 'claude', problems });
+  assert.ok(text.includes(`${t('harness.isolation.hooks', { count: 1 })} ${t('harness.isolation.memory', { paths: '/x' })}`), text);
+  assert.equal(renderMessage(t, 'doctor.node_version.ok', { version: ['24', '1'] }), 'Node 24, 1');
+});
+
+test('runChecks reports a check that returns an empty list as that check\'s failure, and flattens a list in order', () => {
+  const checks = new Map([
+    ['empty', () => []],
+    ['many', () => [{ id: 'many', status: 'ok', messageKey: 'doctor.node_version.ok', params: { version: '1' } }, { id: 'many', status: 'warn', messageKey: 'doctor.node_version.ok', params: { version: '2' } }]],
+  ]);
+  const results = runChecks({}, ['empty', 'many'], checks);
+  assert.deepEqual(results.map((r) => [r.id, r.status]), [['empty', 'fail'], ['many', 'ok'], ['many', 'warn']]);
+  assert.equal(results[0].messageKey, 'doctor.check_crashed');
 });
 
 // --- load order --------------------------------------------------------------

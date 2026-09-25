@@ -627,7 +627,11 @@ A round that did not read its sources may not close the day as swept.
 **Where it lives in brain-kit.** `src/guards/read-evidence.mjs` (counts tool results
 per source), per source high water marks that advance only with exit 0 plus evidence
 plus a report, `BRAIN_KIT_SOURCES` final line,
-`test/incidents/2026-08-20-watermark-without-sources.test.mjs` (Phase 2 and Phase 3).
+`test/incidents/2026-08-20-watermark-without-sources.test.mjs` (Phase 2); the calendar's
+own evidence, a listing that covers the whole window with every page
+(`src/sources/calendar-google.mjs`), and a window per source, so a source advances only
+through the days it read (`src/commands/curate.mjs`),
+`test/incidents/2026-08-20-calendar-partial-read.test.mjs` (Phase 3).
 
 ### Undated: the acceptance criterion demanded facts no round could produce
 **What happened.** The first run of the external sources landed on a Sunday with zero
@@ -672,7 +676,12 @@ its own, which also keeps its runs out of the transcripts the next round reads.
 **Where it lives in brain-kit.** `src/harness/claude-code.mjs` (the flags on every
 round), `src/guards/isolation.mjs` (the check of the first event), `brain-kit doctor`
 check `claude-isolation-flags`, [security.md](security.md),
-`test/incidents/2026-09-24-inherited-settings.test.mjs` (Phase 2).
+`test/incidents/2026-09-24-inherited-settings.test.mjs` (Phase 2); the pinned built-in
+tools, no skills and reads scoped to the vault and the listed transcripts,
+`test/incidents/2026-09-24-unscoped-round.test.mjs`, and connector mode, which loads the
+person's user settings on purpose and mirrors every allow rule in them as a deny
+(`src/curate/user-rules.mjs`), `test/incidents/2026-09-24-user-rules-in-connector-mode.test.mjs`
+(Phase 3).
 
 ## Connectors
 
@@ -686,9 +695,12 @@ PR #32 and PR #33).
 verification has a timestamp. Never attest to the state of a document that was not
 opened in this round. The reliable link between a meeting and its minutes is the
 event's attachment with a file URL, never the title.
-**Where it lives in brain-kit.** Closed uncertainty vocabulary in the curate prompt,
-`src/guards/read-evidence.mjs` (a document counts as read only by a successful read of
-it in this round); the meeting-notes source and its incident test come in Phase 3.
+**Where it lives in brain-kit.** Closed uncertainty vocabulary in the curate prompt
+(Phase 2); the meeting-notes source, `src/sources/meeting-notes-google-drive.mjs`, whose
+prompt block says never to call a document empty or missing unless it was opened in this
+round and to reach a meeting's notes through the event's attachment, and which counts the
+documents opened (`documents` in `last-run.json`),
+`test/incidents/2026-08-11-meeting-notes-two-doors.test.mjs` (Phase 3).
 
 ### 11/08/2026: half the meeting notes were invisible
 **What happened.** Only one door existed: searching the document store by title
@@ -699,8 +711,10 @@ the curator's own hands.
 ones and the event's own attachments for the manual ones. Deduplicate by the literal
 document title recorded in the log, with the stated limit that this only works
 between nights where capture actually happened.
-**Where it lives in brain-kit.** The meeting-notes source (two doors, literal search
-string, dedup by title), not built yet (Phase 3).
+**Where it lives in brain-kit.** `src/sources/meeting-notes-google-drive.mjs` (two
+doors: the literal title search and the documents attached to the calendar's events;
+deduplicated by the literal title in the log), [connectors.md](connectors.md),
+`test/incidents/2026-08-11-meeting-notes-two-doors.test.mjs` (Phase 3).
 
 ### 11/08/2026: a meeting note entered the log as a link and nothing else
 **What happened.** Meeting notes were recorded in the log as a title plus a link,
@@ -709,8 +723,9 @@ content: the source is live and can change or lose its permissions.
 **Rule.** A meeting note is a first class source, with the same weight as a
 transcript. Every note in the window produces a distillation in the log. Promotion to
 a note stays selective; distillation does not.
-**Where it lives in brain-kit.** The meeting-notes source, not built yet, and a curate
-prompt stage for distillation (Phase 3).
+**Where it lives in brain-kit.** The curate prompt's rule `notes-first-class` (every
+note in the window distilled into the log under its literal title) and the meeting-notes
+source's prompt block, `src/sources/meeting-notes-google-drive.mjs` (Phase 3).
 
 ### 11/08/2026: a squad's daily stand-up was invisible to the vault
 **What happened.** Only the owner's own calendar was in scope, so a squad's daily
@@ -718,8 +733,12 @@ stand up, which the owner does not attend, never reached the vault at all.
 **Rule.** Team calendars are in scope, and there the value is precisely what the
 owner does not see. An event that already has the owner among its attendees is
 skipped, and deduplication is by event id.
-**Where it lives in brain-kit.** The calendar source (team calendars with recorded
-consent, dedup by event id), not built yet (Phase 3).
+**Where it lives in brain-kit.** `src/sources/calendar-google.mjs` (other people's
+calendars in `sources.calendar.team_calendars`, read only with
+`team_calendars_consent_noted: true`; events that already include the owner skipped;
+deduplicated by event id), `brain-kit doctor` check `connectors` (calendars listed
+without the recorded consent), `test/incidents/2026-08-11-other-calendars-consent.test.mjs`
+(Phase 3).
 
 ### 21/08/2026: thirteen of sixteen attachments came back "not found"
 **What happened.** Of 16 minutes attached to the previous day's events, 13 returned
@@ -729,8 +748,9 @@ next day.
 **Rule.** An attachment that does not open for permission reasons is reported as "no
 access (document store permission)", never as empty and never as a connector failure,
 and the list goes into the answer so the human can decide whether to request access.
-**Where it lives in brain-kit.** Closed label set in the curate prompt, and the
-meeting-notes source, not built yet (Phase 3).
+**Where it lives in brain-kit.** Closed label set in the curate prompt (Phase 2), its
+rule `no-access-label`, and the meeting-notes source's prompt block, which gives the exact
+reason, `src/sources/meeting-notes-google-drive.mjs` (Phase 3).
 
 ### Undated: the document search is accent sensitive and fails silently
 **What happened.** The search string for the automatically generated meeting notes
@@ -740,8 +760,11 @@ found while calibrating the source.
 **Rule.** Copy the accented search string literally, and treat silent source failure
 as a risk class of its own. A wrong query does not raise an error, it produces a
 quiet night.
-**Where it lives in brain-kit.** The meeting-notes source (literal search string in
-config), not built yet, and `src/guards/read-evidence.mjs` (Phase 3).
+**Where it lives in brain-kit.** `src/sources/meeting-notes-google-drive.mjs` (the
+literal `search_title_contains`, given to the model exactly; a search without it, or with
+it reworded, is not a read), [connectors.md](connectors.md) (copy the title from one of
+your own documents, accents included), `test/incidents/undated-accent-sensitive-search.test.mjs`
+(Phase 3).
 
 ### 03/09/2026: the search found nothing because the event is named after two people
 **What happened.** Searching for a mentor's surname returned nothing, because the
@@ -752,8 +775,12 @@ speaker separation kept swapping two colleagues whose names differ by one letter
 **Rule.** Search by the literal event title, read the whole document rather than just
 the summary, and treat a speaker separation error as a divergence to confirm, never
 as a fact.
-**Where it lives in brain-kit.** The meeting-notes source, not built yet, the
-divergence table required by the curate prompt, skill `seed-rituals` (Phase 3).
+**Where it lives in brain-kit.** The meeting-notes source's prompt block,
+`src/sources/meeting-notes-google-drive.mjs` (the attachment, never a person's name or a
+paraphrase of the event's title, links a meeting to its notes; the whole document and
+every tab; a speaker attribution is a divergence to confirm), the divergence table required
+by the curate prompt, and the skill `seed-rituals`, which keeps the literal event title
+(`skills/seed-rituals/SKILL.md`) (Phase 3).
 
 ### Undated: the deduplication key had to be the escaped literal title
 **What happened.** Matching recurring meetings by the note they feed would have
@@ -767,7 +794,10 @@ with the vertical bar escaped, searched in the raw text. Unescape only to compar
 against the calendar; keep it escaped to write and to match in a markdown table. The
 column names are an interface between the prompt and the note.
 **Where it lives in brain-kit.** `taxonomy` column contract in the config,
-`brain-kit lint` rule `columns`, skill `seed-rituals` (Phase 3).
+`brain-kit lint` rule `columns`, and the skill `seed-rituals`
+(`skills/seed-rituals/SKILL.md`, its body in `lang/<code>/skills/seed-rituals.md`), which
+writes the title in straight quotes with the bar escaped and compares that key as exact
+text, never as a regular expression (Phase 3).
 
 ### Undated: a wrong allowlist burned every turn on workarounds
 **What happened.** A misconfigured tool allowlist made the agent spend all of its
@@ -777,8 +807,11 @@ date is recorded.
 **Rule.** External source stages are best effort: record the failure, skip that stage
 only and carry on, with shell workarounds forbidden in the prompt. A round without
 the calendar is still a valid round.
-**Where it lives in brain-kit.** `sources` marked `required` or `best_effort` in
-config, denylist passed to the model, `src/guards/read-evidence.mjs` (Phase 3).
+**Where it lives in brain-kit.** `curate.sources.required` and `best_effort` in the
+config (a best-effort source never changes a round's exit code), the curate prompt's rule
+`no-workaround`, the relaunch without a source the first launch showed unavailable
+(`src/commands/curate.mjs`), `src/guards/read-evidence.mjs`,
+`test/incidents/undated-wrong-allowlist-workarounds.test.mjs` (Phase 3).
 
 ### 10/08/2026: three debugging iterations on the wrong thing
 **What happened.** Three iterations were spent debugging the wrong layer. The tool
@@ -788,9 +821,12 @@ allowlist the agent never loads the schemas in the first place. The signature of
 wrong allowlist is the agent saying it is waiting for permission.
 **Rule.** Check the MCP tool names with the CLI's own listing before writing the
 allowlist, include the tool search tool, and forbid workarounds in the prompt.
-**Where it lives in brain-kit.** A connector-state guard (parser for the CLI listing),
-not built yet, allowlist derived per subcommand plus source tools, `brain-kit doctor`
-comparing the configured tool prefix with the observed one (Phase 3).
+**Where it lives in brain-kit.** `src/guards/connectors.mjs` (each connector's state
+from the round's own first event, in place of a parser of the CLI's listing, which phase 3
+dropped), the allowlist per kit subcommand plus each source's read tools and ToolSearch
+(`src/curate/tools.mjs`, each source's `toolRules`), `brain-kit doctor` check
+`connectors` naming the prefix the tools were seen under against the configured one,
+[connectors.md](connectors.md) (Phase 3).
 
 ### Undated: a smoke test on a cheap model invented a connector problem
 **What happened.** A smoke test run on a small, fast model made seven calls to the
@@ -801,7 +837,10 @@ outage. No date recorded: this was a test run, not a production round.
 guaranteed data and a mechanical assertion (exit code plus grep), never by reading the
 text the model chose to write.
 **Where it lives in brain-kit.** `brain-kit curate --check`, `src/guards/read-evidence.mjs`
-as the mechanical assertion (Phase 3).
+and each connector source's evidence (`src/sources/calendar-google.mjs`,
+`src/sources/meeting-notes-google-drive.mjs`) as the mechanical assertion, and the opt-in
+end-to-end round `test/e2e-connectors.test.mjs`, which asserts on the round's record,
+never on the model's text (Phase 3).
 
 ### 05/09/2026: connected, online, and the tools were not there
 **What happened.** For four consecutive nights, from 05/09 to 08/09/2026, the CLI
@@ -812,8 +851,12 @@ than in the connectors.
 **Rule.** If the connector says connected and the network is up, it is the
 invocation's configuration, not an outage and not authentication. Compare the
 environment of the two invocations before touching the allowlist.
-**Where it lives in brain-kit.** `brain-kit doctor` (the environment comparison check)
-and a connectors guide, neither built yet (Phase 3).
+**Where it lives in brain-kit.** `src/guards/connectors.mjs` (`tools_missing`:
+connected, but the tools the source needs are not in the session, with the prefix they
+were seen under), `brain-kit doctor` check `connectors` and `brain-kit doctor --probe`,
+which asks the round's own launch mode rather than another invocation,
+[connectors.md](connectors.md), `test/incidents/2026-09-05-connected-without-tools.test.mjs`
+(Phase 3).
 
 ### 14/09/2026: disabled is a state, and nobody reports it
 **What happened.** The session connector status returned the calendar and document
@@ -823,9 +866,12 @@ finding from the blind nights earlier that month.
 **Rule.** Disabled is a state, not an error, and nobody reports it. Check the
 connector's literal status before investigating authentication, network or allowlist.
 The switch becomes the default for new sessions.
-**Where it lives in brain-kit.** A connector-state guard (seven states, exact display
-name, unknown format stays unknown), `brain-kit doctor` and a connectors guide, none
-built yet (Phase 3).
+**Where it lives in brain-kit.** `src/guards/connectors.mjs` (seven states, the exact
+display name, a status it does not know stays `unknown`; a connector disabled for Claude
+Code is `absent`), the state-change notification and the session's status line
+(`src/commands/curate.mjs`, `src/hooks/session-start.mjs`), `brain-kit doctor` check
+`connectors`, [connectors.md](connectors.md),
+`test/incidents/2026-09-14-connector-disabled.test.mjs` (Phase 3).
 
 ## The Stop hook and the session
 
@@ -1047,7 +1093,9 @@ are rules in the prompt, not left to the model's good sense.
 **Where it lives in brain-kit.** `src/sources/transcripts-claude-code.mjs` (the plan
 gives each transcript's size and the line to start reading from, near its end, and caps
 how many are offered), the curate prompt, `--max-turns` and `--max-budget-usd` on every
-round (`curate.max_turns`, `curate.budget_usd`) (Phase 2).
+round (`curate.max_turns`, `curate.budget_usd`) (Phase 2); for meeting notes, the source's
+prompt block, which checks an attached document's metadata first and never opens a
+recording or a full transcription (`src/sources/meeting-notes-google-drive.mjs`) (Phase 3).
 
 ### Undated: a colleague's medical appointment was in the calendar window
 **What happened.** While calibrating the prompt against real calendar data, a
@@ -1057,9 +1105,13 @@ near the vault. Found in calibration, so no incident date.
 appointments and any event with no other person from the organisation are dropped
 entirely, with neither a mention nor an observation. Ingesting other people's
 calendars requires an explicit privacy filter and recorded consent.
-**Where it lives in brain-kit.** Privacy policy in the calendar source prompt block,
-`brain-kit lint` rule `privacy` on added lines, consent recorded per calendar in
-config (Phase 3).
+**Where it lives in brain-kit.** The privacy policy in the calendar source's prompt
+block and the event-type filter in its evidence (`src/sources/calendar-google.mjs`), the
+curate prompt's rule `third-party-privacy`, `brain-kit lint` rule `privacy` on the
+lines a change adds (`privacy.third_party_keywords`, `src/rules/privacy-keywords.mjs`),
+`brain-kit doctor` check `privacy-keywords`, the consent recorded in
+`sources.calendar.team_calendars_consent_noted`,
+`test/incidents/undated-colleague-health-in-calendar.test.mjs` (Phase 3).
 
 ### 18/08/2026: a one sided account became a confirmed pattern
 **What happened.** The brain started treating one party's account as a confirmed
@@ -1070,4 +1122,5 @@ become a confirmed pattern, history is not proof, and the rule applies to the br
 itself, whose files make shallow judgement easier rather than harder.
 **Where it lives in brain-kit.** Uncertainty vocabulary and the triangulation rule in
 the curate prompt, `brain-kit lint` rule `privacy`, confidential folders declared in
-config (Phase 1 and Phase 3).
+config (Phase 1 and Phase 2), and the meeting-notes source's rule that a speaker
+attribution is a divergence to confirm, never a fact (Phase 3).

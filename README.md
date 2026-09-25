@@ -5,9 +5,10 @@
 > `verify`) and the Claude Code plugin (hooks, skills, a read-only subagent) work today,
 > from a clone of this repository. Phase 2 is complete too: the scheduled curator (`curate`,
 > `watermark`, `schedule`) reads your recent Claude Code sessions and opens a pull request
-> from an unattended round. Calendar and meeting-notes sources and the morning briefing
-> are still to come, and the package on npm is still the Phase 0 skeleton. Follow the repository for the first usable
-> release.
+> from an unattended round. Phase 3 is in review: the round also reads your calendar and
+> meeting notes through the claude.ai connectors, once you turn them on. The morning
+> briefing is still to come, and the package on npm is still the Phase 0 skeleton. Follow
+> the repository for the first usable release.
 
 A second brain in plain markdown, in the Open Knowledge Format (OKF) v0.2, kept by an
 AI agent that reads it through an index, feeds it every day from your own work (session
@@ -21,7 +22,7 @@ brain-kit is one repository that is meant to be, at the same time:
   files current, checks the machine with `doctor`, validates and lints a vault, runs the
   pull request loop (`sync`, `propose`, `verify`), and runs the scheduled curator
   (`curate`, `watermark`, `schedule`); the briefing pre-flight is still to come;
-- a Claude Code plugin (seven skills, the Stop and SessionStart hooks, a read-only
+- a Claude Code plugin (eight skills, the Stop and SessionStart hooks, a read-only
   subagent) that calls the same engine;
 - a plugin marketplace of one, so that `claude plugin marketplace add aleckyann/brain-kit`
   followed by `claude plugin install brain-kit@brain-kit` installs it.
@@ -85,8 +86,12 @@ git, the gate and `core.hooksPath`, `brain-kit` on PATH, the configuration, the 
 real CLI and knows every flag that isolates a round, the projects its transcripts come
 from, how far behind each source's watermark is, the last round (a round that exits 0 in
 seconds without a model turn is reported as dead), the timer and its next fire times, and
-whether a failed round reaches you or only the log. Each failure names the command that
-fixes it.
+whether a failed round reaches you or only the log; and, since phase 3, whether lint has
+privacy keywords to refuse on added lines, anything a round may reach beyond the vault,
+and each connector source: off or on, the state the last round saw with its date, a tool
+prefix that does not match, other people's calendars without recorded consent, and a
+user rule that refuses connector mode. `doctor --probe` asks the CLI for each connector's
+state now, without a round. Each failure names the command that fixes it.
 
 `validate` checks the vault against OKF v0.2 and reports two rulers apart: the format's
 own conformance, and the vault's house rules, which are stricter on purpose. A vault can
@@ -104,7 +109,7 @@ that found nothing.
 | `tables` | table shape: the blank line before a table, duplicate rows, overlong cells |
 | `style` | characters the configuration forbids, on the lines a change added |
 | `secrets` | credential shapes and configured patterns, in every file a push could publish, dot-files such as `.env` included |
-| `privacy` | confidential notes stay in confidential directories and are not linked from shared ones |
+| `privacy` | confidential notes stay in confidential directories and are not linked from shared ones, and a line a change adds holds none of the terms in `privacy.third_party_keywords` (someone else's health or private life) |
 | `attribution` | a note's sources and its footnotes anchor each other |
 
 `--rule` restricts the run to named rules, `--base` chooses what counts as the change
@@ -127,18 +132,21 @@ owner's own identity. `machine` shows and edits the machine-local `machine.json`
 configuration lists, selected by the time of their messages, and gives them to a model
 that can act only through the kit's own `validate`, `lint` and `propose`. The round ends
 with a pull request against your vault. The model runs isolated from your own Claude Code
-settings: no settings file of yours or of the project is loaded, no hook and no MCP server,
-and everything its own rules do not allow is denied. The round checks the isolation
-from the CLI's first event and stops the model if it does not hold. The steps run in one
+settings: no settings file of yours or of the project is loaded, no hook, no MCP server,
+no skill and no built-in tool beyond the seven it needs; it reads only the vault and the
+transcripts the round lists, and everything its own rules do not allow is denied. The
+round checks the isolation from the CLI's first event and stops the model if it does not
+hold. The steps run in one
 fixed, tested order (lock, network, sync, then the configuration as synced), and every way
 a round can fail ends with a non-zero exit, a reason in `last-run.json` and the log, and
 your notify command. `--dry` shows what a round would do and `--check` runs every step up
 to the model.
 
-`watermark` shows and moves the last day each source was swept. A round reads the days
-after it, oldest first and whole (as many as fit in `curate.caps.transcripts`; the rest
-wait for the next round), and moves it only when every file it was offered was read and
-the model reported the source; no day is ever closed unread. `schedule install|uninstall|status`
+`watermark` shows and moves the last day each source was swept. Each source reads the
+days after its own mark, oldest first and whole (as many as fit in
+`curate.caps.transcripts`; the rest wait for the next round), and its mark moves only when
+the round's record shows the source read and the model reported it; no day is ever closed
+unread. `schedule install|uninstall|status`
 installs the round in daytime windows (09:30, 14:00 and 20:00 by default), named by what it
 does, with no dependency on a network target: systemd user timers are the reference, and
 launchd and cron are rendered too.
@@ -146,6 +154,34 @@ launchd and cron are rendered too.
 [docs/scheduling.md](docs/scheduling.md) explains the round step by step, the windows, the
 watermark, the exit codes and what to do for each. [docs/security.md](docs/security.md)
 explains what isolates the model and the measurements behind it.
+
+## Calendar and meeting notes
+
+A round can also read your calendar, through the claude.ai Google Calendar connector, and
+your meeting notes, through the claude.ai Google Drive connector. Both are off until you
+turn them on: the calendar by naming the calendars to read, the meeting notes by copying
+the literal title of your automatic notes, accents included, from one of your own
+documents. Both are best effort: a round that cannot read one keeps that source's day open
+and still curates and proposes the rest, and neither can write anything through its
+connector.
+
+To reach the connectors a round loads your Claude Code user settings, and switches off
+everything they bring besides the connectors: your hooks, your skills, every built-in tool
+beyond the pinned set, and every allow rule of yours, mirrored as a deny (a rule that
+cannot be mirrored refuses that mode, and the round runs on the transcripts alone). Each
+connector's state comes from the round's own first event: one that needs authentication,
+failed, is absent (never connected, or disabled for Claude Code) or lacks its tools makes
+the round stop the model before its first turn and launch once more without it. What a
+source counts as read is the record of the calls the model made, never its word: every
+calendar listed over its whole window, with the private-event filter and every page, and
+the literal title search with its bound. A state that changes is announced once through
+your notify command, and the session's status line names a connector that was not
+connected in the last round.
+
+The `seed-rituals` skill fills the vault's weekly rhythm table from your calendar, in your
+own session, with your confirmation for every row. [docs/connectors.md](docs/connectors.md)
+explains what each source reads, how to turn it on, the states and what to do for each,
+and the privacy policy.
 
 ## The Claude Code plugin
 
@@ -157,8 +193,8 @@ marketplace. Inside a vault:
 - the `Stop` hook asks the session to curate only what it changed itself. It never
   blocks outside a vault, in a copy away from the registered vault path, while another
   writer holds the lock, or twice in a row;
-- seven skills drive the engine in the vault's own language: `setup`, `curate-session`,
-  `capture`, `ask`, `lint`, `review-stale` and `approve`;
+- eight skills drive the engine in the vault's own language: `setup`, `curate-session`,
+  `capture`, `ask`, `lint`, `review-stale`, `approve` and `seed-rituals`;
 - the `vault-reader` subagent reads notes with Read, Grep and Glob only.
 
 `evals/` holds one `claude plugin eval` case per skill and language; see
@@ -171,7 +207,7 @@ marketplace. Inside a vault:
 | 0 | Skeleton, exit codes, language packs, config schemas, anti-leak gate, CI, docs | done, 0.0.1 on npm |
 | 1 | Validator, lint, propose (PR loop), Stop hook, init, doctor, skills | done |
 | 2 | Scheduled curator over local transcripts, scheduler templates | done |
-| 3 | Calendar and meeting-notes sources (best effort by design) | planned |
+| 3 | Calendar and meeting-notes sources (best effort by design) | in review |
 | 4 | Morning briefing | planned |
 | 5 | Migration of the original vault onto the kit | planned |
 | 6 | 0.1.0 release | planned |
@@ -212,7 +248,9 @@ Read [docs/rationale.md](docs/rationale.md) for the reasoning and
 
 ## Requirements (target)
 
-Node.js >= 24, git, the GitHub CLI (`gh`) logged in, and Claude Code. Linux is the
+Node.js >= 24, git, the GitHub CLI (`gh`) logged in, and Claude Code; for the calendar and
+meeting-notes sources, the claude.ai Google Calendar and Google Drive connectors, connected
+in claude.ai and enabled for Claude Code. Linux is the
 reference platform for scheduling (systemd user timers, which need
 `loginctl enable-linger` to run while you are logged out); macOS (launchd) and cron entries
 are rendered and tested without being installed by the test suite; Windows is out of scope

@@ -4,7 +4,13 @@
 // Each check is named by what it prevents, and returns one result:
 // { id, status, messageKey, params }, where status is 'ok', 'warn' or
 // 'fail'. A result carries a message key and its parameters, never a
-// formed sentence; the command renders it through the language pack.
+// formed sentence; the command renders it through the language pack. A
+// check that reports on each of several sources (`connectors`, `round-scope`)
+// may return a list of results instead, one per finding, every one under its
+// id. A parameter may itself be a message, { messageKey, params }, or a
+// list of them: the command renders it in place (src/commands/doctor.mjs,
+// renderMessage), so a check quotes the kit's own sentence for a connector
+// state or a user rule instead of forming a second one.
 //
 // THE RULE THIS FILE IS BUILT ON. A check reported `ok` tells a person
 // their gate is running, their machine file is where the kit will look,
@@ -34,16 +40,22 @@ import { EXIT } from '../exit-codes.mjs';
 import { decodeBytes } from '../io.mjs';
 import { CONFIG_FILENAME, MACHINE_FILENAME, canonicalPathMatches, findMachineOnlyKeys, validateConfig, validateMachine } from '../config.mjs';
 import { STATE_FILES, stateDirFor } from '../state.mjs';
-import { kitVersion } from '../version.mjs';
+import { KIT_ROOT, kitVersion } from '../version.mjs';
 import { localGitVarNames, withoutLocalGitVars } from '../git-env.mjs';
 import { loadPatterns } from '../leak.mjs';
+import { SUPPORTED_LANGS } from '../lang.mjs';
 import { TEMPLATE_HOOK } from '../init/skeleton.mjs';
 import { INSTALL_HOOK_COMMAND } from '../init/gate.mjs';
 import { MANIFEST_PATH, readManifest } from '../manifest.mjs';
 import { compareVersions } from '../commands/update.mjs';
 import { defaultBranch, defaultBranchUpstream, remoteBranches, trackedRemote } from '../git.mjs';
 import { checkCli } from '../guards/cli.mjs';
-import { buildArgv, unscopedRules } from '../harness/claude-code.mjs';
+import { buildArgv, rulesIn, runModel, unscopedRules } from '../harness/claude-code.mjs';
+import { checkIsolation } from '../guards/isolation.mjs';
+import { CONNECTOR_STATES, connectorStateMessage, connectorStates } from '../guards/connectors.mjs';
+import { blockingMessage, userSettingsFiles } from '../curate/user-rules.mjs';
+import { keywordMatchers } from '../rules/privacy-keywords.mjs';
+import { SOURCES } from '../sources/index.mjs';
 import { addDays, daysBetween, localDay, readWatermark, WatermarkError } from '../guards/watermark.mjs';
 // A cycle on purpose: schedule.mjs imports resolveClaude and expandHome
 // from this file, and this file asks schedule's own `status`. Neither
@@ -51,6 +63,11 @@ import { addDays, daysBetween, localDay, readWatermark, WatermarkError } from '.
 // so either may be imported first (test/doctor.test.mjs loads each
 // on its own in a fresh process to hold that).
 import { installedRoundPath, ROUND_COMMANDS, roundPath, runScheduleSync } from '../commands/schedule.mjs';
+// The same kind of cycle with curate.mjs, which imports expandHome from
+// here: the connectors check asks the round's own choice of launch mode
+// (chooseMode) and its own reading of a source that is off, so doctor and
+// the round cannot disagree.
+import { BLOCKED_BY_USER_RULES, chooseMode, offOnPurpose, offProblems, problemText } from '../commands/curate.mjs';
 
 export const MINIMUM_NODE_MAJOR = 24;
 export const HOOKS_DIR = '.githooks';
@@ -174,15 +191,19 @@ function readJsonFile(file) {
 // path, so that is the derivation every check that reads the state
 // directory uses. The real path is a separate fact, used where the
 // question is about the real path.
+//
+// `probe` is what `doctor --probe` saw (probeConnectors, below), set by the
+// command before the checks run; null when it was not asked for.
 export function buildContext({
   root, env = process.env, nodeVersion = process.versions.node, execPath = process.execPath, engineVersion = kitVersion(), now = new Date(),
+  probeTimeoutMs = PROBE_INIT_TIMEOUT_MS,
 }) {
   const memo = new Map();
   const once = (key, compute) => () => {
     if (!memo.has(key)) memo.set(key, compute());
     return memo.get(key);
   };
-  const ctx = { root, env, nodeVersion, execPath, engineVersion, now };
+  const ctx = { root, env, nodeVersion, execPath, engineVersion, now, probeTimeoutMs, probe: null };
   ctx.localGitVars = once('localGitVars', () => localGitVarNames(env));
   ctx.realRoot = once('realRoot', () => realpathSync(root));
   ctx.configFile = join(root, CONFIG_FILENAME);
@@ -190,6 +211,8 @@ export function buildContext({
   ctx.stateDir = stateDirFor(root, env);
   ctx.machineFile = join(ctx.stateDir, MACHINE_FILENAME);
   ctx.machine = once('machine', () => readJsonFile(ctx.machineFile));
+  ctx.lastRun = once('lastRun', () => readJsonFile(join(ctx.stateDir, STATE_FILES.LAST_RUN)));
+  ctx.connectors = once('connectors', () => connectorsPlan(ctx));
   return ctx;
 }
 
@@ -854,15 +877,18 @@ function claudeReal(ctx) {
   return { id, status: 'ok', messageKey: 'doctor.claude_real.ok', params: { bin, version: cli.version } };
 }
 
-// Every option buildArgv can put on a round's command line, derived from
-// buildArgv itself so this list cannot fall behind it: since phase 3 that
-// includes --disable-slash-commands and --tools, which pin the round's
-// built-in tools and keep every skill out. A value is not an option: the
-// empty string after --setting-sources and the tool list after --tools
-// are left out by the filter.
+// Every option buildArgv can put on a round's command line, in either
+// launch mode, derived from buildArgv itself so this list cannot fall
+// behind it: since phase 3 that includes --disable-slash-commands and
+// --tools, which pin the round's built-in tools and keep every skill out,
+// and connector mode's --settings, which switches the person's hooks off.
+// A value is not an option: the empty string or `user` after
+// --setting-sources, the JSON after --settings and the tool list after
+// --tools are left out by the filter.
 export function roundFlags() {
-  return buildArgv({ model: 'm', maxTurns: 1, budgetUsd: 1, allowed: ['Read(./**)'], disallowed: ['WebFetch'] })
+  const flags = ['isolated', 'connectors'].flatMap((mode) => buildArgv({ mode, model: 'm', maxTurns: 1, budgetUsd: 1, allowed: ['Read(./**)'], disallowed: ['WebFetch'] }))
     .filter((arg) => /^--?[A-Za-z]/.test(arg));
+  return [...new Set(flags)];
 }
 
 // Flags a round passes that the CLI's own --help does not list, measured
@@ -1129,6 +1155,374 @@ function notifyCheck(ctx) {
   return { id, status: 'ok', messageKey: 'doctor.notify.ok', params: { program: resolved } };
 }
 
+// --- phase 3: privacy keywords, what a round reaches, connectors --------------
+
+// docs/incidents.md, "Undated: a colleague's medical appointment was in the
+// calendar window": lint refuses a line a change adds when it holds one of
+// privacy.third_party_keywords (src/rules/privacy-keywords.mjs). A
+// configuration written before that list existed holds none, and `update`
+// adds no key to a configuration, so such a vault checks nothing and says
+// nothing (review M5 of task 6, 25/09/2026): it is said here. The list the
+// language pack ships is named, since that is what init writes.
+function privacyKeywords(ctx) {
+  const id = 'privacy-keywords';
+  const read = ctx.config();
+  if (!read.ok || !isObject(read.value)) {
+    return { id, status: 'warn', messageKey: 'doctor.curate.config_unknown', params: { file: ctx.configFile } };
+  }
+  const setting = 'privacy.third_party_keywords';
+  const count = keywordMatchers(read.value).length;
+  if (count === 0) {
+    const lang = SUPPORTED_LANGS.includes(read.value.lang) ? read.value.lang : 'en';
+    const defaults = join(KIT_ROOT, 'lang', lang, 'config.defaults.json');
+    return { id, status: 'warn', messageKey: 'doctor.privacy_keywords.none', params: { setting, file: CONFIG_FILENAME, defaults } };
+  }
+  return { id, status: 'ok', messageKey: 'doctor.privacy_keywords.ok', params: { count, setting } };
+}
+
+// What a round may reach beyond the vault and the transcripts its plan
+// lists (phase 3, task 1: every round's reads are scoped to those, measured
+// on 24/09/2026 with Claude Code 2.1.281). Two things widen it, each
+// possibly on purpose and each worth a line, never a failure: a rule the
+// vault's own curate.allowed_tools_extra adds that reads or writes outside
+// the vault, or that runs a command (any command can read any file your
+// user can); and, in connector mode, a read rule of the person's Claude
+// Code user settings, which the round records instead of mirroring it as a
+// deny (src/curate/user-rules.mjs: a mirrored bare Read would deny the
+// round's own reads), while a user allow rule stays active in that mode.
+const PATH_RULE_TOOLS = Object.freeze(['Read', 'Glob', 'Grep', 'Edit', 'Write']);
+const GLOB_CHARACTERS = Object.freeze(['*', '?', '[', '{']);
+
+// A path as written and, when it exists, with every link followed: a scope
+// inside either spelling of the vault is inside it.
+function spellingsOf(path) {
+  const written = resolve(path);
+  try {
+    const real = realpathSync(written);
+    return real === written ? [written] : [written, real];
+  } catch {
+    return [written];
+  }
+}
+
+// Whether a path rule's scope, given to the CLI on its command line, stays
+// inside the vault. `//x` is /x, `~/x` is under the home directory, and
+// `./x` or `x` is under the round's working directory, the vault root. A
+// scope with a single leading slash is anchored somewhere the kit has not
+// measured for a rule on the command line, and a `..` segment or `{`
+// alternatives could climb out of the literal prefix (the text before the
+// first glob character), so none of those is shown to stay inside. A prefix
+// that stops inside a name (`brain*`) reaches every name starting with it.
+function staysInVault(scope, vaults, homes) {
+  let bases = vaults;
+  let rest = scope;
+  if (scope.startsWith('//')) {
+    bases = [sep];
+    rest = scope.slice(2);
+  } else if (scope === '~' || scope.startsWith('~/')) {
+    bases = homes;
+    rest = scope.slice(2);
+  } else if (scope.startsWith('/')) {
+    return false;
+  }
+  if (/(^|\/)\.\.(\/|$)/.test(rest) || rest.includes('{')) return false;
+  let end = rest.length;
+  for (const ch of GLOB_CHARACTERS) {
+    const at = rest.indexOf(ch);
+    if (at !== -1 && at < end) end = at;
+  }
+  const literal = rest.slice(0, end);
+  const partial = end < rest.length && literal !== '' && !literal.endsWith('/');
+  return bases.some((base) => {
+    const path = resolve(base, literal);
+    return vaults.some((vault) => (path === vault && !partial) || path.startsWith(vault + sep));
+  });
+}
+
+function reachesBeyondVault(rule, vaults, homes) {
+  const m = /^([A-Za-z]+)(?:\((.*)\))?$/s.exec(rule);
+  if (m === null) return false;
+  if (m[1] === 'Bash') return true;
+  // A path tool with no scope at all is config-valid's failure, not this.
+  if (!PATH_RULE_TOOLS.includes(m[1]) || m[2] === undefined) return false;
+  return !staysInVault(m[2].trim(), vaults, homes);
+}
+
+function roundScope(ctx) {
+  const id = 'round-scope';
+  const plan = ctx.connectors();
+  if (plan.unknown) return { id, status: 'warn', messageKey: 'doctor.curate.config_unknown', params: { file: ctx.configFile } };
+  if (plan.disabled) return curateDisabled(ctx, id);
+  const vaults = spellingsOf(ctx.root);
+  const homes = spellingsOf(ctx.env.HOME || homedir());
+  const extra = plan.config.curate?.allowed_tools_extra;
+  const rules = (Array.isArray(extra) ? extra : []).filter((arg) => typeof arg === 'string').flatMap((arg) => rulesIn(arg));
+  const beyond = rules.filter((rule) => reachesBeyondVault(rule, vaults, homes));
+  const results = [];
+  if (beyond.length > 0) {
+    results.push({ id, status: 'warn', messageKey: 'doctor.round_scope.extra', params: { setting: 'curate.allowed_tools_extra', file: CONFIG_FILENAME, rules: beyond } });
+  }
+  const widened = plan.choice?.mode === 'connectors' ? plan.choice.userRules.widenedReads : [];
+  if (widened.length > 0) {
+    results.push({ id, status: 'warn', messageKey: 'doctor.round_scope.user_reads', params: { rules: widened, files: userSettingsFiles(ctx.env) } });
+  }
+  if (results.length > 0) return results;
+  return { id, status: 'ok', messageKey: 'doctor.round_scope.ok', params: {} };
+}
+
+// --- connectors ------------------------------------------------------------------
+//
+// The two connector sources, calendar and meeting notes, are best effort
+// (docs/connectors.md): a round that cannot read one keeps that source's
+// day open and goes on without it. Nobody reads a round's log, so this is
+// where a connector that needs authentication, is disabled for Claude Code
+// or has its tools under another prefix is said (docs/incidents.md,
+// 14/09/2026, "disabled is a state, and nobody reports it", and 05/09/2026,
+// "connected, online, and the tools were not there"). Every state but
+// `connected` is a warning, and a failure only for a source the vault lists
+// in curate.sources.required, whose day a round would leave unread (exit 4).
+// Without --probe the states are the last round's, as last-run.json carries
+// them; with it, they are asked of the CLI now.
+
+// How long the probe waits for the CLI's init event. Measured on 24/09/2026
+// with Claude Code 2.1.281 (Part A3 of the phase 3 plan): connector mode
+// printed its init event about 2.8 s after it started, and a launch killed
+// there made no model call, since no assistant or result event came before.
+export const PROBE_INIT_TIMEOUT_MS = 30000;
+// Bounds on the probe's launch for the case the kill ever came late: one
+// turn at most, and a budget far below a round's.
+export const PROBE_MAX_TURNS = 1;
+export const PROBE_BUDGET_USD = 0.1;
+
+// A round's instant as the day a person reads, DD/MM/YYYY, in the vault's
+// zone (the instant's own UTC day when the zone cannot be used): the same
+// day the session's status line shows (src/hooks/session-start.mjs).
+function roundDay(at, timezone) {
+  let day;
+  try {
+    day = localDay(new Date(at), timezone);
+  } catch {
+    day = String(at).slice(0, 10);
+  }
+  const [y, m, d] = day.split('-');
+  return `${d}/${m}/${y}`;
+}
+
+function whenRound(date) {
+  return { messageKey: 'doctor.connectors.when_round', params: { date } };
+}
+
+function whenProbe() {
+  return { messageKey: 'doctor.connectors.when_probe', params: {} };
+}
+
+function configuredSafe(source, config) {
+  try {
+    return source.isConfigured(config) === true;
+  } catch {
+    return false;
+  }
+}
+
+// What the connector checks read, computed once: the configuration, the
+// connector sources curate.sources lists (the required ones first), those
+// that are on, and the round's own choice of launch mode for them
+// (chooseMode, in src/commands/curate.mjs: the person's user settings read
+// and mirrored exactly as a round does). Doctor lists no transcript, which
+// changes only whether a user read rule naming one of them counts as the
+// round's own or as widening reads.
+function connectorsPlan(ctx) {
+  const read = ctx.config();
+  if (!read.ok || !isObject(read.value)) return { unknown: true };
+  const config = read.value;
+  if (config.curate?.enabled === false) return { disabled: true };
+  const lists = isObject(config.curate?.sources) ? config.curate.sources : {};
+  const idsOf = (list) => (Array.isArray(list) ? [...new Set(list.filter((item) => typeof item === 'string'))] : []);
+  const required = idsOf(lists.required);
+  const listed = [...required, ...idsOf(lists.best_effort).filter((item) => !required.includes(item))]
+    .filter((item) => Object.hasOwn(SOURCES, item) && SOURCES[item].kind === 'connector')
+    .map((item) => SOURCES[item]);
+  const on = listed.filter((source) => configuredSafe(source, config));
+  const connectorDenies = [...new Set(on.flatMap((source) => source.toolRules(config).deny))];
+  const choice = on.length === 0 ? null : chooseMode({ config, root: ctx.root, env: ctx.env, readFiles: [], candidates: on, connectorDenies });
+  return { config, required, listed, on, choice };
+}
+
+// What a state means, in the kit's own sentence for it.
+function stateDetail(spec, entry) {
+  if (entry.state === BLOCKED_BY_USER_RULES) return { messageKey: 'doctor.connectors.blocked_before', params: {} };
+  if (CONNECTOR_STATES.includes(entry.state)) return connectorStateMessage(spec, entry);
+  return { messageKey: 'doctor.connectors.state_unknown', params: {} };
+}
+
+// One source's state line. A source whose tools were in the session under
+// another prefix names both prefixes and the setting that fixes it, rather
+// than reading as an outage (docs/incidents.md, 10/08/2026, "three
+// debugging iterations on the wrong thing").
+function stateLine(id, source, spec, entry, when, severity) {
+  if (entry.state === 'connected') {
+    return { id, status: 'ok', messageKey: 'doctor.connectors.connected', params: { source: source.id, connector: spec.serverDisplayName, when, prefix: spec.toolPrefix } };
+  }
+  if (entry.state === 'tools_missing' && typeof entry.observedPrefix === 'string' && entry.observedPrefix !== spec.toolPrefix) {
+    return {
+      id, status: severity, messageKey: 'doctor.connectors.prefix',
+      params: { source: source.id, when, connector: spec.serverDisplayName, observed: entry.observedPrefix, prefix: spec.toolPrefix, setting: `sources.${source.id}.tool_prefix` },
+    };
+  }
+  return { id, status: severity, messageKey: 'doctor.connectors.state', params: { source: source.id, state: String(entry.state), when, detail: stateDetail(spec, entry) } };
+}
+
+// A user allow rule whose mirrored deny would take a source's own read
+// tools (chooseMode blocks that source), in the round's own sentence.
+function deniedMessage(source, config, rules) {
+  return { messageKey: 'curate.user_rules.denies_source', params: { rules: rules.join(', '), connector: source.serverSpec(config).serverDisplayName, tools: source.toolRules(config).allow.join(', ') } };
+}
+
+function consentMessage(count) {
+  return { messageKey: 'sources.calendar.other_calendars_without_consent', params: { count } };
+}
+
+// The lines the probe itself adds: that it launched nothing, and why; that
+// the CLI cannot be run; that it printed no init event; or that its init
+// event shows what would stop a round in connector mode (exit 1, whatever
+// the sources' own best effort).
+function probeLines(id, probe, plan) {
+  if (probe.skipped === 'nothing') return [{ id, status: 'ok', messageKey: 'doctor.connectors.probe_nothing', params: {} }];
+  if (probe.skipped === 'blocked') return [{ id, status: 'ok', messageKey: 'doctor.connectors.probe_blocked', params: {} }];
+  if (probe.skipped !== undefined) return [];
+  if (probe.result !== undefined) return [{ ...probe.result, id }];
+  const lines = [];
+  if (probe.states === null) {
+    const status = plan.choice.available.some((source) => plan.required.includes(source.id)) ? 'fail' : 'warn';
+    lines.push({ id, status, messageKey: 'doctor.connectors.probe_no_init', params: { bin: probe.bin, seconds: probe.seconds, code: probe.code } });
+  }
+  // With no init event, only a hook that ran before it is a finding here.
+  const problems = probe.isolation.details.filter((detail) => detail.code !== 'no_init');
+  if (problems.length > 0) lines.push({ id, status: 'fail', messageKey: 'doctor.connectors.probe_isolation', params: { bin: probe.bin, problems } });
+  return lines;
+}
+
+function connectorsCheck(ctx) {
+  const id = 'connectors';
+  const plan = ctx.connectors();
+  if (plan.unknown) return { id, status: 'warn', messageKey: 'doctor.curate.config_unknown', params: { file: ctx.configFile } };
+  if (plan.disabled) return curateDisabled(ctx, id);
+  const { config, required, listed, on, choice } = plan;
+  const probe = ctx.probe;
+  if (listed.length === 0) {
+    const none = { id, status: 'ok', messageKey: 'doctor.connectors.none', params: { file: CONFIG_FILENAME } };
+    return probe === null ? none : [none, ...probeLines(id, probe, plan)];
+  }
+  const tz = config.vault?.timezone;
+  const severity = (source) => (required.includes(source.id) ? 'fail' : 'warn');
+  const results = [];
+  // A rule that refuses connector mode refuses it for every source at once.
+  for (const entry of choice?.userRules?.blocking ?? []) {
+    const status = on.some((source) => required.includes(source.id)) ? 'fail' : 'warn';
+    results.push({ id, status, messageKey: 'doctor.connectors.blocked', params: { sources: on.map((source) => source.id), detail: blockingMessage(entry) } });
+  }
+  if (probe !== null) results.push(...probeLines(id, probe, plan));
+  const read = ctx.lastRun();
+  const lastRun = read.ok && isObject(read.value) ? read.value : null;
+  const carried = lastRun !== null && isObject(lastRun.connectorStates) ? lastRun.connectorStates : {};
+  for (const source of listed) {
+    const setting = `sources.${source.id}`;
+    if (!on.includes(source)) {
+      const problems = offProblems(source, config, ctx.now, tz);
+      const text = problemText(problems) || '-';
+      if (required.includes(source.id)) {
+        results.push({ id, status: 'fail', messageKey: 'doctor.connectors.required_off', params: { source: source.id, problems: text, setting } });
+      } else if (offOnPurpose(source, config, problems)) {
+        results.push({ id, status: 'ok', messageKey: 'doctor.connectors.off', params: { source: source.id, setting } });
+      } else {
+        results.push({ id, status: 'warn', messageKey: 'doctor.connectors.half', params: { source: source.id, problems: text, setting } });
+      }
+      continue;
+    }
+    const spec = source.serverSpec(config);
+    const blocked = choice.blocked.get(source.id);
+    if (blocked?.rules) {
+      results.push({ id, status: severity(source), messageKey: 'doctor.connectors.denied', params: { source: source.id, detail: deniedMessage(source, config, blocked.rules) } });
+    } else if (blocked === undefined) {
+      const asked = probe?.states?.[source.id] ?? null;
+      const entry = isObject(carried[source.id]) && typeof carried[source.id].state === 'string' ? carried[source.id] : null;
+      if (asked !== null) {
+        results.push(stateLine(id, source, spec, asked, whenProbe(), severity(source)));
+      } else if (entry === null) {
+        results.push({ id, status: 'warn', messageKey: 'doctor.connectors.unseen', params: { source: source.id, file: join(ctx.stateDir, STATE_FILES.LAST_RUN) } });
+      } else {
+        // The prefix the tools were seen under belongs to the round that
+        // saw the state: the last one, when the state is its own.
+        const observed = lastRun.at === entry.at ? lastRun.sources?.[source.id]?.observedPrefix : null;
+        const seen = { state: entry.state, rawStatus: null, observedPrefix: typeof observed === 'string' ? observed : null };
+        results.push(stateLine(id, source, spec, seen, whenRound(roundDay(entry.at, tz)), severity(source)));
+      }
+    }
+    const consent = offProblems(source, config, ctx.now, tz).find((problem) => problem.code === 'other_calendars_without_consent');
+    if (consent !== undefined) {
+      results.push({ id, status: 'warn', messageKey: 'doctor.connectors.consent', params: { source: source.id, detail: consentMessage(consent.detail) } });
+    }
+  }
+  return results;
+}
+
+// The probe's environment: the caller's, without the variables that move
+// git elsewhere, and machine.path_extra in front of PATH, as a round's
+// model gets it (src/commands/curate.mjs, modelEnv), with no round token:
+// the probe holds no lock and proposes nothing.
+function probeEnv(ctx, machine) {
+  const base = withoutLocalGitVars(ctx.env, ctx.localGitVars());
+  const extra = (Array.isArray(machine.path_extra) ? machine.path_extra : []).map((dir) => expandHome(String(dir), ctx.env));
+  return { ...base, PATH: [...extra, base.PATH ?? ''].filter((part) => part !== '').join(delimiter) };
+}
+
+// `brain-kit doctor --probe`: the round's own connector-mode launch (its
+// flags, its allow and deny lists, the person's user rules mirrored), with
+// a one-line prompt, one turn at most and a small budget, killed at its init
+// event before any model call (measured, Part A3), and each available
+// source's connector state read from that event exactly as a round reads it
+// (src/guards/connectors.mjs). A hook event, which a round treats as a
+// breach, stops it too. Nothing is written: no last-run.json, no log, no
+// mark. When the person's rules refuse connector mode, nothing is launched,
+// as a round would launch nothing in that mode.
+export async function probeConnectors(ctx, { prompt }) {
+  const plan = ctx.connectors();
+  if (plan.unknown || plan.disabled) return { skipped: 'curate' };
+  if (plan.choice === null) return { skipped: 'nothing' };
+  if (plan.choice.mode !== 'connectors') return { skipped: 'blocked' };
+  const target = claudeToRun(ctx, 'connectors');
+  if (target.result) return { result: target.result };
+  const { config, choice } = plan;
+  const machine = machineObject(ctx);
+  const specs = choice.available.map((source) => source.serverSpec(config));
+  const argv = buildArgv({
+    mode: 'connectors', model: machine.model ?? undefined, maxTurns: PROBE_MAX_TURNS, budgetUsd: PROBE_BUDGET_USD, allowed: choice.tools.allowed, disallowed: choice.tools.disallowed,
+  });
+  const control = new AbortController();
+  const onLine = (line) => {
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (isObject(event) && event.type === 'system' && typeof event.subtype === 'string' && (event.subtype === 'init' || event.subtype.startsWith('hook_'))) {
+      control.abort('probe');
+    }
+  };
+  const out = await runModel({
+    claudeBin: target.bin, argv, prompt, cwd: ctx.root, env: probeEnv(ctx, machine), timeoutMs: ctx.probeTimeoutMs, onLine, abortSignal: control.signal,
+  });
+  const { record } = out;
+  return {
+    bin: target.bin,
+    states: record.init ? connectorStates(record.init, specs) : null,
+    isolation: checkIsolation(record, { mode: 'connectors', disallowed: choice.tools.disallowed }),
+    code: String(out.exitCode ?? out.signal ?? out.spawnError ?? '-'),
+    seconds: Math.round(out.durationMs / 100) / 10,
+  };
+}
+
 // id -> check, in the order the report prints them.
 export const CHECKS = new Map([
   ['node-version', nodeVersion],
@@ -1145,9 +1539,12 @@ export const CHECKS = new Map([
   ['gh-present', ghPresent],
   ['claude-present', claudePresent],
   ['gitignore-node-modules', gitignoreNodeModules],
+  ['privacy-keywords', privacyKeywords],
   ['claude-real', claudeReal],
   ['claude-isolation-flags', claudeIsolationFlags],
+  ['round-scope', roundScope],
   ['include-projects', includeProjects],
+  ['connectors', connectorsCheck],
   ['watermark', watermarkCheck],
   ['last-run', lastRunCheck],
   ['schedule', scheduleCheck],
@@ -1156,15 +1553,20 @@ export const CHECKS = new Map([
 
 export const CHECK_IDS = Object.freeze([...CHECKS.keys()]);
 
-// Runs the named checks in the order given. A check that throws is a
-// defect in the check, not a pass: it is reported as that check's
-// failure, with the error, and the checks after it still run.
+// Runs the named checks in the order given, a check's list of results in
+// its own order. A check that throws is a defect in the check, not a pass:
+// it is reported as that check's failure, with the error, and the checks
+// after it still run. So is one that returns an empty list, which would
+// otherwise vanish from the report as if it had nothing to say.
 export function runChecks(ctx, ids = CHECK_IDS, checks = CHECKS) {
-  return ids.map((id) => {
+  return ids.flatMap((id) => {
     try {
-      return checks.get(id)(ctx);
+      const result = checks.get(id)(ctx);
+      if (!Array.isArray(result)) return [result];
+      if (result.length === 0) throw new Error('the check returned no result');
+      return result;
     } catch (error) {
-      return { id, status: 'fail', messageKey: 'doctor.check_crashed', params: { error: error.message } };
+      return [{ id, status: 'fail', messageKey: 'doctor.check_crashed', params: { error: error.message } }];
     }
   });
 }

@@ -245,6 +245,96 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   and what to do for each, `last-run.json` and the logs) and `docs/security.md` (what
   isolates the model and the measurements behind it).
 
+### Phase 3: calendar and meeting-notes sources (in review)
+
+- Every round now runs with `--disable-slash-commands` and `--tools
+  Read,Glob,Grep,Edit,Write,Bash,ToolSearch`: no skill, and no built-in tool beyond those
+  seven (the default set also exposes Task, Workflow, CronCreate and more, measured on
+  24/09/2026 with Claude Code 2.1.281); the CLI's first event must show exactly that set.
+  Reads are scoped: the vault (`Read(./**)`, `Glob(./**)`, `Grep(./**)`) and one
+  `Read(//<file>)` per transcript the plan lists, where phase 2 allowed a bare `Read` that
+  could reach any file on disk. A transcript whose path no read rule can name exactly
+  stops the round before the model (exit 4), and `machine set transcripts_dir` refuses such
+  a folder; an allow rule in `curate.allowed_tools_extra` with no scope is a configuration
+  error (exit 2). Every round sets `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` and
+  `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`, and stops when its first event still lists a memory
+  folder (measured on 25/09/2026). `.mcp.json` joins the protected paths.
+- Connector mode. The isolated mode cannot see the claude.ai connectors, so a round with a
+  connector source to read loads the person's user settings, which is what makes them
+  appear, and switches off everything else they bring: hooks
+  (`--settings {"disableAllHooks":true}`), skills, the built-in tools beyond the pinned
+  set, and every user allow rule, mirrored as a deny. A rule that cannot be mirrored
+  without denying the round's own tools refuses the mode: every connector source is then
+  `blocked_by_user_rules`, the round runs isolated on the transcripts alone, and the rule
+  and its file are named. Each connector's state (`connected`, `needs_auth`, `failed`,
+  `pending`, `absent`, `tools_missing`, `unknown`) is read from the round's own first
+  event; one that is not there makes the round kill the model before its first turn and
+  launch once more without it, never twice.
+- The calendar source (`sources.calendar`), off until `enabled: true` and `calendars` name
+  what to read (`primary` for the owner's main calendar). A calendar is read only when the
+  round's record shows a listing that covers the source's whole window with
+  `eventType: ["DEFAULT"]`, exactly the inputs the prompt gives and every page. Other
+  people's calendars are read only with `team_calendars_consent_noted: true`, and only
+  their events shared with other people count. The connector's write tools are denied to
+  every round. `init` no longer writes the owner's e-mail into `calendars`.
+- The meeting-notes source (`sources.meeting_notes`), off until `enabled: true`: the literal
+  title search (`search_title_contains`, to be copied from one of the person's own
+  documents with its accents; the packs suggest `Notes by Gemini` and `Anotações do
+  Gemini`) with its modification bound and every page, and the documents attached to the
+  calendar's events as a second door, each checked through its metadata first, recordings
+  and full transcriptions never opened. The documents opened are counted, never a
+  condition. Past `curate.caps.search_docs_opened` or `attached_notes_opened` the source is
+  reported `partial`, which never moves its mark. The connector's write tools are denied to
+  every round.
+- The round reads each source over its own open days and advances each only through the
+  days it read, so a source that is ahead never reads a covered day again. The model's last
+  line names every source offered: `BRAIN_KIT_SOURCES: transcripts=... calendar=...
+  meeting_notes=...`, with `unavailable` for a connector source and `partial` for the
+  meeting notes. A best-effort source never changes the exit code; a required one that is
+  off stops the round (exit 1), and one left unread makes it exit 4. A listed source that
+  is half configured is said on every round. `last-run.json` gains `mode`, `relaunched`,
+  `notConfigured`, `userRules`, `connectorStates` and, per connector source, `state`,
+  `observedPrefix`, `expected`, `reported`, `rules` and `documents`; the log gains
+  `source_off`, `source_no_day`, `source_blocked`, `connectors`, `relaunch`,
+  `connector_state_changed`, `notify_state` and `model_result`. A best-effort source whose
+  connector state changed is announced once through `machine.notify_command`, naming
+  `docs/connectors.md`, and once more when it comes back. The session's status line names
+  each connector source that was not connected in the last round, with that round's date.
+  The curate prompt gains the rules `no-workaround`, `notes-first-class`,
+  `no-access-label` and `third-party-privacy`.
+- `lint` rule `privacy` refuses a line a change adds that holds one of
+  `privacy.third_party_keywords` (a list per language pack about someone else's health and
+  private life), matched as a whole phrase, case-insensitively, accents significant, outside
+  `privacy.keyword_exempt_paths`; a line already there never counts, and a run over the
+  whole vault (`--base all`) says the keywords were not checked. `propose` refuses such a
+  line through its own gate.
+- The eighth skill, `seed-rituals`: in the person's own session, it reads the last four
+  weeks of their calendar, finds the recurring events and proposes the rows of the weekly
+  rhythm table, each title literal and escaped, written only after the person confirms.
+- `brain-kit doctor` gains `connectors` (each connector source listed: off and why, the
+  state the last round saw with its date, a tool prefix other than the configured one,
+  other people's calendars without recorded consent, a user rule that refuses connector
+  mode, with its file), `round-scope` (an allow rule of the vault's, or a read rule of the
+  person's user settings in connector mode, that reaches beyond the vault), and
+  `privacy-keywords` (a missing or empty list). `claude-isolation-flags` also requires
+  `--disable-slash-commands`, `--tools` and connector mode's `--settings`. `doctor --probe`
+  launches the round's own connector mode with a one-line prompt, kills it at its first
+  event before any model call, and reports each connector's state, writing nothing. A
+  check may now report several lines under its id.
+- `docs/connectors.md` (what each connector source reads, how to turn it on, why connector
+  mode loads the user settings and what it switches off, the states and what to do for
+  each, the privacy policy); `docs/security.md` (scoped reads, the pinned tools, connector
+  mode and its measurements); `docs/scheduling.md` (one window per source, the three
+  sources in the last line, the new `last-run.json` fields and log events).
+- `BRAIN_KIT_E2E_CONNECTORS=1 node --test test/e2e-connectors.test.mjs` runs one real round
+  through the person's own connectors (never in CI), asserting on the round's record: each
+  source read with its mark advanced, or its state recorded with its mark unmoved, and no
+  write tool called.
+- Upgrading a vault made before phase 3: the calendar stays off, and every round says so
+  (`not_enabled`), until `sources.calendar.enabled` is `true`; the meeting notes stay off,
+  and their old defaults need checking before they are turned on; there is no privacy
+  keyword list, which `doctor` reports. `brain-kit update` adds no configuration key.
+
 ## 0.0.1 (published on npm on 18/09/2026)
 
 Phase 0: package skeleton, CLI router with exit codes, language packs (pt-BR reference, en),

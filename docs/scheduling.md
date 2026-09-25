@@ -1,14 +1,16 @@
 # Scheduling the curator
 
 `brain-kit curate` runs one curator round: it reads the Claude Code sessions you had
-since the last round, gives them to a model that can act only through the kit's own
-commands, and ends with a pull request against your vault that you review and merge.
+since the last round, and your calendar and meeting notes when you have turned them on,
+gives them to a model that can act only through the kit's own commands, and ends with a
+pull request against your vault that you review and merge.
 `brain-kit schedule install` makes that happen on its own a few times a day. This page
 explains what a round does, when it runs, how it knows which days it has already read,
 and what to look at when it seems to do nothing.
 
 Every date on this page is written DD/MM/YYYY. What isolates the model from your own
-Claude Code settings, and why, is in [security.md](security.md). The failures that shaped
+Claude Code settings, and why, is in [security.md](security.md); how a round reaches your
+calendar and meeting notes is in [connectors.md](connectors.md). The failures that shaped
 each step are in [incidents.md](incidents.md).
 
 ## Before the first round
@@ -28,15 +30,20 @@ project directories (the names under `~/.claude/projects`) whose sessions feed t
 Nothing outside that list is ever offered to the model. An empty list makes every round
 refuse to run, and `doctor` says so.
 
+The calendar and the meeting notes are off until you turn them on:
+[connectors.md](connectors.md) says how, and `brain-kit doctor --only connectors --probe`
+checks, without a round, that their connectors are there.
+
 ## What a round does, step by step
 
 The order is fixed and tested; each step exists because doing it later, or not at all,
 once broke a real routine.
 
 1. **The vault and its machine file.** No `machine.json`, or an invalid one: exit 2.
-2. **`--dry` stops here.** It prints the window, the sources, the files each source would
-   offer and the full command line of the model, reading the configuration as it is in
-   the working tree now, unsynced. It takes no lock and writes nothing.
+2. **`--dry` stops here.** It prints the window, the sources and each one's days, the
+   files each source would offer, the launch mode with every user rule that refuses
+   connector mode, and the full command line of the model, reading the configuration as it
+   is in the working tree now, unsynced. It takes no lock and writes nothing.
 3. **The vault lock.** Another writer holds it (a `propose` of yours, another round): exit
    75 naming the holder.
 4. **The network.** The round waits for a connection, up to two minutes, by running
@@ -49,8 +56,9 @@ once broke a real routine.
    Diverged: exit 1, because retrying cannot fix it and a person has to reconcile the two
    histories. An operation in progress or a dirty tree in the way: exit 75.
 6. **The configuration and the prompt, as synced.** Only now, so a change you merged
-   upstream is what runs. A `curate.prompt` that points outside the vault: exit 2. From
-   here on the round speaks the vault's language (`lang`), whatever the scheduler's
+   upstream is what runs. A `curate.prompt` that points outside the vault, or a rule in
+   `curate.allowed_tools_extra` that grants a path or command tool with no scope: exit 2.
+   From here on the round speaks the vault's language (`lang`), whatever the scheduler's
    environment says: its output, `last-run.json` and the notification.
 7. **The window**, from the watermark (below). Nothing open: exit 0, "up to date".
 8. **A clean tree.** Any uncommitted file postpones the round: exit 75, naming every file
@@ -60,34 +68,55 @@ once broke a real routine.
 10. **The CLI.** `claude_bin` must be a real program: not missing, not a launcher of a few
     hundred bytes left by an interrupted install, and `--version` must print a version.
     Otherwise exit 1.
-11. **The sources.** Each source lists the files of its window. A required source that is
-    misconfigured (no projects, a missing transcripts directory, every listed project
-    missing): exit 1, and no mark moves. A required source listing a file it cannot read
-    (an I/O error, a file of which no line is JSON, or a conversation none of whose
-    messages carries a timestamp this version can read): exit 4 before the model, naming
-    the file, since no round could close its day. The transcripts cap
+11. **The sources, each over its own days.** Every source reads only its own open days,
+    the days of the window after its own mark (see the watermark, below). A listed source
+    that is off is recorded in `last-run.json` (`notConfigured`); when it is off for any
+    reason but its own `"enabled": false` (half configured, such as a calendar listed with
+    no `enabled`), the round also says so, and a required source that is off stops the
+    round: exit 1. A source with no open day of its own is not collected, not offered and
+    not advanced. For the transcripts: a required source that is misconfigured (no
+    projects, a missing transcripts directory, every listed project missing): exit 1, and
+    no mark moves. A required source listing a file it cannot read (an I/O error, a file of
+    which no line is JSON, a conversation none of whose messages carries a timestamp this
+    version can read, or a path no read rule can name exactly): exit 4 before the model,
+    naming the file, since no round could close its day. The transcripts cap
     (`curate.caps.transcripts`) takes whole days, oldest first: the days that do not fit
     wait for the next round and are said on the output, in the log and in
     `last-run.json`, and this round curates, and advances through, only the days it took;
     a first open day that alone passes the cap: exit 4 before the model, naming the day and
-    the counts. A window with nothing in it at all advances the mark and exits 0 without
-    calling the model.
-12. **`--check` stops here.** It prints the plan, the command line and the prompt's size.
-13. **The model, isolated.** The prompt goes on standard input. The first event the CLI
-    prints says which permission mode, hooks and MCP servers are in effect; if it is not
-    exactly the isolation the round asked for, the model is stopped at once: exit 1. The
-    model runs in a process group of its own, and the whole group is killed on timeout
-    (60 minutes) or when the round is interrupted (SIGINT, SIGTERM, SIGHUP, SIGQUIT, or a
-    rarer signal that would end it: SIGUSR2, SIGALRM, SIGXCPU, SIGXFSZ, SIGVTALRM, SIGPROF,
-    SIGPWR where the system has it), so no command it started outlives the round. A hook
-    event later in the stream kills the model the moment it is seen, and the reason says
-    the model had already started. A SIGKILL of `curate` itself cannot be
-    handled: the model then keeps running until it ends, and the lock is taken back as
-    stale only after that.
+    the counts. A window whose offered sources are all local and hold nothing advances the
+    marks and exits 0 without calling the model; a connector source never counts as empty
+    that way, since an empty day of a calendar is a listing still to prove.
+12. **The launch mode.** With a connector source to read, the round reads your Claude Code
+    user settings and mirrors every allow rule in them as a deny: connector mode, unless a
+    rule refuses it, in which case every connector source gets the state
+    `blocked_by_user_rules` and the round runs isolated, on the transcripts alone. Without
+    one, the isolated mode ([security.md](security.md), [connectors.md](connectors.md)).
+    **`--check` stops here.** It prints the plan, the mode, every rule that refused it,
+    the command line and the prompt's size.
+13. **The model.** The prompt goes on standard input. The first event the CLI prints says
+    which permission mode, hooks, MCP servers, built-in tools and memory folders are in
+    effect; if it is not exactly the isolation of the mode the round asked for, the model is
+    stopped at once: exit 1. In connector mode the same event says each connector's state:
+    a connector that needs authentication, failed, is absent, lacks its tools or reports a
+    status the kit does not know makes the round kill the model before its first turn and
+    launch once more without that source, told it is unavailable and forbidden to reach it
+    any other way. There is never a second relaunch, and a connector still connecting
+    (`pending`) stays in the round. When nothing is left for a model to read, no second
+    launch happens at all. The model runs in a process group of its own, and the whole
+    group is killed on timeout (60 minutes) or when the round is interrupted (SIGINT,
+    SIGTERM, SIGHUP, SIGQUIT, or a rarer signal that would end it: SIGUSR2, SIGALRM,
+    SIGXCPU, SIGXFSZ, SIGVTALRM, SIGPROF, SIGPWR where the system has it), so no command it
+    started outlives the round. A hook event later in the stream kills the model the moment
+    it is seen, and the reason says the model had already started. A SIGKILL of `curate`
+    itself cannot be handled: the model then keeps running until it ends, and the lock is
+    taken back as stale only after that.
 14. **What the model read.** For every file the plan offered, the round looks for a
-    successful Read of exactly that path. It also reads the model's last line,
-    `BRAIN_KIT_SOURCES: transcripts=ok`, and the record of every pull request the model's
-    `propose` opened.
+    successful Read of exactly that path; for the calendar, a listing of each calendar that
+    covers its window with the event-type filter and every page; for the meeting notes, the
+    literal title search with its bound, to its last page ([connectors.md](connectors.md)).
+    It also reads the model's last line, which names every source the round offered, and
+    the record of every pull request the model's `propose` opened.
 15. **Cleanup.** Every file the round proposed that is still byte for byte what was pushed
     is brought back to the default branch's content, so the next round does not stop on a
     dirty tree made by this one.
@@ -96,11 +125,14 @@ once broke a real routine.
     not advance 4 (a file not read, or no `BRAIN_KIT_SOURCES` line reporting it); a round
     record that cannot be read 1; anything still dirty 1; a pull request not opened 3
     (the reason names the branch and the `gh pr create --head <branch> --fill` that opens
-    it); otherwise 0.
-17. **The watermark** advances, only on exit 0 or 3 (below).
+    it); otherwise 0. A best-effort source (the calendar and the meeting notes, by
+    default) never changes it, read or not.
+17. **The watermark** advances, only on exit 0 or 3, each source through its own last day
+    (below).
 18. **Always:** `last-run.json` is written, the log gets its last line, the lock is released
     (the model's process group is already dead), and `machine.notify_command` runs on any
-    non-zero exit, with the reason as its last argument.
+    non-zero exit, with the reason as its last argument, and once more for each
+    best-effort connector source whose state changed since the last round.
 
 ## The windows, and why daytime
 
@@ -152,10 +184,29 @@ is read tomorrow, once it has ended.
   days that fit in `curate.caps.transcripts` together: the rest wait for the next round,
   and a first open day that alone holds more transcripts than the cap stops the round
   (exit 4) until you raise the cap or exclude some projects.
+- **One window per source.** Each source reads only its own open days, the days of the
+  round's window after its own mark (an unset mark: yesterday only), and advances only
+  through the last of them. The round's window is their union, from the earliest mark. A
+  calendar two days behind the transcripts reads its own two days while the transcripts
+  read only theirs, and no source reads a day it already covered, so nothing is captured
+  twice.
 - **When it moves.** Only on exit 0 or 3, and for each source only when the model exited
-  0, every file the plan offered for that source was read, and the model's last line
-  reports the source `ok` (or `empty`, when the plan indeed offered nothing). A round that
-  dies halfway leaves the day open, and the next round reads it again.
+  0, the source's evidence shows it read (every file the plan offered, for the
+  transcripts; every calendar listed, for the calendar; the literal search, for the
+  meeting notes), and the model's last line reports the source `ok`, or `empty` when that
+  means nothing was there: for the transcripts, a plan that offered nothing; for a
+  connector source, a listing or search that was made. `partial` (the meeting notes past
+  their caps), `unavailable` and `failed` never move a mark. A round that dies halfway
+  leaves the day open, and the next round reads it again.
+- **The last line** names every source the round offered, with the states each may be
+  given:
+
+  ```
+  BRAIN_KIT_SOURCES: transcripts=<ok|empty|failed> calendar=<ok|empty|failed|unavailable> meeting_notes=<ok|empty|partial|failed|unavailable>
+  ```
+
+  A source the round could not read this time (its connector missing at the first launch,
+  or blocked by a user rule) is still named, to be written `unavailable`.
 - **It never closes a day unread.** A required source whose mark would not advance makes
   the round exit 4: a file the model did not read, a transcript or a listed project
   directory that cannot be read (the model is then not started at all), a first day over
@@ -199,7 +250,7 @@ What counts as read has limits, by design:
 | 1 | The round failed | Read `reason` in `last-run.json`. It names the setting or the command that fixes it: a diverged branch to reconcile, a watermark to reopen, a CLI to reinstall, a file the round left behind. |
 | 2 | Not a vault, or a bad setting | Fix `machine.json` or `brain-kit.config.json` as the message says, then `brain-kit doctor`. |
 | 3 | Proposed, but the pull request is not open | The commit and branch are pushed; from the vault, run the `gh pr create --head <branch> --fill` the reason names (check `gh auth status`). The mark advanced. |
-| 4 | A required source was not read | The reason says which. A file that cannot be read (`source_unreadable`): fix its permissions, or add a pattern for it to `sources.transcripts.exclude_path_patterns`; `brain-kit watermark assume-covered` skips its days once you have looked. A first day over the cap (`cap_exceeded`): raise `curate.caps.transcripts` or exclude some projects. Otherwise `last-run.json` says how many files of how many were read, or that the model's last line did not report the source. The day stays open and the next round reads it. |
+| 4 | A required source was not read | Only a source in `curate.sources.required` sets it; a best-effort one never does. The reason says which. A file that cannot be read (`source_unreadable`): fix its permissions, or add a pattern for it to `sources.transcripts.exclude_path_patterns`; `brain-kit watermark assume-covered` skips its days once you have looked. A first day over the cap (`cap_exceeded`): raise `curate.caps.transcripts` or exclude some projects. Otherwise `last-run.json` says how many files of how many were read, or that the model's last line did not report the source. The day stays open and the next round reads it. |
 | 69 | No network, or the model unavailable | Usually passes on its own at the next window. An authentication error means your Claude Code login expired: log in again. |
 | 75 | Postponed | Another writer holds the lock, or the tree is dirty (the files are listed). Commit, propose or discard them; the next window retries. A tree that stays dirty stops every round, so do not let it sit. |
 
@@ -215,10 +266,14 @@ otherwise `~/.local/state/brain-kit/<vault name>-<hash>/` (or under `$XDG_STATE_
 |---|---|
 | `at`, `durationMs` | when the round started (ISO, UTC) and how long it took |
 | `exit`, `reasonCode`, `reason` | the exit code, a stable code for it, and the sentence printed |
-| `window` | the days read (`days`), the instants the window spans, and `remaining` days left for the next round |
+| `window` | the days read (`days`), the instants the window spans, `remaining` days left for the next round, and `sources`, each source's own days |
 | `deferredDays` | the open days left for the next round because they would pass the transcripts cap |
 | `network` | whether the network answered, after how long, and the `did_not_wait` note |
-| `sources` | per source: files kept by the plan, files read, whether its mark advanced, and `noTimestamp`, the files left out for holding no conversation |
+| `sources` | per source: for the transcripts, files kept by the plan, files read, whether its mark advanced, and `noTimestamp`, the files left out for holding no conversation; for a connector source, its `state`, the tool prefix its tools were seen under (`observedPrefix`), `read` against `expected` (calendars listed, or the search made), whether its mark advanced, what the model `reported` for it, the `rules` that blocked it when a user rule did, and for the meeting notes `documents` (how many opened, how many failed) |
+| `mode`, `relaunched` | the last launch's mode (`isolated` or `connectors`), and whether the round launched a second time |
+| `notConfigured` | each listed source that is off, with its problems |
+| `userRules` | in a round with a connector source to read: the user allow rules mirrored as denies (`mirrored`), those recorded as widening reads (`widenedReads`), and those that refused connector mode (`blocking`); null otherwise |
+| `connectorStates` | each connector source's last known state and when a round saw it, carried from round to round (what the notification and the session's status line compare against) |
 | `warnings`, `remainingDays` | everything said on the way, and the days still open |
 | `costUsd`, `numTurns` | what the model cost and how many turns it took |
 | `denials` | the names of the tools the model was denied, never their input |
@@ -228,9 +283,16 @@ otherwise `~/.local/state/brain-kit/<vault name>-<hash>/` (or under `$XDG_STATE_
 
 The log is `logs/curate-YYYY-MM-DD.log`, one file per day, one line per event:
 `<instant> <event> <json>`. The events are `start`, `network_did_not_wait`,
-`days_remaining`, `days_deferred`, `source_skipped`, `source_warning`, `plan`, `model_start`, `model_end`,
-`cleanup`, `watermark`, `exit` and `notify_failed`. The log never holds what a tool
-returned, the model's final text, anything read from a transcript, or the round's token.
+`days_remaining`, `days_deferred`, `source_skipped`, `source_off` (a listed source half
+configured), `source_warning`, `source_no_day` (a source with no open day of its own),
+`source_blocked` (a connector source a user rule blocked, with the rule), `plan`,
+`model_start` and `model_end` (one of each per launch, with its number and, on
+`model_start`, its mode), `connectors` (each connector's state in a launch's first event),
+`relaunch` (the sources the second launch goes without, and why), `model_result` (the
+denials and the isolation verdict), `connector_state_changed`, `cleanup`, `watermark` (with
+what the model reported), `exit`, `notify_state` (a state-change notification) and
+`notify_failed`. The log never holds what a tool returned, the model's final text, anything
+read from a transcript, a calendar or a document, or the round's token.
 `brain-kit curate --keep-stream` (or `keep_stream: true` in `machine.json`) also keeps the
 model's raw output next to the log; that file does contain what the model read, so keep it
 only while you debug. Logs older than `log_retention_days` (in `machine.json`, default 30)
@@ -238,8 +300,10 @@ are removed at the end of each round.
 
 `brain-kit doctor` reads all of this for you: the last round (with a warning for a round
 that exited 0 in seconds without a model turn, which is a dead round reported as a
-success), each source's mark and how far behind it is, whether the timer is installed and
-when it fires next, and whether failures reach you or only the log.
+success), each source's mark and how far behind it is, each connector source's last state
+with the round's date, whether the timer is installed and when it fires next, and whether
+failures reach you or only the log. `brain-kit doctor --probe` asks the CLI for each
+connector's state now, without a round.
 
 ## When rounds seem to do nothing
 
@@ -256,6 +320,8 @@ Then, in order:
 2. `brain-kit schedule status`: installed, current and enabled, and when it fires next.
    On Linux, if rounds only run while you are logged in, enable lingering.
 3. `brain-kit watermark show`: a mark days behind yesterday means rounds are not closing
-   days; `last-run.json` says why.
+   days; `last-run.json` says why. A calendar or meeting-notes mark that stays behind while
+   the transcripts move is a connector that is not there: `brain-kit doctor --only
+   connectors --probe` says which state, and [connectors.md](connectors.md) what to do.
 4. `brain-kit curate --check`, then one `brain-kit curate` by hand, reading its output to
    the last line.
