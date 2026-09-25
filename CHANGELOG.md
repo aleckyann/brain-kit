@@ -245,7 +245,7 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   and what to do for each, `last-run.json` and the logs) and `docs/security.md` (what
   isolates the model and the measurements behind it).
 
-### Phase 3: calendar and meeting-notes sources (in review)
+### Phase 3: calendar and meeting-notes sources
 
 - Every round now runs with `--disable-slash-commands` and `--tools
   Read,Glob,Grep,Edit,Write,Bash,ToolSearch`: no skill, and no built-in tool beyond those
@@ -346,6 +346,76 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   carry refuses connector mode. `privacy.third_party_keywords` match across typographic
   apostrophes and runs of whitespace. `prompt --check` warns about a curate overlay without
   `{{sources_line}}`.
+
+### Phase 4: the morning briefing (in review)
+
+- `brain-kit preflight [dir] [--json]` computes every fact the briefing states, in the
+  vault's time zone, and only reads (no lock, no fetch, no write): today and its weekday;
+  the curator's last round from `last-run.json`, with each source's state and whether its
+  mark advanced, and the connector states the rounds carry; every open pull request, from
+  `gh api --paginate` with no cap, or "not known" with the reason when `gh` is absent or
+  fails; the notes past their `stale_after`, by civil date in the vault's zone; the
+  pending items of the tables `briefing.pending` names, read by column name and bucketed
+  (overdue, due today, within `briefing.upcoming_days`, later as a count, no date) by the
+  first real full date in the cell, a date that is not real, a day and month without a
+  year ("may be a date") and a second date-like text each named next to its item, and a
+  missing table, heading or column a named problem; git, with how far the default branch
+  is behind its remote as of the last fetch; the vault lock; and the question queue.
+  `--json` is `brain-kit.preflight/1` with stable keys.
+- `brain-kit questions list|add|answer|archive|sweep [dir]` keeps the briefing's queue in
+  the state directory (`questions.log`, one JSON object per line, written atomically, mode
+  0600): one id per normalised text (NFC, lower case, punctuation to spaces, accents
+  kept), no duplicate of an open question or of one answered within
+  `briefing.questions_dedup_days` (15), escalation after `briefing.question_escalate_after`
+  askings (3), archiving past `briefing.question_max_age_days` (45) only by `sweep`, which
+  prints each question it archives. A key left out takes the pack's default and `null`
+  means never. A line that cannot be read is kept and reported, never dropped. Writers take
+  the vault lock and a queue lock of their own.
+- `brain-kit prompt briefing [--vault <dir>]` renders the briefing from the vault's own
+  `briefing.blocks`: the catalog's fact blocks (`sources`, `due`, `upcoming`, `undated`,
+  `open_prs`, `stale`, `questions`), filled by the kit, and judgement blocks
+  (`blind_spots`, `strategy`, `today_calendar`), plus blocks the person defines (a title,
+  the notes to read, an instruction). An unknown id, a duplicate, an empty list or a
+  custom block reading a missing path, a path outside the vault or one in
+  `briefing.never_read` is a named problem, and the block is left out and said.
+  `never_read` wins over every block, and a path a fact block lists that it covers is
+  shown "(never read)". The real render, and only it, records the questions it shows as
+  asked today, after the whole text is rendered; when that fails, the text is printed
+  with a correction line and the exit is 3. A generic, domain-neutral prompt in both
+  packs, with the contract markers `never-read`, `facts-from-kit`, `closed-uncertainty`,
+  `never-empty-unopened`, `questions-by-command`, `propose-only` and `honour-limits`; an
+  overlay at `briefing.prompt` replaces it, and `prompt --check` fails one without
+  `{{signature}}` as its first line or without `{{blocks}}`. `briefing.max_words`,
+  `briefing.max_questions` and every `briefing.write_caps` value default to `null`, no
+  limit; a limit set is honoured and said when it bites.
+- The ninth skill, `briefing`, prints the rendered briefing through its `!` line in the
+  person's own session inside the vault; what it records becomes one pull request through
+  `propose --only`, and nothing to record means no pull request.
+- `brain-kit schedule install --job briefing [dir]` prints the desktop application's
+  scheduled task (`brain-kit-briefing-<vault_id>`, the vault's title, the cron from
+  `briefing.schedule`, and a two-line prompt: the briefing's signature, then the exact
+  `node "<kit>" prompt briefing --vault "<vault>"` command) and exits 3, since such a
+  task can be created only from inside the application, whose tool takes no working
+  directory; the `setup` skill offers it and creates it. `status --job briefing` reads the
+  task back: missing, unsigned, running no briefing command, a kit path a plugin update
+  removed, another vault, or another kit that still works. `install` refuses a signature
+  that is blank, more than one line or padded with spaces.
+- The transcripts source always counts `briefing.signature` among the kit's own
+  signatures, so the desktop task's sessions never reach the curator; a briefing asked for
+  in the person's own session starts with their message and is curated (in doubt,
+  include). `schedule status --job briefing` and `doctor` judge a task signed with the
+  filter's own predicate.
+- `brain-kit doctor` gains `briefing`: signatures it cannot use, `briefing.blocks`
+  problems, a question queue that cannot be read or holds unreadable lines, and the
+  desktop task as `schedule status --job briefing` reads it.
+- `docs/briefing.md` (what the briefing is and is not, the facts and where each comes
+  from, the blocks, custom blocks, the limits, the question queue, the overlay, the
+  desktop task, which sessions the curator skips, and what never changes).
+- `BRAIN_KIT_E2E_BRIEFING=1 node --test test/e2e-briefing.test.mjs` runs the real skill
+  once against a throwaway vault (never in CI), asserting from the stream and the queue:
+  the skill ran with its `!` lines rendered, every default block in order, the escalated
+  question first, the queue changed through the kit's command, at most one pull request
+  with `--only`, and no path in `never_read` read.
 
 ## 0.0.1 (published on npm on 18/09/2026)
 

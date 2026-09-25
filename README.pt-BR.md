@@ -7,9 +7,10 @@
 > concluída: o curador agendado (`curate`, `watermark`, `schedule`) lê as suas sessões
 > recentes do Claude Code e abre um pull request a partir de uma rodada sem ninguém por
 > perto. A fase 3 também está concluída: a rodada lê ainda a sua agenda e as suas notas de
-> reunião pelos conectores do claude.ai, depois que você os liga. O briefing matinal ainda
-> está por vir, e o pacote no npm ainda é o esqueleto da fase 0. Acompanhe o repositório
-> para a primeira versão usável.
+> reunião pelos conectores do claude.ai, depois que você os liga. A fase 4 está em
+> revisão: o briefing matinal (`preflight`, `questions`, a skill `briefing` e a tarefa dela
+> no aplicativo para desktop). O pacote no npm ainda é o esqueleto da fase 0. Acompanhe o
+> repositório para a primeira versão usável.
 
 Um segundo cérebro em markdown puro, no Open Knowledge Format (OKF) v0.2, mantido por um
 agente de IA que o lê por um índice, o alimenta todo dia a partir do seu próprio trabalho
@@ -22,8 +23,9 @@ O brain-kit é um repositório que pretende ser, ao mesmo tempo:
   cria um vault ou adota um existente, instala o gate de push dele, mantém atualizados os
   arquivos do próprio kit, confere a máquina com o `doctor`, valida e aplica lint a um
   vault, roda o loop de pull request (`sync`, `propose`, `verify`) e roda o curador
-  agendado (`curate`, `watermark`, `schedule`); o pré-voo do briefing ainda está por vir;
-- um plugin do Claude Code (oito skills, os hooks Stop e SessionStart, um subagente
+  agendado (`curate`, `watermark`, `schedule`) e os fatos e a fila de perguntas do
+  briefing matinal (`preflight`, `questions`);
+- um plugin do Claude Code (nove skills, os hooks Stop e SessionStart, um subagente
   somente leitura) que chama o mesmo motor;
 - um marketplace de um plugin só, para que `claude plugin marketplace add aleckyann/brain-kit`
   seguido de `claude plugin install brain-kit@brain-kit` o instale.
@@ -57,6 +59,9 @@ node brain-kit/bin/brain-kit.mjs verify --pr 12
 node brain-kit/bin/brain-kit.mjs curate caminho/do/vault
 node brain-kit/bin/brain-kit.mjs watermark show caminho/do/vault
 node brain-kit/bin/brain-kit.mjs schedule install caminho/do/vault
+node brain-kit/bin/brain-kit.mjs preflight caminho/do/vault
+node brain-kit/bin/brain-kit.mjs questions list caminho/do/vault
+node brain-kit/bin/brain-kit.mjs schedule install --job briefing caminho/do/vault
 ```
 
 O `init` cria um vault novo num diretório vazio ou novo, em inglês ou português: o
@@ -95,8 +100,9 @@ acrescentadas, tudo o que uma rodada pode alcançar além do vault, e cada fonte
 conector: desligada ou ligada, o estado que a última rodada viu com a data dela, um
 prefixo de ferramenta que não confere, agendas de outras pessoas sem o consentimento
 registrado, e uma regra de usuário que recusa o modo com conectores. O `doctor --probe`
-pergunta agora à CLI o estado de cada conector, sem rodada. Cada falha nomeia o comando que
-a corrige.
+pergunta agora à CLI o estado de cada conector, sem rodada. Desde a fase 4 ele confere
+também o briefing matinal: as assinaturas, os blocos, a fila de perguntas e a tarefa no
+aplicativo para desktop. Cada falha nomeia o comando que a corrige.
 
 O `validate` confere o vault contra o OKF v0.2 e reporta duas réguas separadas: a
 conformidade do próprio formato e as regras da casa do vault, que são mais estritas de
@@ -189,6 +195,34 @@ na sua própria sessão, com a sua confirmação para cada linha. O
 [docs/connectors.md](docs/connectors.md) explica o que cada fonte lê, como ligá-la, os
 estados e o que fazer em cada um, e a política de privacidade.
 
+## O briefing matinal
+
+Toda manhã de dia útil, ou quando você pede, o briefing mostra, numa sessão sua, onde o
+vault está: a última rodada do curador e o estado de cada fonte, o que está atrasado, o que
+vence hoje e nos próximos dias, as pendências sem data, os pull requests esperando o seu
+merge, as notas para revisar, os pontos cegos, o vault diante da estratégia, e as perguntas
+que ele precisa que você responda. O conteúdo é o próprio `briefing.blocks` do vault,
+escolhido no catálogo do kit ou escrito por você (um título, as notas a ler, a sua
+instrução), e um overlay de prompt pode trocar o prompt inteiro.
+
+Toda data, contagem e prazo que ele traz é calculado pelo kit: o `preflight` imprime os
+mesmos fatos, lendo as tabelas de pendências pelo nome da coluna e pondo cada item num
+balde pela primeira data real da célula, com "sem data" como balde próprio e o que for
+ambíguo nomeado junto do item. O julgamento é do modelo. Nada em `briefing.never_read` é
+aberto, e nenhum limite vale se você não definir um (`max_words`, `max_questions` e
+`write_caps` são `null` por padrão).
+
+O `questions` guarda a fila de perguntas abertas de uma manhã para outra: sem duplicatas
+pelo texto normalizado, escaladas depois de feitas em três dias e arquivadas depois de 45
+dias (os dois por padrão) pelo `questions sweep`, que imprime cada uma que arquiva. O que
+você responde, e o que o briefing captura, vira um único pull request pelo `propose
+--only`; sem nada a registrar, não há pull request. O `schedule install --job briefing`
+imprime a tarefa a criar no aplicativo Claude para desktop, que a skill `setup` registra
+para você; ela roda enquanto o aplicativo está aberto, e na próxima abertura dele quando
+estava fechado. As sessões da tarefa nunca chegam ao curador; um briefing que você pede
+numa sessão sua é seu, e o curador o lê. O [docs/briefing.md](docs/briefing.md) explica os
+blocos, os fatos e de onde cada um vem, a fila, a tarefa no aplicativo e o que nunca muda.
+
 ## O plugin do Claude Code
 
 Carregue a partir de um clone com `claude --plugin-dir caminho/do/brain-kit`, ou instale
@@ -199,8 +233,8 @@ pelo marketplace. Dentro de um vault:
 - o hook `Stop` pede à sessão que cure só o que ela mesma mudou. Ele nunca bloqueia fora
   de um vault, numa cópia longe do caminho registrado do vault, enquanto outro processo
   segura o lock, nem duas vezes seguidas;
-- oito skills conduzem o motor no idioma do próprio vault: `setup`, `curate-session`,
-  `capture`, `ask`, `lint`, `review-stale`, `approve` e `seed-rituals`;
+- nove skills conduzem o motor no idioma do próprio vault: `setup`, `curate-session`,
+  `capture`, `ask`, `lint`, `review-stale`, `approve`, `seed-rituals` e `briefing`;
 - o subagente `vault-reader` lê notas só com Read, Grep e Glob.
 
 A pasta `evals/` traz um caso de `claude plugin eval` por skill e idioma; veja
@@ -214,7 +248,7 @@ A pasta `evals/` traz um caso de `claude plugin eval` por skill e idioma; veja
 | 1 | Validador, lint, propose (loop de PR), hook Stop, init, doctor, skills | concluída |
 | 2 | Curador agendado sobre transcripts locais, templates de agendamento | concluída |
 | 3 | Fontes de agenda e notas de reunião (best effort por desenho) | concluída |
-| 4 | Briefing matinal | planejada |
+| 4 | Briefing matinal | em revisão |
 | 5 | Migração do vault original para o kit | planejada |
 | 6 | Publicação 0.1.0 | planejada |
 | 7 | Outras forjas, outros harnesses, mais fontes, cada um só quando um segundo caso real precisar | planejada |
@@ -256,7 +290,8 @@ Leia [docs/rationale.md](docs/rationale.md) para o raciocínio e
 
 Node.js >= 24, git, a CLI do GitHub (`gh`) autenticada e o Claude Code; para as fontes de
 agenda e de notas de reunião, os conectores Google Calendar e Google Drive do claude.ai,
-conectados no claude.ai e ativados para o Claude Code. Linux é a
+conectados no claude.ai e ativados para o Claude Code; para o briefing com horário, o
+aplicativo Claude para desktop. Linux é a
 plataforma de referência para agendamento (timers de usuário do systemd, que precisam de
 `loginctl enable-linger` para rodar com você deslogado); as entradas de macOS (launchd) e
 cron são geradas e testadas sem que a suíte de testes as instale; Windows fica fora do

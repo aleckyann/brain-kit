@@ -447,8 +447,18 @@ context, discarding too much costs the day. Every scheduled actor that produces
 transcripts needs a signature known to the filter, and each signature needs a test.
 **Where it lives in brain-kit.** `src/sources/transcripts-claude-code.mjs` (the
 self-trace filter: the first user message with text, parsed as JSON, starting with
-`curate.signature` or one of `curate.extra_signatures`),
-`test/incidents/2026-08-11-self-trace-filter.test.mjs` (Phase 2).
+`curate.signature`, `briefing.signature` or one of `curate.extra_signatures`),
+`test/incidents/2026-08-11-self-trace-filter.test.mjs` (Phase 2). The morning briefing's
+desktop task is the second scheduled actor: its prompt starts with `briefing.signature`,
+which the filter always counts, whatever `curate.extra_signatures` lists, so what that
+briefing records it proposes itself and the curator never reads it again. A briefing the
+person asks for in their own session starts with their own message and stays in, by the
+same rule: in doubt, include; the cost is a capture the next round may propose a second
+time, visible in the pull request's diff. `schedule status --job briefing` and `doctor`
+judge the task signed with the filter's own predicate, and refuse a signature that is
+blank, more than one line or padded with spaces, which could sign nothing
+([briefing.md](briefing.md)); `test/incidents/2026-09-25-briefing-self-trace.test.mjs`
+(Phase 4).
 
 ### 11/08/2026: the cap threw away exactly the work of the day
 **What happened.** The cap on how many transcripts to read sorted candidates by
