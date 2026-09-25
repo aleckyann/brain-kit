@@ -7,14 +7,18 @@
 // BRAIN_KIT_E2E_LANG names the vault's language pack (`en` by default, or
 // `pt-BR`): the vault is made in it, and the request is written in it.
 //
-// Everything is built in a scratch directory that is NOT removed when the
-// test ends, so the session can be read afterwards (the path is printed): a
-// vault made by `brain-kit init --yes`, committed, with its pending table
-// seeded with one overdue item, one due today and one with no date; the
-// question queue seeded with one question asked on three earlier days, so
-// it is escalated; a bare remote the vault pushes to; a fake `gh` first on
-// PATH that records every call (it lists no open pull request and records
-// the one `propose` opens instead of opening it); and a state directory.
+// The world is test/helpers/briefing-world.mjs's, built in a scratch
+// directory that is NOT removed when the test ends, so the session can be
+// read afterwards (the path is printed): a vault made by `brain-kit init
+// --yes`, committed, with its pending table seeded with one overdue item,
+// one due today and one with no date; its log seeded with three recent days
+// and, far below them, an old day holding a unique marker; the question
+// queue seeded with one question asked on three earlier days, so it is
+// escalated; a bare remote the vault pushes to; a fake `gh` first on PATH
+// that records every call (it lists no open pull request and records the
+// one `propose` opens instead of opening it); and a state directory.
+// Before any model is paid for, the kit's own `preflight`, `validate` and
+// `lint` must see that world as seeded.
 //
 // HOME stays the person's own, because the real claude's login lives
 // there. What keeps the person's own Claude Code out is the round's
@@ -27,79 +31,48 @@
 // this checkout as the plugin, and its `briefing` skill must be picked from
 // a request that asks for the morning briefing. The real CLI still updates
 // the person's own ~/.claude.json for the scratch working directory, as any
-// use of the login does. No budget, turn or time limit is set.
+// use of the login does; and `doctor`, which the skill body names for its
+// failure path and the session may run, looks for the briefing task under
+// the person's real ~/.claude/scheduled-tasks (a file named after the
+// scratch vault's id, which does not exist; nothing is written there). No
+// budget, turn or time limit is set.
 //
 // The request asks for the briefing and answers its questions in advance
 // (the escalated one gets an answer, any other none), since nobody is there
 // to answer in a `-p` session.
 //
 // What a passing run proves (the phase 4 criterion): the model invoked the
-// briefing skill, and the skill's two `!` lines ran (the stream carries the
-// rendered skill body and the rendered briefing, and the queue counts the
-// seeded question as asked today, which only the real render does); every
-// default block's heading appears in the reply, in order; the escalated
-// question comes first among the questions; the queue changed through the
-// kit's own command (a question added, or the answered one marked); exactly
-// one `pr create`, against the default branch, from `propose --only` naming
-// every file it changed, or none when nothing was recorded; and no path in
-// `briefing.never_read` was read by any tool the model called.
+// briefing skill, and its `!` lines ran the kit's real render (the queue
+// counts the seeded question as asked on the day of the run, which only
+// `prompt briefing` itself does); every default block's heading appears in
+// the reply as a heading, in order; the escalated question comes first
+// among the questions; the queue changed through the kit's own command (a
+// question added, or the answered one marked); exactly one `pr create`,
+// against the default branch, from `propose --only` naming every file it
+// changed, or none when nothing was recorded; no tool the model called named
+// a path in `briefing.never_read`; and the old log section's marker never
+// came back to the model in a tool result (the log is read by its headings
+// and its most recent sections, never whole).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import {
-  chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
+import { closeSync, existsSync, openSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { delimiter, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { KIT_ROOT } from '../src/version.mjs';
-import { withoutLocalGitVars } from '../src/git-env.mjs';
 import { addDays, localDay } from '../src/guards/watermark.mjs';
-import { normalizeQuestion, questionId } from '../src/briefing/questions.mjs';
+import { normalizeQuestion } from '../src/briefing/questions.mjs';
 import { inNeverRead } from '../src/briefing/pending.mjs';
 import { disallowedTools, kitCommand } from '../src/curate/tools.mjs';
+import { BIN, TZ, WORLD, buildBriefingWorld, run } from './helpers/briefing-world.mjs';
 
 const ENABLED = process.env.BRAIN_KIT_E2E_BRIEFING === '1';
 const LANG = process.env.BRAIN_KIT_E2E_LANG || 'en';
-const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
 const FAKE_CLAUDE = fileURLToPath(new URL('./helpers/fake-claude.mjs', import.meta.url));
 const MODEL = 'sonnet';
-const TZ = 'UTC';
 // The kit's own subcommands the session may run: the ones the briefing and
 // the skill body name, and the read-only ones a model reaches for.
 const KIT_SUBCOMMANDS = Object.freeze(['questions', 'validate', 'lint', 'propose', 'doctor', 'preflight']);
-
-// What the vault holds and what the person says, in the vault's language.
-const WORLD = Object.freeze({
-  en: {
-    question: 'Should the reading group keep meeting on Thursdays?',
-    overdue: 'Send Ana the reading list',
-    dueToday: 'Book the room for the reading group',
-    undated: 'Choose the next book',
-    undatedCell: 'when the group decides',
-    request: [
-      'Good morning. Give me my morning briefing from this vault.',
-      'I will not be here to answer while you give it, so here are my answers in advance.',
-      'If you ask whether the reading group should keep meeting on Thursdays: yes, it stays on Thursdays, because the library room is free that evening.',
-      'I have no answer to any other question today: leave it open for another day.',
-      'When the briefing is done, record what my answer teaches the vault, as the briefing says.',
-    ].join(' '),
-  },
-  'pt-BR': {
-    question: 'O grupo de leitura deve continuar se reunindo às quintas?',
-    overdue: 'Mandar para a Ana a lista de leituras',
-    dueToday: 'Reservar a sala para o grupo de leitura',
-    undated: 'Escolher o próximo livro',
-    undatedCell: 'quando o grupo decidir',
-    request: [
-      'Bom dia. Me dê o meu briefing matinal deste vault.',
-      'Não vou estar aqui para responder enquanto você o apresenta, então seguem as minhas respostas adiantadas.',
-      'Se você perguntar se o grupo de leitura deve continuar se reunindo às quintas: sim, continua às quintas, porque a sala da biblioteca fica livre nessa noite.',
-      'Não tenho resposta para nenhuma outra pergunta hoje: deixe-as abertas para outro dia.',
-      'Quando o briefing terminar, registre o que a minha resposta ensina ao vault, como o briefing manda.',
-    ].join(' '),
-  },
-});
 
 function findOnPath(name) {
   for (const dir of (process.env.PATH ?? '').split(delimiter)) {
@@ -114,38 +87,6 @@ function findOnPath(name) {
   return null;
 }
 
-// Records every call as one JSON line. `api` (the preflight's listing of
-// the open pull requests) lists none; `pr create` succeeds and `pr view`
-// answers only for a head a `pr create` named, as the real gh would.
-function fakeGh(log) {
-  return `#!${process.execPath}
-'use strict';
-const fs = require('node:fs');
-const args = process.argv.slice(2);
-const log = ${JSON.stringify(log)};
-const before = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
-fs.appendFileSync(log, JSON.stringify({ args }) + '\\n');
-const url = 'https://example.invalid/ana/reading/pull/1';
-if (args[0] === 'api') process.exit(0);
-if (args[0] === 'pr' && args[1] === 'create') {
-  process.stdout.write('Creating pull request\\n' + url + '\\n');
-  process.exit(0);
-}
-if (args[0] === 'pr' && args[1] === 'view') {
-  const created = before.filter((e) => e.args[0] === 'pr' && e.args[1] === 'create' && e.args[e.args.indexOf('--head') + 1] === args[2]).at(-1);
-  if (!created) { process.stderr.write('no pull requests found for branch "' + args[2] + '"\\n'); process.exit(1); }
-  process.stdout.write(JSON.stringify({ baseRefName: created.args[created.args.indexOf('--base') + 1], headRefName: args[2], url }) + '\\n');
-  process.exit(0);
-}
-process.stderr.write('fake gh: unexpected call\\n');
-process.exit(2);
-`;
-}
-
-function run(program, args, { cwd, env, input } = {}) {
-  return spawnSync(program, args, { cwd, env, encoding: 'utf8', input, maxBuffer: 64 * 1024 * 1024 });
-}
-
 function must(r, what) {
   assert.equal(r.status, 0, `${what} exited ${r.status}\n${r.stdout}\n${r.stderr}`);
   return r.stdout;
@@ -153,11 +94,6 @@ function must(r, what) {
 
 function jsonLines(file) {
   return readFileSync(file, 'utf8').split('\n').filter((line) => line.trim() !== '').map((line) => JSON.parse(line));
-}
-
-function dmy(day) {
-  const [y, m, d] = day.split('-');
-  return `${d}/${m}/${y}`;
 }
 
 // Every string anywhere inside `value`.
@@ -168,26 +104,31 @@ function stringsIn(value, out = []) {
   return out;
 }
 
-function escapeRegExp(text) {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// Every day from `from` to `to`, both included (YYYY-MM-DD): the days a
+// session that may cross midnight can call today.
+function daysBetween(from, to) {
+  const days = [];
+  for (let day = from; day <= to; day = addDays(day, 1)) days.push(day);
+  return days;
 }
 
-// True when a shell command names `target` (a vault-relative folder or
-// file) as a path of its own: relative, or under an absolute vault path.
-function commandMentions(command, target) {
-  return new RegExp(`(?:^|[\\s"'=(/])${escapeRegExp(target)}(?:/|$|[\\s"')])`).test(command);
-}
-
-// The values after `--only` in a propose command line, unquoted.
-function onlyPaths(command) {
-  const at = command.indexOf('--only');
-  if (at === -1) return [];
-  const out = [];
-  for (const token of command.slice(at + '--only'.length).match(/"[^"]*"|'[^']*'|\S+/g) ?? []) {
-    if (token.startsWith('--')) break;
-    out.push(token.replace(/^["']|["']$/g, '').replace(/^\.\//, ''));
+// The words of a shell command line, quotes removed, split into the
+// commands it chains (`&&`, `||`, `;`, `|`), each a list of words. Enough
+// for what a model types; not a shell.
+function shellCommands(line) {
+  const commands = [[]];
+  for (const m of line.matchAll(/"((?:[^"\\]|\\.)*)"|'([^']*)'|(&&|\|\||[;|])|([^\s"';|&]+)/g)) {
+    if (m[3] !== undefined) commands.push([]);
+    else commands.at(-1).push(m[1] !== undefined ? m[1].replace(/\\(.)/g, '$1') : (m[2] ?? m[4]));
   }
-  return out;
+  return commands.filter((words) => words.length > 0);
+}
+
+// A line of the reply read as a heading: its leading markup (`#`, `*`,
+// `>`, `-`, a number and its dot or bracket) stripped, then normalised the
+// way the queue normalises text.
+function headingText(line) {
+  return normalizeQuestion(line.replace(/^[\s#>*_\-\d.)]+/, ''));
 }
 
 test('the real briefing skill against a throwaway vault gives every block in order, asks the escalated question first, records through the kit and never reads a never_read path', {
@@ -197,100 +138,28 @@ test('the real briefing skill against a throwaway vault gives every block in ord
   assert.ok(claude, 'BRAIN_KIT_E2E_BRIEFING=1 needs the real claude on PATH');
   assert.notEqual(claude, FAKE_CLAUDE, 'this test runs the real claude, never the fake');
   assert.ok(Object.hasOwn(WORLD, LANG), `BRAIN_KIT_E2E_LANG must be en or pt-BR, not ${LANG}`);
-  const world = WORLD[LANG];
 
-  const base = mkdtempSync(join(tmpdir(), 'brain-kit-e2e-briefing-'));
+  const w = buildBriefingWorld({ lang: LANG });
+  const { base, vault, remote, env, config, world, seededId, normalized, marker, kit } = w;
   t.diagnostic(`scratch: ${base}`);
   console.log(`e2e briefing: scratch ${base}`);
-  const vault = join(base, 'vault');
-  const remote = join(base, 'remote.git');
-  const state = join(base, 'state');
-  const fakebin = join(base, 'fakebin');
-  const ghLog = join(base, 'gh-calls.jsonl');
-  const gitconfig = join(base, 'gitconfig');
   const streamFile = join(base, 'session.stream.jsonl');
   const stderrFile = join(base, 'session.stderr.log');
-  mkdirSync(fakebin);
-  mkdirSync(state, { mode: 0o700 });
-  writeFileSync(join(fakebin, 'gh'), fakeGh(ghLog));
-  chmodSync(join(fakebin, 'gh'), 0o755);
-  // The vault's push gate runs `brain-kit` from PATH: this checkout's own.
-  symlinkSync(BIN, join(fakebin, 'brain-kit'));
-  writeFileSync(gitconfig, '[user]\n\tname = Ana\n\temail = ana@example.invalid\n[init]\n\tdefaultBranch = main\n[protocol "file"]\n\tallow = always\n');
-
-  const env = {
-    ...withoutLocalGitVars(process.env),
-    PATH: `${fakebin}${delimiter}${process.env.PATH ?? ''}`,
-    BRAIN_KIT_STATE_DIR: state,
-    BRAIN_KIT_LANG: LANG,
-    GIT_CONFIG_GLOBAL: gitconfig,
-    GIT_CONFIG_NOSYSTEM: '1',
-  };
-  const kit = (args, options = {}) => run(process.execPath, [BIN, ...args], { cwd: base, env, ...options });
-  const git = (cwd, args) => must(run('git', args, { cwd, env }), `git ${args.join(' ')}`);
-
-  // The vault, in the language asked for, its zone fixed so "today" is known.
-  must(kit(['init', vault, '--yes', '--lang', LANG]), 'brain-kit init --yes');
-  const configFile = join(vault, 'brain-kit.config.json');
-  const config = JSON.parse(readFileSync(configFile, 'utf8'));
-  config.vault.timezone = TZ;
-  writeFileSync(configFile, `${JSON.stringify(config, null, 2)}\n`);
-  const today = localDay(new Date(), TZ);
   const defaults = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', LANG, 'config.defaults.json'), 'utf8'));
   const messages = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', LANG, 'messages.json'), 'utf8'));
 
-  // The pending table: one overdue item, one due today, one with no date,
-  // written under the open heading of the first table briefing.pending reads.
-  const pending = config.briefing.pending[0];
-  const tablePath = config.taxonomy.files[pending.file];
-  const heading = config.taxonomy.columns[pending.file].labels[pending.heading];
-  const header = config.taxonomy.columns[pending.file].columns;
-  const dateAt = header.indexOf(pending.date_column);
-  const whatAt = header.indexOf(pending.what_column);
-  assert.ok(dateAt !== -1 && whatAt !== -1, `the pack's ${pending.file} columns hold ${pending.date_column} and ${pending.what_column}`);
-  const row = (what, deadline) => `| ${header.map((_, i) => (i === whatAt ? what : i === dateAt ? deadline : i === 0 ? dmy(addDays(today, -10)) : '-')).join(' | ')} |`;
-  const rows = [row(world.overdue, dmy(addDays(today, -3))), row(world.dueToday, dmy(today)), row(world.undated, world.undatedCell)];
-  const tableFile = join(vault, tablePath);
-  const lines = readFileSync(tableFile, 'utf8').split('\n');
-  const headingAt = lines.findIndex((line) => line.trim() === heading.trim());
-  const separatorAt = lines.findIndex((line, i) => i > headingAt && /^\|(?:\s*-+\s*\|)+$/.test(line.trim()));
-  assert.ok(headingAt !== -1 && separatorAt !== -1, `${tablePath} has a table under ${heading}`);
-  lines.splice(separatorAt + 1, 0, ...rows);
-  writeFileSync(tableFile, lines.join('\n'));
-
-  // The queue: one open question, asked on three earlier days (the pack's
-  // question_escalate_after is 3), created well inside question_max_age_days.
-  const machine = JSON.parse(readFileSync(join(state, 'machine.json'), 'utf8'));
-  const queueFile = machine.paths?.questions_log ?? join(state, 'questions.log');
-  const normalized = normalizeQuestion(world.question);
-  const seededId = questionId(normalized);
-  writeFileSync(queueFile, `${JSON.stringify({
-    id: seededId, text: world.question, normalized, createdOn: addDays(today, -6),
-    askedOn: [addDays(today, -5), addDays(today, -4), addDays(today, -3)],
-    status: 'open', answeredOn: null, archivedOn: null, archivedReason: null,
-  })}\n`, { mode: 0o600 });
-
-  // Committed, on a bare remote.
-  git(base, ['init', '-q', '--bare', '-b', 'main', remote]);
-  git(vault, ['add', '-A']);
-  git(vault, ['commit', '-q', '-m', 'A new vault']);
-  git(vault, ['remote', 'add', 'origin', remote]);
-  git(vault, ['push', '-q', '-u', 'origin', 'main']);
-  git(vault, ['remote', 'set-head', 'origin', '--auto']);
-
-  // The seeded world, as the kit computes it, before any model is paid for.
+  // The seeded world, as the kit sees it, before any model is paid for. The
+  // kit's own today is the first day of the run.
   const facts = JSON.parse(must(kit(['preflight', vault, '--json']), 'brain-kit preflight --json'));
-  assert.equal(facts.today, today);
+  assert.equal(facts.today, w.today, 'the day changed while the world was built; run again');
   assert.equal(facts.pending.overdue.length, 1, JSON.stringify(facts.pending));
   assert.equal(facts.pending.today.length, 1, JSON.stringify(facts.pending));
   assert.equal(facts.pending.undated.length, 1, JSON.stringify(facts.pending));
   assert.deepEqual(facts.questions.escalated.map((q) => q.id), [seededId], JSON.stringify(facts.questions));
   assert.deepEqual(facts.openPullRequests, { ok: true, reason: null, detail: null, items: [] });
-  // The skill body the first `!` line prints, to find in the stream.
-  const body = must(kit(['prompt', 'skill', 'briefing', '--vault', vault]), 'brain-kit prompt skill briefing');
-  const bodyLine = body.split('\n').reduce((longest, line) => (line.length > longest.length ? line : longest), '').trim();
-  assert.ok(bodyLine.length > 40, `a distinctive line of the skill body: ${JSON.stringify(bodyLine)}`);
-  const firstBlockHeading = `### 1. ${messages['briefing.title_sources']} (sources)`;
+  must(kit(['validate', vault]), 'brain-kit validate');
+  must(kit(['lint', vault, '--base', 'all']), 'brain-kit lint --base all');
+  const firstDay = facts.today;
 
   // The session, as the person opens it in the vault.
   const kitPath = kitCommand();
@@ -321,6 +190,9 @@ test('the real briefing skill against a throwaway vault gives every block in ord
     closeSync(out);
     closeSync(err);
   }
+  // A session with no time limit may cross midnight in the vault's zone:
+  // any day from the first to now is "today" for what it recorded.
+  const runDays = daysBetween(firstDay, localDay(new Date(), TZ));
 
   const events = jsonLines(streamFile);
   const result = events.findLast((e) => e.type === 'result') ?? null;
@@ -342,35 +214,32 @@ test('the real briefing skill against a throwaway vault gives every block in ord
     && stringsIn(u.input).some((value) => /(?:^|:)briefing$/.test(value.trim())));
   assert.ok(skillUse, `no Skill tool use for the briefing: ${JSON.stringify(toolUses.map((u) => ({ name: u.name, input: u.input })))}; init plugins ${JSON.stringify(init.plugins)}, skills ${JSON.stringify(init.skills ?? init.slash_commands)}`);
 
-  // Its two `!` lines ran: the rendered skill body and the rendered
-  // briefing reached the model, and the real render counted the seeded
-  // question as asked today (only `prompt briefing` itself does that).
-  const queueAfter = jsonLines(queueFile);
+  // Its `!` lines ran the kit's real render: only `prompt briefing` itself
+  // counts a placed question as asked, once per day. Whether the stream
+  // also carries the rendered text is a detail of the CLI's output format,
+  // not of the product, so it is reported, not asserted.
+  const queueAfter = jsonLines(w.queue);
   const seededAfter = queueAfter.find((q) => q.id === seededId);
   assert.ok(seededAfter, `the seeded question is still in the queue: ${JSON.stringify(queueAfter)}`);
-  const renderedByKit = seededAfter.askedOn.includes(today);
+  const askedToday = seededAfter.askedOn.filter((day) => runDays.includes(day));
+  assert.equal(askedToday.length, 1, `the real render did not count the seeded question once on ${runDays.join(' or ')}: ${JSON.stringify(seededAfter)}`);
   const handed = events.filter((e) => e.type !== 'assistant').flatMap((e) => stringsIn(e));
-  const where = `stream events: ${JSON.stringify(events.map((e) => `${e.type}${e.subtype ? `/${e.subtype}` : ''}`))}; queue counts today: ${renderedByKit}`;
-  assert.ok(handed.some((s) => s.includes(bodyLine)), `the rendered skill body is not in the stream (${JSON.stringify(bodyLine)}); ${where}`);
-  assert.ok(handed.some((s) => s.includes('<!-- rule:facts-from-kit -->') && s.includes(firstBlockHeading)), `the rendered briefing is not in the stream; ${where}`);
-  assert.ok(renderedByKit, `the seeded question was not counted as asked on ${today}: ${JSON.stringify(seededAfter)}`);
-  assert.equal(seededAfter.askedOn.filter((day) => day === today).length, 1, JSON.stringify(seededAfter));
+  t.diagnostic(`the stream carries the rendered briefing: ${handed.some((s) => s.includes('<!-- rule:facts-from-kit -->'))}`);
 
-  // Every default block's heading, in the reply, in order.
-  const normalizedReply = normalizeQuestion(reply);
-  const positions = [];
+  // Every default block's heading, as a heading of the reply, in order.
+  const replyLines = reply.split('\n');
+  const headingAt = {};
   let from = 0;
   for (const id of defaults.briefing.blocks) {
     const title = normalizeQuestion(messages[`briefing.title_${id}`]);
-    const at = normalizedReply.indexOf(title, from);
-    assert.ok(at !== -1, `the heading of ${id} ("${messages[`briefing.title_${id}`]}") is not in the reply after the ones before it (${JSON.stringify(positions)}):\n${reply}`);
-    positions.push({ id, at });
-    from = at + title.length;
+    const at = replyLines.findIndex((line, i) => i >= from && headingText(line).startsWith(title));
+    assert.ok(at !== -1, `no line of the reply after line ${from} starts with the heading of ${id} ("${messages[`briefing.title_${id}`]}"):\n${reply}`);
+    headingAt[id] = at;
+    from = at + 1;
   }
 
   // The escalated question comes first among the questions.
-  const questionsAt = positions.find((p) => p.id === 'questions').at;
-  const afterQuestions = normalizedReply.slice(questionsAt);
+  const afterQuestions = normalizeQuestion(replyLines.slice(headingAt.questions).join('\n'));
   const found = [afterQuestions.indexOf(normalized), afterQuestions.indexOf(normalizeQuestion(seededId))].filter((at) => at !== -1);
   assert.ok(found.length > 0, `the escalated question (${seededId}) is not asked in the questions block:\n${reply}`);
   const escalatedAt = Math.min(...found);
@@ -381,20 +250,21 @@ test('the real briefing skill against a throwaway vault gives every block in ord
 
   // The queue changed through the kit's own command.
   const commands = toolUses.filter((u) => u.name === 'Bash' && typeof u.input?.command === 'string').map((u) => u.input.command);
-  const answered = seededAfter.status === 'answered' && seededAfter.answeredOn === today
+  const answered = seededAfter.status === 'answered' && runDays.includes(seededAfter.answeredOn)
     && commands.some((c) => /\bquestions\s+answer\b/.test(c) && c.includes(seededId));
-  const added = queueAfter.some((q) => q.id !== seededId && q.createdOn === today)
+  const added = queueAfter.some((q) => q.id !== seededId && runDays.includes(q.createdOn))
     && commands.some((c) => /\bquestions\s+add\b/.test(c));
   assert.ok(answered || added, `neither questions add nor questions answer changed the queue: commands ${JSON.stringify(commands)}, queue ${JSON.stringify(queueAfter)}`);
 
   // Exactly one pull request, against the default branch, from `propose
   // --only` naming every file it changed; or none, with nothing recorded.
-  const proposals = commands.filter((c) => /\bpropose\b/.test(c) && c.includes('bin/brain-kit.mjs'));
-  for (const c of proposals) {
-    assert.ok(c.includes('--only'), `a propose without --only: ${c}`);
-    assert.ok(!/\s--all\b/.test(c), `a propose with --all: ${c}`);
+  const isKit = (words) => words[0] === BIN || (words[0] === 'node' && words[1] === BIN);
+  const proposals = commands.flatMap(shellCommands).filter((words) => isKit(words) && words[words[0] === 'node' ? 2 : 1] === 'propose');
+  for (const words of proposals) {
+    assert.ok(words.includes('--only'), `a propose without --only: ${words.join(' ')}`);
+    assert.ok(!words.includes('--all'), `a propose with --all: ${words.join(' ')}`);
   }
-  const calls = existsSync(ghLog) ? jsonLines(ghLog) : [];
+  const calls = existsSync(w.ghLog) ? jsonLines(w.ghLog) : [];
   const creates = calls.filter((c) => c.args[0] === 'pr' && c.args[1] === 'create');
   assert.ok(creates.length <= 1, `more than one pull request: ${JSON.stringify(creates)}`);
   if (creates.length === 1) {
@@ -402,7 +272,13 @@ test('the real briefing skill against a throwaway vault gives every block in ord
     assert.equal(create.args[create.args.indexOf('--base') + 1], 'main');
     const branch = create.args[create.args.indexOf('--head') + 1];
     assert.ok(proposals.length > 0, `a pull request no propose command opened: ${JSON.stringify(commands)}`);
-    const named = new Set(proposals.flatMap(onlyPaths));
+    const named = new Set();
+    for (const words of proposals) {
+      for (const word of words.slice(words.indexOf('--only') + 1)) {
+        if (word.startsWith('--')) break;
+        named.add(word.replace(/^\.\//, ''));
+      }
+    }
     const changed = must(run('git', ['diff', '--name-only', 'main', branch], { cwd: remote, env }), `git diff main ${branch}`).split('\n').filter(Boolean);
     assert.ok(changed.length > 0, `the branch ${branch} changes nothing`);
     for (const path of changed) assert.ok(named.has(path), `${path} is on ${branch} but no --only named it: ${JSON.stringify([...named])}`);
@@ -413,14 +289,15 @@ test('the real briefing skill against a throwaway vault gives every block in ord
     console.log('e2e briefing: no pull request, nothing recorded');
   }
 
-  // No path in never_read was read by any tool the model called. An entry
-  // with a fragment (the log, "#full") forbids reading that file whole: a
-  // Read of it without a limit. A glob that merely lists from an ancestor
-  // is reported, not failed: it reads no content.
+  // No tool the model called named a path in never_read. The entries that
+  // close a path: a Read or an Edit of it, a Glob naming it, a Grep rooted in
+  // it or searching over it with no filter, and a word of a shell command
+  // (the kit's own commands aside: they are the kit, not the model reading)
+  // that resolves to it. A filtered glob or grep from an ancestor is only
+  // reported: it reads no content of the path.
   const neverRead = config.briefing.never_read.filter((entry) => typeof entry === 'string' && entry.trim() !== '');
   const closed = neverRead.filter((entry) => !entry.includes('#'));
   const closedTargets = closed.map((entry) => entry.replace(/^\.\//, '').replace(/\/+$/, ''));
-  const wholeOnly = neverRead.filter((entry) => entry.includes('#')).map((entry) => entry.slice(0, entry.indexOf('#')).replace(/^\.\//, ''));
   const roots = [...new Set([vault, realpathSync(vault)])];
   const vaultRel = (path) => {
     if (typeof path !== 'string' || path === '') return null;
@@ -439,9 +316,7 @@ test('the real briefing skill against a throwaway vault gives every block in ord
     const input = use.input ?? {};
     const shown = `${use.name} ${JSON.stringify(input)}`;
     if (use.name === 'Read' || use.name === 'Edit' || use.name === 'NotebookEdit') {
-      const rel = vaultRel(input.file_path ?? input.notebook_path);
-      if (covers(rel)) violations.push(shown);
-      if (use.name === 'Read' && rel !== null && wholeOnly.includes(rel) && input.limit === undefined) violations.push(`${shown} (read whole)`);
+      if (covers(vaultRel(input.file_path ?? input.notebook_path))) violations.push(shown);
     } else if (use.name === 'Glob') {
       const rel = vaultRel(input.path ?? vault);
       const pattern = typeof input.pattern === 'string' ? input.pattern : '';
@@ -453,11 +328,22 @@ test('the real briefing skill against a throwaway vault gives every block in ord
       if (covers(rel)) violations.push(shown);
       else if (ancestorOfClosed(rel) && input.glob === undefined && input.type === undefined) violations.push(`${shown} (searches a never_read path)`);
       else if (ancestorOfClosed(rel)) listings.push(shown);
-    } else if (use.name === 'Bash') {
-      const command = typeof input.command === 'string' ? input.command : '';
-      if (closedTargets.some((target) => commandMentions(command, target))) violations.push(shown);
+    } else if (use.name === 'Bash' && typeof input.command === 'string') {
+      for (const words of shellCommands(input.command)) {
+        if (isKit(words)) continue;
+        if (words.some((word) => covers(vaultRel(word.replace(/[*?].*$/, ''))))) violations.push(shown);
+      }
     }
   }
   if (listings.length > 0) t.diagnostic(`tool uses that list or search from an ancestor of a never_read path, with a filter: ${JSON.stringify(listings)}`);
   assert.deepEqual(violations, [], `tool uses that reached a never_read path (${JSON.stringify(neverRead)})`);
+
+  // The log is never read whole (its never_read entry with "#"): the marker
+  // of its old section, far below the recent ones, never came back to the
+  // model in a tool result.
+  const results = events
+    .filter((e) => e.type === 'user' && Array.isArray(e.message?.content))
+    .flatMap((e) => e.message.content.filter((block) => block?.type === 'tool_result'));
+  const leaked = results.filter((block) => stringsIn(block).some((s) => s.includes(marker)));
+  assert.deepEqual(leaked.map((block) => block.tool_use_id), [], `the old log section's marker ${marker} reached the model: the log was read whole`);
 });

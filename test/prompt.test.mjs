@@ -76,8 +76,8 @@ test('SKILL_NAMES lists exactly the nine skills, in order', () => {
 // saying it could not be loaded.
 test('the briefing body renders in both languages, under 60 lines, naming the kit\'s doctor for the could-not-load line', async () => {
   const words = {
-    en: [/The briefing below, printed by the kit, is this session's instructions/, /a single line saying the briefing could not be loaded or prepared, or that no vault was found/, /and stop\. Write no file\./],
-    'pt-BR': [/O briefing abaixo, impresso pelo kit, é a instrução desta sessão/, /uma única linha dizendo que o briefing não pôde ser carregado ou preparado, ou que nenhum vault foi encontrado/, /e pare\. Não escreva nenhum arquivo\./],
+    en: [/The briefing below, printed by the kit, is this session's instructions/, /a single line saying the briefing could not be loaded or prepared, or that no vault was found/, /and stop\. Write no file\./, /a single line saying the briefing is turned off in this vault, tell the person that line as it is and stop: run nothing, not even doctor/],
+    'pt-BR': [/O briefing abaixo, impresso pelo kit, é a instrução desta sessão/, /uma única linha dizendo que o briefing não pôde ser carregado ou preparado, ou que nenhum vault foi encontrado/, /e pare\. Não escreva nenhum arquivo\./, /uma única linha dizendo que o briefing está desligado neste vault, diga essa linha à pessoa como ela está e pare: não rode nada, nem o doctor/],
   };
   for (const [lang, patterns] of Object.entries(words)) {
     const { vault, state } = freshVault(lang);

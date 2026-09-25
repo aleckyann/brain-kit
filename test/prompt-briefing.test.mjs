@@ -435,3 +435,59 @@ for (const lang of LANGS) {
     assert.doesNotMatch(out, /Besides the paths a block below names|Além dos caminhos que um bloco abaixo citar/);
   });
 }
+
+// ------------------------------------------------------------ task 5 fix round 1
+
+// Ruling R-T16: briefing.enabled false turns the briefing off in the vault,
+// the one asked for by hand included: the real render prints one line in
+// the vault's language, records no question and exits 0. With enabled true
+// the briefing is unchanged (the schema requires the key), and --check is
+// not affected either way.
+for (const lang of LANGS) {
+  test(`${lang}: with briefing.enabled false the real render is one line saying the briefing is off, records nothing and exits 0`, async () => {
+    const world = freshVault(lang, { enabled: false });
+    const id = addQuestion(world.state, 'Anything?', { today: '2026-09-20' }).id;
+    const { code, out, err } = await briefing(world, { lang: lang === 'en' ? 'pt-BR' : 'en' });
+    assert.equal(code, EXIT.OK, out + err);
+    assert.equal(err, '');
+    assert.equal(out, `${createTranslator(lang)('prompt.briefing_disabled', { file: 'brain-kit.config.json' })}\n`);
+    assert.match(out, /briefing\.enabled/);
+    assert.match(out, lang === 'en' ? /^The morning briefing is turned off in this vault/ : /^O briefing matinal está desligado neste vault/);
+    assert.equal(out.includes(loadConfig(world.vault).briefing.signature), false);
+    assert.deepEqual(asked(world.state), [[id, []]]);
+  });
+}
+
+test('with briefing.enabled true the briefing renders and records as before', async () => {
+  const world = freshVault('en', { enabled: true });
+  const id = addQuestion(world.state, 'Anything?', { today: '2026-09-20' }).id;
+  const { code, out } = await briefing(world);
+  assert.equal(code, EXIT.OK, out);
+  assert.equal(out.split('\n')[0], loadConfig(world.vault).briefing.signature);
+  assert.ok(out.includes('### 1. The curator and the sources (sources)'));
+  assert.deepEqual(asked(world.state), [[id, [TODAY]]]);
+});
+
+test('--check is not affected by briefing.enabled false, and records nothing', async () => {
+  const off = freshVault('en', { enabled: false });
+  const on = freshVault('en');
+  const id = addQuestion(off.state, 'Anything?', { today: '2026-09-20' }).id;
+  const a = await briefing(off, { argv: ['--check', '--vault', off.vault] });
+  const b = await briefing(on, { argv: ['--check', '--vault', on.vault] });
+  assert.equal(a.code, b.code);
+  assert.equal(a.code, EXIT.OK, a.out + a.err);
+  assert.equal(a.out, b.out);
+  assert.equal(a.err, b.err);
+  assert.deepEqual(asked(off.state), [[id, []]]);
+});
+
+test('the real binary with briefing.enabled false prints the one line and exits 0', () => {
+  const world = freshVault('en', { enabled: false });
+  const bin = join(world.base, 'bin');
+  mkdirSync(bin);
+  symlinkSync(REAL_GIT, join(bin, 'git'));
+  const r = spawnSync(process.execPath, [BIN, 'prompt', 'briefing', '--vault', world.vault], { encoding: 'utf8', env: { ...world.env, PATH: bin }, cwd: world.base });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(r.stdout.trim().split('\n').length, 1);
+  assert.match(r.stdout, /^The morning briefing is turned off in this vault: briefing\.enabled is false in brain-kit\.config\.json\./);
+});

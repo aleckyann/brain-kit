@@ -208,9 +208,14 @@ instrução), e um overlay de prompt pode trocar o prompt inteiro.
 Toda data, contagem e prazo que ele traz é calculado pelo kit: o `preflight` imprime os
 mesmos fatos, lendo as tabelas de pendências pelo nome da coluna e pondo cada item num
 balde pela primeira data real da célula, com "sem data" como balde próprio e o que for
-ambíguo nomeado junto do item. O julgamento é do modelo. Nada em `briefing.never_read` é
-aberto, e nenhum limite vale se você não definir um (`max_words`, `max_questions` e
-`write_caps` são `null` por padrão).
+ambíguo nomeado junto do item. O julgamento é do modelo. O kit nunca põe no prompt o
+conteúdo de um caminho em `briefing.never_read`: um caminho que ele precisa citar, como
+uma nota vencida, vem marcado "(nunca lido)", e as verificações dele só leem o que o
+`validate` sempre leu, o frontmatter de cada nota. O modelo recebe a instrução de nunca
+abrir, listar ou buscar esses caminhos; é uma instrução ao modelo, não uma caixa de
+areia. Nenhum limite vale se você não definir um (`max_words`, `max_questions` e
+`write_caps` são `null` por padrão), e `briefing.enabled: false` desliga o briefing no
+vault.
 
 O `questions` guarda a fila de perguntas abertas de uma manhã para outra: sem duplicatas
 pelo texto normalizado, escaladas depois de feitas em três dias e arquivadas depois de 45

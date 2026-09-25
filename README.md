@@ -203,9 +203,13 @@ instruction), and a prompt overlay can replace the whole prompt.
 Every date, count and deadline in it is computed by the kit: `preflight` prints the same
 facts, reading the pending tables by column name and bucketing each item by the first real
 date in its cell, with "no date" a bucket of its own and anything ambiguous named next to
-its item. The judgement is the model's. Nothing in `briefing.never_read` is ever opened,
-and no limit applies unless you set one (`max_words`, `max_questions` and `write_caps` are
-`null` by default).
+its item. The judgement is the model's. The kit never puts the content of a path in
+`briefing.never_read` in the prompt: a path it must mention, such as a stale note, is
+marked "(never read)", and its own checks read only what `validate` always reads, every
+note's frontmatter. The model is told never to open, list or search those paths; that is
+an instruction to the model, not a sandbox. No limit applies unless you set one
+(`max_words`, `max_questions` and `write_caps` are `null` by default), and
+`briefing.enabled: false` turns the briefing off in the vault.
 
 `questions` keeps the queue of open questions across mornings: deduplicated by their
 normalised text, escalated once asked on three days and archived after 45 days (both by

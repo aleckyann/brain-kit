@@ -378,8 +378,12 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   the notes to read, an instruction). An unknown id, a duplicate, an empty list or a
   custom block reading a missing path, a path outside the vault or one in
   `briefing.never_read` is a named problem, and the block is left out and said.
-  `never_read` wins over every block, and a path a fact block lists that it covers is
-  shown "(never read)". The real render, and only it, records the questions it shows as
+  `never_read` wins over every block: the kit never puts a covered path's content in the
+  prompt, a path it must mention (a stale note) is shown "(never read)", and the model is
+  told never to open, list or search one (an instruction, not a sandbox; the stale count
+  reads every note's frontmatter, as `validate` does). With `briefing.enabled` false the
+  render is one line saying the briefing is turned off in the vault, nothing is recorded,
+  and the exit is 0. The real render, and only it, records the questions it shows as
   asked today, after the whole text is rendered; when that fails, the text is printed
   with a correction line and the exit is 3. A generic, domain-neutral prompt in both
   packs, with the contract markers `never-read`, `facts-from-kit`, `closed-uncertainty`,
@@ -413,9 +417,10 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   desktop task, which sessions the curator skips, and what never changes).
 - `BRAIN_KIT_E2E_BRIEFING=1 node --test test/e2e-briefing.test.mjs` runs the real skill
   once against a throwaway vault (never in CI), asserting from the stream and the queue:
-  the skill ran with its `!` lines rendered, every default block in order, the escalated
-  question first, the queue changed through the kit's command, at most one pull request
-  with `--only`, and no path in `never_read` read.
+  the skill ran and the real render counted its question, every default block's heading
+  in order, the escalated question first, the queue changed through the kit's command, at
+  most one pull request with `--only`, no tool use naming a `never_read` path, and an old
+  log section's marker never handed to the model.
 
 ## 0.0.1 (published on npm on 18/09/2026)
 

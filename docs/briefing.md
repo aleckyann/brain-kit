@@ -9,10 +9,11 @@ the model's. What you answer, and what the briefing learns, becomes one pull req
 
 It is not the curator. The curator ([scheduling.md](scheduling.md)) runs unattended,
 reads your Claude Code sessions, calendar and meeting notes over the days since its last
-round, and proposes what they taught the vault. The briefing reads none of those sources:
-it reads the vault and the kit's own state, it asks you questions, so it always runs in
-your session with you there, and it writes only what you told it or what it found in the
-vault.
+round, and proposes what they taught the vault. The briefing reads none of those sources
+(by default: the optional `today_calendar` block reads today's events from your own
+session's calendar connector): it reads the vault and the kit's own state, it asks you
+questions, so it always runs in your session with you there, and it writes only what you
+told it or what it found in the vault.
 
 Every date on this page is written DD/MM/YYYY.
 
@@ -27,9 +28,13 @@ Two ways, the same briefing:
   session on the schedule in `briefing.schedule` (`0 9 * * 1-5` by default) and runs the
   same command for your vault. See [The desktop task](#the-desktop-task) below.
 
-`briefing.enabled` (`true` by default) turns the whole thing off: `schedule install --job
-briefing` refuses to register a task for a vault where it is `false`, and `doctor` says
-so when a task is still registered.
+`briefing.enabled` (`true` by default) turns the briefing off in the vault. Set to
+`false`, `brain-kit prompt briefing` prints one line instead of the briefing, in the
+vault's language, saying the briefing is turned off there (naming the key) and telling
+the model to say so and stop; it records no question and exits 0, so a briefing you ask
+for and one the desktop task starts both end there. `schedule install --job briefing`
+refuses to register a task for such a vault, and `schedule status --job briefing` and
+`doctor` say so when a task is still registered. `prompt --check` is not affected.
 
 ## What the kit computes
 
@@ -170,18 +175,29 @@ stderr, `doctor` warns about it and `prompt --check` lists it:
 
 ### `never_read` wins over every block
 
-`briefing.never_read` lists what the briefing never opens (the packs: the people and
-attachments folders, `.brain-kit/`, and the log read whole). An entry ending in `/`, or
+`briefing.never_read` lists what the briefing keeps out (the packs: the people and
+attachments folders, `.brain-kit/`, and the log read whole). What that means, exactly as
+built:
+
+- **The kit** never puts the content of a covered path in the prompt: no block reads it,
+  a pending table under it is not opened (a problem says so), and an entry of
+  `briefing.read` it covers is left out and said. Where the kit must mention a covered
+  path, it shows the path marked "(never read)", never its content: a stale note in the
+  people folder, say. The kit's own mechanical checks still read the frontmatter of every
+  note, covered ones included, as `validate` always has: that is how the stale count
+  knows a note's `stale_after`.
+- **The model** is told never to open, list or search a covered path, not even to check
+  that it exists, even when a block names it, and no configuration turns that rule off.
+  It is an instruction to the model, not a sandbox: the session keeps the tools it has
+  (yours, when you ask for the briefing in your own session).
+
+An entry ending in `/`, or
 without it, covers that folder and everything under it; an entry with a `#` after a file
 name (`memory/log.md#full`) forbids reading that file whole, so the log is read by its
 headings and the section under the most recent ones. A block's `read` path is checked
 against the list before the file system is touched, so a path you keep out is not even
 checked for existence, and again by its real path, so a link inside the vault that leads
-into a never-read folder is refused too. A path a fact block lists that the list covers
-(a stale note in the people folder, say) is shown with "(never read)", and the prompt
-tells the model that such a path stays closed even when a block names it. A pending table
-in the list is not opened, and an entry of `briefing.read` it covers is left out and
-said.
+into a never-read folder is refused too.
 
 ## Limits
 
@@ -254,9 +270,12 @@ record, it writes nothing and proposes nothing, and says so.
 
 ## What never changes
 
-These stay out of configuration: they are the kit's guarantees, not a matter of taste.
+These rules stay out of configuration: no setting turns them off, and no overlay drops
+them without `prompt --check` saying so.
 
-- Nothing in `briefing.never_read` is ever opened, listed or searched.
+- Nothing in `briefing.never_read` reaches the prompt as content, and the model is told
+  never to open, list or search it (an instruction, not a sandbox: see
+  [`never_read` wins over every block](#never_read-wins-over-every-block)).
 - The vault changes only by pull request, through `propose --only`.
 - Uncertainty is said with exactly one of three expressions: not verified, not found,
   don't know.
@@ -313,7 +332,7 @@ Run exactly this command with Bash and follow what it prints as this session's i
 
 The task runs on the machine's own clock (`install` warns when the machine's zone and the
 vault's do not keep the same time all year), while the application is open, and on its
-next launch when it was closed at that hour; every run is a fresh session.
+next launch when it was closed at that hour.
 
 The kit's path in the task is absolute, and a plugin update moves it. `schedule status
 --job briefing` and `doctor`'s `briefing` check read the task back and say when its kit

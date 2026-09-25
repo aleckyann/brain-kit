@@ -39,6 +39,8 @@
 // exit is 3. Every failure before that writes one line to stdout, in the
 // vault's language when there is one, saying what to tell the person, and
 // records nothing: the briefing never hands the model an empty prompt.
+// A vault whose `briefing.enabled` is not true gets one line saying the
+// briefing is turned off there, exit 0, nothing recorded (ruling R-T16).
 //
 // `skill` always exits 0: the body is what a model reads in place of a
 // SKILL.md's own prose, and a failure that left stdout empty would hand
@@ -82,7 +84,7 @@ import { GuardError } from '../guards/location.mjs';
 import { briefingFacts, humanDay } from '../briefing/facts.mjs';
 import { markAsked } from '../briefing/questions.mjs';
 import {
-  blockProblemLine, briefingBlocks, briefingLimits, renderBlocks, renderLimits, renderNeverRead, renderReadList, selectQuestions, validateBriefingBlocks,
+  blockProblemLine, briefingBlocks, briefingLimits, briefingSetting, renderBlocks, renderLimits, renderNeverRead, renderReadList, selectQuestions, validateBriefingBlocks,
 } from '../briefing/blocks.mjs';
 
 // The nine skills the plugin ships, one skills/<name>/SKILL.md each,
@@ -565,6 +567,15 @@ function runBriefing(io, { startDir, env, now, packsDir, deps }) {
   }
   const lang = langFor(config, env);
   const t = createTranslator(lang, { warn });
+  // Ruling R-T16: `briefing.enabled` other than true turns the briefing off
+  // in this vault, the one asked for by hand included, as it keeps `schedule
+  // install --job briefing` from registering a task: one line telling the
+  // model to say so and stop, nothing recorded, and exit 0, because the
+  // command did what the vault asks of it.
+  if (briefingSetting(config, 'enabled') !== true) {
+    io.stdout.write(`${t('prompt.briefing_disabled', { file: CONFIG_FILENAME })}\n`);
+    return EXIT.OK;
+  }
   const outside = promptOutsideVault(root, config, 'briefing');
   if (outside !== null) {
     io.stdout.write(`${t('prompt.briefing_prompt_outside', { file: CONFIG_FILENAME, path: outside })}\n`);

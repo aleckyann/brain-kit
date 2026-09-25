@@ -1214,6 +1214,7 @@
   "briefing.limit_pending_changes": "- No máximo {count} mudanças são feitas nas tabelas de pendências por este briefing (briefing.write_caps.pending_changes).",
   "briefing.limit_write_cap": "- No máximo {count} para briefing.write_caps.{key}.",
   "prompt.briefing_no_vault": "Nenhum vault do brain-kit foi encontrado a partir de {dir}, então não há briefing para dar: não escreva arquivo nenhum; diga à pessoa que nenhum vault foi encontrado aqui e sugira abrir a sessão dentro do vault ou rodar a skill setup.",
+  "prompt.briefing_disabled": "O briefing matinal está desligado neste vault: briefing.enabled está como false em {file}. Isto não é um briefing: não escreva nenhum arquivo e não rode nada; diga à pessoa que o briefing está desligado, e que pôr briefing.enabled como true nesse arquivo o religa, e pare.",
   "prompt.briefing_config_invalid": "O briefing não pode ser preparado: o {file} do vault não pode ser usado ({detail}). Não escreva arquivo nenhum; conte à pessoa e sugira rodar brain-kit doctor.",
   "prompt.briefing_bad_timezone": "O briefing não pode ser preparado: vault.timezone em {file} é \"{timezone}\", que não é um fuso horário que este sistema conhece, então não há um hoje de onde calcular. Não escreva arquivo nenhum; conte à pessoa e sugira rodar brain-kit doctor.",
   "prompt.briefing_prompt_outside": "O briefing não pode ser preparado: briefing.prompt em {file} aponta para {path}, fora do vault, e o kit se recusa a rodá-lo. Não escreva arquivo nenhum; conte à pessoa.",
