@@ -6,7 +6,9 @@
 // no denial reported. The fixture default-run.jsonl is that stream,
 // anonymized. The rule: the argument vector always carries the isolation
 // flags, and the round reads the init event and stops when it shows any of
-// the three, before the model does any work.
+// the three, before the model does any work. Since phase 3 (task 1) the
+// same run fails a fourth count too: its built-in tools are the default
+// set, not the pinned one (test/incidents/2026-09-24-unscoped-round.test.mjs).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -21,11 +23,11 @@ const FIXTURES = fileURLToPath(new URL('../fixtures/stream/', import.meta.url));
 const FAKE = fileURLToPath(new URL('../helpers/fake-claude.mjs', import.meta.url));
 const read = (name) => readFileSync(join(FIXTURES, `${name}.jsonl`), 'utf8');
 
-test('the default run, with the person\'s settings inherited, fails isolation on all three counts', () => {
+test('the default run, with the person\'s settings inherited, fails isolation on all three counts, and on the built-in tools', () => {
   const record = parseStream(read('default-run'));
   const out = checkIsolation(record);
   assert.equal(out.ok, false);
-  assert.deepEqual([...out.problems].sort(), ['hooks', 'mcp', 'permission_mode']);
+  assert.deepEqual([...out.problems].sort(), ['builtin_tools', 'hooks', 'mcp', 'permission_mode']);
   // And it is the run where the disallowed command ran with no denial.
   assert.ok(record.toolUses.some((u) => u.input.command === 'curl -s https://example.com'));
   assert.deepEqual(record.denials, []);
@@ -33,7 +35,7 @@ test('the default run, with the person\'s settings inherited, fails isolation on
 
 test('the isolated run passes, and its stream is what the isolation flags produced', () => {
   assert.deepEqual(checkIsolation(parseStream(read('isolated-run'))).problems, []);
-  const argv = buildArgv({ allowed: ['Read'] });
+  const argv = buildArgv({ allowed: ['Read(./**)'] });
   assert.equal(argv[argv.indexOf('--setting-sources') + 1], '');
   assert.ok(argv.includes('--strict-mcp-config'));
   assert.equal(argv[argv.indexOf('--permission-mode') + 1], 'dontAsk');
@@ -45,5 +47,5 @@ test('end to end through the child process: the inherited-settings stream is cau
   writeFileSync(scenarioPath, JSON.stringify({ stream: join(FIXTURES, 'default-run.jsonl') }));
   const out = await runModel({ claudeBin: FAKE, argv: buildArgv({}), prompt: 'x', cwd: dir, env: { ...process.env, FAKE_CLAUDE_SCENARIO: scenarioPath }, timeoutMs: 20000 });
   assert.equal(out.exitCode, 0);
-  assert.deepEqual([...checkIsolation(out.record).problems].sort(), ['hooks', 'mcp', 'permission_mode']);
+  assert.deepEqual([...checkIsolation(out.record).problems].sort(), ['builtin_tools', 'hooks', 'mcp', 'permission_mode']);
 });

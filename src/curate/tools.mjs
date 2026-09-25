@@ -27,7 +27,46 @@ export const KIT_SUBCOMMANDS = Object.freeze(['validate', 'lint', 'propose']);
 // vault root) let the model write in the vault and denied a write outside
 // it, and a path deny rule such as `Edit(./.githooks/**)` wins over them.
 // Bare `Edit`/`Write` would reach any file the user can write.
-const BASE_ALLOWED = Object.freeze(['Read', 'Glob', 'Grep', 'Edit(./**)', 'Write(./**)']);
+//
+// Reads are scoped the same way (phase 3, task 1). Phase 2 allowed a bare
+// Read, Glob and Grep, which reach any file the user can read. Measured on
+// 24/09/2026 against Claude Code 2.1.281 (measurement 4 of
+// docs/superpowers/plans/2026-09-24-phase-3-connector-sources.md and the
+// controller's rulings R-A1 and R-A2): `Read(./**)` plus
+// `Read(//<absolute dir>/**)` denied a read of /etc/hostname and allowed
+// the vault and that directory; `Read(//<dir with a space>/<accented
+// name>.jsonl)` allowed that exact file and denied its sibling; with
+// `Glob(./**)` and `Grep(./**)`, a Glob in /etc and a Grep of /etc/hosts
+// were denied and both worked inside the vault. ToolSearch reads no file:
+// it is how the model loads a connector's deferred tools.
+const BASE_ALLOWED = Object.freeze(['Read(./**)', 'Glob(./**)', 'Grep(./**)', 'Edit(./**)', 'Write(./**)', 'ToolSearch']);
+
+// An absolute path as a permission rule names it: `//` and the path without
+// its leading slash, the form Claude Code reads from the root of the file
+// system. The rule is a gitignore-style pattern, so a character it would
+// read as a wildcard or a class is escaped with a backslash, and the rule
+// names that path and no other. Not measured, and rare: Claude Code names
+// a project's folder with every character but letters and digits turned
+// into a dash, and a session file by its id, so only a configured
+// transcripts_dir could hold one; a CLI that read the backslash literally
+// would deny the listed file instead. A path that is not absolute is
+// refused: relative to where the round runs, it would name another file.
+function rulePath(path, label) {
+  if (typeof path !== 'string' || !path.startsWith('/')) throw new TypeError(`${label}: not an absolute path: ${JSON.stringify(path)}`);
+  return `//${path.slice(1).replace(/[\\*?[\]]/g, '\\$&')}`;
+}
+
+function readFileRule(file) {
+  return `Read(${rulePath(file, 'readFiles')})`;
+}
+
+// A directory and everything under it. The root itself would be the whole
+// disk, and is refused.
+function readDirRule(dir) {
+  const path = rulePath(dir, 'readDirs').replace(/\/+$/, '');
+  if (path === '') throw new TypeError(`readDirs: the root of the file system is not a read root: ${JSON.stringify(dir)}`);
+  return `Read(${path}/**)`;
+}
 
 // What the model must never write, even inside the vault: what runs code
 // (hooks, git's own configuration, CI, Claude Code settings), what decides
@@ -66,10 +105,15 @@ export function kitCommand() {
 }
 
 // `extra` is the vault's `curate.allowed_tools_extra`, appended as given.
-export function allowedTools(extra = []) {
+// `readFiles` are absolute paths the round may read, each one exactly (the
+// transcripts its plan lists, ruling R-A2), and `readDirs` absolute
+// directories it may read everything under; nothing else outside the vault
+// is readable.
+export function allowedTools(extra = [], { readFiles = [], readDirs = [] } = {}) {
   const kit = kitCommand();
   const kitRules = KIT_SUBCOMMANDS.flatMap((sub) => [`Bash(${kit} ${sub}:*)`, `Bash(node ${kit} ${sub}:*)`]);
-  return [...BASE_ALLOWED, ...kitRules, ...extra];
+  const readRules = [...new Set([...readFiles.map(readFileRule), ...readDirs.map(readDirRule)])];
+  return [...BASE_ALLOWED, ...readRules, ...kitRules, ...extra];
 }
 
 // `extra` is the vault's `curate.disallowed_tools_extra`, appended as given.

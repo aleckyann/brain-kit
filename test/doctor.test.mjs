@@ -1693,9 +1693,10 @@ function configWith(edit) {
   return config;
 }
 
-test('curator: roundFlags is every option buildArgv puts on a round, the four isolation flags among them', () => {
+test('curator: roundFlags is every option buildArgv puts on a round, the isolation flags, --disable-slash-commands and --tools among them', () => {
   assert.deepEqual(roundFlags(), [
     '-p', '--verbose', '--output-format', '--permission-mode', '--permission-prompts', '--setting-sources', '--strict-mcp-config',
+    '--disable-slash-commands', '--tools',
     '--no-session-persistence', '--model', '--max-turns', '--max-budget-usd', '--allowedTools', '--disallowedTools',
   ]);
 });
@@ -1811,6 +1812,21 @@ test('claude-isolation-flags: --max-turns, hidden from the help of 2.1.281 and m
   r = await doctor(fx, ['--only', 'claude-isolation-flags']);
   const failed = assertCheck(r.report, 'claude-isolation-flags', 'fail', 'doctor.claude_isolation_flags.missing');
   assert.deepEqual(failed.params.missing, ['--setting-sources']);
+});
+
+test('claude-isolation-flags: a CLI whose --help lacks --disable-slash-commands or --tools fails naming it; --max-turns stays exempt', async () => {
+  for (const flag of ['--disable-slash-commands', '--tools']) {
+    const fx = withClaude(setup(), claudeScript({ help: roundFlags().filter((f) => f !== flag && f !== '--max-turns') }));
+    const { report, code } = await doctor(fx, ['--only', 'claude-isolation-flags']);
+    const c = assertCheck(report, 'claude-isolation-flags', 'fail', 'doctor.claude_isolation_flags.missing');
+    assert.deepEqual(c.params.missing, [flag]);
+    assert.equal(code, EXIT.FAILURE);
+  }
+  // --allowed-tools, printed by the CLI beside --allowedTools, is not --tools.
+  const help = [...roundFlags().filter((f) => f !== '--tools'), '--allowed-tools', '--disallowed-tools'];
+  const fx = withClaude(setup(), claudeScript({ help }));
+  const { report } = await doctor(fx, ['--only', 'claude-isolation-flags']);
+  assert.deepEqual(assertCheck(report, 'claude-isolation-flags', 'fail', 'doctor.claude_isolation_flags.missing').params.missing, ['--tools']);
 });
 
 test('claude-isolation-flags: a --help that fails, or exits 0 printing nothing, is never ok', async () => {

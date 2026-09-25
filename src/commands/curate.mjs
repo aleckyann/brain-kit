@@ -272,13 +272,30 @@ function renderParameters(t, { window, tz, plans, sources, config, deferred }) {
   return lines.join('\n');
 }
 
-function modelArgv(config, machine) {
+// The files outside the vault the model may read: every file a local
+// source's plan lists, each one by its exact path (ruling R-A2 of
+// 24/09/2026), never its folder, so a session the plan left out stays
+// unreadable.
+function readFilesOf(sources, plans) {
+  return sources.filter((source) => source.kind === 'local').flatMap((source) => (plans[source.id]?.files ?? []).map((file) => file.path));
+}
+
+// The round's allow and deny lists. The deny list also tells the isolation
+// check which built-in tools the round removed by name (ruling R-B4).
+function roundTools(config, readFiles) {
+  return {
+    allowed: allowedTools(config.curate?.allowed_tools_extra ?? [], { readFiles }),
+    disallowed: disallowedTools(config.curate?.disallowed_tools_extra ?? []),
+  };
+}
+
+function modelArgv(config, machine, tools) {
   return buildArgv({
     model: machine.model ?? undefined,
     maxTurns: config.curate?.max_turns ?? FALLBACK_MAX_TURNS,
     budgetUsd: config.curate?.budget_usd ?? FALLBACK_BUDGET_USD,
-    allowed: allowedTools(config.curate?.allowed_tools_extra ?? []),
-    disallowed: disallowedTools(config.curate?.disallowed_tools_extra ?? []),
+    allowed: tools.allowed,
+    disallowed: tools.disallowed,
   });
 }
 
@@ -719,7 +736,8 @@ export async function runCurate(argv, io, t, deps = {}) {
 
     const parameters = renderParameters(tv, { window, tz, plans, sources: active, config, deferred });
     const prompt = renderCuratePrompt({ vaultRoot: root, config, lang: vaultLang, parameters, now });
-    const argvList = modelArgv(config, machine);
+    const tools = roundTools(config, readFilesOf(active, plans));
+    const argvList = modelArgv(config, machine, tools);
 
     // 12. --check stops before the model.
     if (parsed.check) {
@@ -761,7 +779,7 @@ export async function runCurate(argv, io, t, deps = {}) {
       if (isHook && init !== null) lateHooks += 1;
       if (event.subtype === 'init' && init === null) init = event;
       if (!isHook && event.subtype !== 'init') return;
-      let checked = checkIsolation({ init, hookEvents: hooks, hookEventsAfterInit: lateHooks });
+      let checked = checkIsolation({ init, hookEvents: hooks, hookEventsAfterInit: lateHooks }, { disallowed: tools.disallowed });
       // A hook before the init event is a hook, not a missing init.
       if (isHook && init === null) {
         const details = checked.details.filter((d) => d.code !== 'no_init');
@@ -781,7 +799,7 @@ export async function runCurate(argv, io, t, deps = {}) {
     run.costUsd = result?.costUsd ?? null;
     run.numTurns = result?.numTurns ?? null;
     run.denials = record.denials.map((d) => ({ toolName: d.toolName ?? null }));
-    const isolation = isolationAbort ?? checkIsolation(record);
+    const isolation = isolationAbort ?? checkIsolation(record, { disallowed: tools.disallowed });
     // A CLI that printed nothing at all (it died before its first event,
     // as on an expired login) never started a model that could do work
     // unisolated: that is a model failure, mapped below (69 or 1), not an
@@ -1027,6 +1045,7 @@ function dryRun({ root, stateDir, machine, claudeBin, io, env, now }) {
     io.stdout.write(`${t('curate.check_source', { source: source.id, kept: plans[source.id].files.length })}\n`);
     if (plans[source.id].problems.length > 0) io.stdout.write(`${t('curate.source_warning', { source: source.id, problems: problemText(plans[source.id].problems) })}\n`);
   }
-  io.stdout.write(`${t('curate.check_argv', { bin: claudeBin, argv: JSON.stringify(modelArgv(config, machine)) })}\n`);
+  const argv = modelArgv(config, machine, roundTools(config, readFilesOf(active, plans)));
+  io.stdout.write(`${t('curate.check_argv', { bin: claudeBin, argv: JSON.stringify(argv) })}\n`);
   return EXIT.OK;
 }

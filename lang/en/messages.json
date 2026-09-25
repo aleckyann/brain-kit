@@ -5,6 +5,7 @@
   "harness.isolation.permission_mode": "The model reported permission mode {mode}, not dontAsk: it would act under the person's own permission settings. The round was stopped before the model did any work.",
   "harness.isolation.hooks": "Hook events ran inside the round ({count}): the person's own hooks were loaded. The round was stopped before the model did any work.",
   "harness.isolation.mcp": "The round started with MCP servers it did not ask for: {servers}. The round was stopped before the model did any work.",
+  "harness.isolation.builtin_tools": "The round started with built-in tools other than the ones it pinned with --tools (extra: {extra}; missing: {missing}). The round was stopped before the model did any work.",
   "harness.isolation.no_init": "The model's stream never reported its init event, so its isolation cannot be proved. The round was stopped.",
   "harness.cli.missing": "The Claude Code CLI was not found at {bin}.",
   "harness.cli.stub": "{bin} is {bytes} bytes: a launcher stub, not the Claude Code CLI (its install step did not run). Reinstall Claude Code, or run its package's own install script.",

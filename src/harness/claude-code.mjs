@@ -19,6 +19,19 @@
 // is not a settings source and keeps working. src/guards/isolation.mjs
 // checks, from the stream's own init event, that the flags took effect.
 //
+// TOOLS AND SKILLS. Measured on 24/09/2026 with Claude Code 2.1.281
+// (docs/superpowers/plans/2026-09-24-phase-3-connector-sources.md,
+// measurement 3): with no --tools, a run exposes the default built-in set,
+// which besides the tools below holds Task, Workflow, CronCreate,
+// RemoteTrigger, SendMessage, Artifact and more, in both setting-source
+// modes, and a Skill tool that loads skills. `--tools` with ROUND_TOOLS
+// left exactly those built-in tools (MCP tools stay available), and
+// `--disable-slash-commands` removed the Skill tool and every skill.
+// ToolSearch stays in the set: a connector's tools are deferred, and the
+// model loaded them through it before its first call (the controller's
+// capture of 24/09/2026). src/guards/isolation.mjs checks, from the init
+// event, that the built-in tools are exactly ROUND_TOOLS.
+//
 // `--verbose` is required: `-p --output-format stream-json` without it
 // exits 1 ("When using --print, --output-format=stream-json requires
 // --verbose"). The prompt never goes on the argument vector: `--` closes it
@@ -26,6 +39,8 @@
 import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import { createStreamParser } from './stream.mjs';
+
+export const ROUND_TOOLS = Object.freeze(['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash', 'ToolSearch']);
 
 export const ISOLATION_ARGS = Object.freeze([
   '-p',
@@ -35,8 +50,37 @@ export const ISOLATION_ARGS = Object.freeze([
   '--permission-prompts', 'none',
   '--setting-sources', '',
   '--strict-mcp-config',
+  '--disable-slash-commands',
+  '--tools', ROUND_TOOLS.join(','),
   '--no-session-persistence',
 ]);
+
+// Built-in tools whose rule takes a scope, a path or a command. Allowed by
+// its bare name, such a tool is granted on every file or every command:
+// phase 2's round allowed a bare Read, which could read any file on disk
+// (measurement 4 of the phase 3 plan). No round is launched with one.
+const SCOPED_TOOLS = Object.freeze(['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash']);
+
+// The rules one argument holds, split where the CLI splits a tool list: at
+// a comma or a space outside parentheses (a space inside a rule's
+// parentheses is part of its scope, as in a path with a space).
+function rulesIn(arg) {
+  const out = [];
+  let depth = 0;
+  let current = '';
+  for (const ch of arg) {
+    if (ch === '(') depth += 1;
+    else if (ch === ')' && depth > 0) depth -= 1;
+    if (depth === 0 && (ch === ',' || /\s/.test(ch))) {
+      if (current !== '') out.push(current);
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  if (current !== '') out.push(current);
+  return out;
+}
 
 function checkRules(label, rules) {
   if (!Array.isArray(rules)) throw new TypeError(`${label} must be an array of rules`);
@@ -49,9 +93,20 @@ function checkRules(label, rules) {
   }
 }
 
+function checkScoped(allowed) {
+  for (const arg of allowed) {
+    const bare = rulesIn(arg).find((rule) => SCOPED_TOOLS.includes(rule));
+    if (bare !== undefined) {
+      const example = bare === 'Bash' ? 'Bash(<command>:*)' : `${bare}(./**)`;
+      throw new TypeError(`allowed: ${JSON.stringify(bare)} would grant the tool on every file or command; a round allows it only with a scope, such as ${example}`);
+    }
+  }
+}
+
 export function buildArgv({ model, maxTurns, budgetUsd, allowed = [], disallowed = [] } = {}) {
   checkRules('allowed', allowed);
   checkRules('disallowed', disallowed);
+  checkScoped(allowed);
   const argv = [...ISOLATION_ARGS];
   if (model !== undefined && model !== null) {
     if (typeof model !== 'string' || model === '' || model.startsWith('-')) throw new TypeError(`not a model name: ${JSON.stringify(model)}`);

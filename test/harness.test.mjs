@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildArgv, ISOLATION_ARGS, runModel } from '../src/harness/claude-code.mjs';
+import { buildArgv, ISOLATION_ARGS, ROUND_TOOLS, runModel } from '../src/harness/claude-code.mjs';
 import { parseStream } from '../src/harness/stream.mjs';
 import { checkIsolation } from '../src/guards/isolation.mjs';
 import { checkCli } from '../src/guards/cli.mjs';
@@ -38,12 +38,13 @@ function scenario(fields) {
 // --- buildArgv -------------------------------------------------------------
 
 test('buildArgv puts the isolation flags first, then model, limits, each rule as its own argument, then -- and nothing after it', () => {
-  const allowed = ['Bash("/opt/brain-kit/bin/brain-kit.mjs" validate:*)', 'Bash("/opt/brain-kit/bin/brain-kit.mjs" propose:*)', 'Read'];
+  const allowed = ['Bash("/opt/brain-kit/bin/brain-kit.mjs" validate:*)', 'Bash("/opt/brain-kit/bin/brain-kit.mjs" propose:*)', 'Read(./**)'];
   const disallowed = ['Bash(curl:*)', 'WebFetch'];
   const argv = buildArgv({ model: 'claude-opus-5-5', maxTurns: 40, budgetUsd: 1.5, allowed, disallowed });
   assert.deepEqual(argv, [
     '-p', '--verbose', '--output-format', 'stream-json', '--permission-mode', 'dontAsk', '--permission-prompts', 'none',
-    '--setting-sources', '', '--strict-mcp-config', '--no-session-persistence',
+    '--setting-sources', '', '--strict-mcp-config', '--disable-slash-commands', '--tools', 'Read,Glob,Grep,Edit,Write,Bash,ToolSearch',
+    '--no-session-persistence',
     '--model', 'claude-opus-5-5', '--max-turns', '40', '--max-budget-usd', '1.5',
     '--allowedTools', ...allowed,
     '--disallowedTools', ...disallowed,
@@ -52,17 +53,30 @@ test('buildArgv puts the isolation flags first, then model, limits, each rule as
 });
 
 test('buildArgv always carries every isolation flag, and --setting-sources is followed by the empty string as its own element', () => {
-  for (const options of [{}, { allowed: ['Read'] }, { model: 'm', maxTurns: 1 }]) {
+  for (const options of [{}, { allowed: ['Read(./**)'] }, { model: 'm', maxTurns: 1 }]) {
     const argv = buildArgv(options);
     assert.deepEqual(argv.slice(0, ISOLATION_ARGS.length), [...ISOLATION_ARGS]);
-    for (const flag of ['-p', '--verbose', '--strict-mcp-config', '--no-session-persistence']) assert.ok(argv.includes(flag), flag);
+    for (const flag of ['-p', '--verbose', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence']) assert.ok(argv.includes(flag), flag);
     assert.equal(argv[argv.indexOf('--output-format') + 1], 'stream-json');
     assert.equal(argv[argv.indexOf('--permission-mode') + 1], 'dontAsk');
     assert.equal(argv[argv.indexOf('--permission-prompts') + 1], 'none');
     assert.equal(argv[argv.indexOf('--setting-sources') + 1], '');
+    assert.equal(argv[argv.indexOf('--tools') + 1], 'Read,Glob,Grep,Edit,Write,Bash,ToolSearch');
     assert.equal(argv.at(-1), '--');
     assert.equal(argv.indexOf('--'), argv.length - 1);
   }
+});
+
+test('ROUND_TOOLS is the pinned built-in set, frozen, and --tools carries it once, as one comma-joined element; skills are disabled once', () => {
+  assert.deepEqual([...ROUND_TOOLS], ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash', 'ToolSearch']);
+  assert.ok(Object.isFrozen(ROUND_TOOLS));
+  assert.ok(Object.isFrozen(ISOLATION_ARGS));
+  const argv = buildArgv({ model: 'm', maxTurns: 1, budgetUsd: 1, allowed: ['Read(./**)'], disallowed: ['WebFetch'] });
+  assert.equal(argv.filter((a) => a === '--tools').length, 1);
+  assert.equal(argv.filter((a) => a === '--disable-slash-commands').length, 1);
+  assert.equal(argv[argv.indexOf('--tools') + 1], ROUND_TOOLS.join(','));
+  // The value is one element: a tool name never lands where an option is read.
+  assert.ok(!argv.includes('ToolSearch'));
 });
 
 test('buildArgv leaves out what was not set and refuses a rule that would read as an option', () => {
@@ -71,6 +85,20 @@ test('buildArgv leaves out what was not set and refuses a rule that would read a
   assert.throws(() => buildArgv({ disallowed: [''] }), TypeError);
   assert.throws(() => buildArgv({ maxTurns: 0 }), TypeError);
   assert.throws(() => buildArgv({ budgetUsd: -1 }), TypeError);
+});
+
+test('buildArgv refuses to allow a path or command tool with no scope, alone or inside a list the CLI splits, and accepts it scoped', () => {
+  for (const tool of ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash']) {
+    assert.throws(() => buildArgv({ allowed: [tool] }), (error) => error instanceof TypeError && error.message.includes(tool), tool);
+    assert.throws(() => buildArgv({ allowed: ['Edit(./**)', `Write(./**),${tool}`] }), TypeError, `${tool} after a comma`);
+    assert.throws(() => buildArgv({ allowed: [`Read(./a b/**) ${tool}`] }), TypeError, `${tool} after a space`);
+    assert.doesNotThrow(() => buildArgv({ allowed: [`${tool}(./**)`] }), tool);
+  }
+  // A space or a comma inside a rule's parentheses is part of its scope,
+  // even when what follows it reads like a tool name.
+  assert.doesNotThrow(() => buildArgv({ allowed: ['Read(//home/ana/notes Read,Bash/c.jsonl)', 'ToolSearch', 'mcp__x__y'] }));
+  // Denying a tool everywhere is the round's own business.
+  assert.doesNotThrow(() => buildArgv({ disallowed: ['Bash', 'Read'] }));
 });
 
 // --- parseStream -----------------------------------------------------------
@@ -192,7 +220,7 @@ test('a hook event after the init event is counted apart, and checkIsolation the
 
 test('runModel writes the prompt on stdin, passes the argument vector untouched, and returns the child\'s own exit code with the record', async () => {
   const s = scenario({ stream: join(FIXTURES, 'isolated-run.jsonl'), exitCode: 3, stderr: 'something on stderr\n' });
-  const argv = buildArgv({ maxTurns: 5, allowed: ['Read'] });
+  const argv = buildArgv({ maxTurns: 5, allowed: ['Read(./**)'] });
   const lines = [];
   assertFake(FAKE);
   const out = await runModel({ claudeBin: FAKE, argv, prompt: 'Curate the vault.\nSecond line.', cwd: s.dir, env: s.env, timeoutMs: 20000, onLine: (l) => lines.push(l) });
@@ -274,6 +302,7 @@ test('checkIsolation reports each problem alone', () => {
     permission_mode: (ev) => { initOf(ev).permissionMode = 'auto'; return ev; },
     hooks: (ev) => [{ type: 'system', subtype: 'hook_started', hook_event: 'SessionStart' }, ...ev],
     mcp: (ev) => { initOf(ev).mcp_servers = [{ name: 'example-server', status: 'connected' }]; return ev; },
+    builtin_tools: (ev) => { initOf(ev).tools.push('Task'); return ev; },
     no_init: (ev) => ev.filter((e) => e.subtype !== 'init'),
   };
   for (const [code, edit] of Object.entries(cases)) {
@@ -292,6 +321,47 @@ test('checkIsolation fails closed on a missing permission mode or an unreadable 
   assert.deepEqual(out.problems, ['mcp']);
   assert.deepEqual(out.details[0].params, { servers: 'other' });
   assert.deepEqual(checkIsolation(null).problems, ['no_init']);
+});
+
+test('checkIsolation flags builtin_tools for an init with Task added and for one with Read missing, naming the difference', () => {
+  const added = checkIsolation(isolatedWith((ev) => { initOf(ev).tools.push('Task'); return ev; }));
+  assert.deepEqual(added.problems, ['builtin_tools']);
+  assert.deepEqual(added.details, [{ code: 'builtin_tools', messageKey: 'harness.isolation.builtin_tools', params: { extra: 'Task', missing: '-' } }]);
+  const missing = checkIsolation(isolatedWith((ev) => { initOf(ev).tools = initOf(ev).tools.filter((n) => n !== 'Read'); return ev; }));
+  assert.deepEqual(missing.problems, ['builtin_tools']);
+  assert.deepEqual(missing.details[0].params, { extra: '-', missing: 'Read' });
+  // Both at once, every default extra named in the order the init lists them.
+  const both = checkIsolation(isolatedWith((ev) => { initOf(ev).tools = ['Task', 'Skill', 'Glob', 'Grep', 'Edit', 'Write', 'Bash', 'ToolSearch', 'Workflow']; return ev; }));
+  assert.deepEqual(both.details[0].params, { extra: 'Task, Skill, Workflow', missing: 'Read' });
+});
+
+test('checkIsolation passes the pinned set in any order, repeated, beside MCP tools, and fails closed on an init with no readable tool list', () => {
+  const pinned = (tools) => checkIsolation(isolatedWith((ev) => { initOf(ev).tools = tools; return ev; }));
+  assert.deepEqual(pinned([...ROUND_TOOLS]).problems, []);
+  assert.deepEqual(pinned([...ROUND_TOOLS].reverse()).problems, []);
+  assert.deepEqual(pinned([...ROUND_TOOLS, 'Read']).problems, []);
+  assert.deepEqual(pinned([...ROUND_TOOLS, 'mcp__claude_ai_Example__list_items']).problems, []);
+  // An MCP tool never stands in for a built-in one.
+  assert.deepEqual(pinned([...ROUND_TOOLS.filter((n) => n !== 'Bash'), 'mcp__x__Bash']).details[0].params, { extra: '-', missing: 'Bash' });
+  for (const tools of [undefined, null, 'Read,Glob,Grep,Edit,Write,Bash,ToolSearch', {}]) {
+    const out = pinned(tools);
+    assert.deepEqual(out.problems, ['builtin_tools'], JSON.stringify(tools));
+    assert.deepEqual(out.details[0].params, { extra: '(unreadable tools)', missing: ROUND_TOOLS.join(', ') }, JSON.stringify(tools));
+  }
+  // A name that is not a string is not one of the pinned tools.
+  assert.deepEqual(pinned([...ROUND_TOOLS, 42]).details[0].params, { extra: '42', missing: '-' });
+});
+
+test('checkIsolation expects absent a built-in the round denies by bare name (ruling R-B4), and present one it denies only in part', () => {
+  const withTools = (tools) => isolatedWith((ev) => { initOf(ev).tools = tools; return ev; });
+  const noGlob = withTools(ROUND_TOOLS.filter((n) => n !== 'Glob'));
+  assert.deepEqual(checkIsolation(noGlob, { disallowed: ['Bash(curl:*)', 'Glob', 'WebFetch'] }).problems, []);
+  assert.deepEqual(checkIsolation(noGlob).details[0].params, { extra: '-', missing: 'Glob' });
+  assert.deepEqual(checkIsolation(noGlob, { disallowed: ['Glob(./secret/**)'] }).details[0].params, { extra: '-', missing: 'Glob' });
+  // Denied by bare name and still listed: the CLI did not do what was measured.
+  assert.deepEqual(checkIsolation(withTools([...ROUND_TOOLS]), { disallowed: ['Glob'] }).details[0].params, { extra: 'Glob', missing: '-' });
+  // The kit's own denylist names no pinned tool bare.
+  assert.deepEqual(checkIsolation(withTools([...ROUND_TOOLS]), { disallowed: ['WebFetch', 'WebSearch'] }).problems, []);
 });
 
 // --- checkCli ------------------------------------------------------------------
@@ -328,7 +398,7 @@ test('every problem the two guards report renders in both packs with exactly the
     checkCli(FAKE, { env: broken.env }),
   ];
   assert.deepEqual(details.map((d) => d.messageKey), [
-    'harness.isolation.permission_mode', 'harness.isolation.mcp', 'harness.isolation.hooks', 'harness.isolation.no_init',
+    'harness.isolation.permission_mode', 'harness.isolation.mcp', 'harness.isolation.builtin_tools', 'harness.isolation.hooks', 'harness.isolation.no_init',
     'harness.cli.missing', 'harness.cli.stub', 'harness.cli.version',
   ]);
   for (const lang of ['en', REFERENCE_LANG]) {
@@ -343,6 +413,22 @@ test('every problem the two guards report renders in both packs with exactly the
 
 // --- fixtures ---------------------------------------------------------------------
 
+// The built-in tools a run with no --tools exposes, as measured on
+// 24/09/2026 with Claude Code 2.1.281, plus one tool of the fixture's
+// connected MCP server.
+const DEFAULT_TOOLS = [
+  'Task', 'Bash', 'Glob', 'Grep', 'Read', 'Edit', 'Write', 'WebFetch', 'WebSearch', 'Skill', 'ToolSearch',
+  'Workflow', 'CronCreate', 'RemoteTrigger', 'SendMessage', 'Artifact', 'mcp__example-server__lookup',
+];
+
+test('the pinned fixtures list exactly ROUND_TOOLS as a set, and the default run lists more than it with none missing', () => {
+  assert.deepEqual(['Bash', 'Read', 'Glob', 'Grep', 'Edit', 'Write', 'ToolSearch'].sort(), [...ROUND_TOOLS].sort());
+  const out = checkIsolation(parseStream(fixture('default-run')));
+  assert.deepEqual(out.details.find((d) => d.code === 'builtin_tools').params, {
+    extra: 'Task, WebFetch, WebSearch, Skill, Workflow, CronCreate, RemoteTrigger, SendMessage, Artifact', missing: '-',
+  });
+});
+
 test('the stream fixtures carry no path of a real machine: no /home/ but /home/ana/, no /tmp/claude-, no -home-', () => {
   const files = readdirSync(FIXTURES).filter((f) => f.endsWith('.jsonl'));
   assert.deepEqual(files.sort(), ['default-run.jsonl', 'denied-run.jsonl', 'isolated-run.jsonl', 'max-turns.jsonl']);
@@ -355,7 +441,10 @@ test('the stream fixtures carry no path of a real machine: no /home/ but /home/a
       const event = JSON.parse(line);
       if (event.session_id !== undefined) assert.match(event.session_id, /^00000000-0000-4000-8000-00000000000\d$/, file);
       if (event.subtype === 'init') {
-        assert.deepEqual(event.tools, ['Bash', 'Read', 'Glob', 'Grep', 'Edit', 'Write'], file);
+        // The default run lists the default built-in set (measured on
+        // 24/09/2026); every other fixture lists the pinned set.
+        const expected = file === 'default-run.jsonl' ? DEFAULT_TOOLS : ['Bash', 'Read', 'Glob', 'Grep', 'Edit', 'Write', 'ToolSearch'];
+        assert.deepEqual(event.tools, expected, file);
         assert.equal(event.cwd, '/home/ana/vault', file);
       }
     }

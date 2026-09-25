@@ -18,6 +18,7 @@
 //       "replace": [["from", "to"], ...],   plain text, over the whole stream
 //       "permissionMode": "auto",           on the init event
 //       "mcpServers": [{ "name", "status" }],
+//       "tools": ["Read", ...],             the init event's tool list, replaced
 //       "hookEvent": true,                  a hook_started event before init
 //       "hookAfterInit": true,              a PreToolUse hook_started event right after init
 //       "dropInit": true,
@@ -103,6 +104,7 @@ function buildStream() {
   const session = init ? init.session_id : '00000000-0000-4000-8000-000000000000';
   if (init && rw.permissionMode !== undefined) init.permissionMode = rw.permissionMode;
   if (init && rw.mcpServers !== undefined) init.mcp_servers = rw.mcpServers;
+  if (init && rw.tools !== undefined) init.tools = rw.tools;
   if (rw.dropInit) events = events.filter((e) => e !== init);
   if (rw.hookEvent) {
     const hook = { type: 'system', subtype: 'hook_started', hook_id: '00000000-0000-4000-a000-00000000000f', hook_name: 'SessionStart:startup', hook_event: 'SessionStart', uuid: '00000000-0000-4000-9000-0000000000ff', session_id: session };

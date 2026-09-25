@@ -553,6 +553,92 @@ test('the model runs in the vault with the round token, path_extra first on PATH
   assert.equal(argv.at(-1), '--');
 });
 
+// Phase 3, task 1: every round runs with the exact built-in tools, no
+// skills, and reads scoped to the vault and the plan's own transcripts.
+const PINNED_TOOLS = 'Read,Glob,Grep,Edit,Write,Bash,ToolSearch';
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+test('the round\'s argv pins the built-in tools, disables skills, and allows reading only the vault and the plan\'s transcripts, a space and an accent kept', () => {
+  const w = makeCurateWorld();
+  // The transcripts tree, under a directory with a space and an accent.
+  const root = join(w.base, 'Sessões de estudo');
+  const projectDir = join(root, PROJECT);
+  mkdirSync(projectDir, { recursive: true });
+  const kept = join(projectDir, 'aaaaaaaa-1111-4222-8333-444444444444.jsonl');
+  writeFileSync(kept, readFileSync(w.transcript));
+  // A session of the same project that the plan leaves out: written ten days ago.
+  const old = join(projectDir, 'bbbbbbbb-1111-4222-8333-444444444444.jsonl');
+  writeFileSync(old, `${JSON.stringify({ type: 'user', timestamp: `${utcDay(-10)}T12:00:00.000Z`, message: { role: 'user', content: 'An older session' } })}\n`);
+  const tenDaysAgo = new Date(Date.now() - 10 * DAY_MS);
+  utimesSync(old, tenDaysAgo, tenDaysAgo);
+  w.setMachine({ transcripts_dir: root });
+  w.scenario({ rewrite: { toolUses: [{ name: 'Read', input: { file_path: kept, offset: 1 } }] } });
+  // --dry prints the argument vector the round would pass, read rule included.
+  const dry = w.curate(['--dry']);
+  assert.equal(dry.status, EXIT.OK, dry.stderr);
+  assert.ok(dry.stdout.includes(JSON.stringify(`Read(//${kept.slice(1)})`)), dry.stdout);
+  assert.ok(dry.stdout.includes(JSON.stringify(PINNED_TOOLS)), dry.stdout);
+  const r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.deepEqual(w.lastRun().sources.transcripts, { kept: 1, read: 1, advanced: true, noTimestamp: 0 });
+  const argv = JSON.parse(readFileSync(w.files.argvFile, 'utf8'));
+  assert.equal(argv.filter((a) => a === '--disable-slash-commands').length, 1);
+  assert.equal(argv[argv.indexOf('--tools') + 1], PINNED_TOOLS);
+  const allowed = argv.slice(argv.indexOf('--allowedTools') + 1, argv.indexOf('--disallowedTools'));
+  const reads = allowed.filter((rule) => /^(Read|Glob|Grep)\b/.test(rule));
+  assert.deepEqual(reads, ['Read(./**)', 'Glob(./**)', 'Grep(./**)', `Read(//${kept.slice(1)})`]);
+  assert.ok(allowed.includes('ToolSearch'));
+  assert.equal(JSON.stringify(argv).includes('bbbbbbbb-1111'), false, 'a session the plan left out is not readable');
+  assert.equal(JSON.stringify(argv).includes(`${projectDir}/**`), false, 'the project directory is not readable as a whole');
+});
+
+test('a stream whose init lists a built-in tool beyond the pinned set, or lacks one, is killed at once and exits 1, the day open', () => {
+  const w = makeCurateWorld();
+  const cases = [
+    [['Bash', 'Read', 'Glob', 'Grep', 'Edit', 'Write', 'ToolSearch', 'Task'], /extra: Task; missing: -/],
+    [['Bash', 'Glob', 'Grep', 'Edit', 'Write', 'ToolSearch'], /extra: -; missing: Read\b/],
+  ];
+  for (const [tools, detail] of cases) {
+    w.scenario({ rewrite: { tools }, delayMs: 60000 });
+    const started = Date.now();
+    const r = w.curate();
+    assert.ok(Date.now() - started < 30000, 'killed, not waited for');
+    assert.equal(r.status, EXIT.FAILURE, r.stderr);
+    const last = w.lastRun();
+    assert.equal(last.reasonCode, 'isolation');
+    assert.deepEqual(last.isolation.problems, ['builtin_tools']);
+    assert.match(last.reason, detail);
+    assert.equal(w.watermark(), null);
+  }
+  assert.equal(w.notifications().length, cases.length);
+});
+
+test('a built-in tool the vault denies by bare name is expected absent from the init and the round runs (ruling R-B4); absent with no such deny, the round stops', () => {
+  const noGlob = ['Bash', 'Read', 'Grep', 'Edit', 'Write', 'ToolSearch'];
+  const w = makeCurateWorld({ config: (c) => { c.curate.disallowed_tools_extra = ['Glob']; } });
+  w.scenario({ rewrite: { tools: noGlob } });
+  const r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.equal(w.lastRun().isolation.ok, true);
+  assert.equal(JSON.parse(readFileSync(w.files.argvFile, 'utf8')).at(-2), 'Glob');
+
+  const control = makeCurateWorld();
+  control.scenario({ rewrite: { tools: noGlob } });
+  const c = control.curate();
+  assert.equal(c.status, EXIT.FAILURE, c.stderr);
+  assert.deepEqual(control.lastRun().isolation.problems, ['builtin_tools']);
+  assert.equal(control.watermark(), null);
+});
+
+test('a vault that adds a bare Read to the allow list never starts the model: exit 1 naming it, the day open', () => {
+  const w = makeCurateWorld({ config: (c) => { c.curate.allowed_tools_extra = ['Read']; } });
+  const r = w.curate();
+  assert.equal(r.status, EXIT.FAILURE, r.stderr);
+  assert.equal(traces(w).model, false, 'the model was never started');
+  assert.match(w.lastRun().reason, /"Read"/);
+  assert.equal(w.watermark(), null);
+});
+
 test('the prompt carries the parameters block: the day as DD/MM/YYYY, the window, the transcript, the caps and the kit, and no signature line of its own', () => {
   const w = makeCurateWorld();
   const r = w.curate();

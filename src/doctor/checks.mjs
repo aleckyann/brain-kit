@@ -848,9 +848,13 @@ function claudeReal(ctx) {
 }
 
 // Every option buildArgv can put on a round's command line, derived from
-// buildArgv itself so this list cannot fall behind it.
+// buildArgv itself so this list cannot fall behind it: since phase 3 that
+// includes --disable-slash-commands and --tools, which pin the round's
+// built-in tools and keep every skill out. A value is not an option: the
+// empty string after --setting-sources and the tool list after --tools
+// are left out by the filter.
 export function roundFlags() {
-  return buildArgv({ model: 'm', maxTurns: 1, budgetUsd: 1, allowed: ['Read'], disallowed: ['WebFetch'] })
+  return buildArgv({ model: 'm', maxTurns: 1, budgetUsd: 1, allowed: ['Read(./**)'], disallowed: ['WebFetch'] })
     .filter((arg) => /^--?[A-Za-z]/.test(arg));
 }
 

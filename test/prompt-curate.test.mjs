@@ -93,15 +93,50 @@ test('kitCommand() is the kit\'s own bin/brain-kit.mjs, double quoted and absolu
   assert.doesNotMatch(kit, /\bnode\b/);
 });
 
-test('allowedTools() is exactly the list task 6 names, each subcommand bare and behind node, then the extras', () => {
+test('allowedTools() is exactly the list phase 3 task 1 names: reads, writes, Glob and Grep inside the vault, ToolSearch, each subcommand bare and behind node, then the extras', () => {
   const kit = kitCommand();
   assert.deepEqual(allowedTools(), [
-    'Read', 'Glob', 'Grep', 'Edit(./**)', 'Write(./**)',
+    'Read(./**)', 'Glob(./**)', 'Grep(./**)', 'Edit(./**)', 'Write(./**)', 'ToolSearch',
     `Bash(${kit} validate:*)`, `Bash(node ${kit} validate:*)`,
     `Bash(${kit} lint:*)`, `Bash(node ${kit} lint:*)`,
     `Bash(${kit} propose:*)`, `Bash(node ${kit} propose:*)`,
   ]);
   assert.deepEqual(allowedTools(['mcp__x__y']).slice(-1), ['mcp__x__y']);
+  for (const bare of ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash']) assert.ok(!allowedTools().includes(bare), `${bare} is never granted without a scope`);
+});
+
+test('allowedTools() grants reading each listed file exactly, and each listed directory under it, by absolute path, a space and an accent kept, before the kit rules', () => {
+  const kit = kitCommand();
+  const file = '/home/ana/Notas de reunião/-home-ana-vault/sessão 1.jsonl';
+  const other = '/srv/transcripts/b.jsonl';
+  const dir = '/home/ana/Sessões antigas';
+  const rules = allowedTools(['mcp__x__y'], { readFiles: [file, other], readDirs: [dir, '/srv/archive/'] });
+  assert.deepEqual(rules, [
+    'Read(./**)', 'Glob(./**)', 'Grep(./**)', 'Edit(./**)', 'Write(./**)', 'ToolSearch',
+    'Read(//home/ana/Notas de reunião/-home-ana-vault/sessão 1.jsonl)', 'Read(//srv/transcripts/b.jsonl)',
+    'Read(//home/ana/Sessões antigas/**)', 'Read(//srv/archive/**)',
+    `Bash(${kit} validate:*)`, `Bash(node ${kit} validate:*)`,
+    `Bash(${kit} lint:*)`, `Bash(node ${kit} lint:*)`,
+    `Bash(${kit} propose:*)`, `Bash(node ${kit} propose:*)`,
+    'mcp__x__y',
+  ]);
+  // A file listed twice is granted once.
+  assert.equal(allowedTools([], { readFiles: [other, other] }).filter((r) => r === 'Read(//srv/transcripts/b.jsonl)').length, 1);
+});
+
+test('allowedTools() escapes what a permission pattern would read as a wildcard, so a listed path names only itself', () => {
+  assert.deepEqual(allowedTools([], { readFiles: ['/home/ana/a*b/[x]?.jsonl', '/home/ana/back\\slash.jsonl'] }).slice(6, 8), [
+    'Read(//home/ana/a\\*b/\\[x\\]\\?.jsonl)', 'Read(//home/ana/back\\\\slash.jsonl)',
+  ]);
+  assert.deepEqual(allowedTools([], { readDirs: ['/home/ana/*'] }).slice(6, 7), ['Read(//home/ana/\\*/**)']);
+});
+
+test('allowedTools() refuses a read root that is not an absolute path, and a directory that is the whole disk', () => {
+  for (const bad of ['relative/a.jsonl', './a.jsonl', '~/a.jsonl', '', 'C:\\a.jsonl', null, 7]) {
+    assert.throws(() => allowedTools([], { readFiles: [bad] }), TypeError, `readFiles ${JSON.stringify(bad)}`);
+    assert.throws(() => allowedTools([], { readDirs: [bad] }), TypeError, `readDirs ${JSON.stringify(bad)}`);
+  }
+  for (const root of ['/', '//', '///']) assert.throws(() => allowedTools([], { readDirs: [root] }), TypeError, root);
 });
 
 test('disallowedTools() is exactly the list task 6 names, then the extras, and never carries Bash(node:*)', () => {

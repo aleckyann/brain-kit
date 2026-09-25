@@ -5,6 +5,7 @@
   "harness.isolation.permission_mode": "O modelo informou o modo de permissão {mode}, não dontAsk: agiria sob as configurações de permissão da própria pessoa. A rodada foi interrompida antes de o modelo fazer qualquer trabalho.",
   "harness.isolation.hooks": "Eventos de hook rodaram dentro da rodada ({count}): os hooks da própria pessoa foram carregados. A rodada foi interrompida antes de o modelo fazer qualquer trabalho.",
   "harness.isolation.mcp": "A rodada começou com servidores MCP que não pediu: {servers}. A rodada foi interrompida antes de o modelo fazer qualquer trabalho.",
+  "harness.isolation.builtin_tools": "A rodada começou com ferramentas nativas diferentes das que fixou com --tools (sobrando: {extra}; faltando: {missing}). A rodada foi interrompida antes de o modelo fazer qualquer trabalho.",
   "harness.isolation.no_init": "O fluxo do modelo nunca informou o evento init, então não dá para provar que ele estava isolado. A rodada foi interrompida.",
   "harness.cli.missing": "O Claude Code CLI não foi encontrado em {bin}.",
   "harness.cli.stub": "{bin} tem {bytes} bytes: é um lançador vazio, não o Claude Code CLI (a etapa de instalação não rodou). Reinstale o Claude Code ou rode o script de instalação do próprio pacote.",
