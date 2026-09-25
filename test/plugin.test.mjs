@@ -185,7 +185,7 @@ test('evals stay out of the npm package', () => {
   assert.ok(!pkg.files.some((entry) => entry.startsWith('evals')));
 });
 
-test('the seven SKILL.md descriptions are exactly the agreed text', () => {
+test('the eight SKILL.md descriptions are exactly the agreed text', () => {
   const expected = {
     setup: 'Use when the person wants to start a second brain with brain-kit, adopt an existing markdown vault, or check that the kit, git, gh and the plugin are ready on this machine.',
     'curate-session': "Use at the end of a working session in a brain-kit vault, or when asked to curate: sync, capture what was learned, compile it into notes, validate, lint and open a pull request with only this session's files.",
@@ -194,6 +194,7 @@ test('the seven SKILL.md descriptions are exactly the agreed text', () => {
     lint: 'Use when brain-kit validate or lint reported problems, or the person asks what a lint rule means and how to fix what it found.',
     'review-stale': 'Use when notes in the brain-kit vault are past their stale_after date, or the person asks to review what may be out of date.',
     approve: 'Use after the owner merged a brain-kit pull request and wants the merged notes stamped verified.',
+    'seed-rituals': "Use when the person wants the brain-kit vault's weekly rhythm table filled from their calendar: read the last four weeks, find recurring events, and propose the rows.",
   };
   for (const name of SKILL_NAMES) {
     assert.equal(frontmatterOf(readFileSync(join(SKILLS_DIR, name, 'SKILL.md'), 'utf8')).fields.description, expected[name], name);
@@ -217,5 +218,41 @@ test('the setup body runs init from an answers file, never interactively', () =>
     for (const key of ['lang', 'name', 'handle', 'title', 'repo', 'private', 'timezone']) assert.match(body, new RegExp(`"${key}"`), `${lang}: ${key}`);
     assert.match(body, /\.githooks\/pre-push/, lang);
     assert.match(body, /core\.hooksPath/, lang);
+  }
+});
+
+// Phase 3, task 7. The calls and the table rules the seed-rituals body
+// owes, each one a clause whose loss the maintainer's own calendar work
+// paid for: a listing without explicit bounds answers about another
+// window, a first page read as every page, a title matched unquoted or
+// unescaped (docs/incidents.md, "the deduplication key had to be the
+// escaped literal title"), and a row written before the person saw it.
+test('the seed-rituals body reads four weeks with explicit bounds and every page, writes escaped literal titles and asks before writing', () => {
+  const words = {
+    en: {
+      weeks: /last four weeks/, times: /three times/, header: /header row/, stop: /say so and stop/, raw: /in the file's raw text/,
+      confirm: /Ask for confirmation and wait/, confirmed: /Write only the confirmed rows/,
+    },
+    'pt-BR': {
+      weeks: /últimas quatro semanas/, times: /três vezes/, header: /linha de cabeçalho/, stop: /diga isso à pessoa e pare/, raw: /no texto cru do arquivo/,
+      confirm: /Peça confirmação e espere/, confirmed: /Escreva só as linhas confirmadas/,
+    },
+  };
+  for (const [lang, word] of Object.entries(words)) {
+    const body = readFileSync(join(KIT_ROOT, 'lang', lang, 'skills', 'seed-rituals.md'), 'utf8');
+    assert.ok(body.split('\n').length < 120, `${lang}: the body must stay under 120 lines`);
+    for (const token of [
+      'ToolSearch', 'list_events', 'startTime', 'endTime', '{{today_iso}}T00:00:00', 'eventType: ["DEFAULT"]', 'pageSize: 250',
+      'nextPageToken', 'pageToken', 'recurringEventId', 'organizer', 'sources.calendar.calendars', '`primary`',
+      'team_calendars_consent_noted', 'taxonomy.files.rituals', 'generated: { by: {{agent}}',
+    ]) {
+      assert.ok(body.includes(token), `${lang}: missing ${token}`);
+    }
+    for (const [name, pattern] of Object.entries(word)) assert.match(body, pattern, `${lang}: ${name}`);
+    // A title with a vertical bar, in straight quotes, the bar written \|.
+    assert.match(body, /"[^"\n]*\\\|[^"\n]*"/, `${lang}: an example title in straight quotes with the bar escaped`);
+    assert.match(body, /\{\{kit\}\} validate/, lang);
+    assert.match(body, /\{\{kit\}\} lint/, lang);
+    assert.match(body, /\{\{kit\}\} propose "<[^>]+>" --only /, lang);
   }
 });

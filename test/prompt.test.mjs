@@ -67,8 +67,27 @@ function assertEveryPlaceholderResolved(text, names = KNOWN_PLACEHOLDER_NAMES) {
   }
 }
 
-test('SKILL_NAMES lists exactly the seven skills, in order', () => {
-  assert.deepEqual([...SKILL_NAMES], ['setup', 'curate-session', 'capture', 'ask', 'lint', 'review-stale', 'approve']);
+test('SKILL_NAMES lists exactly the eight skills, in order', () => {
+  assert.deepEqual([...SKILL_NAMES], ['setup', 'curate-session', 'capture', 'ask', 'lint', 'review-stale', 'approve', 'seed-rituals']);
+});
+
+test('the seed-rituals body renders in both languages inside a vault, every placeholder resolved, the four weeks ending today', async () => {
+  const expected = { en: /Today is 25\/09\/2026\./, 'pt-BR': /Hoje é 25\/09\/2026\./ };
+  for (const [lang, today] of Object.entries(expected)) {
+    const { vault, state } = freshVault(lang);
+    const c = collector();
+    const code = await runPrompt(['skill', 'seed-rituals'], c.io, noopT(), {
+      cwd: vault, env: testEnv(state), now: new Date(2026, 8, 25, 10, 0, 0),
+    });
+    assert.equal(code, EXIT.OK, `${lang}: ${c.stdout}${c.stderr}`);
+    assert.equal(c.stderr, '', lang);
+    assertEveryPlaceholderResolved(c.stdout);
+    assert.doesNotMatch(c.stdout, /\{\{\w+\}\}/, `${lang}: unresolved placeholder`);
+    assert.match(c.stdout, today, lang);
+    // The window's end is today's own date, rendered from {{today_iso}}.
+    assert.match(c.stdout, /2026-09-25T00:00:00/, lang);
+    assert.match(c.stdout, /node "[^"]+bin[/\\]brain-kit\.mjs" propose "<[^>]+>" --only /, lang);
+  }
 });
 
 test('renders the capture skill in pt-BR inside a pt-BR vault', async () => {

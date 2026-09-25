@@ -31,8 +31,9 @@
 // "every skill has a body in every supported language" comes down to,
 // with exactly two supported languages), and no body anywhere uses a
 // placeholder this command does not know how to fill, and every name in
-// SKILL_NAMES has a body in every supported language (task 4 wrote all
-// seven, so a missing one is now a broken pack, not unfinished work). It
+// SKILL_NAMES has a body in every supported language (task 4 wrote the
+// first seven and phase 3 the eighth, so a missing one is a broken pack,
+// not unfinished work). It
 // exits 0 when all three hold, 1 otherwise. Phase 2 extends it to
 // lang/<code>/prompts/ (same file set and placeholders in both packs,
 // the signature as first line, every contract marker present) and, when
@@ -56,9 +57,11 @@ import { findVaultRoot } from '../vault.mjs';
 import { CONFIG_FILENAME, loadConfig, ConfigError } from '../config.mjs';
 import { kitCommand } from '../curate/tools.mjs';
 
-// The seven skills the plugin ships, one skills/<name>/SKILL.md each,
-// and one body per name in every language pack.
-export const SKILL_NAMES = Object.freeze(['setup', 'curate-session', 'capture', 'ask', 'lint', 'review-stale', 'approve']);
+// The eight skills the plugin ships, one skills/<name>/SKILL.md each,
+// and one body per name in every language pack. `seed-rituals` (phase 3,
+// task 7) fills the weekly rhythm table from the person's own calendar
+// connector, in their own session.
+export const SKILL_NAMES = Object.freeze(['setup', 'curate-session', 'capture', 'ask', 'lint', 'review-stale', 'approve', 'seed-rituals']);
 
 // Every placeholder a body may use. Anything else left in a body's text
 // (`{{x}}`) is never filled in: `skill` prints it back literally, and
