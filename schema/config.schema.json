@@ -260,9 +260,9 @@
         "calendar": {
           "type": "object", "additionalProperties": false, "required": ["provider", "server_display_name", "tool_prefix", "tool_suffixes", "calendars"],
           "properties": {
-            "provider": { "type": "string" }, "server_display_name": { "type": "string" },
-            "tool_prefix": { "type": "string", "pattern": "^mcp__[A-Za-z0-9_-]+__$" },
-            "tool_suffixes": { "type": "array", "items": { "type": "string", "enum": ["list_events", "get_event", "list_calendars"] } },
+            "enabled": { "type": "boolean" },
+            "provider": { "type": "string" }, "server_display_name": { "type": "string" }, "tool_prefix": { "type": "string" },
+            "tool_suffixes": { "type": "array", "items": { "type": "string" } },
             "calendars": { "type": "array", "items": { "type": "string" } },
             "team_calendars": { "type": "array", "items": { "type": "string" } },
             "team_calendars_consent_noted": { "type": "boolean" },

@@ -313,6 +313,7 @@
       "sample_strategy": "tail-first"
     },
     "calendar": {
+      "enabled": false,
       "provider": "claude-connector-google-calendar",
       "server_display_name": "claude.ai Google Calendar",
       "tool_prefix": "mcp__claude_ai_Google_Calendar__",

@@ -101,7 +101,7 @@ export function completeDefaults(defaults, answers, { kitVersion } = {}) {
   // sources.calendar.calendars stays the defaults' empty list, whatever the
   // e-mail: the calendar source is opt in (decision D6 of the phase 3 plan),
   // and turning it on moves the round into connector mode, which a person
-  // chooses by naming the calendars to read.
+  // chooses by setting sources.calendar.enabled and naming the calendars.
   config.briefing.calendar_id = email;
 
   const left = findPlaceholders(config, '$', []);

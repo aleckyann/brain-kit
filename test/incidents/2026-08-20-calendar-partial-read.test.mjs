@@ -36,6 +36,7 @@ const LIST = 'mcp__claude_ai_Google_Calendar__list_events';
 function plan() {
   const config = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', 'en', 'config.defaults.json'), 'utf8'));
   config.vault.timezone = TIMEZONE;
+  config.sources.calendar.enabled = true;
   config.sources.calendar.calendars = ['primary'];
   return calendarSource.collect({ window: { from: FROM, to: TO, days: [DAY], timezone: TIMEZONE }, config });
 }

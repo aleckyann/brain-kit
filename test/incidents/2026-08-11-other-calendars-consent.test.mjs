@@ -32,7 +32,7 @@ const SQUAD = 'squad-calendar@example.com';
 function config(lang, calendar) {
   const c = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', lang, 'config.defaults.json'), 'utf8'));
   c.vault.timezone = TIMEZONE;
-  c.sources.calendar = { ...c.sources.calendar, calendars: [OWNER], team_calendars: [SQUAD], ...calendar };
+  c.sources.calendar = { ...c.sources.calendar, enabled: true, calendars: [OWNER], team_calendars: [SQUAD], ...calendar };
   return c;
 }
 

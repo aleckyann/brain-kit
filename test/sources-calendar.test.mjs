@@ -21,7 +21,8 @@ import { calendarSource } from '../src/sources/calendar-google.mjs';
 const FROM = new Date('2026-05-12T03:00:00.000Z');
 const TO = new Date('2026-05-13T03:00:00.000Z');
 const NOW = new Date('2026-05-13T12:00:00.000Z');
-const HOUR = 60 * 60 * 1000;
+const MINUTE = 60 * 1000;
+const HOUR = 60 * MINUTE;
 const TIMEZONE = 'America/Argentina/Buenos_Aires';
 const PREFIX = 'mcp__claude_ai_Google_Calendar__';
 const LIST = `${PREFIX}list_events`;
@@ -33,12 +34,20 @@ function defaults(lang = 'en') {
   return JSON.parse(readFileSync(join(KIT_ROOT, 'lang', lang, 'config.defaults.json'), 'utf8'));
 }
 
-// A vault configuration from a pack's defaults, with the owner's calendar
-// configured unless `calendar` says otherwise.
+// A vault configuration from a pack's defaults, with the calendar source
+// turned on for the owner's calendar unless `calendar` says otherwise.
 function config({ lang = 'en', calendar = {} } = {}) {
   const c = defaults(lang);
   c.vault.timezone = TIMEZONE;
-  c.sources.calendar = { ...c.sources.calendar, calendars: [OWNER], ...calendar };
+  c.sources.calendar = { ...c.sources.calendar, enabled: true, calendars: [OWNER], ...calendar };
+  return c;
+}
+
+// The same, completed the way init completes a pack, so the schema can
+// judge it.
+function validConfig(calendar = {}) {
+  const c = completeDefaults(defaults('en'), { lang: 'en', name: 'Ana', handle: 'ana', title: 'Notes', timezone: TIMEZONE });
+  c.sources.calendar = { ...c.sources.calendar, enabled: true, calendars: [OWNER], ...calendar };
   return c;
 }
 
@@ -139,6 +148,90 @@ test('isConfigured looks at the owner calendars only: other people calendars nev
   assert.equal(calendarSource.isConfigured(config({ calendar: { calendars: [], team_calendars: [...TEAM], team_calendars_consent_noted: true } })), false);
 });
 
+test('isConfigured needs sources.calendar.enabled to be exactly true, besides the calendars', () => {
+  for (const enabled of [false, undefined, 'true', 1, null]) {
+    assert.equal(calendarSource.isConfigured(config({ calendar: { enabled } })), false, String(enabled));
+  }
+  assert.equal(calendarSource.isConfigured(config({ calendar: { enabled: true } })), true);
+});
+
+// ---------------------------------------------------------------- the source turns itself off (ruling R-E1)
+
+test('a vault made before the calendar source asked for enabled stays off after the upgrade, and says why', () => {
+  // test/fixtures/config/valid.json is shaped like a configuration the old
+  // init wrote: the owner's e-mail in calendars, and no enabled key.
+  const old = JSON.parse(readFileSync(join(KIT_ROOT, 'test', 'fixtures', 'config', 'valid.json'), 'utf8'));
+  assert.equal(Object.hasOwn(old.sources.calendar, 'enabled'), false);
+  assert.deepEqual(old.sources.calendar.calendars, [OWNER]);
+  assert.deepEqual(validateConfig(old), [], 'the old configuration still validates');
+  assert.equal(calendarSource.isConfigured(old), false);
+  const plan = calendarSource.collect({ window: { from: FROM, to: TO, timezone: TIMEZONE }, config: old });
+  assert.equal(plan.configured, false);
+  assert.deepEqual(plan.calendars, []);
+  assert.deepEqual(plan.problems, [{ code: 'not_enabled', detail: '1' }]);
+  assert.match(plan.promptBlock, /sources\.calendar\.calendars lists 1 calendar\(s\), but the calendar source is off because sources\.calendar\.enabled is not true/);
+  assert.deepEqual(calendarSource.readEvidence(record([{ input: listing() }]), plan), { read: 0, expected: 0, ok: false });
+  assert.deepEqual(calendarSource.toolRules(old).allow, [], 'an off source asks for no tool');
+  const same = config({ calendar: { enabled: undefined } });
+  delete same.sources.calendar.enabled;
+  assert.deepEqual(collect({ calendar: { enabled: undefined } }).problems, [{ code: 'not_enabled', detail: '1' }]);
+  assert.equal(calendarSource.isConfigured(same), false);
+});
+
+test('a source left off with no calendar says only that it is off', () => {
+  for (const lang of ['en', 'pt-BR']) {
+    const plan = calendarSource.collect({ window: { from: FROM, to: TO, timezone: TIMEZONE }, config: defaults(lang) });
+    assert.equal(plan.configured, false, lang);
+    assert.deepEqual(plan.problems, [{ code: 'disabled', detail: '' }], lang);
+  }
+  assert.match(collect({ calendar: { enabled: false, calendars: [] } }).promptBlock, /^The calendar source is off \(sources\.calendar\.enabled is not true\)/);
+  assert.match(collect({ lang: 'pt-BR', calendar: { enabled: false, calendars: [] } }).promptBlock, /^A fonte de agenda está desligada \(sources\.calendar\.enabled não é true\)/);
+  assert.deepEqual(collect({ calendar: { enabled: false, calendars: [OWNER, 'primary', '<teammate>'] } }).problems, [{ code: 'not_enabled', detail: '2' }], 'only real ids are counted');
+});
+
+test('a tool prefix that is not one MCP server prefix turns only this source off, with a named problem', () => {
+  for (const prefix of ['Bash(*) mcp__x__', 'mcp__a__,Bash', 'mcp__a b__', 'mcp__x__(', 'mcp__claude_ai_Google_Calendar_', '']) {
+    const c = validConfig({ tool_prefix: prefix });
+    assert.deepEqual(validateConfig(c), [], `the schema leaves ${JSON.stringify(prefix)} to the source`);
+    assert.equal(calendarSource.isConfigured(c), false, prefix);
+    const plan = collect({ calendar: { tool_prefix: prefix } });
+    assert.equal(plan.configured, false, prefix);
+    assert.deepEqual(plan.problems, [{ code: 'bad_tool_prefix', detail: prefix }], prefix);
+    assert.ok(plan.promptBlock.includes(`sources.calendar.tool_prefix is ${JSON.stringify(prefix)}, which is not one MCP server's tool prefix`), plan.promptBlock);
+    assert.deepEqual(calendarSource.toolRules(c), { allow: [], deny: [] }, `no rule ever carries ${JSON.stringify(prefix)}`);
+  }
+});
+
+test('a tool outside the calendar read tools, or a list without list_events, turns only this source off, with a named problem', () => {
+  const writes = validConfig({ tool_suffixes: ['list_events', 'create_event', 'list_events Bash'] });
+  assert.deepEqual(validateConfig(writes), []);
+  assert.equal(calendarSource.isConfigured(writes), false);
+  const plan = collect({ calendar: { tool_suffixes: ['list_events', 'create_event', 'list_events Bash'] } });
+  assert.deepEqual(plan.problems, [{ code: 'bad_tool_suffixes', detail: '"create_event", "list_events Bash"' }]);
+  assert.match(plan.promptBlock, /sources\.calendar\.tool_suffixes names "create_event", "list_events Bash", outside the calendar's read tools/);
+  assert.deepEqual(calendarSource.toolRules(writes), {
+    allow: [],
+    deny: [`${PREFIX}create_event`, `${PREFIX}update_event`, `${PREFIX}delete_event`, `${PREFIX}respond_to_event`],
+  });
+  const noList = collect({ calendar: { tool_suffixes: ['get_event', 'list_calendars'] } });
+  assert.equal(noList.configured, false);
+  assert.deepEqual(noList.problems, [{ code: 'missing_tools', detail: 'list_events' }]);
+  assert.match(noList.promptBlock, /sources\.calendar\.tool_suffixes leaves out list_events/);
+  assert.equal(calendarSource.isConfigured(config({ calendar: { tool_suffixes: ['list_events'] } })), true, 'list_events alone is enough');
+});
+
+test('every configuration problem is named at once, in the order a person fixes them, in both languages', () => {
+  const calendar = { calendars: [], tool_prefix: 'mcp__a b__', tool_suffixes: ['get_event', 'delete_event'] };
+  const plan = collect({ calendar });
+  assert.deepEqual(plan.problems.map((p) => p.code), ['not_configured', 'bad_tool_prefix', 'bad_tool_suffixes', 'missing_tools']);
+  assert.equal(plan.promptBlock.split('\n').length, 4);
+  const pt = collect({ lang: 'pt-BR', calendar }).promptBlock;
+  assert.match(pt, /sources\.calendar\.enabled é true, mas sources\.calendar\.calendars não nomeia agenda nenhuma/);
+  assert.match(pt, /sources\.calendar\.tool_prefix é "mcp__a b__", que não é o prefixo de ferramentas de um servidor MCP/);
+  assert.match(pt, /sources\.calendar\.tool_suffixes nomeia "delete_event", fora das ferramentas de leitura da agenda/);
+  assert.match(pt, /sources\.calendar\.tool_suffixes deixa de fora list_events/);
+});
+
 // ---------------------------------------------------------------- collect
 
 test('collect plans the configured calendars over the window, in the vault time zone', () => {
@@ -190,6 +283,19 @@ test('a blank or placeholder entry of team_calendars names no calendar: never pl
   assert.deepEqual(collect({ calendar: { team_calendars: team } }).problems, [{ code: 'other_calendars_without_consent', detail: '1' }]);
 });
 
+test('without consent the count is of distinct calendars that are not already the owner ones', () => {
+  const plan = collect({ calendar: { team_calendars: [TEAM[0], TEAM[0], OWNER, TEAM[1], ` ${TEAM[1]} `] } });
+  assert.deepEqual(plan.problems, [{ code: 'other_calendars_without_consent', detail: '2' }]);
+});
+
+test('calendar ids are planned trimmed, so the ids the model is given are the ids it is checked against', () => {
+  const plan = collect({ calendar: { calendars: [` ${OWNER} `, OWNER], team_calendars: [` ${TEAM[0]}`], team_calendars_consent_noted: true } });
+  assert.deepEqual(plan.calendars, [OWNER]);
+  assert.deepEqual(plan.otherCalendars, [TEAM[0]]);
+  assert.ok(plan.promptBlock.includes(JSON.stringify(listing())), plan.promptBlock);
+  assert.deepEqual(calendarSource.readEvidence(record([{ input: listing() }, { input: listing({ calendarId: TEAM[0] }) }]), plan), { read: 2, expected: 2, ok: true });
+});
+
 test('no team calendar at all is no problem, with or without consent', () => {
   assert.deepEqual(collect({ calendar: { team_calendars: [] } }).problems, []);
   assert.deepEqual(collect({ calendar: { team_calendars: [], team_calendars_consent_noted: true } }).problems, []);
@@ -197,14 +303,16 @@ test('no team calendar at all is no problem, with or without consent', () => {
 
 test('an unconfigured calendar source plans nothing, reads nothing and says so', () => {
   for (const calendars of [[], ['<owner-email>']]) {
-    const plan = collect({ calendar: { calendars, team_calendars: [...TEAM], team_calendars_consent_noted: true } });
-    assert.equal(plan.configured, false);
-    assert.deepEqual(plan.calendars, []);
-    assert.deepEqual(plan.otherCalendars, []);
-    assert.deepEqual(plan.problems, [{ code: 'not_configured', detail: '' }]);
-    assert.match(plan.promptBlock, /sources\.calendar\.calendars/);
-    assert.ok(!plan.promptBlock.includes(LIST), plan.promptBlock);
-    assert.deepEqual(calendarSource.readEvidence(record([{ input: listing() }]), plan), { read: 0, expected: 0, ok: false });
+    for (const consent of [true, false]) {
+      const plan = collect({ calendar: { calendars, team_calendars: [...TEAM], team_calendars_consent_noted: consent } });
+      assert.equal(plan.configured, false);
+      assert.deepEqual(plan.calendars, []);
+      assert.deepEqual(plan.otherCalendars, []);
+      assert.deepEqual(plan.problems, [{ code: 'not_configured', detail: '' }], 'only why it is off, never the consent of a source that reads nothing');
+      assert.match(plan.promptBlock, /sources\.calendar\.calendars/);
+      assert.ok(!plan.promptBlock.includes(LIST), plan.promptBlock);
+      assert.deepEqual(calendarSource.readEvidence(record([{ input: listing() }]), plan), { read: 0, expected: 0, ok: false });
+    }
   }
 });
 
@@ -232,7 +340,11 @@ test('the prompt block speaks the vault language and carries the privacy policy,
   assert.match(en, /only events with at least two attendees count/);
   assert.match(en, /Nothing about anyone's private life \(health, absence, family, personal errands\) is ever written, not even as a mention/);
   assert.match(en, /second door to meeting notes/);
+  assert.match(en, /passing exactly the inputs on its line and no other/);
+  assert.match(en, /If a page fails or comes back cut, ask for it again with the same pageToken, lowering pageSize if that helps \(pageSize is the only input you may change\)/);
   const pt = collect({ lang: 'pt-BR' }).promptBlock;
+  assert.match(pt, /passando exatamente as entradas da linha dela e nenhuma outra/);
+  assert.match(pt, /Se uma página falhar ou vier cortada, peça-a de novo com o mesmo pageToken, baixando o pageSize se ajudar \(pageSize é a única entrada que você pode mudar\)/);
   assert.match(pt, /chame mcp__claude_ai_Google_Calendar__list_events de novo com as mesmas entradas e mais pageToken/);
   assert.match(pt, /conte uma vez só, pelo id/);
   assert.match(pt, /Na agenda de outra pessoa, pule todo evento que já inclui o dono/);
@@ -253,6 +365,34 @@ test('readEvidence: a listing that starts an hour late does not read the calenda
 
 test('readEvidence: a listing that ends an hour early does not read the calendar', () => {
   assert.deepEqual(evidence([{ input: listing({ endTime: new Date(TO.getTime() - HOUR).toISOString() }) }]), UNREAD);
+});
+
+test('readEvidence: the first page covers the window with no slack at all', () => {
+  for (const ms of [MINUTE, 1]) {
+    assert.deepEqual(evidence([{ input: listing({ startTime: new Date(FROM.getTime() + ms).toISOString() }) }]), UNREAD, `starts ${ms} ms late`);
+    assert.deepEqual(evidence([{ input: listing({ endTime: new Date(TO.getTime() - ms).toISOString() }) }]), UNREAD, `ends ${ms} ms early`);
+  }
+});
+
+test('readEvidence: a next page carries exactly the first page instants, not a minute more or less on either bound', () => {
+  const first = { input: listing(), more: true };
+  const bounds = [
+    ['startTime', FROM, -MINUTE, 'starts a minute earlier'],
+    ['startTime', FROM, MINUTE, 'starts a minute later'],
+    ['endTime', TO, -MINUTE, 'ends a minute earlier'],
+    ['endTime', TO, MINUTE, 'ends a minute later'],
+    ['startTime', FROM, -1, 'starts 1 ms earlier'],
+    ['endTime', TO, -1, 'ends 1 ms earlier'],
+  ];
+  for (const [key, instant, shift, label] of bounds) {
+    const next = listing({ pageToken: 'page-2', [key]: new Date(instant.getTime() + shift).toISOString() });
+    assert.deepEqual(evidence([first, { input: next }]), UNREAD, label);
+  }
+  // The first page itself asked wider than the window: its next pages carry
+  // its instants, not the window's.
+  const wide = listing({ startTime: new Date(FROM.getTime() - HOUR).toISOString(), endTime: new Date(TO.getTime() + HOUR).toISOString() });
+  assert.deepEqual(evidence([{ input: wide, more: true }, { input: { ...wide, pageToken: 'page-2' } }]), READ);
+  assert.deepEqual(evidence([{ input: wide, more: true }, { input: listing({ pageToken: 'page-2' }) }]), UNREAD, 'the window instead of the first page instants');
 });
 
 test('readEvidence: a listing wider than the window reads it, its instants compared whatever offset they are written in', () => {
@@ -292,9 +432,28 @@ test('readEvidence: eventType must be exactly ["DEFAULT"]: another type added, o
   assert.deepEqual(evidence([{ input: listing({ eventType: [] }) }]), UNREAD);
 });
 
-test('readEvidence: a listing narrowed by a text search covers the window and still does not read the calendar', () => {
-  assert.deepEqual(evidence([{ input: listing({ fullText: 'stand-up' }) }]), UNREAD);
-  assert.deepEqual(evidence([{ input: listing(), more: true }, { input: listing({ pageToken: 'page-2', fullText: 'stand-up' }) }]), UNREAD, 'a next page narrowed by one');
+test('readEvidence: only the inputs the prompt names count; any other input, on any page, makes the call not count', () => {
+  // fullText narrows by text; eventTypeFilter (served beside eventType on
+  // 25/09/2026) widens or narrows the event types; orderBy changes what a
+  // page token means; an input nobody knows yet might filter too.
+  const extras = [
+    { fullText: 'stand-up' },
+    { eventTypeFilter: ['OUT_OF_OFFICE', 'FOCUS_TIME'] },
+    { eventTypeFilter: ['BIRTHDAY'] },
+    { orderBy: 'startTime' },
+    { q: 'review' },
+    { showDeleted: true },
+  ];
+  for (const extra of extras) {
+    const label = JSON.stringify(extra);
+    assert.deepEqual(evidence([{ input: listing(extra) }]), UNREAD, `first page with ${label}`);
+    assert.deepEqual(evidence([{ input: listing(), more: true }, { input: listing({ pageToken: 'page-2', ...extra }) }]), UNREAD, `next page with ${label}`);
+  }
+  // Every input the prompt names, and nothing else, reads it; pageSize and
+  // timeZone may be left out.
+  assert.deepEqual(evidence([{ input: listing() }]), READ);
+  assert.deepEqual(evidence([{ input: listing({ pageSize: undefined, timeZone: undefined }) }]), READ);
+  assert.deepEqual(evidence([{ input: listing(), more: true }, { input: listing({ pageToken: 'page-2', pageSize: 50 }) }]), READ, 'a lower pageSize on a next page');
 });
 
 test('readEvidence: a listing of a different calendar does not read this one', () => {
@@ -366,6 +525,40 @@ test('readEvidence: a follow-up counts only with a token, the same calendar, the
 
 test('readEvidence: a follow-up counts only after the page it follows', () => {
   assert.deepEqual(evidence([{ input: listing({ pageToken: 'page-2' }) }, { input: listing(), more: true }]), UNREAD);
+});
+
+test('readEvidence: the next page is the first later call with a token; a page that failed, came back cut or was never answered is never stepped over', () => {
+  // The review's sequence: page 2 comes back cut, and the model still asks
+  // page 3 with the token it saw in what it got.
+  const one = { input: listing(), more: true };
+  const two = listing({ pageToken: 'token-1' });
+  const three = { input: listing({ pageToken: 'token-2' }) };
+  assert.deepEqual(evidence([one, { input: two, complete: false }, three]), UNREAD, 'page 2 cut');
+  assert.deepEqual(evidence([one, { input: two, error: true }, three]), UNREAD, 'page 2 errored');
+  assert.deepEqual(evidence([one, { input: two, unanswered: true }, three]), UNREAD, 'page 2 unanswered');
+  // A wrong next page is not stepped over either, even when a right one follows.
+  assert.deepEqual(evidence([one, { input: listing({ pageToken: 'token-1', endTime: new Date(TO.getTime() - HOUR).toISOString() }) }, { input: two }]), UNREAD, 'a narrower next page first');
+  assert.deepEqual(evidence([one, { input: listing({ pageToken: 'token-1', orderBy: 'startTime' }) }, { input: two }]), UNREAD, 'a next page with another input first');
+  // Calls without a token, and calls for other calendars, are not next pages.
+  const late = listing({ startTime: new Date(FROM.getTime() + HOUR).toISOString() });
+  assert.deepEqual(evidence([one, { input: listing({ calendarId: 'bruno@example.com', pageToken: 'other' }) }, { input: late }, { input: two }]), READ);
+});
+
+test('readEvidence: only a retry with the same pageToken takes the place of a page that failed, came back cut or was never answered', () => {
+  const one = { input: listing(), more: true };
+  const two = listing({ pageToken: 'token-1' });
+  assert.deepEqual(evidence([one, { input: two, complete: false }, { input: two }]), READ, 'retried after a cut');
+  assert.deepEqual(evidence([one, { input: two, error: true }, { input: two, unanswered: true }, { input: two, complete: false }, { input: two }]), READ, 'retried until whole');
+  assert.deepEqual(evidence([one, { input: two, error: true }, { input: { ...two, pageSize: 50 } }]), READ, 'retried with a lower pageSize');
+  assert.deepEqual(evidence([one, { input: two, error: true }, { input: two, more: true }, { input: listing({ pageToken: 'token-2' }) }]), READ, 'retried, then the listing goes on');
+  assert.deepEqual(evidence([one, { input: two, error: true }, { input: listing({ pageToken: 'token-2' }) }]), UNREAD, 'another token instead of the retry');
+  assert.deepEqual(evidence([one, { input: two, error: true }, { input: { ...two, endTime: new Date(TO.getTime() - HOUR).toISOString() } }]), UNREAD, 'a retry with other instants');
+  assert.deepEqual(evidence([one, { input: two, error: true }]), UNREAD, 'never retried');
+  assert.deepEqual(evidence([one, { input: two, error: true }, { input: two, complete: false }]), UNREAD, 'retried, and the retry came back cut too');
+  assert.deepEqual(evidence([one, { input: two, complete: false }, { input: two, unanswered: true }]), UNREAD, 'retried, and the retry was never answered');
+  // Starting the listing over from its first page is a new listing, and it
+  // reads the calendar when it completes.
+  assert.deepEqual(evidence([one, { input: two, complete: false }, { input: listing(), more: true }, { input: two }]), READ);
 });
 
 test('readEvidence: a broken listing does not spoil a later complete one', () => {
@@ -464,18 +657,23 @@ test('toolRules allows the configured read tools and denies every calendar write
   });
 });
 
-test('toolRules refuses a prefix or a tool name that would carry more than one permission rule', () => {
+test('toolRules never emits a rule that would carry a second one, and an off source asks for no tool', () => {
   for (const tool_prefix of ['Bash(*) mcp__x__', 'mcp__a__,Bash', 'mcp__a b__', 'mcp__x__(', 'mcp__claude_ai_Google_Calendar_', '']) {
-    assert.throws(() => calendarSource.toolRules(config({ calendar: { tool_prefix } })), TypeError, tool_prefix);
+    assert.deepEqual(calendarSource.toolRules(config({ calendar: { tool_prefix } })), { allow: [], deny: [] }, tool_prefix);
   }
-  for (const suffix of ['list_events Bash', 'list_events,Bash', 'list_events(*)', '']) {
-    assert.throws(() => calendarSource.toolRules(config({ calendar: { tool_suffixes: ['list_events', suffix] } })), TypeError, suffix);
+  const deny = [`${PREFIX}create_event`, `${PREFIX}update_event`, `${PREFIX}delete_event`, `${PREFIX}respond_to_event`];
+  for (const suffix of ['list_events Bash', 'list_events,Bash', 'list_events(*)', '', 'search_events', 'create_event']) {
+    assert.deepEqual(calendarSource.toolRules(config({ calendar: { tool_suffixes: ['list_events', suffix] } })), { allow: [], deny }, suffix);
+  }
+  for (const calendar of [{ enabled: false }, { calendars: [] }, { tool_suffixes: ['get_event'] }]) {
+    assert.deepEqual(calendarSource.toolRules(config({ calendar })), { allow: [], deny }, JSON.stringify(calendar));
   }
 });
 
 // ---------------------------------------------------------------- defaults and schema
 
 const CALENDAR_DEFAULTS = Object.freeze({
+  enabled: false,
   provider: 'claude-connector-google-calendar',
   server_display_name: 'claude.ai Google Calendar',
   tool_prefix: PREFIX,
@@ -489,7 +687,7 @@ const CALENDAR_DEFAULTS = Object.freeze({
   focus_blocks_as_ruler: true,
 });
 
-test('both packs default to no calendar (the source is opt in) and to the three read tools, the rest unchanged', () => {
+test('both packs default to the source off, no calendar and the three read tools, the rest unchanged', () => {
   for (const [lang, keyword] of [['en', 'personal'], ['pt-BR', 'pessoal']]) {
     const pack = defaults(lang);
     assert.deepEqual(pack.sources.calendar, { ...CALENDAR_DEFAULTS, privacy: { ...CALENDAR_DEFAULTS.privacy, exclude_keywords: [keyword] } }, lang);
@@ -506,24 +704,23 @@ test('a vault made by init has no calendar configured, even when the owner gave 
   }
 });
 
-test('the schema refuses a calendar tool the source must never reach, and a prefix that is not one MCP server prefix', () => {
+test('the schema holds enabled to a boolean and leaves the tool prefix and tools to the source, so a best-effort source never stops the vault (ruling R-E1)', () => {
   const base = completeDefaults(defaults('en'), { lang: 'en', name: 'Ana', handle: 'ana', title: 'Notes', timezone: TIMEZONE });
-  const withCalendars = structuredClone(base);
-  withCalendars.sources.calendar.calendars = [OWNER, 'primary'];
-  withCalendars.sources.calendar.team_calendars = [...TEAM];
-  withCalendars.sources.calendar.team_calendars_consent_noted = true;
-  assert.deepEqual(validateConfig(withCalendars), []);
-  for (const tool of ['create_event', 'update_event', 'delete_event', 'respond_to_event', 'list_events Bash']) {
-    const bad = structuredClone(base);
-    bad.sources.calendar.tool_suffixes = ['list_events', tool];
-    assert.match(validateConfig(bad).join('\n'), /\$\.sources\.calendar\.tool_suffixes\[1\]: must be one of/, tool);
+  const on = structuredClone(base);
+  on.sources.calendar.enabled = true;
+  on.sources.calendar.calendars = [OWNER, 'primary'];
+  on.sources.calendar.team_calendars = [...TEAM];
+  on.sources.calendar.team_calendars_consent_noted = true;
+  assert.deepEqual(validateConfig(on), []);
+  assert.equal(calendarSource.isConfigured(on), true);
+  for (const enabled of ['true', 1, null]) {
+    const bad = structuredClone(on);
+    bad.sources.calendar.enabled = enabled;
+    assert.match(validateConfig(bad).join('\n'), /\$\.sources\.calendar\.enabled: expected boolean/, String(enabled));
   }
-  for (const prefix of ['Bash(*) mcp__x__', 'mcp__a__,Bash', 'mcp__a b__', 'mcp__claude_ai_Google_Calendar_', 'Read(//**)']) {
-    const bad = structuredClone(base);
-    bad.sources.calendar.tool_prefix = prefix;
-    assert.match(validateConfig(bad).join('\n'), /\$\.sources\.calendar\.tool_prefix: does not match/, prefix);
-  }
-  const renamed = structuredClone(base);
-  renamed.sources.calendar.tool_prefix = 'mcp__claude_ai_Work-Calendar__';
-  assert.deepEqual(validateConfig(renamed), []);
+  const odd = structuredClone(on);
+  odd.sources.calendar.tool_prefix = 'Bash(*) mcp__x__';
+  odd.sources.calendar.tool_suffixes = ['list_events', 'create_event'];
+  assert.deepEqual(validateConfig(odd), [], 'refused by the source, never by the schema');
+  assert.equal(calendarSource.isConfigured(odd), false);
 });
