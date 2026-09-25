@@ -39,6 +39,14 @@
 // claude_bin, then node's own directory and the system directories,
 // deduplicated: a reinstall that moves the claude binary between the two
 // usual places must not kill the round (docs/incidents.md, 27/08/2026).
+// The round's model runs `propose`, which pushes through the vault's
+// pre-push gate (it runs the `brain-kit` on PATH and nothing else) and
+// opens the pull request with `gh`: both must resolve on that PATH, so
+// `install` looks for each there and, when one is not, adds the directory
+// where the installing shell's own PATH finds it; when neither has it, it
+// refuses (exit 2) naming the command and how to install it (final review
+// I1, 24/09/2026: a unit PATH without them made every round fail in a
+// way only the model's tool results could explain).
 // LC_ALL=C.UTF-8 and TZ=<vault.timezone> complete the environment.
 //
 // `--dry` prints every file it would write and every command it would run,
@@ -52,14 +60,14 @@
 // and the kit's entry point, for the tests. Production passes nothing.
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { EXIT } from '../exit-codes.mjs';
 import { CONFIG_FILENAME, canonicalPathMatches, loadConfig, loadMachine } from '../config.mjs';
 import { findVaultRoot } from '../vault.mjs';
 import { STATE_FILES, stateDirFor } from '../state.mjs';
 import { KIT_ROOT } from '../version.mjs';
 import { run } from '../exec.mjs';
-import { expandHome, resolveClaude, shownInstant } from '../doctor/checks.mjs';
+import { expandHome, findExecutable, resolveClaude, shownInstant } from '../doctor/checks.mjs';
 
 const ROOT_INDEX = 'index.md';
 const ACTIONS = Object.freeze(['install', 'uninstall', 'status']);
@@ -67,6 +75,8 @@ export const PLATFORMS = Object.freeze(['systemd', 'launchd', 'cron']);
 export const DAYTIME_FROM = '07:00';
 export const DAYTIME_UNTIL = '23:00';
 const SYSTEM_PATH = Object.freeze(['/usr/local/bin', '/usr/bin', '/bin']);
+// What the round's own `propose` runs from PATH.
+export const ROUND_COMMANDS = Object.freeze(['brain-kit', 'gh']);
 const HALF_YEAR_DAYS = 182;
 // Vixie cron (Debian, Ubuntu) and macOS cron cap a command near 1000 bytes
 // and refuse the whole crontab above it; the kit refuses first, in its own
@@ -186,6 +196,59 @@ export function sameClock(a, b, now) {
 // 27/08/2026, for node or the kit instead of claude).
 function pinnedByManager(path) {
   return PINNED_MARKERS.some((marker) => path.includes(marker));
+}
+
+// The PATH a scheduled round runs with: path_extra, claude's directory,
+// node's directory and the system directories; then, for each command in
+// ROUND_COMMANDS that none of them holds, the directory where the
+// installing shell's PATH finds it. `missing` names the commands found in
+// neither. `systemPath` is for the tests.
+export function roundPath({ extra = [], claude = null, node, env, systemPath = SYSTEM_PATH }) {
+  const base = dedupe([...extra.map((dir) => expandHome(String(dir), env)), ...(claude ? [dirname(claude)] : []), dirname(node), ...systemPath]);
+  const added = [];
+  const missing = [];
+  for (const command of ROUND_COMMANDS) {
+    if (findExecutable(command, [...base, ...added]) !== null) continue;
+    const found = findExecutable(command, String(env.PATH ?? '').split(delimiter));
+    if (found === null) missing.push(command);
+    else added.push(dirname(found));
+  }
+  return { dirs: dedupe([...base, ...added]), missing };
+}
+
+// The PATH of the entry installed for this vault, read back from its file
+// (systemd, then launchd) or from its crontab block: { file, path }, or
+// null when none is installed or its PATH cannot be read. doctor checks it
+// reaches ROUND_COMMANDS.
+export function installedRoundPath({ machine, env }) {
+  const home = env.HOME || homedir();
+  const name = `brain-kit-curate-${machine.vault_id}`;
+  const service = join(configHome(env, home), 'systemd', 'user', `${name}.service`);
+  const serviceText = readText(service);
+  if (serviceText !== null) {
+    const line = serviceText.split('\n').find((l) => l.startsWith('Environment="PATH='));
+    if (line === undefined) return null;
+    const quoted = line.slice('Environment='.length);
+    const value = quoted.slice(1, -1).replace(/\\(.)/g, '$1').replace(/%%/g, '%');
+    return { file: service, path: value.slice('PATH='.length) };
+  }
+  const plist = join(home, 'Library', 'LaunchAgents', `${name}.plist`);
+  const plistText = readText(plist);
+  if (plistText !== null) {
+    const match = /<key>PATH<\/key>\s*<string>([^<]*)<\/string>/.exec(plistText);
+    if (match === null) return null;
+    const value = match[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+    return { file: plist, path: value };
+  }
+  const listed = run('crontab', ['-l'], { env });
+  if (listed.status !== 0) return null;
+  const lines = listed.stdout.split('\n');
+  const begin = lines.findIndex((line) => opensBlock(line, name));
+  if (begin === -1) return null;
+  const entry = lines.slice(begin + 1).find((line) => / PATH='/.test(line));
+  const match = entry === undefined ? null : / PATH='((?:[^']|'\\'')*)'/.exec(entry);
+  if (match === null) return null;
+  return { file: 'crontab', path: match[1].replace(/'\\''/g, "'").replace(/\\%/g, '%') };
 }
 
 function detectPlatform(env, os) {
@@ -321,7 +384,14 @@ export function runScheduleSync(argv, io, t, deps = {}) {
     complain(t('schedule.claude_not_found', { bin: machine.claude_bin }));
     return EXIT.USAGE;
   }
-  const pathDirs = dedupe([...extra.map((dir) => expandHome(String(dir), env)), dirname(claude), dirname(node), ...SYSTEM_PATH]);
+  const { dirs: pathDirs, missing } = roundPath({ extra, claude, node, env, ...(deps.systemPath ? { systemPath: deps.systemPath } : {}) });
+  if (parsed.action === 'install' && missing.length > 0) {
+    for (const command of missing) {
+      const hint = t(command === 'gh' ? 'schedule.hint_gh' : 'schedule.hint_brain_kit');
+      complain(t('schedule.command_missing', { command, path: pathDirs.join(':'), hint }));
+    }
+    return EXIT.USAGE;
+  }
   for (const [index, value] of [...argvOfRound, timezone].entries()) {
     if (unsafeFor(value, { platform, program: index < 2 })) {
       complain(t('schedule.unsafe_path', { path: value }));

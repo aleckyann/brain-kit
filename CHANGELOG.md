@@ -198,13 +198,16 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   model.
 - The transcripts source selects Claude Code sessions by the timestamps of their messages,
   not by file modification time, from the projects `sources.transcripts.include_projects`
-  lists; drops the curator's own runs by their first user message only; caps by recency;
-  and gives the model each file's size and the line to start reading from.
+  lists; drops the curator's own runs by their first user message only; caps by whole
+  days, oldest first, leaving the days that do not fit for the next round (a first day
+  that alone passes the cap stops the round with exit 4 before the model); counts a file
+  with no message timestamp apart, without blocking its day; and gives the model each
+  file's size and the line to start reading from (`sampleLine`).
 - A generic, domain-neutral curate prompt in both language packs, written from scratch,
   which a vault may override with `.brain-kit/prompts/curate.md` (never outside the vault).
   `brain-kit prompt curate` prints it and `prompt --check` verifies it.
-- The watermark: per source, the last day swept. A round reads the open days oldest first,
-  at most seven at a time, and advances a source only on exit 0 or 3, with every offered
+- The watermark: per source, the last day swept. A round reads the open days oldest first
+  and whole, at most seven at a time and as many as fit in the transcripts cap, and advances a source only on exit 0 or 3, with every offered
   file read and the model's `BRAIN_KIT_SOURCES` line reporting it; a day is never closed
   unread. `brain-kit watermark show|set|reopen|assume-covered [dir]` shows it and moves it
   by hand, taking the vault lock to write.
@@ -212,8 +215,12 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   installs the round in daytime windows only (07:00 to 22:59; 09:30, 14:00 and 20:00 by
   default), named `brain-kit-curate-<vault_id>` by what it does, with no dependency on a
   network target, missed windows not caught up where the platform allows it, and a `PATH`
-  that survives the CLI moving between its two usual directories. systemd user units are
-  the reference; launchd and cron are rendered too. `status` says whether the entry is
+  that holds `machine.path_extra`, the CLI's directory, node's and the system's, plus the
+  directories where the installing shell finds `brain-kit` and `gh`, which the round's
+  `propose` runs (refused, exit 2, when either is found nowhere). The CLI itself is
+  recorded by its absolute path in `claude_bin`: a CLI that moves is reported by the
+  round's CLI check (exit 1) until `claude_bin` is updated. systemd user units are the
+  reference; launchd and cron are rendered too. `status` says whether the entry is
   installed, current and enabled, and prints the next fire times and the last round as
   DD/MM/YYYY HH:MM.
 - Isolation: every round runs the model with `--setting-sources ''`,
@@ -222,16 +229,17 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   headless run was measured inheriting all of them), with an allowlist of the kit's own
   `validate`, `lint` and `propose` and a denylist for publishing, the network and the
   kit's protected files. The round stops the model before it does any work when the CLI's
-  first event reports anything else. The model runs in its own process group, killed as a
-  whole on timeout or interruption, and the `propose` it runs joins the lock the round
-  holds.
+  first event reports anything else, and kills it at once on a hook event that arrives
+  later. The model runs in its own process group, killed as a whole on timeout or
+  interruption, and the `propose` it runs joins the lock the round holds.
 - `brain-kit doctor` checks the curator: `claude-real` (not a launcher stub, a real
   version), `claude-isolation-flags` (the installed CLI's help lists every flag a round
   passes, but `--max-turns`, which 2.1.281 hides from its help and which works),
   `include-projects`, `watermark` (days behind per source; more than three warns),
   `last-run` (a round that exited 0 in under 20 seconds without a model turn is a dead
-  round), `schedule` (installed, current, enabled, next fire times) and `notify`. Each
-  names the command that fixes what it finds.
+  round), `schedule` (installed, current, enabled, next fire times) and `notify`; and
+  `brain-kit-on-path` also checks that the scheduled round's own `PATH` reaches
+  `brain-kit` and `gh`. Each names the command that fixes what it finds.
 - `docs/scheduling.md` (the round step by step, the windows, the watermark, the exit codes
   and what to do for each, `last-run.json` and the logs) and `docs/security.md` (what
   isolates the model and the measurements behind it).

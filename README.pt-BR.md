@@ -137,8 +137,10 @@ diferente de zero, um motivo no `last-run.json` e no log, e o seu comando de not
 `--dry` mostra o que uma rodada faria e o `--check` roda todos os passos até o modelo.
 
 O `watermark` mostra e move o último dia varrido de cada fonte. Uma rodada lê os dias
-seguintes, os mais antigos primeiro, e só move a marca quando todo arquivo oferecido foi
-lido e o modelo informou a fonte; nenhum dia é fechado sem ter sido lido. O
+seguintes, os mais antigos primeiro e inteiros (quantos couberem em
+`curate.caps.transcripts`; os demais ficam para a próxima rodada), e só move a marca
+quando todo arquivo oferecido foi lido e o modelo informou a fonte; nenhum dia é fechado
+sem ter sido lido. O
 `schedule install|uninstall|status` instala a rodada em janelas diurnas (09:30, 14:00 e
 20:00 por padrão), com um nome que diz o que ela faz e sem depender de nenhum alvo de rede:
 os timers de usuário do systemd são a referência, e launchd e cron também são gerados.

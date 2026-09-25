@@ -56,7 +56,10 @@ function writeExecutable(path, content) {
 //   schedule, timezone, enabled   written into the fixture configuration
 //   machine     overrides for machine.json
 //   fakes       which fakes to put on PATH (default all three)
-export function makeScheduleWorld({ vaultName = 'vault', schedule, timezone = 'America/Sao_Paulo', enabled = true, machine = {}, fakes = ['systemctl', 'launchctl', 'crontab'] } = {}) {
+//   roundTools  put stand-ins for `brain-kit` and `gh`, the commands the
+//               round's propose runs from PATH, beside claude (default
+//               true), so the unit PATH reaches them on any machine
+export function makeScheduleWorld({ vaultName = 'vault', schedule, timezone = 'America/Sao_Paulo', enabled = true, machine = {}, fakes = ['systemctl', 'launchctl', 'crontab'], roundTools = true } = {}) {
   const base = realpathSync(makeTempDir('brain-kit-schedule-'));
   const home = join(base, 'home', 'ana');
   const xdg = join(base, 'xdg-config');
@@ -71,6 +74,7 @@ export function makeScheduleWorld({ vaultName = 'vault', schedule, timezone = 'A
   if (fakes.includes('launchctl')) writeExecutable(join(fakeBin, 'launchctl'), FAKE_LAUNCHCTL);
   if (fakes.includes('crontab')) writeExecutable(join(fakeBin, 'crontab'), FAKE_CRONTAB);
   const claude = writeExecutable(join(claudeDir, 'claude'), '#!/bin/sh\necho "2.1.300 (Claude Code)"\n');
+  if (roundTools) for (const name of ['brain-kit', 'gh']) writeExecutable(join(claudeDir, name), '#!/bin/sh\nexit 0\n');
 
   const config = JSON.parse(readFileSync(new URL('../fixtures/config/valid.json', import.meta.url), 'utf8'));
   config.vault.timezone = timezone;

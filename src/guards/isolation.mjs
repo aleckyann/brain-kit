@@ -11,6 +11,8 @@
 //                    maintainer's machine reported `auto`, and ran a
 //                    disallowed command)
 //   hooks            any hook event in the stream: a hook of the person's ran
+//                    (`hookEventsAfterInit` > 0 picks the message for one
+//                    that ran after the model started)
 //   mcp              any MCP server in init the round did not ask for
 //   no_init          no init event at all, so nothing above can be proved
 //
@@ -40,9 +42,12 @@ export function checkIsolation(record, { allowMcp = [] } = {}) {
     }
   }
   const count = record && typeof record.hookEvents === 'number' ? record.hookEvents : 0;
+  // A hook after the init event means the model may already have worked
+  // under the person's settings: said so, never "before any work".
+  const late = record && typeof record.hookEventsAfterInit === 'number' && record.hookEventsAfterInit > 0;
   if (count > 0) {
     problems.push('hooks');
-    details.push({ code: 'hooks', messageKey: 'harness.isolation.hooks', params: { count } });
+    details.push({ code: 'hooks', messageKey: late ? 'harness.isolation.hooks_late' : 'harness.isolation.hooks', params: { count } });
   }
   return { ok: problems.length === 0, problems, details };
 }

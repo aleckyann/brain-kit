@@ -24,7 +24,7 @@ import { spawnSync } from 'node:child_process';
 import {
   chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
-import { delimiter, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { makeTempDir } from './helpers/tmp.mjs';
 import { KIT_ROOT, kitVersion } from '../src/version.mjs';
@@ -216,6 +216,14 @@ function setup({
     }
   }
   const toolsDir = makeTools(tools);
+  // What a scheduled round's propose runs from PATH (brain-kit for the
+  // gate, gh for the pull request), in a directory of machine.json's
+  // path_extra: the unit PATH then reaches both whatever the shell's PATH
+  // holds, so a tool left out of the shell's PATH below tests that check
+  // alone, on any machine (a CI runner has a gh in /usr/bin, this one may not).
+  const roundTools = join(base, 'round-tools');
+  mkdirSync(roundTools);
+  for (const name of ['brain-kit', 'gh']) writeScript(join(roundTools, name), 'exit 0');
   const env = {
     PATH: toolsDir,
     HOME: home,
@@ -236,6 +244,7 @@ function setup({
       state_dir: stateDir,
       paths: { watermark: 'watermark.json', last_run: 'last-run.json', log_dir: 'logs' },
       notify_command: ['notify', 'brain-kit'],
+      path_extra: [roundTools],
       ...machine,
     };
     writeFileSync(machineFile, machineText ?? JSON.stringify(value, null, 2));
@@ -245,7 +254,7 @@ function setup({
     // still reached with the file already in it.
     chmodSync(stateDir, dirMode);
   }
-  return { base, home, root, gitTop, env, stateDir, machineFile, toolsDir };
+  return { base, home, root, gitTop, env, stateDir, machineFile, toolsDir, roundTools };
 }
 
 // Yesterday as a YYYY-MM-DD day in UTC, the fixture configuration's zone.
@@ -1287,6 +1296,44 @@ test('brain-kit-on-path: passes with this checkout\'s launcher on PATH, naming i
   const c = assertCheck(report, 'brain-kit-on-path', 'ok', 'doctor.brain_kit_on_path.ok');
   assert.equal(c.params.bin, join(fx.toolsDir, 'brain-kit'));
   assert.equal(c.params.version, kitVersion());
+});
+
+// Final review I1: the scheduled round runs with the unit's PATH, not the
+// shell's, and its propose needs brain-kit and gh on it.
+test('brain-kit-on-path: the installed round\'s PATH that reaches neither brain-kit nor gh fails, naming the unit file, its PATH and both commands', async () => {
+  const fx = setup();
+  const service = join(fx.home, '.config', 'systemd', 'user', 'brain-kit-curate-ana-brain.service');
+  const text = readFileSync(service, 'utf8');
+  assert.match(text, /^Environment="PATH=/m, 'the fixture installed the unit');
+  writeFileSync(service, text.replace(/^Environment="PATH=.*"$/m, 'Environment="PATH=/nonexistent-dir:/another-nonexistent-dir"'));
+  const { report } = await doctor(fx, ['--only', 'brain-kit-on-path']);
+  const c = assertCheck(report, 'brain-kit-on-path', 'fail', 'doctor.brain_kit_on_path.unit_missing_installed');
+  assert.equal(c.params.file, service);
+  assert.equal(c.params.path, '/nonexistent-dir:/another-nonexistent-dir');
+  assert.equal(c.params.commands, 'brain-kit, gh');
+});
+
+test('brain-kit-on-path: the installed round\'s PATH is read back as systemd wrote it, quoting undone, and passes when it reaches both', async () => {
+  const fx = setup();
+  const { report } = await doctor(fx, ['--only', 'brain-kit-on-path']);
+  assertCheck(report, 'brain-kit-on-path', 'ok', 'doctor.brain_kit_on_path.ok');
+  // A directory with a percent sign (doubled by the renderer) still resolves.
+  const odd = join(fx.base, 'odd 100% dir');
+  mkdirSync(odd);
+  for (const name of ['brain-kit', 'gh']) writeScript(join(odd, name), 'exit 0');
+  const service = join(fx.home, '.config', 'systemd', 'user', 'brain-kit-curate-ana-brain.service');
+  writeFileSync(service, readFileSync(service, 'utf8').replace(/^Environment="PATH=.*"$/m, `Environment="PATH=${odd.replace(/%/g, '%%')}"`));
+  assertCheck((await doctor(fx, ['--only', 'brain-kit-on-path'])).report, 'brain-kit-on-path', 'ok', 'doctor.brain_kit_on_path.ok');
+});
+
+const SYSTEM_GH = [dirname(process.execPath), '/usr/local/bin', '/usr/bin', '/bin'].some((dir) => existsSync(join(dir, 'gh')));
+test('brain-kit-on-path: with no round installed, a gh found neither on the PATH schedule install would write nor on the shell\'s fails, naming the PATH', { skip: SYSTEM_GH && 'this machine has a gh in node\'s or a system directory, which the unit PATH always holds' }, async () => {
+  const fx = setup({ tools: { gh: 'absent' }, machine: { path_extra: [] } });
+  const { report } = await doctor(fx, ['--only', 'brain-kit-on-path,schedule']);
+  assertCheck(report, 'schedule', 'warn', 'doctor.schedule.not_installed');
+  const c = assertCheck(report, 'brain-kit-on-path', 'fail', 'doctor.brain_kit_on_path.unit_missing_computed');
+  assert.equal(c.params.commands, 'gh');
+  assert.ok(c.params.path.split(':').includes(fx.toolsDir), c.params.path);
 });
 
 test('state-dir-mode: a state directory at 0577 is not 0700, even though it is numerically below it', async () => {

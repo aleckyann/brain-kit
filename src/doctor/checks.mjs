@@ -50,7 +50,7 @@ import { addDays, daysBetween, localDay, readWatermark, WatermarkError } from '.
 // module uses the other's exports while it loads, only inside functions,
 // so either may be imported first (test/doctor.test.mjs loads each
 // on its own in a fresh process to hold that).
-import { runScheduleSync } from '../commands/schedule.mjs';
+import { installedRoundPath, ROUND_COMMANDS, roundPath, runScheduleSync } from '../commands/schedule.mjs';
 
 export const MINIMUM_NODE_MAJOR = 24;
 export const HOOKS_DIR = '.githooks';
@@ -116,7 +116,7 @@ export function expandHome(path, env) {
 // means "from wherever you are"; both are skipped, since a program that
 // resolves only from wherever doctor happened to be started is not one a
 // hook or a scheduled run can be relied on to find.
-function findExecutable(name, dirs) {
+export function findExecutable(name, dirs) {
   for (const dir of dirs) {
     if (!isAbsolute(dir)) continue;
     const candidate = join(dir, name);
@@ -409,10 +409,39 @@ function brainKitOnPath(ctx) {
   if (!match) {
     return { id, status: 'fail', messageKey: 'doctor.brain_kit_on_path.unrecognised', params: { bin, output: firstLine(r.stdout) } };
   }
+  const unit = roundPathProblem(ctx);
+  if (unit !== null) {
+    return { id, status: 'fail', messageKey: `doctor.brain_kit_on_path.${unit.kind}`, params: { bin, version: match[1], ...unit.params } };
+  }
   if (match[1] !== running) {
     return { id, status: 'warn', messageKey: 'doctor.brain_kit_on_path.other_version', params: { bin, version: match[1], running } };
   }
   return { id, status: 'ok', messageKey: 'doctor.brain_kit_on_path.ok', params: { bin, version: match[1] } };
+}
+
+// The scheduled round runs with its own PATH, not the shell's, and its
+// `propose` needs brain-kit (the gate) and gh (the pull request) on it
+// (final review I1, 24/09/2026). The installed entry's PATH is read back
+// from its file; with none installed, the PATH `schedule install` would
+// write is computed the same way it does. null when both commands resolve,
+// or when there is no scheduled curator to ask about (disabled, or a
+// configuration or machine file other checks already report).
+function roundPathProblem(ctx) {
+  const read = ctx.config();
+  if (!read.ok || !isObject(read.value) || read.value.curate?.enabled === false) return null;
+  const machine = machineObject(ctx);
+  if (machine === null || validateMachine(machine).length > 0) return null;
+  const installed = installedRoundPath({ machine, env: ctx.env });
+  if (installed !== null) {
+    const missing = ROUND_COMMANDS.filter((command) => findExecutable(command, installed.path.split(':')) === null);
+    if (missing.length === 0) return null;
+    return { kind: 'unit_missing_installed', params: { file: installed.file, path: installed.path, commands: missing.join(', ') } };
+  }
+  const extra = Array.isArray(machine.path_extra) ? machine.path_extra : [];
+  const claude = typeof machine.claude_bin === 'string' ? resolveClaude(machine.claude_bin, extra, ctx.env, ctx.root) : null;
+  const computed = roundPath({ extra, claude, node: process.execPath, env: ctx.env });
+  if (computed.missing.length === 0) return null;
+  return { kind: 'unit_missing_computed', params: { path: computed.dirs.join(':'), commands: computed.missing.join(', ') } };
 }
 
 function configValid(ctx) {

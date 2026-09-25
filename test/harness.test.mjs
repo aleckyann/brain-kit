@@ -173,6 +173,21 @@ test('parseStream counts any hook_* system event, and a stream with no result ha
   assert.equal(r.result, null);
 });
 
+test('a hook event after the init event is counted apart, and checkIsolation then never says the model did no work (final review I3)', () => {
+  const lines = fixtureLines('isolated-run');
+  const initAt = lines.findIndex((l) => l.includes('"subtype":"init"'));
+  const late = '{"type":"system","subtype":"hook_started","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse"}';
+  const r = parseStream([...lines.slice(0, initAt + 1), late, ...lines.slice(initAt + 1)]);
+  assert.equal(r.hookEvents, 1);
+  assert.equal(r.hookEventsAfterInit, 1);
+  const checked = checkIsolation(r);
+  assert.deepEqual(checked.problems, ['hooks']);
+  assert.equal(checked.details[0].messageKey, 'harness.isolation.hooks_late');
+  const early = parseStream(['{"type":"system","subtype":"hook_started","hook_event":"SessionStart"}', ...lines]);
+  assert.equal(early.hookEventsAfterInit, 0);
+  assert.equal(checkIsolation(early).details.find((d) => d.code === 'hooks').messageKey, 'harness.isolation.hooks');
+});
+
 // --- runModel ---------------------------------------------------------------
 
 test('runModel writes the prompt on stdin, passes the argument vector untouched, and returns the child\'s own exit code with the record', async () => {

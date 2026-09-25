@@ -518,3 +518,40 @@ test('the CLI lists schedule and routes to it', () => {
   assert.ok(r.stdout.includes(ACCENTED));
   assert.ok(r.stdout.includes(VAULT_ID));
 });
+
+// ------------------------------------------------ final review I1: the round's commands
+
+test('install adds the directory where the installing shell finds brain-kit when the unit PATH would not reach it, after every other directory', async () => {
+  const world = makeScheduleWorld({ roundTools: false });
+  writeFileSync(join(world.claudeDir, 'gh'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const npmBin = join(world.base, 'npm global', 'bin');
+  mkdirSync(npmBin, { recursive: true });
+  writeFileSync(join(npmBin, 'brain-kit'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const node = join(world.base, 'node-dir', 'node');
+  mkdirSync(dirname(node), { recursive: true });
+  writeFileSync(node, '#!/bin/sh\n', { mode: 0o755 });
+  const r = await world.run(['install', '--platform', 'systemd', '--dry'], { env: { PATH: `${world.fakeBin}:${npmBin}` }, node, systemPath: ['/nonexistent-system-dir'] });
+  assert.equal(r.status, 0, r.stderr);
+  const service = dryFiles(r.stdout)[join(world.unitDir, `${world.name}.service`)];
+  const expected = [join(world.home, '.local/bin'), '/opt/tools/bin', world.claudeDir, dirname(node), '/nonexistent-system-dir', npmBin].join(':');
+  assert.deepEqual(systemdWords(unitValues(service, 'Environment')[0], { exec: false }), [`PATH=${expected}`]);
+});
+
+test('install refuses with exit 2, naming the command and how to install it, when brain-kit or gh is found neither on the unit PATH nor on the shell\'s; nothing is written or run', async () => {
+  for (const [command, present, hintKey] of [['brain-kit', 'gh', 'schedule.hint_brain_kit'], ['gh', 'brain-kit', 'schedule.hint_gh']]) {
+    const world = makeScheduleWorld({ roundTools: false });
+    writeFileSync(join(world.claudeDir, present), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const node = join(world.base, 'node-dir', 'node');
+    mkdirSync(dirname(node), { recursive: true });
+    writeFileSync(node, '#!/bin/sh\n', { mode: 0o755 });
+    for (const dry of [[], ['--dry']]) {
+      const r = await world.run(['install', '--platform', 'systemd', ...dry], { node, systemPath: ['/nonexistent-system-dir'] });
+      const path = [join(world.home, '.local/bin'), '/opt/tools/bin', world.claudeDir, dirname(node), '/nonexistent-system-dir'].join(':');
+      assert.equal(r.status, 2, command);
+      assert.equal(r.stderr, `${world.t('schedule.command_missing', { command, path, hint: world.t(hintKey) })}\n`);
+      assert.equal(r.stdout, '');
+    }
+    assert.equal(existsSync(world.unitDir), false);
+    assert.deepEqual(world.commands(), []);
+  }
+});

@@ -126,12 +126,27 @@ test('lines without a timestamp, malformed lines and unknown types are skipped, 
   assert.equal(plan.files[0].lastAt, INSIDE, 'a line of an unknown type does not count as a message');
 });
 
-test('a file with no parseable message timestamp is unreadable and listed, never silently dropped', () => {
+test('a file whose lines parse but carry no message timestamp is counted as noTimestamp, announced, and never unreadable (final review I2)', () => {
   const world = makeWorld();
-  const bad = world.write(PROJECT, 'bad.jsonl', ['garbage', customTitle(), lastPrompt()]);
+  world.write(PROJECT, 'meta.jsonl', ['garbage', customTitle(), lastPrompt()]);
+  world.write(PROJECT, 'summary.jsonl', [{ type: 'summary', summary: 'A session of Ana', leafUuid: 'x' }]);
+  world.write(PROJECT, 'empty.jsonl', []);
+  const plan = world.collect();
+  assert.deepEqual(plan.files, []);
+  assert.deepEqual(plan.unreadable, []);
+  assert.equal(plan.dropped.unreadable, 0);
+  assert.equal(plan.dropped.noTimestamp, 3);
+  assert.match(plan.promptBlock, /3 transcripts left out because no line in them carries a message timestamp/);
+  assert.deepEqual(transcriptsSource.readEvidence({ toolUses: [], toolResults: [] }, plan), { read: 0, expected: 0, ok: true }, 'nothing expected, nothing blocked');
+});
+
+test('a file of which no line parses as JSON cannot be decoded: unreadable and listed, never silently dropped', () => {
+  const world = makeWorld();
+  const bad = world.write(PROJECT, 'bad.jsonl', ['garbage', 'not json either']);
   const plan = world.collect();
   assert.deepEqual(plan.files, []);
   assert.equal(plan.dropped.unreadable, 1);
+  assert.equal(plan.dropped.noTimestamp, 0);
   assert.equal(plan.unreadable.length, 1);
   assert.equal(plan.unreadable[0].path, bad);
   assert.equal(plan.unreadable[0].project, PROJECT);
@@ -393,7 +408,8 @@ test('the prompt block lists each file with project, window span, size and sampl
   assert.ok(line.includes('2026-09-23T10:00:00.000Z'));
   assert.ok(line.includes('2026-09-23T11:00:00.000Z'));
   assert.ok(line.includes(String(plan.files[0].bytes)));
-  assert.ok(line.includes(`byte ${plan.files[0].sampleFrom}`));
+  assert.ok(line.endsWith(`sampleLine ${plan.files[0].sampleLine})`), 'the line is labelled sampleLine, the word the prompt uses');
+  assert.doesNotMatch(line, /\bbyte \d/, 'no byte offset a model could pass to Read as a line offset');
   assert.match(plan.promptBlock, /1 transcripts? left out because no message falls inside the window/);
   assert.doesNotMatch(plan.promptBlock, /cap of/);
   assert.doesNotMatch(plan.promptBlock, /exclude_path_patterns/);
@@ -458,6 +474,14 @@ test('readEvidence counts a kept file as read only by a successful Read of exact
   assert.deepEqual(transcriptsSource.readEvidence(record([{ path: a, name: 'Grep' }]), plan), { read: 0, expected: 2, ok: false });
   assert.deepEqual(transcriptsSource.readEvidence(record([{ path: a }, { path: a }]), plan), { read: 1, expected: 2, ok: false });
   assert.deepEqual(transcriptsSource.readEvidence(record([{ path: a }, { path: b }]), plan), { read: 2, expected: 2, ok: true });
+});
+
+test('readEvidence never counts a Read whose tool result never came back (final review M7)', () => {
+  const world = makeWorld();
+  const a = world.write(PROJECT, 'a.jsonl', [user('Ana asks', INSIDE)]);
+  const plan = world.collect();
+  const unanswered = { toolUses: [{ id: 'toolu_1', name: 'Read', input: { file_path: a } }], toolResults: [] };
+  assert.deepEqual(transcriptsSource.readEvidence(unanswered, plan), { read: 0, expected: 1, ok: false });
 });
 
 test('readEvidence is ok only when every kept file was read: one of two leaves the day open (ruling R13)', () => {

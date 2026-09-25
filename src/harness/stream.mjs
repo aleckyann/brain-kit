@@ -59,6 +59,7 @@ export function createStreamParser() {
   let init = null;
   let result = null;
   let hookEvents = 0;
+  let hookEventsAfterInit = 0;
   let invalidLines = 0;
 
   const addDenial = (toolName, toolUseId, input) => {
@@ -86,7 +87,10 @@ export function createStreamParser() {
       if (!KNOWN_SYSTEM_SUBTYPES.has(subtype)) unknownTypes.push(`system/${subtype}`);
       // Any hook event counts, including a hook_* subtype a later release
       // adds: a hook that ran at all means the person's settings were read.
-      if (typeof subtype === 'string' && subtype.startsWith('hook_')) hookEvents++;
+      if (typeof subtype === 'string' && subtype.startsWith('hook_')) {
+        hookEvents++;
+        if (init !== null) hookEventsAfterInit++;
+      }
       if (subtype === 'init' && init === null) init = event;
       if (subtype === 'permission_denied') {
         const use = toolUses.find((u) => u.id === event.tool_use_id);
@@ -133,6 +137,7 @@ export function createStreamParser() {
       denials: [...denials],
       result,
       hookEvents,
+      hookEventsAfterInit,
       unknownTypes: [...unknownTypes],
       invalidLines,
     };

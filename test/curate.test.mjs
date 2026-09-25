@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { constants as osConstants } from 'node:os';
 import { runCurate } from '../src/commands/curate.mjs';
 import { acquireLock } from '../src/guards/lock.mjs';
 import { createTranslator } from '../src/lang.mjs';
@@ -79,7 +80,7 @@ test('a full round: the fake writes a note and runs the real propose with the ro
   assert.equal(last.proposed.branch, branch);
   assert.deepEqual(last.proposed.paths, ['notes/meeting.md']);
   assert.equal(last.proposed.opened, true);
-  assert.deepEqual(last.sources.transcripts, { kept: 1, read: 1, advanced: true });
+  assert.deepEqual(last.sources.transcripts, { kept: 1, read: 1, advanced: true, noTimestamp: 0 });
   assert.deepEqual(last.leftovers, []);
   assert.equal(last.isolation.ok, true);
   assert.equal(last.costUsd, 0.041879);
@@ -146,6 +147,25 @@ test('a proposal whose pull request did not open exits 3, still cleans up and ad
   assert.equal(w.status(), '');
   assert.deepEqual(w.watermark(), { transcripts: utcDay(-1) });
   assert.equal(w.notifications().length, 1);
+  // The reason says what to run, with the branch: propose's own message
+  // went to the model, which nobody reads (final review I1).
+  const { branch } = w.lastRun().proposed;
+  const reason = w.lastRun().reason;
+  assert.ok(reason.includes(`gh pr create --head ${branch}`), reason);
+  assert.doesNotMatch(reason, /the command propose printed/);
+  assert.equal(w.notifications().at(-1).at(-1), reason, 'the notification carries it too');
+});
+
+test('a round record that is a symlink is never followed: it counts as broken, even pointing at a valid record, and the round exits 1 (final review M7)', () => {
+  const w = makeCurateWorld();
+  const target = join(w.base, 'elsewhere.json');
+  writeFileSync(target, JSON.stringify({ format: 1, proposals: [] }));
+  const link = `require('node:fs').symlinkSync(${JSON.stringify(target)}, '.git/brain-kit-round-' + process.env.BRAIN_KIT_ROUND_TOKEN + '.json')`;
+  w.scenario({ actions: [{ run: [process.execPath, '-e', link] }] });
+  const r = w.curate();
+  assert.equal(r.status, EXIT.FAILURE, r.stderr);
+  assert.equal(w.lastRun().reasonCode, 'record_invalid');
+  assert.equal(w.watermark(), null);
 });
 
 test('a round record that cannot be read is left with the files, and the round exits 1', () => {
@@ -170,6 +190,22 @@ test('a stream whose init reports permissionMode auto is killed at once and exit
   const last = w.lastRun();
   assert.equal(last.reasonCode, 'isolation');
   assert.deepEqual(last.isolation.problems, ['permission_mode']);
+  assert.equal(w.watermark(), null);
+  assert.equal(w.notifications().length, 1);
+});
+
+test('a hook event after the init event kills the model at once, exit 1, and the reason does not claim the model did no work (final review I3)', () => {
+  const w = makeCurateWorld();
+  w.scenario({ rewrite: { hookAfterInit: true }, delayMs: 30000 });
+  const started = Date.now();
+  const r = w.curate();
+  assert.ok(Date.now() - started < 15000, 'killed at the hook, not waited for');
+  assert.equal(r.status, EXIT.FAILURE, r.stderr);
+  const last = w.lastRun();
+  assert.equal(last.reasonCode, 'isolation');
+  assert.deepEqual(last.isolation.problems, ['hooks']);
+  assert.match(last.reason, /after the model had started/);
+  assert.doesNotMatch(last.reason, /before the model did any work/);
   assert.equal(w.watermark(), null);
   assert.equal(w.notifications().length, 1);
 });
@@ -542,7 +578,10 @@ test('the parameters block renders in the vault\'s language', () => {
   assert.doesNotMatch(prompt, /\{[a-z_]+\}/);
 });
 
-for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT']) {
+// The four usual ones, then the rarer catchable signals whose default
+// action ends a process (SIGPWR only where the platform has it).
+const RARER = ['SIGUSR2', 'SIGALRM', 'SIGXCPU', 'SIGXFSZ', 'SIGVTALRM', 'SIGPROF', 'SIGPWR'].filter((name) => Object.hasOwn(osConstants.signals, name));
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT', ...RARER]) {
   test(`a ${signal} to curate while the model runs kills the model's whole process group before the lock is released, writes last-run, notifies and exits 1`, async () => {
     const { spawn } = await import('node:child_process');
     const w = makeCurateWorld();
@@ -649,14 +688,19 @@ test('more open days than a round reads: it curates the oldest, advances only th
   assert.deepEqual(w.watermark(), { transcripts: utcDay(-1) });
 });
 
-test('a day whose only transcript cannot be opened is not an empty day: the round exits 4 and the mark stays', { skip: process.getuid?.() === 0 ? 'root reads any file' : false }, () => {
+test('a day whose only transcript cannot be opened is not an empty day: the round exits 4 before the model, naming the file, and the mark stays (final review I2)', { skip: process.getuid?.() === 0 ? 'root reads any file' : false }, () => {
   const w = makeCurateWorld();
   chmodSync(w.transcript, 0o000);
   try {
     w.scenario({ rewrite: { toolUses: [], finalText: 'BRAIN_KIT_SOURCES: transcripts=failed' } });
     const r = w.curate();
     assert.equal(r.status, EXIT.SOURCE_UNREAD, r.stderr);
-    assert.match(w.lastRun().reason, /transcripts \(0\/1\)/);
+    const last = w.lastRun();
+    assert.equal(last.reasonCode, 'source_unreadable');
+    assert.ok(last.reason.includes(w.transcript), 'the reason names the file');
+    assert.match(last.reason, /exclude_path_patterns/);
+    assert.match(last.reason, /brain-kit watermark assume-covered transcripts/);
+    assert.equal(traces(w).model, false, 'the model was never started');
     assert.equal(w.watermark(), null);
     assert.equal(w.notifications().length, 1);
   } finally {
@@ -774,4 +818,122 @@ test('every round removes its own log files older than machine.log_retention_day
   assert.equal(left.includes('curate-2026-01-01.log'), false);
   assert.equal(left.includes('curate-2026-01-01T00-00-00-000Z.stream.jsonl'), false);
   for (const kept of ['curate-2026-09-01.log', 'notes-of-mine.txt', 'other-2026-01-01.log']) assert.ok(left.includes(kept), kept);
+});
+
+// ------------------------------------------------ final review of phase 2
+
+// Sessions of Ana on `day` (UTC, the world's zone), noon plus a minute
+// each, with an mtime inside the window.
+function daySessions(w, day, count, tag) {
+  const paths = [];
+  const mtime = new Date('2026-09-28T23:00:00.000Z');
+  for (let i = 0; i < count; i += 1) {
+    const path = join(w.projects, PROJECT, `${tag}${String(i).padStart(7, '0')}-1111-4222-8333-444444444444.jsonl`);
+    const at = new Date(Date.parse(`${day}T12:00:00.000Z`) + i * 60_000).toISOString();
+    writeFileSync(path, `${JSON.stringify({ type: 'user', timestamp: at, message: { role: 'user', content: `Ana, ${tag} ${i}` } })}\n`);
+    utimesSync(path, mtime, mtime);
+    paths.push(path);
+  }
+  return paths;
+}
+
+const AFTER_28 = new Date('2026-09-29T12:00:00.000Z');
+
+test('the reviewer\'s C1 reproduction: 5 + 10 + 10 sessions and a cap of 20 cover 26/09 and 27/09, the mark stops at 27/09, 28/09 is deferred and said; the next round covers 28/09', async () => {
+  const w = makeCurateWorld();
+  writeFileSync(join(w.state, 'watermark.json'), JSON.stringify({ sources: { transcripts: '2026-09-25' } }));
+  const first = daySessions(w, '2026-09-26', 5, 'a');
+  const second = daySessions(w, '2026-09-27', 10, 'b');
+  const third = daySessions(w, '2026-09-28', 10, 'c');
+  const all = [...first, ...second, ...third];
+  // A model that reads every file the plan could list.
+  w.scenario({ rewrite: { toolUses: all.map((path) => ({ name: 'Read', input: { file_path: path, offset: 1 } })) } });
+  const r = await curateInProcess(w, [], { now: AFTER_28 });
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  const last = w.lastRun();
+  assert.deepEqual(last.window.days, ['2026-09-26', '2026-09-27']);
+  assert.equal(last.window.to, '2026-09-28T00:00:00.000Z');
+  assert.deepEqual(last.deferredDays, ['2026-09-28']);
+  assert.deepEqual(last.sources.transcripts, { kept: 15, read: 15, advanced: true, noTimestamp: 0 });
+  assert.ok(last.warnings.some((line) => /reads through 27\/09\/2026 and leaves 1 day\(s\) \(28\/09\/2026\) for the next round/.test(line)), last.warnings.join('\n'));
+  assert.match(r.stderr, /leaves 1 day\(s\) \(28\/09\/2026\) for the next round/);
+  assert.match(r.stderr, /curate\.caps\.transcripts \(20\)/);
+  assert.match(w.logText(), /days_deferred/);
+  assert.deepEqual(w.watermark(), { transcripts: '2026-09-27' }, 'the mark stops at the last covered day');
+  const prompt = readFileSync(w.files.stdinFile, 'utf8');
+  for (const path of [...first, ...second]) assert.ok(prompt.includes(path), path);
+  for (const path of third) assert.equal(prompt.includes(path), false, 'a deferred day\'s session is not offered');
+  assert.match(prompt, /1 more open day\(s\) \(28\/09\/2026\) are left for the next round/);
+
+  const next = await curateInProcess(w, [], { now: AFTER_28 });
+  assert.equal(next.status, EXIT.OK, next.stderr);
+  assert.deepEqual(w.lastRun().window.days, ['2026-09-28']);
+  assert.deepEqual(w.lastRun().deferredDays, []);
+  assert.equal(w.lastRun().sources.transcripts.kept, 10);
+  assert.deepEqual(w.watermark(), { transcripts: '2026-09-28' });
+});
+
+test('a first open day holding more transcripts than the cap exits 4 before the model, naming curate.caps.transcripts, the day and the counts; notified; the mark stays', async () => {
+  const w = makeCurateWorld();
+  writeFileSync(join(w.state, 'watermark.json'), JSON.stringify({ sources: { transcripts: '2026-09-25' } }));
+  const paths = daySessions(w, '2026-09-26', 21, 'a');
+  w.scenario({ rewrite: { toolUses: paths.map((path) => ({ name: 'Read', input: { file_path: path } })) } });
+  const r = await curateInProcess(w, [], { now: AFTER_28 });
+  assert.equal(r.status, EXIT.SOURCE_UNREAD, r.stderr);
+  const last = w.lastRun();
+  assert.equal(last.reasonCode, 'cap_exceeded');
+  assert.match(last.reason, /26\/09\/2026 alone holds 21 transcripts, more than brain-kit\.config\.json curate\.caps\.transcripts \(20\)/);
+  assert.equal(traces(w).model, false, 'the model was never started');
+  assert.deepEqual(w.watermark(), { transcripts: '2026-09-25' });
+  assert.equal(w.notifications().length, 1);
+  assert.equal(w.notifications()[0].at(-1), last.reason);
+});
+
+test('the reviewer\'s I2 reproduction, a metadata-only session beside a normal one: one round proposes once and closes the day; the retry is a no-op, never a second pull request', () => {
+  const w = makeCurateWorld();
+  const meta = join(w.projects, PROJECT, 'ffffffff-1111-4222-8333-444444444444.jsonl');
+  writeFileSync(meta, `${JSON.stringify({ type: 'summary', summary: 'Ana and the reading group', leafUuid: '00000000-0000-4000-8000-000000000001' })}\n`);
+  w.scenario({ actions: [{ write: { path: 'notes/meeting.md', content: note('Meeting') } }, w.proposeAction('notes/meeting.md')] });
+  const r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.equal(w.lastRun().sources.transcripts.noTimestamp, 1);
+  assert.deepEqual(w.watermark(), { transcripts: utcDay(-1) });
+  const again = w.curate();
+  assert.equal(again.status, EXIT.OK, again.stderr);
+  assert.equal(w.lastRun().reasonCode, 'up_to_date');
+  assert.equal(w.ghCalls().filter((call) => call.args[1] === 'create').length, 1, 'one pull request, not one per retry');
+});
+
+test('the reviewer\'s I2 reproduction with a session that cannot be decoded: every retry exits 4 without starting the model, so no pull request is ever opened for a day that cannot close', () => {
+  const w = makeCurateWorld();
+  const broken = join(w.projects, PROJECT, 'ffffffff-1111-4222-8333-444444444444.jsonl');
+  writeFileSync(broken, 'not json at all\n');
+  w.scenario({ actions: [{ write: { path: 'notes/meeting.md', content: note('Meeting') } }, w.proposeAction('notes/meeting.md')] });
+  for (let i = 0; i < 2; i += 1) {
+    const r = w.curate();
+    assert.equal(r.status, EXIT.SOURCE_UNREAD, r.stderr);
+    assert.equal(w.lastRun().reasonCode, 'source_unreadable');
+    assert.ok(w.lastRun().reason.includes(broken));
+  }
+  assert.equal(traces(w).model, false, 'the model never ran');
+  assert.equal(w.ghCalls().filter((call) => call.args[1] === 'create').length, 0);
+  assert.equal(w.watermark(), null);
+});
+
+test('a scheduled round speaks the vault\'s language, whatever the environment says', () => {
+  const w = makeCurateWorld({ config: (c) => { c.lang = 'pt-BR'; } });
+  rmSync(w.transcript);
+  const r = w.curate([], { BRAIN_KIT_LANG: 'en' });
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.match(w.lastRun().reason, /nada a curar/);
+  assert.match(r.stdout, /nada a curar/);
+});
+
+test('curate.network_min_wait_ms reaches the network wait: at 0 a check that answers at once is no longer noted as did_not_wait', () => {
+  const w = makeCurateWorld({ config: (c) => { c.curate.network_min_wait_ms = 0; } });
+  rmSync(w.transcript);
+  const r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.equal(w.lastRun().network.warning, null);
+  assert.doesNotMatch(w.logText(), /network_did_not_wait/);
 });

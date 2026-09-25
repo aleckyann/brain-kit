@@ -41,14 +41,17 @@ once broke a real routine.
    75 naming the holder.
 4. **The network.** The round waits for a connection, up to two minutes, by running
    `machine.network_check` or, when that is unset, by opening a connection to the model's
-   endpoint. None: exit 69. A check that answers in under 100 milliseconds on its first try
-   is accepted but noted as "did not wait" in the log and in `last-run.json`: it may be
-   answering about something other than the connection. The note is never a failure.
+   endpoint. None: exit 69. A check that answers in under 100 milliseconds
+   (`curate.network_min_wait_ms`) on its first try is accepted but noted as "did not wait"
+   in the log and in `last-run.json`: it may be answering about something other than the
+   connection. The note is never a failure.
 5. **Sync.** The default branch is brought level with its remote. Behind: fast-forward.
    Diverged: exit 1, because retrying cannot fix it and a person has to reconcile the two
    histories. An operation in progress or a dirty tree in the way: exit 75.
 6. **The configuration and the prompt, as synced.** Only now, so a change you merged
-   upstream is what runs. A `curate.prompt` that points outside the vault: exit 2.
+   upstream is what runs. A `curate.prompt` that points outside the vault: exit 2. From
+   here on the round speaks the vault's language (`lang`), whatever the scheduler's
+   environment says: its output, `last-run.json` and the notification.
 7. **The window**, from the watermark (below). Nothing open: exit 0, "up to date".
 8. **A clean tree.** Any uncommitted file postpones the round: exit 75, naming every file
    with its modification time.
@@ -59,15 +62,25 @@ once broke a real routine.
     Otherwise exit 1.
 11. **The sources.** Each source lists the files of its window. A required source that is
     misconfigured (no projects, a missing transcripts directory, every listed project
-    missing): exit 1, and no mark moves. A window with nothing in it at all advances the
-    mark and exits 0 without calling the model.
+    missing): exit 1, and no mark moves. A required source listing a file it cannot read
+    (an I/O error, or a file of which no line is JSON): exit 4 before the model, naming
+    the file, since no round could close its day. The transcripts cap
+    (`curate.caps.transcripts`) takes whole days, oldest first: the days that do not fit
+    wait for the next round and are said on the output, in the log and in
+    `last-run.json`, and this round curates, and advances through, only the days it took;
+    a first open day that alone passes the cap: exit 4 before the model, naming the day and
+    the counts. A window with nothing in it at all advances the mark and exits 0 without
+    calling the model.
 12. **`--check` stops here.** It prints the plan, the command line and the prompt's size.
 13. **The model, isolated.** The prompt goes on standard input. The first event the CLI
     prints says which permission mode, hooks and MCP servers are in effect; if it is not
     exactly the isolation the round asked for, the model is stopped at once: exit 1. The
     model runs in a process group of its own, and the whole group is killed on timeout
-    (60 minutes) or when the round is interrupted (SIGINT, SIGTERM, SIGHUP or SIGQUIT),
-    so no command it started outlives the round. A SIGKILL of `curate` itself cannot be
+    (60 minutes) or when the round is interrupted (SIGINT, SIGTERM, SIGHUP, SIGQUIT, or a
+    rarer signal that would end it: SIGUSR2, SIGALRM, SIGXCPU, SIGXFSZ, SIGVTALRM, SIGPROF,
+    SIGPWR where the system has it), so no command it started outlives the round. A hook
+    event later in the stream kills the model the moment it is seen, and the reason says
+    the model had already started. A SIGKILL of `curate` itself cannot be
     handled: the model then keeps running until it ends, and the lock is taken back as
     stale only after that.
 14. **What the model read.** For every file the plan offered, the round looks for a
@@ -80,8 +93,9 @@ once broke a real routine.
 16. **The exit code**, first match wins: isolation broken 1; interrupted or timed out 1;
     the model failed 69 (an API or login error) or 1; a required source whose mark would
     not advance 4 (a file not read, or no `BRAIN_KIT_SOURCES` line reporting it); a round
-    record that cannot be read 1; anything still dirty 1; a pull request not opened 3;
-    otherwise 0.
+    record that cannot be read 1; anything still dirty 1; a pull request not opened 3
+    (the reason names the branch and the `gh pr create --head <branch> --fill` that opens
+    it); otherwise 0.
 17. **The watermark** advances, only on exit 0 or 3 (below).
 18. **Always:** `last-run.json` is written, the log gets its last line, the lock is released
     (the model's process group is already dead), and `machine.notify_command` runs on any
@@ -99,6 +113,15 @@ day a no-op.
 
 The windows fire on the machine's clock. The round itself counts days in
 `vault.timezone`, and `schedule install` warns when the two clocks differ.
+
+The entry runs the round with a `PATH` of its own, not your shell's: `machine.path_extra`,
+the directory of `claude_bin`, node's directory and the system directories. The model's
+`propose` needs two commands on it: `brain-kit`, because the vault's pre-push gate runs the
+`brain-kit` on `PATH`, and `gh`, which opens the pull request. `schedule install` looks for
+both there, adds the directory where your shell finds one that is missing, and refuses
+(exit 2) when your shell does not find it either, saying how to install it. Run it again
+after moving either one. `doctor` (check `brain-kit-on-path`) reads the installed entry's
+`PATH` back and says when it does not reach them.
 
 What each platform does with a window missed while the machine was off or asleep:
 
@@ -123,15 +146,21 @@ is read tomorrow, once it has ended.
   `vault.timezone`. With no mark yet, only yesterday. A round reads at most the seven
   oldest open days; when more are open it reads the oldest seven, moves the mark through
   the last one it read, says how many remain, and the next round continues from there.
-  Days are caught up oldest first, and none is skipped.
+  Days are caught up oldest first, and none is skipped. A round also takes only whole
+  days that fit in `curate.caps.transcripts` together: the rest wait for the next round,
+  and a first open day that alone holds more transcripts than the cap stops the round
+  (exit 4) until you raise the cap or exclude some projects.
 - **When it moves.** Only on exit 0 or 3, and for each source only when the model exited
   0, every file the plan offered for that source was read, and the model's last line
   reports the source `ok` (or `empty`, when the plan indeed offered nothing). A round that
   dies halfway leaves the day open, and the next round reads it again.
 - **It never closes a day unread.** A required source whose mark would not advance makes
   the round exit 4: a file the model did not read, a transcript or a listed project
-  directory that cannot be read, or a last line that is missing or does not report the
-  source. The mark stays, and the next round reads the day again.
+  directory that cannot be read (the model is then not started at all), a first day over
+  the cap, or a last line that is missing or does not report the source. The mark stays,
+  and the next round reads the day again. A transcript whose lines carry no message
+  timestamp at all (only a title or a summary) belongs to no day: it is counted as
+  `noTimestamp` in `last-run.json` and blocks nothing.
 
 The commands:
 
@@ -166,8 +195,8 @@ What counts as read has limits, by design:
 | 0 | Done, nothing to do, or up to date | Nothing. Review the pull request if one was opened. |
 | 1 | The round failed | Read `reason` in `last-run.json`. It names the setting or the command that fixes it: a diverged branch to reconcile, a watermark to reopen, a CLI to reinstall, a file the round left behind. |
 | 2 | Not a vault, or a bad setting | Fix `machine.json` or `brain-kit.config.json` as the message says, then `brain-kit doctor`. |
-| 3 | Proposed, but the pull request is not open | The commit and branch are pushed; open the pull request the message names (check `gh auth status`). The mark advanced. |
-| 4 | A required source was not read | `last-run.json` says how many files of how many were read. Fix what kept them from being read (permissions, a missing project); when every file was read, the model's last line did not report the source. The day stays open and the next round reads it. |
+| 3 | Proposed, but the pull request is not open | The commit and branch are pushed; from the vault, run the `gh pr create --head <branch> --fill` the reason names (check `gh auth status`). The mark advanced. |
+| 4 | A required source was not read | The reason says which. A file that cannot be read (`source_unreadable`): fix its permissions, or add a pattern for it to `sources.transcripts.exclude_path_patterns`; `brain-kit watermark assume-covered` skips its days once you have looked. A first day over the cap (`cap_exceeded`): raise `curate.caps.transcripts` or exclude some projects. Otherwise `last-run.json` says how many files of how many were read, or that the model's last line did not report the source. The day stays open and the next round reads it. |
 | 69 | No network, or the model unavailable | Usually passes on its own at the next window. An authentication error means your Claude Code login expired: log in again. |
 | 75 | Postponed | Another writer holds the lock, or the tree is dirty (the files are listed). Commit, propose or discard them; the next window retries. A tree that stays dirty stops every round, so do not let it sit. |
 
@@ -184,8 +213,9 @@ otherwise `~/.local/state/brain-kit/<vault name>-<hash>/` (or under `$XDG_STATE_
 | `at`, `durationMs` | when the round started (ISO, UTC) and how long it took |
 | `exit`, `reasonCode`, `reason` | the exit code, a stable code for it, and the sentence printed |
 | `window` | the days read (`days`), the instants the window spans, and `remaining` days left for the next round |
+| `deferredDays` | the open days left for the next round because they would pass the transcripts cap |
 | `network` | whether the network answered, after how long, and the `did_not_wait` note |
-| `sources` | per source: files kept by the plan, files read, and whether its mark advanced |
+| `sources` | per source: files kept by the plan, files read, whether its mark advanced, and `noTimestamp`, the files left out for holding no message timestamp |
 | `warnings`, `remainingDays` | everything said on the way, and the days still open |
 | `costUsd`, `numTurns` | what the model cost and how many turns it took |
 | `denials` | the names of the tools the model was denied, never their input |
@@ -195,7 +225,7 @@ otherwise `~/.local/state/brain-kit/<vault name>-<hash>/` (or under `$XDG_STATE_
 
 The log is `logs/curate-YYYY-MM-DD.log`, one file per day, one line per event:
 `<instant> <event> <json>`. The events are `start`, `network_did_not_wait`,
-`days_remaining`, `source_skipped`, `source_warning`, `plan`, `model_start`, `model_end`,
+`days_remaining`, `days_deferred`, `source_skipped`, `source_warning`, `plan`, `model_start`, `model_end`,
 `cleanup`, `watermark`, `exit` and `notify_failed`. The log never holds what a tool
 returned, the model's final text, anything read from a transcript, or the round's token.
 `brain-kit curate --keep-stream` (or `keep_stream: true` in `machine.json`) also keeps the

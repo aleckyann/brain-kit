@@ -66,7 +66,9 @@ settings file.
 The round does not take the flags on trust. The first event the CLI prints reports the
 permission mode, the MCP servers and every hook that fires. If the mode is not `dontAsk`,
 if any MCP server appears, or if any hook event appears, the round stops the model at once
-and exits 1, before it does any work. `brain-kit doctor` (check `claude-isolation-flags`)
+and exits 1. A problem in the first event stops it before it does any work; a hook event
+that arrives later (a `PreToolUse` hook, say) kills it the moment it is seen, and the round
+says the model had already started, so nothing it did counts and the day stays open. `brain-kit doctor` (check `claude-isolation-flags`)
 asks the installed CLI's own `--help` for every flag a round passes, so an update that
 drops one is caught before a round runs with it. One flag is exempt: `--max-turns` is not
 in the help of Claude Code 2.1.281, yet it works (every run of the spike used it).
@@ -143,8 +145,9 @@ written with owner-only permissions; keep it only while you debug.
 
 ## When a round is stopped
 
-`curate` handles SIGINT, SIGTERM, SIGHUP and SIGQUIT: it kills the model's whole process
-group, writes `last-run.json`, releases the lock and runs your notify command. A SIGKILL of
+`curate` handles SIGINT, SIGTERM, SIGHUP and SIGQUIT, and the rarer signals that would
+end it too (SIGUSR2, SIGALRM, SIGXCPU, SIGXFSZ, SIGVTALRM, SIGPROF, and SIGPWR where the
+system has it): it kills the model's whole process group, writes `last-run.json`, releases the lock and runs your notify command. A SIGKILL of
 `curate` cannot be handled by any program. The model, which runs detached in its own
 process group, then keeps running until it ends, and the vault's lock is taken back as
 stale only after that.

@@ -16,8 +16,18 @@
 //     JSON; a signature anywhere else never drops a file. In doubt the
 //     file stays in.
 //   - 11/08/2026, the cap threw away exactly the work of the day. The cap
-//     keeps the newest by last message inside the window, and the prompt
-//     block says how many fell off. Every ceiling announces itself.
+//     never cuts a day in half: it takes WHOLE days, oldest first (the
+//     order a catch-up round reads them in), while the distinct files of
+//     the days taken stay within `curate.caps.transcripts`. A file belongs
+//     to every day, in the vault's time zone, that one of its in-window
+//     messages falls on. The days taken are `daysCovered`, the rest
+//     `daysDeferred`, and the plan's window ends at the last covered day, so
+//     curate advances the mark only through days whose files were all
+//     offered (final review C1, 24/09/2026: cutting the window's oldest
+//     sessions and then closing their days lost them for good). When the
+//     first open day alone holds more files than the cap, nothing is
+//     covered and `overCap` says so: curate refuses to run the model.
+//     Every ceiling announces itself.
 // And one rule of the prompt: a transcript is sampled from its end, never
 // read whole ("reading a transcript whole blew the context"), so the plan
 // carries where the last 64 KB begin, as a byte offset and as the number
@@ -26,9 +36,15 @@
 // A file is scanned in fixed-size chunks, line by line, never loaded
 // whole: an active session can be hundreds of megabytes and is exactly
 // the file the mtime pre-filter lets through on every round. A line
-// longer than maxLineChars is skipped like a malformed one. Any error
-// while scanning a file lists it as unreadable; nothing about one file
-// throws out of `collect`.
+// longer than maxLineChars is skipped like a malformed one. `unreadable`
+// is only for a file that could not be read (an I/O error while statting
+// or scanning it) or decoded (not one of its lines parses as JSON); such a
+// file blocks its day, and curate refuses to start the model on it. A file
+// whose lines parse but carry no message timestamp (a title or summary
+// line only) is counted as `noTimestamp`: nothing in it can be dated, so
+// it belongs to no day and blocks none (final review I2, 24/09/2026: as
+// unreadable it kept its day open forever and every retry opened the same
+// pull request again). Nothing about one file throws out of `collect`.
 //
 // Transcript shape (Claude Code 2.1.281): one JSON object per line. Lines
 // of type user, assistant, system and attachment are messages and carry an
@@ -42,6 +58,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { createTranslator } from '../lang.mjs';
+import { addDays, localDay, startOfDay } from '../guards/watermark.mjs';
 
 export const SAMPLE_BYTES = 64 * 1024;
 export const MTIME_SLACK_MS = 15 * 60 * 1000;
@@ -91,30 +108,36 @@ function signaturesOf(config) {
 
 // One pass over a file, `size` bytes of it (the size stat reported, so a
 // session still being written yields a consistent plan), in chunks:
-//   first, last:   earliest and latest message timestamps inside [from, to)
+//   perDay:        day index -> { first, last }, the earliest and latest
+//                  message timestamps inside [from, to) falling on that day
+//                  (`starts` holds each day's first instant, ascending)
 //   anyTimestamp:  whether any message timestamp parsed at all
+//   lines, parsed: non-blank lines judged, and how many parsed as JSON
 //   selfTrace:     whether the first user message with text starts with a
 //                  signature
 //   sampleLine:    the 1-based number of the line holding byte sampleFrom,
 //                  that is 1 + the newlines strictly before it
-function scanFile(path, size, sampleFrom, window, signatures, io, limits) {
+function scanFile(path, size, sampleFrom, window, starts, signatures, io, limits) {
   const from = window.from.getTime();
   const to = window.to.getTime();
-  let first = null;
-  let last = null;
+  const perDay = new Map();
   let anyTimestamp = false;
+  let lines = 0;
+  let parsed = 0;
   let firstUserSeen = false;
   let selfTrace = false;
   let sampleLine = 1;
 
   function judge(raw) {
     if (raw.trim() === '') return;
+    lines += 1;
     let line;
     try {
       line = JSON.parse(raw);
     } catch {
       return;
     }
+    parsed += 1;
     if (line === null || typeof line !== 'object' || !MESSAGE_TYPES.has(line.type)) return;
     if (!firstUserSeen && line.type === 'user' && line.isMeta !== true) {
       const content = userText(line.message?.content);
@@ -129,8 +152,14 @@ function scanFile(path, size, sampleFrom, window, signatures, io, limits) {
     if (Number.isNaN(at)) return;
     anyTimestamp = true;
     if (at < from || at >= to) return;
-    if (first === null || at < first) first = at;
-    if (last === null || at > last) last = at;
+    let index = starts.length - 1;
+    while (index > 0 && at < starts[index]) index -= 1;
+    const span = perDay.get(index);
+    if (span === undefined) perDay.set(index, { first: at, last: at });
+    else {
+      if (at < span.first) span.first = at;
+      if (at > span.last) span.last = at;
+    }
   }
 
   const fd = io.openSync(path, 'r');
@@ -171,7 +200,7 @@ function scanFile(path, size, sampleFrom, window, signatures, io, limits) {
   } finally {
     io.closeSync(fd);
   }
-  return { first, last, anyTimestamp, selfTrace, sampleLine };
+  return { perDay, anyTimestamp, lines, parsed, selfTrace, sampleLine };
 }
 
 // The short identifier a capture names its session by: Claude Code names
@@ -199,7 +228,7 @@ function renderPromptBlock(t, plan) {
     for (const file of plan.files) {
       lines.push(t('sources.transcripts.file_line', {
         session: file.session, path: file.path, project: file.project, firstAt: file.firstAt, lastAt: file.lastAt,
-        bytes: file.bytes, sampleFrom: file.sampleFrom, sampleLine: file.sampleLine,
+        bytes: file.bytes, sampleLine: file.sampleLine,
       }));
     }
   } else if (!plan.misconfigured) {
@@ -209,18 +238,50 @@ function renderPromptBlock(t, plan) {
     lines.push(t('sources.transcripts.unreadable_line', { path: file.path, project: file.project, bytes: file.bytes }));
   }
   const d = plan.dropped;
-  if (d.byCap) lines.push(t('sources.transcripts.dropped_by_cap', { count: d.byCap, cap: plan.cap }));
+  if (plan.overCap) lines.push(t('sources.transcripts.over_cap', { day: shownDay(plan.overCap.day), count: plan.overCap.files, cap: plan.cap }));
+  else if (d.byCap) lines.push(t('sources.transcripts.dropped_by_cap', { count: d.byCap, cap: plan.cap, days: plan.daysDeferred.map(shownDay).join(', ') }));
   if (d.selfTrace) lines.push(t('sources.transcripts.dropped_self_trace', { count: d.selfTrace }));
   if (d.outOfWindow) lines.push(t('sources.transcripts.dropped_out_of_window', { count: d.outOfWindow }));
   if (d.modifiedBeforeWindow) lines.push(t('sources.transcripts.dropped_modified_before_window', { count: d.modifiedBeforeWindow }));
   if (d.excludedPath) lines.push(t('sources.transcripts.dropped_excluded_path', { count: d.excludedPath }));
   if (d.unreadable) lines.push(t('sources.transcripts.dropped_unreadable', { count: d.unreadable }));
+  if (d.noTimestamp) lines.push(t('sources.transcripts.dropped_no_timestamp', { count: d.noTimestamp }));
   return lines.join('\n');
 }
 
-// collect({ window: { from, to }, config, machine, now, home, io, limits })
+// DD/MM/YYYY, for a person.
+function shownDay(day) {
+  const [y, m, d] = day.split('-');
+  return `${d}/${m}/${y}`;
+}
+
+// The calendar days of the window, each with the first instant it holds
+// inside [from, to): `window.days` and `window.timezone` when the caller
+// gives them (curate always does), otherwise derived from `from` and `to`
+// in the vault's time zone. A time zone that cannot be used (only a
+// direct call can reach here with one: curate refuses it first) makes the
+// whole window a single day, which the cap then takes or refuses whole.
+function daysOf(window, config) {
+  const from = window.from.getTime();
+  const to = window.to.getTime();
+  const tz = window.timezone ?? config?.vault?.timezone;
+  try {
+    let names = Array.isArray(window.days) ? window.days : null;
+    if (names === null) {
+      names = [];
+      for (let day = localDay(from, tz); startOfDay(day, tz).getTime() < to; day = addDays(day, 1)) names.push(day);
+    }
+    return names.map((day) => ({ day, start: Math.max(from, startOfDay(day, tz).getTime()) }));
+  } catch {
+    return from < to ? [{ day: window.from.toISOString().slice(0, 10), start: from }] : [];
+  }
+}
+
+// collect({ window: { from, to, days, timezone }, config, machine, now, home, io, limits })
 //   window: Date instants, [from, to), computed by the caller in the
-//           vault's time zone.
+//           vault's time zone; `days` (YYYY-MM-DD, oldest first) and
+//           `timezone` name the calendar days it spans (derived from
+//           from/to and config.vault.timezone when absent).
 //   home:   the home directory `~` stands for (tests); os.homedir() when
 //           absent.
 //   io, limits: tests only. `io` replaces openSync/readSync/closeSync
@@ -234,10 +295,12 @@ function collect({ window, config, machine, home = homedir(), io = fs, limits = 
   const capValue = config?.curate?.caps?.transcripts;
   const cap = Number.isInteger(capValue) && capValue >= 0 ? capValue : Infinity;
   const signatures = signaturesOf(config);
-  const dropped = { byCap: 0, selfTrace: 0, outOfWindow: 0, modifiedBeforeWindow: 0, excludedPath: 0, unreadable: 0 };
+  const dropped = { byCap: 0, selfTrace: 0, outOfWindow: 0, modifiedBeforeWindow: 0, excludedPath: 0, unreadable: 0, noTimestamp: 0 };
   const problems = [];
   const unreadable = [];
-  let kept = [];
+  const candidates = [];
+  const days = daysOf(window, config);
+  const starts = days.map((d) => d.start);
 
   const rootExists = isDirectory(root);
   const names = projects.length && rootExists ? listDir(root) : null;
@@ -284,16 +347,21 @@ function collect({ window, config, machine, home = homedir(), io = fs, limits = 
       const sampleFrom = Math.max(0, bytes - SAMPLE_BYTES);
       let found;
       try {
-        found = scanFile(path, bytes, sampleFrom, window, signatures, io, limits);
+        found = scanFile(path, bytes, sampleFrom, window, starts, signatures, io, limits);
       } catch {
         found = null;
       }
-      if (found === null || !found.anyTimestamp) {
+      // Not read, or not decoded: nothing in it is JSON.
+      if (found === null || (!found.anyTimestamp && found.lines > 0 && found.parsed === 0)) {
         dropped.unreadable += 1;
         unreadable.push({ path, project, bytes });
         continue;
       }
-      if (found.first === null) {
+      if (!found.anyTimestamp) {
+        dropped.noTimestamp += 1;
+        continue;
+      }
+      if (found.perDay.size === 0) {
         dropped.outOfWindow += 1;
         continue;
       }
@@ -301,35 +369,55 @@ function collect({ window, config, machine, home = homedir(), io = fs, limits = 
         dropped.selfTrace += 1;
         continue;
       }
-      kept.push({
-        path,
-        project,
-        session: sessionId(entry.name),
-        firstAt: new Date(found.first).toISOString(),
-        lastAt: new Date(found.last).toISOString(),
-        bytes,
-        sampleFrom,
-        sampleLine: found.sampleLine,
-        last: found.last,
-      });
+      candidates.push({ path, project, session: sessionId(entry.name), bytes, sampleFrom, sampleLine: found.sampleLine, perDay: found.perDay });
     }
   }
 
-  kept.sort((a, b) => b.last - a.last || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  if (kept.length > cap) {
-    dropped.byCap = kept.length - cap;
-    kept = kept.slice(0, cap);
+  // Whole days, oldest first, while the distinct files of the days taken
+  // stay within the cap.
+  const byDay = days.map(() => []);
+  for (const candidate of candidates) for (const index of candidate.perDay.keys()) byDay[index].push(candidate);
+  const taken = new Set();
+  let covered = 0;
+  for (let index = 0; index < days.length; index += 1) {
+    const added = byDay[index].filter((candidate) => !taken.has(candidate));
+    if (taken.size + added.length > cap) break;
+    for (const candidate of added) taken.add(candidate);
+    covered = index + 1;
   }
-  const files = kept.map(({ last, ...file }) => file);
+  const overCap = covered === 0 && days.length > 0 ? { day: days[0].day, files: byDay[0].length } : null;
+  dropped.byCap = candidates.length - taken.size;
+
+  // A kept file's span counts only its messages on the covered days.
+  const kept = [...taken].map((candidate) => {
+    let first = null;
+    let last = null;
+    for (const [index, span] of candidate.perDay) {
+      if (index >= covered) continue;
+      if (first === null || span.first < first) first = span.first;
+      if (last === null || span.last > last) last = span.last;
+    }
+    const { perDay, ...file } = candidate;
+    return { ...file, firstAt: new Date(first).toISOString(), lastAt: new Date(last).toISOString(), last };
+  });
+  kept.sort((a, b) => b.last - a.last || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const files = kept.map(({ last, ...file }) => ({
+    path: file.path, project: file.project, session: file.session, firstAt: file.firstAt, lastAt: file.lastAt,
+    bytes: file.bytes, sampleFrom: file.sampleFrom, sampleLine: file.sampleLine,
+  }));
   unreadable.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 
+  const coveredTo = covered === days.length ? window.to.getTime() : days[covered].start;
   const plan = {
     root,
-    window: { from: window.from.toISOString(), to: window.to.toISOString() },
+    window: { from: window.from.toISOString(), to: new Date(covered === 0 ? window.from.getTime() : coveredTo).toISOString() },
     cap: cap === Infinity ? null : cap,
     files,
     unreadable,
     dropped,
+    daysCovered: days.slice(0, covered).map((d) => d.day),
+    daysDeferred: days.slice(covered).map((d) => d.day),
+    overCap,
     problems,
     misconfigured,
   };

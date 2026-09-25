@@ -19,6 +19,8 @@ export const INSIDE = '2026-09-23T14:00:00.000Z';
 export const WEEKS_AGO = '2026-08-31T15:00:00.000Z';
 export const SIGNATURE = 'Second brain curator';
 export const PROJECT = '-home-ana-vault';
+// The vault's zone in these tests: UTC-3 all year.
+export const TIMEZONE = 'America/Argentina/Buenos_Aires';
 export const OTHER_PROJECT = '-home-ana-code';
 
 let counter = 0;
@@ -99,6 +101,7 @@ export function makeWorld({
   if (!missingRoot) mkdirSync(root);
   const config = defaultConfig(lang);
   config.lang = lang;
+  config.vault.timezone = TIMEZONE;
   config.curate.signature = SIGNATURE;
   config.curate.extra_signatures = extraSignatures;
   config.curate.caps = { ...config.curate.caps, transcripts: cap };

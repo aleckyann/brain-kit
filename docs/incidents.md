@@ -455,13 +455,24 @@ self-trace filter: the first user message with text, parsed as JSON, starting wi
 path. The locale ignored punctuation, unrelated projects sorted first alphabetically,
 and the transcripts from the vault itself, which are the actual work of the day, were
 the first to be cut (PR #30).
-**Rule.** Sort candidates by recency, newest first, never by name. When the cap bites,
-the oldest falls off, and the log says how many were dropped. The original fix sorted by
-modification time; the kit sorts by the last message inside the window instead, for the
-reason in the 24/09/2026 entry below.
+**Rule.** Never sort candidates by name. The original fix sorted by recency, newest
+first, and let the oldest fall off; in brain-kit that turned out wrong too (final review
+of phase 2, 24/09/2026): a round catching up reads the oldest open days first and closes
+every day it reads, so the sessions the cap cut were exactly the oldest days', and those
+days were closed with none of their sessions read. The cap now takes whole days, oldest
+first, while the distinct transcripts of the days taken stay within the cap (a
+transcript belongs to every day, in the vault's time zone, that one of its messages falls
+on). The days that do not fit wait for the next round, which the round says on its
+output, in the log and in `last-run.json`; the window it curates, and the mark it
+advances, end at the last day it took whole. When the first open day alone holds more
+transcripts than the cap, the round does not start the model: exit 4, naming the setting,
+the day and the counts. Within what is offered, the list runs newest first by the last
+message inside the window, never by modification time (24/09/2026 entry below).
 **Where it lives in brain-kit.** `src/sources/transcripts-claude-code.mjs` (the cap,
-`curate.caps.transcripts`, and `dropped.byCap` in the log),
-`test/incidents/2026-08-11-recency-cap.test.mjs` (Phase 2).
+`curate.caps.transcripts`: `daysCovered`, `daysDeferred`, `overCap`, and `dropped.byCap`
+in the log), `src/commands/curate.mjs` (the narrowed window, `deferredDays` and the
+`cap_exceeded` refusal), `test/incidents/2026-08-11-recency-cap.test.mjs`,
+`test/curate.test.mjs` (Phase 2).
 
 ### 24/09/2026: selection by modification time turned an old session into a new fact
 **What happened.** The curator picked the transcripts of its window by their file
@@ -472,9 +483,9 @@ fact. It happened twice before anyone noticed that the "new" material was weeks 
 never by when the file was last written. Modification time is only a cheap
 pre-filter: a file last modified before the window opened, with a margin for a
 clock that disagrees, is not opened, and is counted as not opened rather than as
-holding no message in the window. The recency cap sorts by the last message inside the
-window for the same reason, which replaces the modification time order of the
-11/08/2026 entry above.
+holding no message in the window. The transcripts a round offers are listed by the last
+message inside the window for the same reason, which replaces the modification time
+order of the 11/08/2026 entry above.
 **Where it lives in brain-kit.** `src/sources/transcripts-claude-code.mjs`,
 `test/incidents/2026-09-24-mtime-selection.test.mjs` (Phase 2).
 

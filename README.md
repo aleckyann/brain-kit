@@ -135,8 +135,9 @@ your notify command. `--dry` shows what a round would do and `--check` runs ever
 to the model.
 
 `watermark` shows and moves the last day each source was swept. A round reads the days
-after it, oldest first, and moves it only when every file it was offered was read and the
-model reported the source; no day is ever closed unread. `schedule install|uninstall|status`
+after it, oldest first and whole (as many as fit in `curate.caps.transcripts`; the rest
+wait for the next round), and moves it only when every file it was offered was read and
+the model reported the source; no day is ever closed unread. `schedule install|uninstall|status`
 installs the round in daytime windows (09:30, 14:00 and 20:00 by default), named by what it
 does, with no dependency on a network target: systemd user timers are the reference, and
 launchd and cron are rendered too.

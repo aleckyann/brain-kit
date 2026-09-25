@@ -19,6 +19,7 @@
 //       "permissionMode": "auto",           on the init event
 //       "mcpServers": [{ "name", "status" }],
 //       "hookEvent": true,                  a hook_started event before init
+//       "hookAfterInit": true,              a PreToolUse hook_started event right after init
 //       "dropInit": true,
 //       "toolUses": [{ "name", "input", "isError" }],  added before the result
 //       "finalText": "...",                 an assistant text and result.result
@@ -107,6 +108,11 @@ function buildStream() {
     const hook = { type: 'system', subtype: 'hook_started', hook_id: '00000000-0000-4000-a000-00000000000f', hook_name: 'SessionStart:startup', hook_event: 'SessionStart', uuid: '00000000-0000-4000-9000-0000000000ff', session_id: session };
     const at = events.indexOf(init);
     events.splice(at === -1 ? 0 : at, 0, hook);
+  }
+  if (rw.hookAfterInit) {
+    const hook = { type: 'system', subtype: 'hook_started', hook_id: '00000000-0000-4000-a000-00000000001f', hook_name: 'PreToolUse:Bash', hook_event: 'PreToolUse', uuid: '00000000-0000-4000-9000-0000000001ff', session_id: session };
+    const at = events.indexOf(init);
+    events.splice(at === -1 ? 0 : at + 1, 0, hook);
   }
   const resultAt = () => {
     const at = events.findIndex((e) => e.type === 'result');

@@ -21,7 +21,11 @@
 //    9. the round's own snapshot
 //   10. the CLI is a real program; not: exit 1
 //   11. collect the sources; a required source misconfigured: exit 1 and no
-//       mark moves; nothing in the window: advance vacuously and exit 0
+//       mark moves; a required source listing a file it cannot read, or a
+//       first open day with more transcripts than the cap: exit 4 before
+//       the model, no mark moves; days past the cap are deferred and the
+//       window ends at the last covered day; nothing in the window:
+//       advance vacuously and exit 0
 //   12. --check: print the plan and the prompt's size, exit 0
 //   13. run the model, isolated; an init event that fails the isolation
 //       check kills it at once: exit 1
@@ -47,6 +51,7 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { constants as osConstants } from 'node:os';
 import { delimiter, join, resolve, sep } from 'node:path';
 import { EXIT } from '../exit-codes.mjs';
 import { CONFIG_FILENAME, ConfigError, loadConfig, loadMachine } from '../config.mjs';
@@ -66,7 +71,7 @@ import { checkIsolation } from '../guards/isolation.mjs';
 import { evidenceFor, unreadRequired } from '../guards/read-evidence.mjs';
 import { emptyWindow } from '../guards/empty-window.mjs';
 import {
-  addDays, advanceWatermark, localDay, parseSourcesLine, readWatermark, windowFor, WatermarkError,
+  addDays, advanceWatermark, localDay, parseSourcesLine, readWatermark, startOfDay, windowFor, WatermarkError,
 } from '../guards/watermark.mjs';
 import { buildArgv, runModel } from '../harness/claude-code.mjs';
 import { allowedTools, disallowedTools, kitCommand } from '../curate/tools.mjs';
@@ -98,8 +103,14 @@ const API_MARKERS = Object.freeze([/API Error/i, /\b401\b/, /authentication/i]);
 // SIGHUP or SIGQUIT left the model running with the round's token after
 // the round and its lock were gone (review findings I2, I3). A SIGKILL of
 // curate cannot be handled: the model then keeps running, and the lock is
-// reclaimed as stale only once the model has exited.
-const FORWARDED_SIGNALS = Object.freeze(['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT']);
+// reclaimed as stale only once the model has exited. The rarer signals
+// whose default action ends a Node process are handled the same way
+// (SIGPWR exists on Linux, not on macOS, so it is listed only where the
+// platform has it); SIGUSR1 is left alone, Node reserves it for its
+// inspector.
+const FORWARDED_SIGNALS = Object.freeze([
+  'SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT', 'SIGUSR2', 'SIGALRM', 'SIGXCPU', 'SIGXFSZ', 'SIGVTALRM', 'SIGPROF', 'SIGPWR',
+].filter((signal) => Object.hasOwn(osConstants.signals, signal)));
 
 // The sources this version can read, by the id the configuration names
 // them with. A configured id missing here is refused when required and
@@ -185,13 +196,52 @@ function computeWindow(stateDir, sources, now, tz) {
   return { window: windowFor(earliest ?? addDays(yesterday, -1), now, tz), marks: mark.sources };
 }
 
-function collectPlans(sources, window, config, machine, env, now) {
+function collectPlans(sources, window, config, machine, env, now, tz) {
   const plans = {};
   const home = env.HOME || undefined;
   for (const source of sources) {
-    plans[source.id] = source.collect({ window: { from: window.from, to: window.to }, config, machine, now, ...(home ? { home } : {}) });
+    plans[source.id] = source.collect({ window: { from: window.from, to: window.to, days: window.days, timezone: tz }, config, machine, now, ...(home ? { home } : {}) });
   }
   return plans;
+}
+
+// The whole days every source could take within its cap (plan.daysCovered,
+// C1 of the final review): the window a round curates, and advances
+// through, ends at the earliest last covered day among them. Returns null
+// when every day is covered, otherwise the narrowed window, the deferred
+// days, and the source that set the bound. A source that does not report
+// daysCovered takes every day; one whose plan was collected over the wider
+// window is collected again over the narrowed one.
+function narrowWindow(window, plans, sources, tz) {
+  let bound = null;
+  for (const source of sources) {
+    const covered = plans[source.id]?.daysCovered;
+    if (!Array.isArray(covered)) continue;
+    const last = covered.at(-1);
+    if (last === undefined || last >= window.days.at(-1)) continue;
+    if (bound === null || last < bound.last) bound = { last, source };
+  }
+  if (bound === null) return null;
+  const days = window.days.filter((day) => day <= bound.last);
+  return {
+    window: { ...window, days, to: startOfDay(addDays(bound.last, 1), tz) },
+    deferred: window.days.filter((day) => day > bound.last),
+    source: bound.source,
+    cap: plans[bound.source.id].cap,
+  };
+}
+
+// curate.network_min_wait_ms, read before the round's lock and sync (the
+// network wait comes first, step 4) from the configuration as it is in the
+// working tree: only a threshold for a note, never a decision, so an
+// unsynced or unreadable file just leaves the default.
+function networkMinWait(root) {
+  try {
+    const value = loadConfig(root).curate?.network_min_wait_ms;
+    return Number.isInteger(value) && value >= 0 ? value : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // The setting a person fixes for each misconfiguration code.
@@ -204,10 +254,11 @@ function problemText(problems) {
   return problems.map((p) => (p.detail ? `${p.code} (${p.detail})` : p.code)).join(', ');
 }
 
-function renderParameters(t, { window, tz, plans, sources, config }) {
+function renderParameters(t, { window, tz, plans, sources, config, deferred }) {
   const lines = [];
   lines.push(t('curate.params.days', { days: window.days.map(shown).join(', '), timezone: tz }));
   lines.push(t('curate.params.window', { from: window.from.toISOString(), to: window.to.toISOString() }));
+  if (deferred.length > 0) lines.push(t('curate.params.deferred', { count: deferred.length, days: deferred.map(shown).join(', ') }));
   if (window.remaining > 0) lines.push(t('curate.params.remaining', { count: window.remaining }));
   for (const source of sources) {
     lines.push('');
@@ -409,7 +460,7 @@ export async function runCurate(argv, io, t, deps = {}) {
   // The round's own state, filled as it goes and written at the end.
   const run = {
     at: now.toISOString(), durationMs: null, exit: null, reasonCode: null, reason: null, window: null, network: null,
-    sources: {}, warnings: [], remainingDays: 0, costUsd: null, numTurns: null, denials: [], isolation: null, proposed: null, leftovers: [],
+    sources: {}, warnings: [], remainingDays: 0, deferredDays: [], costUsd: null, numTurns: null, denials: [], isolation: null, proposed: null, leftovers: [],
   };
   let lock = null;
   let recordFile = null;
@@ -460,7 +511,9 @@ export async function runCurate(argv, io, t, deps = {}) {
   async function roundUnderLock() {
     // 4. The network.
     onStep('network');
+    const minWaitMs = networkMinWait(root);
     const network = await waitForNetwork(machine.network_check ?? null, {
+      ...(minWaitMs !== undefined ? { minWaitMs } : {}),
       ...(deps.networkTimeoutMs !== undefined ? { timeoutMs: deps.networkTimeoutMs } : {}),
       ...(deps.networkIntervalMs !== undefined ? { intervalMs: deps.networkIntervalMs } : {}),
     }, deps.networkDeps ?? {});
@@ -506,6 +559,12 @@ export async function runCurate(argv, io, t, deps = {}) {
       if (!(error instanceof ConfigError)) throw error;
       return fail(EXIT.USAGE, 'config_invalid', t('curate.config_invalid', { detail: error.message }));
     }
+    const vaultLang = SUPPORTED_LANGS.includes(config.lang) ? config.lang : 'en';
+    const tv = createTranslator(vaultLang);
+    // From here on the round speaks the vault's language, whatever the
+    // scheduler's environment says (a unit runs with LC_ALL=C.UTF-8 and no
+    // BRAIN_KIT_LANG): its output, last-run.json and the notification.
+    t = tv;
     // Disabled in the configuration: a normal state, said, never a failure,
     // and nothing is read, run or advanced.
     if (config.curate?.enabled === false) {
@@ -517,8 +576,6 @@ export async function runCurate(argv, io, t, deps = {}) {
     const outside = promptOutsideVault(root, config);
     const promptSetting = `${CONFIG_FILENAME} curate.prompt`;
     if (outside !== null) return fail(EXIT.USAGE, 'prompt_outside', t('curate.prompt_outside', { path: outside, setting: promptSetting }));
-    const vaultLang = SUPPORTED_LANGS.includes(config.lang) ? config.lang : 'en';
-    const tv = createTranslator(vaultLang);
     const tz = config.vault?.timezone;
     const { active, required, unknownRequired, unknownBestEffort } = sourcesOf(config);
 
@@ -537,7 +594,7 @@ export async function runCurate(argv, io, t, deps = {}) {
       const command = reopenCommand(source, yesterday);
       return fail(EXIT.FAILURE, 'watermark_future', t('curate.watermark_future', { source, day: shown(day), yesterday: shown(yesterday), command }));
     }
-    const { window } = computed;
+    let { window } = computed;
     run.window = { days: window.days, from: window.from.toISOString(), to: window.to.toISOString(), remaining: window.remaining };
     if (window.days.length === 0) {
       run.exit = EXIT.OK;
@@ -545,7 +602,7 @@ export async function runCurate(argv, io, t, deps = {}) {
       run.reason = t('curate.up_to_date', {});
       return EXIT.OK;
     }
-    const lastDay = window.days.at(-1);
+    let lastDay = window.days.at(-1);
     if (window.remaining > 0) {
       // Catching up oldest first: the mark moves through the last day read
       // here, and the newer days wait for the next round (never closed).
@@ -586,10 +643,10 @@ export async function runCurate(argv, io, t, deps = {}) {
       io.stderr.write(`${text}\n`);
       log('source_skipped', { source: id });
     }
-    const plans = collectPlans(active, window, config, machine, env, now);
+    let plans = collectPlans(active, window, config, machine, env, now, tz);
     for (const source of active) {
       const plan = plans[source.id];
-      run.sources[source.id] = { kept: plan.files.length, read: 0, advanced: false };
+      run.sources[source.id] = { kept: plan.files.length, read: 0, advanced: false, noTimestamp: plan.dropped?.noTimestamp ?? 0 };
       if (plan.misconfigured && required.includes(source.id)) {
         const codes = plan.problems.filter((p) => ['no_projects', 'root_missing', 'root_unreadable', 'project_missing'].includes(p.code));
         const setting = settingFor(codes[0]?.code ?? 'no_projects');
@@ -601,6 +658,44 @@ export async function runCurate(argv, io, t, deps = {}) {
         io.stderr.write(`${text}\n`);
         log('source_warning', { source: source.id, problems: plan.problems.map((p) => p.code) });
       }
+    }
+    // A file a required source cannot read keeps its day open whatever the
+    // model does, so the model is not started at all: running it would
+    // spend the round and open a pull request for a day that cannot close,
+    // and every retry would open it again (final review I2).
+    for (const id of required) {
+      const unreadable = plans[id]?.unreadable ?? [];
+      if (unreadable.length === 0) continue;
+      const setting = `${CONFIG_FILENAME} sources.${id}.exclude_path_patterns`;
+      log('plan', { [id]: { kept: plans[id].files.length, dropped: plans[id].dropped } });
+      return fail(EXIT.SOURCE_UNREAD, 'source_unreadable', t('curate.source_unreadable', { source: id, files: unreadable.map((f) => f.path).join(', '), setting, command: `brain-kit watermark assume-covered ${id}` }));
+    }
+    // The first open day alone over a source's cap: no whole day fits, and
+    // a round never reads part of a day (final review C1).
+    for (const source of active) {
+      const over = plans[source.id].overCap;
+      if (!over) continue;
+      const setting = `${CONFIG_FILENAME} curate.caps.${source.id}`;
+      log('plan', { [source.id]: { kept: 0, dropped: plans[source.id].dropped, overCap: over } });
+      return fail(EXIT.SOURCE_UNREAD, 'cap_exceeded', t('curate.cap_exceeded', { day: shown(over.day), count: over.files, cap: plans[source.id].cap, setting }));
+    }
+    // Days past the cap wait for the next round; this one curates, and
+    // advances through, only the whole days it could take.
+    const narrowed = narrowWindow(window, plans, active, tz);
+    let deferred = [];
+    if (narrowed !== null) {
+      ({ window, deferred } = narrowed);
+      lastDay = window.days.at(-1);
+      const again = active.filter((source) => !Array.isArray(plans[source.id].daysCovered));
+      if (again.length > 0) plans = { ...plans, ...collectPlans(again, window, config, machine, env, now, tz) };
+      for (const source of active) run.sources[source.id].kept = plans[source.id].files.length;
+      run.window = { ...run.window, days: window.days, to: window.to.toISOString() };
+      run.deferredDays = deferred;
+      const setting = `${CONFIG_FILENAME} curate.caps.${narrowed.source.id}`;
+      const text = t('curate.days_deferred', { last: shown(lastDay), count: deferred.length, days: deferred.map(shown).join(', '), setting, cap: narrowed.cap });
+      run.warnings.push(text);
+      io.stderr.write(`${text}\n`);
+      log('days_deferred', { through: lastDay, days: deferred, source: narrowed.source.id });
     }
     log('plan', Object.fromEntries(active.map((s) => [s.id, { kept: plans[s.id].files.length, dropped: plans[s.id].dropped }])));
     if (emptyWindow(plans)) {
@@ -622,7 +717,7 @@ export async function runCurate(argv, io, t, deps = {}) {
       return EXIT.OK;
     }
 
-    const parameters = renderParameters(tv, { window, tz, plans, sources: active, config });
+    const parameters = renderParameters(tv, { window, tz, plans, sources: active, config, deferred });
     const prompt = renderCuratePrompt({ vaultRoot: root, config, lang: vaultLang, parameters, now });
     const argvList = modelArgv(config, machine);
 
@@ -647,6 +742,7 @@ export async function runCurate(argv, io, t, deps = {}) {
     const streamFile = keepStream ? join(stateDir, STATE_FILES.LOG_DIR, `curate-${now.toISOString().replace(/[:.]/g, '-')}.stream.jsonl`) : null;
     let init = null;
     let hooks = 0;
+    let lateHooks = 0;
     let isolationAbort = null;
     const onLine = (line) => {
       if (streamFile !== null) appendFileSync(streamFile, `${line}\n`, { mode: 0o600 });
@@ -659,9 +755,13 @@ export async function runCurate(argv, io, t, deps = {}) {
       if (event === null || typeof event !== 'object' || event.type !== 'system' || typeof event.subtype !== 'string') return;
       const isHook = event.subtype.startsWith('hook_');
       if (isHook) hooks += 1;
+      // A hook after the init event arrives while the model may already be
+      // working (a PreToolUse hook rewrote a command in the measurement of
+      // 24/09/2026): it kills the model at once, like one before init.
+      if (isHook && init !== null) lateHooks += 1;
       if (event.subtype === 'init' && init === null) init = event;
       if (!isHook && event.subtype !== 'init') return;
-      let checked = checkIsolation({ init, hookEvents: hooks });
+      let checked = checkIsolation({ init, hookEvents: hooks, hookEventsAfterInit: lateHooks });
       // A hook before the init event is a hook, not a missing init.
       if (isHook && init === null) {
         const details = checked.details.filter((d) => d.code !== 'no_init');
@@ -770,7 +870,11 @@ export async function runCurate(argv, io, t, deps = {}) {
     } else if (run.leftovers.length > 0) {
       exit = fail(EXIT.FAILURE, 'leftovers', t('curate.leftovers', { paths: run.leftovers.join(', ') }));
     } else if (proposals.some((p) => !p.opened)) {
-      exit = fail(EXIT.DEGRADED, 'not_opened', t('curate.not_opened', { branches: proposals.filter((p) => !p.opened).map((p) => p.branch).join(', ') }));
+      // What to run, in the reason itself: propose's own message went to
+      // the model's tool result, which nobody reads (final review I1).
+      const branches = [...new Set(proposals.filter((p) => !p.opened).map((p) => p.branch))];
+      const commands = branches.map((branch) => `gh pr create --head ${branch} --fill`).join('; ');
+      exit = fail(EXIT.DEGRADED, 'not_opened', t('curate.not_opened', { branches: branches.join(', '), commands }));
     } else {
       exit = EXIT.OK;
       run.exit = EXIT.OK;
@@ -907,7 +1011,16 @@ function dryRun({ root, stateDir, machine, claudeBin, io, t, env, now }) {
   }
   io.stdout.write(`${t('curate.check_window', { days: window.days.map(shown).join(', '), from: window.from.toISOString(), to: window.to.toISOString() })}\n`);
   for (const id of [...unknownRequired, ...unknownBestEffort]) io.stdout.write(`${t('curate.source_skipped', { source: id })}\n`);
-  const plans = collectPlans(active, window, config, machine, env, now);
+  const plans = collectPlans(active, window, config, machine, env, now, tz);
+  for (const source of active) {
+    const over = plans[source.id].overCap;
+    if (over) io.stdout.write(`${t('curate.cap_exceeded', { day: shown(over.day), count: over.files, cap: plans[source.id].cap, setting: `${CONFIG_FILENAME} curate.caps.${source.id}` })}\n`);
+  }
+  const narrowed = narrowWindow(window, plans, active, tz);
+  if (narrowed !== null) {
+    const setting = `${CONFIG_FILENAME} curate.caps.${narrowed.source.id}`;
+    io.stdout.write(`${t('curate.days_deferred', { last: shown(narrowed.window.days.at(-1)), count: narrowed.deferred.length, days: narrowed.deferred.map(shown).join(', '), setting, cap: narrowed.cap })}\n`);
+  }
   for (const source of active) {
     io.stdout.write(`${t('curate.check_source', { source: source.id, kept: plans[source.id].files.length })}\n`);
     if (plans[source.id].problems.length > 0) io.stdout.write(`${t('curate.source_warning', { source: source.id, problems: problemText(plans[source.id].problems) })}\n`);
