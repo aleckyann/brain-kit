@@ -2,11 +2,11 @@
 // asks of a line of text (src/rules/lint.mjs, "--- privacy"). Does the line
 // hold one of the words the vault's configuration lists in
 // `privacy.third_party_keywords`? Which lines are asked (the lines a change
-// added, read from the scope exactly as the style rule reads them) and what
-// an answer becomes (a finding at the severity `lint.privacy` resolves to)
-// stay with the rule, so this module knows nothing about git, scope or
-// severity; `privacy.keyword_exempt_paths` is read here too, so both of the
-// clause's settings are read in one place.
+// added, as the scope reports them, and none at all in a run over the
+// whole vault) and what an answer becomes (a finding at the severity
+// `lint.privacy` resolves to) stay with the rule, so this module knows
+// nothing about git, scope or severity; `privacy.keyword_exempt_paths` is
+// read here too, so both of the clause's settings are read in one place.
 //
 // docs/incidents.md, "Undated: a colleague's medical appointment was in the
 // calendar window": someone else's health or private life is never content.
@@ -35,6 +35,12 @@
 //   plus a combining accent would never match its composed keyword.
 // - Literally. Every character a regular expression would read as syntax
 //   is escaped, so a configured "(" or "." means that character.
+// - With every carriage return read as a space (fix round 1). A line
+//   reaches this module as git reports it, and git ends a line at a line
+//   feed only, so a CR can sit inside one: the CR of a CRLF a caller did
+//   not strip, or a lone CR left by an old editor. Read as a space it
+//   bounds a word as any whitespace does, and it cannot split a phrase in
+//   two ("sick", CR, "leave" is the phrase "sick leave").
 //
 // A listed entry that is not a string, or is blank, is dropped rather than
 // compiled: an empty phrase bounded on both sides matches almost every
@@ -43,6 +49,7 @@
 import { isUnderPath } from '../vault.mjs';
 
 const REGEXP_SYNTAX = /[.*+?^${}()|[\]\\]/g;
+const CARRIAGE_RETURN = /\r/g;
 const NOT_AFTER_WORD = '(?<![\\p{L}\\p{N}])';
 const NOT_BEFORE_WORD = '(?![\\p{L}\\p{N}])';
 
@@ -67,7 +74,7 @@ export function keywordMatchers(config) {
 // reading left to right, and on a tie the one listed first, so a line is
 // named once and always the same way. null when it holds none.
 export function firstKeyword(line, matchers) {
-  const text = line.normalize('NFC');
+  const text = line.replace(CARRIAGE_RETURN, ' ').normalize('NFC');
   let found = null;
   let foundAt = Infinity;
   for (const { keyword, pattern } of matchers) {

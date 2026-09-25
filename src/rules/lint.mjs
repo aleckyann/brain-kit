@@ -265,7 +265,8 @@
 // 'error' where every other rule defaults to 'warn'. `privacy` reads
 // `privacy.confidential_dirs` and judges the whole vault, like
 // index-completeness, orphans and columns, except for its third clause
-// (phase 3), which judges only the lines a change added, like style.
+// (phase 3), which judges only the lines a change added, and nothing at
+// all in a run over the whole vault.
 // `attribution` is the only
 // rule in this file that cites the Open Knowledge Format directly
 // (section 5.1), and also judges the whole vault.
@@ -1816,16 +1817,35 @@ function isConfidentialContent(path, confidentialDirs) {
 
 // Clause 3 (phase 3, task 6): no line a change ADDS holds a word
 // `privacy.third_party_keywords` lists (src/rules/privacy-keywords.mjs says
-// how a word matches). Unlike clauses 1 and 2, this one reads the scope,
-// and reads it exactly as the style rule above does: `scope.addedLines`
-// per file, `null` meaning every line of the file (the `all` base, or a
-// file git has never seen), a set meaning only those lines. A keyword is a
-// word in prose, not a structural leak like a link or a marking, and a
-// vault that adopts this kit arrives with years of prose written under no
-// such rule; the reasoning that scopes style leaves that prose alone here
-// too. Under `--base all` every line is "added", so a run over the whole
-// vault (the vault's own pre-push hook runs one) judges every line, as
-// style does.
+// how a word matches). Unlike clauses 1 and 2, this one reads the scope. A
+// keyword is a word in prose, not a structural leak like a link or a
+// marking, and a vault that adopts this kit arrives with years of prose
+// written under no such rule; the reasoning that scopes style leaves that
+// prose alone here too.
+//
+// It judges ONLY a change, and a run over the whole vault is not one (fix
+// round 1, a controller ruling). When the base is `all` (asked for, or
+// what the base resolved to: outside a repository, before the first
+// commit, `auto` on a clean default branch, a merge base that cannot be
+// used), `scope.files` is null (src/git.mjs changedPaths), there is no
+// change to judge against, and this clause produces no finding at all;
+// the report says, in one line, that keywords were not checked
+// (src/commands/lint.mjs). Read the way style reads that base, every line
+// would count as added, and at `lint.privacy` "error" every caller of an
+// `all` run would refuse lines no change added: the vault's pre-push hook
+// runs `lint --base all` on every push, `propose`'s pushes included, and
+// init and adoption run it on their first check. A keyword on a line a
+// proposal adds is still refused, by `propose`'s own `lint --base
+// worktree`. What this gives up: a person who pushes a new keyword line
+// by hand, outside `propose`, is not refused by this clause.
+//
+// The text judged is git's own, `scope.addedText` (fix round 1): git ends
+// a line at a line feed only, while the markdown reader (makeReadFile,
+// src/commands/validate.mjs) also ends one at a lone carriage return, so
+// reading the file back at git's line numbers judged the wrong line after
+// a lone CR and could miss a keyword the change added. A file git has
+// never seen has no diff to read (`null`): it is read whole, every line
+// judged, and its line numbers are the reader's.
 //
 // A note inside a confidential directory is judged like any other: the
 // boundary decides where a note may be linked from, not what may be
@@ -1842,20 +1862,19 @@ function isConfidentialContent(path, confidentialDirs) {
 function thirdPartyKeywordFindings(files, context, scope) {
   const matchers = keywordMatchers(context.config);
   if (matchers.length === 0) return [];
+  if (scope.files === null) return []; // the `all` base: no change to judge, and the report says keywords were not checked
   const exemptPaths = keywordExemptPaths(context.config);
   const findings = [];
   for (const file of files) {
     if (isKeywordExempt(file, exemptPaths)) continue;
-    const added = scope.addedLines(file);
-    const lines = context.readFile(file).split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const lineNumber = i + 1;
-      if (added !== null && !added.has(lineNumber)) continue;
-      const keyword = firstKeyword(lines[i], matchers);
+    const added = scope.addedText(file);
+    const lines = added ?? context.readFile(file).split('\n').map((text, i) => ({ line: i + 1, text }));
+    for (const { line, text } of lines) {
+      const keyword = firstKeyword(text, matchers);
       if (keyword === null) continue;
       findings.push({
         file,
-        line: lineNumber,
+        line,
         check: 'third-party-keyword',
         messageKey: 'lint.privacy.third_party_keyword',
         params: { keyword },

@@ -321,16 +321,40 @@ test('a note whose added line holds a privacy keyword is refused at the gate: ex
   assert.deepEqual(fingerprint(world.vault), before);
 });
 
-test('a keyword already on the default branch never blocks a proposal that adds none: only a line the proposal adds is judged', async () => {
+// The vault's real pre-push gate (templates/githooks/pre-push), installed
+// as the push hook, with a brain-kit on PATH that records each call and
+// runs this checkout. The environment for a propose run that reaches it.
+function installTemplateGate(world) {
+  const bin = join(world.base, 'gatebin');
+  mkdirSync(bin);
+  const calls = join(world.base, 'gate-calls.txt');
+  const bk = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
+  writeFileSync(join(bin, 'brain-kit'), `#!/usr/bin/env bash\necho "$*" >> ${JSON.stringify(calls)}\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(bk)} "$@"\n`, { mode: 0o755 });
+  writeFileSync(join(world.vault, '.git', 'hooks', 'pre-push'), readFileSync(join(KIT_ROOT, 'templates', 'githooks', 'pre-push')), { mode: 0o755 });
+  const patterns = join(world.base, 'throwaway-patterns.txt');
+  writeFileSync(patterns, 'zqxthrowawaymark\n');
+  return {
+    env: { ...world.env, PATH: `${bin}:${world.env.PATH}`, BRAIN_KIT_LEAK_PATTERNS: patterns },
+    calls: () => readFileSync(calls, 'utf8').split('\n').filter(Boolean).map((entry) => entry.split(' ')[0]),
+  };
+}
+
+// Fix round 1: in a world wired like the vaults init makes, the push runs
+// the real gate, whose `lint --base all` judges the whole vault. Without
+// the gate installed this test passed while such a vault refused the
+// proposal at the push.
+test('a keyword already on the default branch never blocks a proposal that adds none, with the vault\'s real pre-push gate running on the push', async () => {
   const world = makeProposeWorld();
   publishPackKeywords(world);
   world.write('notes/week.md', `${note('Week')}\nBruno is on sick leave until Friday.\n`);
   git(world.vault, ['add', 'notes/week.md']);
   git(world.vault, ['commit', '-q', '-m', 'an older note, written before the rule']);
   git(world.vault, ['push', '-q', 'origin', 'main']);
+  const gate = installTemplateGate(world);
   world.write('notes/week.md', `${note('Week')}\nBruno is on sick leave until Friday.\nTuesday: review with Ana.\n`);
-  const run = await propose(world, ['Week', '--only', 'notes/week.md']);
+  const run = await propose(world, ['Week', '--only', 'notes/week.md'], { env: gate.env });
   assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.deepEqual(gate.calls(), ['validate', 'lint', 'push-gate'], 'the gate ran every step and let the push through');
   const commit = world.remoteSha(`refs/heads/${BRANCH}`);
   assert.deepEqual(world.changedIn(commit), ['M\tnotes/week.md']);
 });

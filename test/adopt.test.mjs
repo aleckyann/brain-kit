@@ -248,6 +248,24 @@ for (const c of CASES) {
   });
 }
 
+// Phase 3, task 6, fix round 1: a privacy keyword already in the vault
+// changes nothing about adopt's exit. The configuration carries the
+// language's keywords, which are judged only on lines a change adds, and
+// adopt's check is `lint --base all`, which is no change: its report says
+// the keywords were not checked.
+test('a privacy keyword already in the adopted vault leaves adopt\'s exit as it was, and the lint report says keywords were not checked', () => {
+  const copy = freshCopy('pt-BR');
+  appendFileSync(join(copy.vault, 'memoria', 'log.md'), '\n- Bruno em licença médica até sexta.\n');
+  for (const args of [['add', '-A'], ['commit', '-q', '-m', 'An older capture']]) {
+    const r = git(copy.vault, ['-c', 'maintenance.auto=false', '-c', 'gc.auto=0', ...args]);
+    assert.equal(r.status, 0, r.stderr);
+  }
+  const r = adopt(copy, ANSWERS['pt-BR']);
+  assert.equal(r.status, EXIT.OK, `${r.stdout}\n${r.stderr}`);
+  assert.ok(loadConfig(copy.vault).privacy.third_party_keywords.includes('licença médica'), 'the adopted configuration carries the pack\'s keywords');
+  assert.ok(r.stdout.includes(`${createTranslator('pt-BR')('lint.privacy_keywords_not_checked')}\n`), r.stdout);
+});
+
 // --- what adopt infers ------------------------------------------------------------
 
 function keysOf(notes) {

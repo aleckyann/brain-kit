@@ -64,6 +64,7 @@ import { findVaultRoot, isUnderPath } from '../vault.mjs';
 import { fileSetMessage, listPublishable, noteFileSet } from '../file-set.mjs';
 import { createTranslator, REFERENCE_LANG } from '../lang.mjs';
 import { LINT_RULES, runLintRules, severityFor } from '../rules/lint.mjs';
+import { keywordMatchers } from '../rules/privacy-keywords.mjs';
 import { KNOWN_BASES, addedLines, changedPaths, resolveBase } from '../git.mjs';
 import { isMarkdown, makeReadFile, makeScanFile } from './validate.mjs';
 
@@ -467,7 +468,13 @@ function renderVerdict(t, { errors, warnings, defects, skippedIds, linesRestrict
 // right under the scope line, and the JSON carries it as `fileSet`.
 // Optional, so a test of the grouping alone need not invent one; runLint
 // always passes it.
-export function buildReport(findings, { t, base, fileCount, skippedIds, restrictedTo = [], ignoredPaths = [], secretScan = null, fileSet = null }) {
+//
+// `privacyKeywords` (phase 3, fix round 1): null when privacy's keyword
+// clause was not in play (the rule did not run, or no keyword is
+// configured), else `{ checked }`, false when the run had no change to
+// judge. The text report prints one line when it is false; the JSON
+// carries it as it is.
+export function buildReport(findings, { t, base, fileCount, skippedIds, restrictedTo = [], ignoredPaths = [], secretScan = null, fileSet = null, privacyKeywords = null }) {
   const defects = findings.filter((f) => f.defect === true);
   const errors = findings.filter((f) => f.defect !== true && f.severity === 'error');
   const warnings = findings.filter((f) => f.defect !== true && f.severity === 'warn');
@@ -514,6 +521,7 @@ export function buildReport(findings, { t, base, fileCount, skippedIds, restrict
           absent: secretScan.absent,
           listingFailed: secretScan.failure !== null,
         },
+    privacyKeywords,
   };
 
   const lines = [];
@@ -558,6 +566,7 @@ export function buildReport(findings, { t, base, fileCount, skippedIds, restrict
     if (elsewhere.length > 0) lines.push(t('lint.secrets_other_repositories', { paths: listedPaths(t, elsewhere) }));
     if (secretScan.absent.length > 0) lines.push(t('lint.secrets_absent', { count: secretScan.absent.length, paths: listedPaths(t, secretScan.absent) }));
   }
+  if (privacyKeywords !== null && privacyKeywords.checked === false) lines.push(t('lint.privacy_keywords_not_checked'));
   if (restrictedTo.length > 0) lines.push(t('lint.restricted_to', { ids: restrictedTo }));
   lines.push('');
   lines.push(...renderDefectSection(t, defects));
@@ -729,31 +738,40 @@ export async function runLint(argv, io, t, walkVault) {
 
   const base = resolveBase(root, parsed.base);
   // The scope contract src/git.mjs's own header promises runLintRules:
-  // `{ files, addedLines(relPath) -> Set<number> | null }`. `files` here is
-  // deliberately the CHANGED paths this base considers (changedPaths' own
-  // return, null for the `all` base), not the vault's markdown file list
-  // above; no rule in this task reads it, but the contract names it, and
-  // handing down less than the contract promises is exactly the kind of
-  // gap a future scope-reading rule would inherit silently.
+  // `{ files, addedLines(relPath) -> Set<number> | null }`, plus, since
+  // phase 3, `addedText(relPath) -> Array<{ line, text }> | null`. `files`
+  // here is deliberately the CHANGED paths this base considers
+  // (changedPaths' own return, null for the `all` base), not the vault's
+  // markdown file list above. privacy's keyword clause reads it for
+  // exactly that null: no change to judge (fix round 1).
   //
   // src/git.mjs's OWN exported `addedLines(root, base, relPath)` does NOT
-  // return that shape: it returns `Array<{ line, text }> | null` (every
+  // return the Set: it returns `Array<{ line, text }> | null` (every
   // added line's text alongside its number, for a caller that needs the
-  // text too), never a bare Set<number>. tables, style and privacy's
-  // keyword clause (src/rules/lint.mjs) call `.has(lineNumber)` and read
-  // `.size` on whatever this function returns, so handing the raw array
-  // straight through would fail the very first scoped file a real run
-  // touches; the map to line numbers, wrapped in a Set, is what actually
-  // builds the contract runLintRules was promised, not merely something
-  // shaped similarly to it.
+  // text too). tables and style (src/rules/lint.mjs) call
+  // `.has(lineNumber)` and read `.size` on what `addedLines` returns, so
+  // handing the raw array straight through would fail the very first
+  // scoped file a real run touches; the map to line numbers, wrapped in a
+  // Set, is what builds the contract runLintRules was promised. `addedText`
+  // hands the raw array on, for privacy's keyword clause, which judges the
+  // text of each line git says was added rather than the file read back at
+  // those numbers (a lone carriage return breaks a line for the markdown
+  // reader and not for git).
   //
-  // Asked once per file and kept (phase 3, task 6): three readers now ask
+  // Asked once per file and kept (phase 3, task 6): three readers ask
   // about the same file, and each answer costs git processes. Keeping the
   // first answer also means every reader judges the very same set of
   // lines. Removing the cache changes no finding, only the number of git
   // processes a run spawns, so no test can see it go; this sentence is the
   // disclosure.
   const addedByFile = new Map();
+  const addedFor = (relPath) => {
+    if (!addedByFile.has(relPath)) {
+      const raw = addedLines(root, base, relPath);
+      addedByFile.set(relPath, raw === null ? null : { lines: new Set(raw.map((entry) => entry.line)), entries: raw });
+    }
+    return addedByFile.get(relPath);
+  };
   const scope = {
     // Fix round 3 (finding H): `changedPaths` now returns VAULT-relative
     // paths (src/git.mjs, `--relative`), so `scope.files` finally speaks
@@ -763,14 +781,19 @@ export async function runLint(argv, io, t, walkVault) {
     // larger repository the first rule to read this field would have
     // inherited the mismatch in silence, since no rule reads it today.
     files: changedPaths(root, base),
-    addedLines: (relPath) => {
-      if (!addedByFile.has(relPath)) {
-        const raw = addedLines(root, base, relPath);
-        addedByFile.set(relPath, raw === null ? null : new Set(raw.map((entry) => entry.line)));
-      }
-      return addedByFile.get(relPath);
-    },
+    addedLines: (relPath) => addedFor(relPath)?.lines ?? null,
+    addedText: (relPath) => addedFor(relPath)?.entries ?? null,
   };
+  // Whether privacy's keyword clause was in play, and if so whether it
+  // judged anything (fix round 1): in play when the privacy rule runs in
+  // this run and the configuration lists a keyword; it judges nothing when
+  // the scope has no change to judge (the `all` base, `scope.files` null,
+  // the one condition the clause itself reads). The report says so in one
+  // line, so a whole-vault run that found no keyword is never read as one
+  // that looked.
+  const privacyRule = LINT_RULES.find((rule) => rule.id === 'privacy');
+  const keywordsInPlay = severityFor(privacyRule, restrictedConfig) !== 'off' && keywordMatchers(config).length > 0;
+  const privacyKeywords = keywordsInPlay ? { checked: scope.files !== null } : null;
 
   const findings = runLintRules(files, context, scope);
   // A listing git could not produce leaves the note rules reading the walk
@@ -802,6 +825,7 @@ export async function runLint(argv, io, t, walkVault) {
     ignoredPaths: Array.isArray(config?.validate?.ignore_paths) ? config.validate.ignore_paths : [],
     secretScan,
     fileSet,
+    privacyKeywords,
   });
 
   if (parsed.json) {

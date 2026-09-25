@@ -15,6 +15,7 @@ import { mkdirSync, readFileSync, writeFileSync, chmodSync, copyFileSync, exists
 import { delimiter } from 'node:path';
 import { join, dirname } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
+import { createTranslator } from '../src/lang.mjs';
 import { makeVault } from './helpers/vault-fixture.mjs';
 import { makeTempDir } from './helpers/tmp.mjs';
 
@@ -391,6 +392,30 @@ test('a vault that escalated style to error refuses a feature-branch push over a
   assert.notEqual(r.status, 0, r.stderr);
   assert.match(r.stderr, /brain-kit lint found a problem/);
   assert.match(`${r.stdout}${r.stderr}`, /people\/ana\.md:\d+ {2}style\b/);
+});
+
+// Phase 3, task 6, fix round 1: privacy.third_party_keywords is judged
+// only on the lines a change adds, and the gate's `lint --base all` is
+// not a change. A keyword committed before the rule, or before its word
+// joined the list, refuses no push, on the default branch or on a feature
+// branch, and the gate's lint says in one line that keywords were not
+// checked. A keyword a proposal adds is refused by propose's own
+// `lint --base worktree` (test/propose.test.mjs), never here.
+test('a committed privacy keyword refuses no push: the gate lints the whole vault, which judges no keyword, and says so', () => {
+  const { privacy } = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', 'en', 'config.defaults.json'), 'utf8'));
+  const notChecked = createTranslator('en')('lint.privacy_keywords_not_checked');
+  const files = { ...cleanFiles(), 'memory/log.md': `${CLEAN_LOG}Bruno is on sick leave until Friday.\n` };
+  const { work } = setup({ files, config: { privacy: { third_party_keywords: privacy.third_party_keywords } } });
+  commitEverything(work, 'init');
+  const seeded = git(work, ['push', '-q', 'origin', 'main']);
+  assert.equal(seeded.status, 0, seeded.stderr);
+  assert.ok(`${seeded.stdout}${seeded.stderr}`.includes(notChecked), `the gate's lint says keywords were not checked:\n${seeded.stderr}`);
+
+  assert.equal(git(work, ['checkout', '-q', '-b', 'feature']).status, 0);
+  writeFileSync(join(work, 'memory', 'log.md'), `${CLEAN_LOG}Bruno is on sick leave until Friday.\nAn unrelated, clean entry.\n`);
+  commitEverything(work, 'an unrelated change');
+  const r = git(work, ['push', '-q', 'origin', 'feature']);
+  assert.equal(r.status, 0, r.stderr);
 });
 
 // --- final fix round 2: what the gate reads is what the push could publish ---
