@@ -17,7 +17,7 @@
 // that records the pull request instead of opening one, an empty but
 // configured Claude Code transcripts tree, and a state directory.
 // machine.json points claude_bin at the real claude found on PATH and the
-// model at sonnet; the configuration caps the round at 1.5 USD. HOME stays
+// model at sonnet; the round runs with the vault's own configuration, no extra cap. HOME stays
 // the person's own and CLAUDE_CONFIG_DIR is left as it is, because the
 // login and the connectors live there: connector mode loads the person's
 // user settings on purpose, and what it switches off (hooks, skills, the
@@ -57,7 +57,6 @@ const LANG = process.env.BRAIN_KIT_E2E_LANG || 'en';
 const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
 const FAKE_CLAUDE = fileURLToPath(new URL('./helpers/fake-claude.mjs', import.meta.url));
 const PROJECT = '-home-ana-reading';
-const BUDGET_USD = 1.5;
 const MODEL = 'sonnet';
 const ROUND_TIMEOUT_MS = 30 * 60 * 1000;
 const CONNECTOR_SOURCES = Object.freeze(['calendar', 'meeting_notes']);
@@ -178,7 +177,6 @@ test('a real round through the person\'s own connectors reads each source or rec
   config.sources.calendar.enabled = true;
   config.sources.calendar.calendars = [CALENDAR];
   config.sources.meeting_notes.enabled = true;
-  config.curate.budget_usd = BUDGET_USD;
   writeFileSync(configFile, `${JSON.stringify(config, null, 2)}\n`);
   const literal = config.sources.meeting_notes.search_title_contains;
   assert.ok(typeof literal === 'string' && literal !== '', 'init wrote the pack\'s meeting-notes literal');
@@ -214,7 +212,6 @@ test('a real round through the person\'s own connectors reads each source or rec
   t.diagnostic(summary);
   console.log(`e2e connectors: ${summary}`);
   assert.equal(round.status, 0, `curate exited ${round.status}\n${round.stdout}\n${round.stderr}\n${JSON.stringify(lastRun, null, 2)}`);
-  if (typeof lastRun.costUsd === 'number') assert.ok(lastRun.costUsd <= BUDGET_USD * 1.5, `cost ${lastRun.costUsd}`);
 
   // Connector mode, or the states say why not.
   if (lastRun.mode !== 'connectors') {

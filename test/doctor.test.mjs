@@ -2570,12 +2570,13 @@ test('--probe: launches the round\'s own connector mode, kills it at the init ev
   assert.equal(notes.params.state, 'needs_auth');
   assert.equal(notes.status, 'warn');
   assert.equal(code, EXIT.OK);
-  // The argv is connector mode's, bounded, with the round's lists.
+  // The argv is connector mode's, with the round's lists and no cap of its
+  // own: the launch is killed at its init event, before any model call.
   const argv = probe.argv();
   assert.deepEqual(argv.slice(0, 16), ['-p', '--verbose', '--output-format', 'stream-json', '--permission-mode', 'dontAsk', '--permission-prompts', 'none', '--setting-sources', 'user', '--settings', '{"disableAllHooks":true}', '--disable-slash-commands', '--tools', ROUND_TOOLS.join(','), '--no-session-persistence']);
   assert.ok(!argv.includes('--strict-mcp-config'));
-  assert.deepEqual(valuesAfter(argv, '--max-turns'), ['1']);
-  assert.deepEqual(valuesAfter(argv, '--max-budget-usd'), ['0.1']);
+  assert.deepEqual(valuesAfter(argv, '--max-turns'), []);
+  assert.deepEqual(valuesAfter(argv, '--max-budget-usd'), []);
   const allowed = valuesAfter(argv, '--allowedTools');
   for (const tool of [...CAL_TOOLS, ...DRIVE_TOOLS]) assert.ok(allowed.includes(tool), tool);
   const denied = valuesAfter(argv, '--disallowedTools');

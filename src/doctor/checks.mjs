@@ -1290,10 +1290,6 @@ function roundScope(ctx) {
 // printed its init event about 2.8 s after it started, and a launch killed
 // there made no model call, since no assistant or result event came before.
 export const PROBE_INIT_TIMEOUT_MS = 30000;
-// Bounds on the probe's launch for the case the kill ever came late: one
-// turn at most, and a budget far below a round's.
-export const PROBE_MAX_TURNS = 1;
-export const PROBE_BUDGET_USD = 0.1;
 
 // A round's instant as the day a person reads, DD/MM/YYYY, in the vault's
 // zone (the instant's own UTC day when the zone cannot be used): the same
@@ -1524,7 +1520,7 @@ export async function probeConnectors(ctx, { prompt }) {
   const machine = machineObject(ctx);
   const specs = choice.available.map((source) => source.serverSpec(config));
   const argv = buildArgv({
-    mode: 'connectors', model: machine.model ?? undefined, maxTurns: PROBE_MAX_TURNS, budgetUsd: PROBE_BUDGET_USD, allowed: choice.tools.allowed, disallowed: choice.tools.disallowed,
+    mode: 'connectors', model: machine.model ?? undefined, allowed: choice.tools.allowed, disallowed: choice.tools.disallowed,
   });
   const control = new AbortController();
   const onLine = (line) => {

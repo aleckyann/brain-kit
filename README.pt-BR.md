@@ -6,7 +6,7 @@
 > leitura) já funcionam hoje, a partir de um clone deste repositório. A fase 2 também está
 > concluída: o curador agendado (`curate`, `watermark`, `schedule`) lê as suas sessões
 > recentes do Claude Code e abre um pull request a partir de uma rodada sem ninguém por
-> perto. A fase 3 está em revisão: a rodada também lê a sua agenda e as suas notas de
+> perto. A fase 3 também está concluída: a rodada lê ainda a sua agenda e as suas notas de
 > reunião pelos conectores do claude.ai, depois que você os liga. O briefing matinal ainda
 > está por vir, e o pacote no npm ainda é o esqueleto da fase 0. Acompanhe o repositório
 > para a primeira versão usável.
@@ -213,7 +213,7 @@ A pasta `evals/` traz um caso de `claude plugin eval` por skill e idioma; veja
 | 0 | Esqueleto, códigos de saída, packs de idioma, schemas de config, trava anti-vazamento, CI, docs | concluída, 0.0.1 no npm |
 | 1 | Validador, lint, propose (loop de PR), hook Stop, init, doctor, skills | concluída |
 | 2 | Curador agendado sobre transcripts locais, templates de agendamento | concluída |
-| 3 | Fontes de agenda e notas de reunião (best effort por desenho) | em revisão |
+| 3 | Fontes de agenda e notas de reunião (best effort por desenho) | concluída |
 | 4 | Briefing matinal | planejada |
 | 5 | Migração do vault original para o kit | planejada |
 | 6 | Publicação 0.1.0 | planejada |

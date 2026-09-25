@@ -357,7 +357,7 @@ warning, and a failure only for a source in `curate.sources.required`.
 
 **`brain-kit doctor --probe`** asks the CLI now, without a round. It launches the round's own
 connector mode (the same flags, the same allow and deny lists, your user rules mirrored the
-same way) with a one-line prompt, one turn at most and a budget of 0.1 USD, kills it at its
+same way) with a one-line prompt, kills it at its
 first event, before any model call, and reports each connector's state from that event. It
 also reports anything in that event that would stop every connector-mode round: a hook, a
 built-in tool beyond the pinned set, a memory folder. It writes nothing: no

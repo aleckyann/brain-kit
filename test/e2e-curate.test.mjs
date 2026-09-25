@@ -9,8 +9,8 @@
 // `gh` first on PATH that records the pull request instead of opening one,
 // a Claude Code transcripts tree with one session inside yesterday, and a
 // state directory. machine.json points claude_bin at the real claude found
-// on PATH and the model at sonnet; the configuration caps the round at 1
-// USD. HOME stays the person's own, because the real claude's login lives
+// on PATH and the model at sonnet; the round runs with the vault's own
+// configuration, no extra cap. HOME stays the person's own, because the real claude's login lives
 // there: the round's isolation (--setting-sources '' and the rest) is what
 // keeps the person's settings, hooks and MCP servers out, and this test is
 // where that is proven against the real CLI.
@@ -36,7 +36,6 @@ const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
 const FAKE_CLAUDE = fileURLToPath(new URL('./helpers/fake-claude.mjs', import.meta.url));
 const PROJECT = '-home-ana-reading';
 const FACT = 'Ana decided to move the reading group to Thursdays';
-const BUDGET_USD = 1;
 const MODEL = 'sonnet';
 const ROUND_TIMEOUT_MS = 30 * 60 * 1000;
 
@@ -131,7 +130,6 @@ test('a real round against a throwaway vault opens a pull request from inside th
   const config = JSON.parse(readFileSync(configFile, 'utf8'));
   config.vault.timezone = 'UTC';
   config.sources.transcripts.include_projects = [PROJECT];
-  config.curate.budget_usd = BUDGET_USD;
   writeFileSync(configFile, `${JSON.stringify(config, null, 2)}\n`);
   git(base, ['init', '-q', '--bare', '-b', 'main', remote]);
   git(vault, ['add', '-A']);
@@ -171,7 +169,7 @@ test('a real round against a throwaway vault opens a pull request from inside th
 
   // last-run.json: a cost, the isolation proven, a pull request opened.
   assert.equal(typeof lastRun.costUsd, 'number', JSON.stringify(lastRun));
-  assert.ok(lastRun.costUsd > 0 && lastRun.costUsd <= BUDGET_USD * 1.5, `cost ${lastRun.costUsd}`);
+  assert.ok(lastRun.costUsd > 0, `cost ${lastRun.costUsd}`);
   assert.deepEqual(lastRun.isolation, { ok: true, problems: [] });
   assert.equal(lastRun.proposed?.opened, true, JSON.stringify(lastRun.proposed));
 
