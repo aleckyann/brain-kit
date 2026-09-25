@@ -159,7 +159,7 @@ test('allowedTools() refuses a read root that is not an absolute path, and a dir
 });
 
 test('disallowedTools() is exactly the list task 6 names, then the extras, and never carries Bash(node:*)', () => {
-  assert.deepEqual(PROTECTED_PATHS, ['.githooks', '.git', '.github', '.claude', '.brain-kit', 'brain-kit.config.json', '.gitignore', '.gitattributes', '.gitmodules']);
+  assert.deepEqual(PROTECTED_PATHS, ['.githooks', '.git', '.github', '.claude', '.brain-kit', 'brain-kit.config.json', '.gitignore', '.gitattributes', '.gitmodules', '.mcp.json']);
   const protectedRules = PROTECTED_PATHS.flatMap((p) => [`Edit(./${p})`, `Edit(./${p}/**)`, `Write(./${p})`, `Write(./${p}/**)`]);
   assert.deepEqual(disallowedTools(), [
     'Bash(git push:*)', 'Bash(git commit:*)', 'Bash(gh:*)', 'Bash(curl:*)', 'Bash(wget:*)', 'Bash(rm:*)', 'WebFetch', 'WebSearch',

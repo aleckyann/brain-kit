@@ -5,10 +5,11 @@
 // directory; the person's own ~/.claude is never read.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { blockingMessage, mirrorUserRules, userSettingsFiles } from '../src/curate/user-rules.mjs';
 import { KIT_SUBCOMMANDS } from '../src/curate/tools.mjs';
+import { rulesIn } from '../src/harness/claude-code.mjs';
 import { createTranslator, REFERENCE_LANG } from '../src/lang.mjs';
 import { makeTempDir } from './helpers/tmp.mjs';
 
@@ -47,9 +48,23 @@ test('userSettingsFiles lists settings.json and settings.local.json of CLAUDE_CO
   mkdirSync(join(home, '.claude'));
   writeFileSync(join(home, '.claude', 'settings.json'), '{}');
   assert.deepEqual(userSettingsFiles({ HOME: home }), [join(home, '.claude', 'settings.json')]);
-  assert.deepEqual(userSettingsFiles({ HOME: home, CLAUDE_CONFIG_DIR: '' }), [join(home, '.claude', 'settings.json')]);
   // CLAUDE_CONFIG_DIR wins over HOME, even when it holds nothing.
   assert.deepEqual(userSettingsFiles({ HOME: home, CLAUDE_CONFIG_DIR: configDir({}) }), []);
+});
+
+test('a CLAUDE_CONFIG_DIR that is set but not absolute, empty included, gives both names as they are, and the mirror refuses them (review M3)', () => {
+  const home = makeTempDir('brain-kit-user-rules-home-');
+  mkdirSync(join(home, '.claude'));
+  writeFileSync(join(home, '.claude', 'settings.json'), '{}');
+  assert.deepEqual(userSettingsFiles({ HOME: home, CLAUDE_CONFIG_DIR: '' }), ['settings.json', 'settings.local.json']);
+  assert.deepEqual(userSettingsFiles({ HOME: home, CLAUDE_CONFIG_DIR: 'config/claude' }), [join('config', 'claude', 'settings.json'), join('config', 'claude', 'settings.local.json')]);
+  assert.deepEqual(userSettingsFiles({ CLAUDE_CONFIG_DIR: '~/.claude' }), [join('~', '.claude', 'settings.json'), join('~', '.claude', 'settings.local.json')]);
+  // The round's CLI resolves such a path in the vault, not where the kit runs: whatever exists here (the
+  // kit's own package.json, from where the tests run) is not read.
+  const files = ['package.json', ...userSettingsFiles({ HOME: home, CLAUDE_CONFIG_DIR: 'config/claude' })];
+  assert.deepEqual(mirrorUserRules({ files, ownAllowed: OWN, vaultRoot: VAULT, home: HOME, kit: KIT }), {
+    deny: [], widenedReads: [], blocking: files.map((file) => ({ rule: null, file, reason: 'unreadable' })), dropNodeForms: false,
+  });
 });
 
 // --- mirrorUserRules ---------------------------------------------------------------
@@ -180,6 +195,73 @@ test('a rule that is not one Tool or Tool(scope), as the CLI would split it, ref
   ];
   const { file, out } = mirrorOf(rules);
   assert.deepEqual(out, { deny: [], widenedReads: [], blocking: rules.map((rule) => ({ rule, file, reason: 'unreadable' })), dropNodeForms: false });
+});
+
+test('a rule with a parenthesis inside its scope is never mirrored: connector mode is refused, naming it (ruling I1)', () => {
+  const rules = [
+    'Bash(python3 -c "print(1)" *)', 'Bash(echo $(date) ok)', 'Bash(git log --format=%s (x) y)', 'Bash(echo ))', 'Bash(echo ( x)',
+    'Read(//home/ana/notes (old)/**)', 'Read(//tmp/a (b/**)', 'Edit(//tmp/a(b)/**)', 'WebFetch(domain:example.com))', 'mcp__claude_ai_Gmail__send_email(x(y))',
+  ];
+  const { file, out } = mirrorOf(rules);
+  assert.deepEqual(out, { deny: [], widenedReads: [], blocking: rules.map((rule) => ({ rule, file, reason: 'unreadable' })), dropNodeForms: false });
+  // Without one, the same commands are judged as usual.
+  assert.deepEqual(mirrorOf(['Bash(python3 -c *)', 'Bash(echo *)']).out.deny, ['Bash(python3 -c *)', 'Bash(echo *)']);
+});
+
+test('every rule the mirror denies is exactly one rule where the CLI splits its deny list, spaces and commas inside the scope included', () => {
+  const rules = [
+    'Bash(rtk curl *)', 'Bash(npm run build)', 'Bash(git log --oneline, --stat:*)', 'WebFetch(domain:example.com,other)', 'Edit(//tmp/a b/**)',
+    'mcp__claude_ai_Gmail__send_email', 'Bash(node:*)', 'Write(//tmp/x, y/**)', 'Bash(echo "a  b":*)',
+  ];
+  const { out } = mirrorOf(rules);
+  assert.deepEqual(out.deny, rules);
+  for (const rule of out.deny) assert.deepEqual(rulesIn(rule), [rule], rule);
+});
+
+test('a path scope whose tail could climb out of its literal prefix is judged by the worst: a write rule refuses connector mode, a read rule widens reads (review M2)', () => {
+  const writes = ['Edit(./notes/**/../../../../tmp/x)', 'Write(./notes/{a,../../../tmp}/**)', 'Edit(//tmp/x/*/..)', 'MultiEdit(./notes/{a,b}/**)'];
+  const reads = ['Read(./**/../../../etc/**)', 'Read(./{a,../../../etc}/**)', 'Glob(./notes/*/../..)'];
+  const { file, out } = mirrorOf([...writes, ...reads]);
+  assert.deepEqual(out, { deny: [], widenedReads: reads, blocking: writes.map((rule) => ({ rule, file, reason: 'unreadable' })), dropNodeForms: false });
+  // Dots that are not a whole segment, and a `..` before the first glob (resolved), climb nothing.
+  assert.deepEqual(mirrorOf(['Edit(./notes/*..md)', 'Edit(./notes/../other/**)', 'Read(./notes/*..md)']).out, NOTHING);
+});
+
+test('a vault, a home or a folder reached through a link is judged by where the link leads too (review M1)', () => {
+  const root = makeTempDir('brain-kit-user-rules-links-');
+  const real = join(root, 'data', 'vault');
+  mkdirSync(join(real, 'notes'), { recursive: true });
+  mkdirSync(join(root, 'data', 'vault2'), { recursive: true });
+  const linkVault = join(root, 'link-vault');
+  symlinkSync(real, linkVault);
+  const linkHome = join(root, 'link-home');
+  symlinkSync(join(root, 'data'), linkHome);
+  const { file } = mirrorOf([]);
+  const mirror = (allow, vaultRoot, home = HOME) => {
+    writeFileSync(file, JSON.stringify({ permissions: { allow } }));
+    return mirrorUserRules({ files: [file], ownAllowed: OWN, vaultRoot, home, kit: KIT });
+  };
+  // The kit handed the link, the rule naming the real place: a holder of the vault covers it, a folder inside it is inside.
+  const byLink = mirror([`Edit(/${root}/data/**)`, `Write(/${real}/notes/**)`, `Read(/${real}/notes/**)`, `Edit(/${root}/data/vault2/**)`], linkVault);
+  assert.deepEqual(byLink, { deny: [`Edit(/${root}/data/vault2/**)`], widenedReads: [], blocking: [{ rule: `Edit(/${root}/data/**)`, file, reason: 'covers_vault' }], dropNodeForms: false });
+  // The kit handed the real path, the rule naming the link: the same answers.
+  const byReal = mirror([`Edit(/${linkHome}/**)`, `Write(/${linkVault}/notes/**)`, `Read(/${linkVault}/**)`], real);
+  assert.deepEqual(byReal, { deny: [], widenedReads: [], blocking: [{ rule: `Edit(/${linkHome}/**)`, file, reason: 'covers_vault' }], dropNodeForms: false });
+  // A home reached through a link holds the vault it leads to, also for a scope that stops inside a name.
+  assert.deepEqual(mirror(['Edit(~/**)', 'Edit(~/vault/notes/**)', 'Edit(~/va*)'], real, linkHome).blocking, [
+    { rule: 'Edit(~/**)', file, reason: 'covers_vault' }, { rule: 'Edit(~/va*)', file, reason: 'covers_vault' },
+  ]);
+  // So does a settings folder reached through a link, for its /x rules.
+  const linkConfig = join(root, 'link-config');
+  symlinkSync(join(root, 'data'), linkConfig);
+  writeFileSync(join(linkConfig, 'settings.json'), JSON.stringify({ permissions: { allow: ['Edit(/va*)', 'Edit(/vault/notes/**)'] } }));
+  assert.deepEqual(mirrorUserRules({ files: [join(linkConfig, 'settings.json')], ownAllowed: OWN, vaultRoot: real, home: HOME, kit: KIT }), {
+    deny: [], widenedReads: [], blocking: [{ rule: 'Edit(/va*)', file: join(linkConfig, 'settings.json'), reason: 'covers_vault' }], dropNodeForms: false,
+  });
+  // A scope that stops inside a name is judged as written: where one link of that name leads says nothing of
+  // the other names that start the same way (link-notes-old, say).
+  symlinkSync(join(real, 'notes'), join(root, 'link-notes'));
+  assert.deepEqual(mirror([`Read(/${root}/link-notes*)`, `Read(/${root}/link-notes/**)`], real).widenedReads, [`Read(/${root}/link-notes*)`]);
 });
 
 test('a rule both files hold is mirrored or recorded once, in the order the files list them', () => {

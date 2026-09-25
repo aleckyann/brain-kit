@@ -20,6 +20,11 @@
 //                    exactly ROUND_TOOLS as a set: one more (the default set
 //                    adds Task, Workflow, CronCreate and more, measured on
 //                    24/09/2026) or one missing, each named in the detail
+//   memory           init.memory_paths is present and not empty: the CLI
+//                    loaded the person's memory, or would write it outside
+//                    the vault (ruling R-C1; runModel sets the two switches
+//                    that, measured on 25/09/2026, leave it absent); the
+//                    paths are named in the detail
 //   no_init          no init event at all, so nothing above can be proved
 //
 // Two launch modes (src/harness/claude-code.mjs). In 'isolated' every check
@@ -31,8 +36,8 @@
 // through the round's own allow rules under dontAsk. The permission mode,
 // the hooks (every one of the person's is switched off in that mode, and
 // one that runs means the switch failed) and the built-in tools are
-// checked in both modes. A mode that is neither throws: guessing which
-// checks apply is how a check goes missing.
+// checked in both modes, and so is `memory`. A mode that is neither
+// throws: guessing which checks apply is how a check goes missing.
 //
 // A built-in tool the round itself denies by its bare name is removed from
 // the session by the CLI (measured on 24/09/2026: a bare "Bash" in
@@ -58,6 +63,20 @@ function builtinToolsDiff(tools, disallowed) {
     extra: builtins.filter((name) => !expected.includes(name)),
     missing: expected.filter((name) => !builtins.includes(name)),
   };
+}
+
+// The memory paths an init event lists, as text; null when there are none.
+// The measured shape is an object of paths ({ auto: '<dir>' }); a list is
+// read the same way, and any other value that is not empty counts as a
+// path the CLI names (fail closed on a shape a later release brings).
+function memoryPaths(value) {
+  if (value === undefined || value === null || value === '') return null;
+  let items;
+  if (Array.isArray(value)) items = value;
+  else if (typeof value === 'object') items = Object.values(value);
+  else items = [value];
+  if (items.length === 0) return null;
+  return items.map((item) => (typeof item === 'string' ? item : JSON.stringify(item))).join(', ') || '-';
 }
 
 const MODES = Object.freeze(['isolated', 'connectors']);
@@ -91,6 +110,11 @@ export function checkIsolation(record, { mode = 'isolated', allowMcp = [], disal
     if (diff.extra.length > 0 || diff.missing.length > 0) {
       problems.push('builtin_tools');
       details.push({ code: 'builtin_tools', messageKey: 'harness.isolation.builtin_tools', params: { extra: diff.extra.join(', ') || '-', missing: diff.missing.join(', ') || '-' } });
+    }
+    const paths = memoryPaths(init.memory_paths);
+    if (paths !== null) {
+      problems.push('memory');
+      details.push({ code: 'memory', messageKey: 'harness.isolation.memory', params: { paths } });
     }
   }
   const count = record && typeof record.hookEvents === 'number' ? record.hookEvents : 0;

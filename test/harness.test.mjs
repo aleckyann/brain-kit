@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildArgv, CONNECTOR_ARGS, ISOLATION_ARGS, ROUND_TOOLS, runModel, unscopedRules } from '../src/harness/claude-code.mjs';
+import { buildArgv, CONNECTOR_ARGS, ISOLATION_ARGS, ROUND_ENV, ROUND_TOOLS, runModel, unscopedRules } from '../src/harness/claude-code.mjs';
 import { parseStream } from '../src/harness/stream.mjs';
 import { checkIsolation } from '../src/guards/isolation.mjs';
 import { checkCli } from '../src/guards/cli.mjs';
@@ -196,7 +196,8 @@ test('parseStream reads the isolated run: dontAsk, no hooks, no MCP server, the 
   assert.deepEqual(r.init.mcp_servers, []);
   assert.equal(r.hookEvents, 0);
   assert.deepEqual(r.toolUses.map((u) => [u.name, u.input.command]), [['Bash', '/opt/brain-kit/bin/brain-kit.mjs propose example']]);
-  assert.deepEqual(r.toolResults, [{ toolUseId: r.toolUses[0].id, isError: false, hasNextPage: false }]);
+  // The kit's own command answers in plain text: not one JSON document, so not a complete connector result.
+  assert.deepEqual(r.toolResults, [{ toolUseId: r.toolUses[0].id, isError: false, complete: false, hasNextPage: false }]);
   assert.equal(r.result.costUsd, 0.041879);
   assert.equal(r.result.numTurns, 2);
   assert.deepEqual(r.denials, []);
@@ -215,7 +216,8 @@ test('parseStream reads the connector run: deferred tools loaded first, every ca
   const answer = (use) => r.events.find((e) => e.type === 'user' && e.message.content[0].tool_use_id === use.id).message.content[0].content;
   assert.equal(typeof answer(r.toolUses[1]), 'string');
   assert.equal(r.toolUses[2].input.pageToken, JSON.parse(answer(r.toolUses[1])).nextPageToken);
-  assert.deepEqual(r.toolResults, r.toolUses.map((u, i) => ({ toolUseId: u.id, isError: false, hasNextPage: i === 1 || i === 4 })));
+  // ToolSearch answers with tool references, no text; every connector answers with one JSON document.
+  assert.deepEqual(r.toolResults, r.toolUses.map((u, i) => ({ toolUseId: u.id, isError: false, complete: i > 0, hasNextPage: i === 1 || i === 4 })));
   assert.deepEqual(r.unknownTypes, []);
   assert.equal(r.invalidLines, 0);
   assert.equal(r.result.subtype, 'success');
@@ -225,7 +227,7 @@ test('parseStream reads a denial: the tool result is an error and the denial nam
   const r = parseStream(fixtureLines('denied-run'));
   const curl = r.toolUses.find((u) => u.input.command === 'curl -s https://example.com');
   assert.deepEqual(r.denials, [{ toolName: 'Bash', toolUseId: curl.id, input: { command: 'curl -s https://example.com', description: 'Fetch example.com' } }]);
-  assert.deepEqual(r.toolResults.filter((t) => t.isError), [{ toolUseId: curl.id, isError: true, hasNextPage: false }]);
+  assert.deepEqual(r.toolResults.filter((t) => t.isError), [{ toolUseId: curl.id, isError: true, complete: false, hasNextPage: false }]);
   const denied = r.events.find((e) => e.type === 'user' && e.message.content[0].tool_use_id === curl.id);
   assert.equal(denied.message.content[0].content, 'Permission to use Bash with command curl -s https://example.com has been denied.');
   assert.equal(r.result.subtype, 'success');
@@ -371,6 +373,33 @@ test('the fake performs its actions in its working directory with the environmen
   assert.equal(out.record.result.text, 'BRAIN_KIT_SOURCES: transcripts=ok');
 });
 
+test('ROUND_ENV switches the CLI\'s memory off, and runModel merges it over whatever environment it is given, in both modes (ruling R-C1)', async () => {
+  assert.deepEqual({ ...ROUND_ENV }, { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1' });
+  assert.ok(Object.isFrozen(ROUND_ENV));
+  const probe = [process.execPath, '-e', 'process.stdout.write(JSON.stringify([process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS, process.env.BRAIN_KIT_PROBE]))'];
+  const cases = [
+    ['isolated', { BRAIN_KIT_PROBE: 'kept' }],
+    ['connectors', { BRAIN_KIT_PROBE: 'kept' }],
+    ['connectors', { BRAIN_KIT_PROBE: 'kept', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0', CLAUDE_CODE_DISABLE_CLAUDE_MDS: '' }],
+  ];
+  for (const [mode, extra] of cases) {
+    const s = scenario({ stream: join(FIXTURES, 'isolated-run.jsonl'), actions: [{ run: probe }] });
+    const env = { ...s.env, ...extra };
+    if (!('CLAUDE_CODE_DISABLE_AUTO_MEMORY' in extra)) {
+      delete env.CLAUDE_CODE_DISABLE_AUTO_MEMORY;
+      delete env.CLAUDE_CODE_DISABLE_CLAUDE_MDS;
+    }
+    const before = { ...env };
+    assertFake(FAKE);
+    const out = await runModel({ claudeBin: FAKE, argv: buildArgv({ mode }), prompt: 'x', cwd: s.dir, env, timeoutMs: 20000 });
+    assert.equal(out.exitCode, 0);
+    const [run] = readFileSync(s.recordFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.deepEqual(JSON.parse(run.stdout), ['1', '1', 'kept'], `${mode} ${JSON.stringify(extra)}`);
+    assert.deepEqual(env, before, 'the caller\'s own environment object is left as it was');
+    assert.equal(JSON.parse(readFileSync(s.argvFile, 'utf8'))[0], '-p');
+  }
+});
+
 // --- checkIsolation ----------------------------------------------------------
 
 function isolatedWith(edit) {
@@ -389,6 +418,7 @@ test('checkIsolation reports each problem alone', () => {
     hooks: (ev) => [{ type: 'system', subtype: 'hook_started', hook_event: 'SessionStart' }, ...ev],
     mcp: (ev) => { initOf(ev).mcp_servers = [{ name: 'example-server', status: 'connected' }]; return ev; },
     builtin_tools: (ev) => { initOf(ev).tools.push('Task'); return ev; },
+    memory: (ev) => { initOf(ev).memory_paths = { auto: '/home/ana/.claude/projects/-home-ana-vault/memory/' }; return ev; },
     no_init: (ev) => ev.filter((e) => e.subtype !== 'init'),
   };
   for (const [code, edit] of Object.entries(cases)) {
@@ -529,6 +559,45 @@ test('checkIsolation refuses a mode it does not know, rather than guessing which
   for (const mode of ['connector', 'Connectors', '', null, 0, 'constructor', '__proto__']) {
     assert.throws(() => checkIsolation(record, { mode }), (error) => error instanceof TypeError && error.message.startsWith('checkIsolation: not a launch mode: '), String(mode));
   }
+});
+
+const MEMORY_DIR = '/home/ana/.claude/projects/-home-ana-vault/memory/';
+
+test('checkIsolation reports memory in both modes when the init event lists memory paths, naming them in both packs (ruling R-C1)', () => {
+  for (const mode of ['isolated', 'connectors']) {
+    const withMemory = (mode === 'isolated' ? isolatedWith : connectorsWith)((ev) => { initOf(ev).memory_paths = { auto: MEMORY_DIR }; return ev; });
+    const out = checkIsolation(withMemory, { mode });
+    assert.deepEqual(out.problems, ['memory'], mode);
+    assert.deepEqual(out.details, [{ code: 'memory', messageKey: 'harness.isolation.memory', params: { paths: MEMORY_DIR } }], mode);
+    for (const lang of ['en', REFERENCE_LANG]) {
+      const text = createTranslator(lang)('harness.isolation.memory', out.details[0].params);
+      assert.ok(text.includes(MEMORY_DIR), `${lang}: ${text}`);
+      assert.doesNotMatch(text, /\{\w+\}/);
+    }
+  }
+  const withPaths = (value) => checkIsolation(isolatedWith((ev) => { initOf(ev).memory_paths = value; return ev; }));
+  for (const none of [undefined, null, {}, [], '']) assert.deepEqual(withPaths(none).problems, [], JSON.stringify(none));
+  assert.deepEqual(withPaths([MEMORY_DIR, '/home/ana/.claude/CLAUDE.md']).details[0].params, { paths: `${MEMORY_DIR}, /home/ana/.claude/CLAUDE.md` });
+  assert.deepEqual(withPaths({ auto: MEMORY_DIR, project: '/home/ana/vault/CLAUDE.md' }).details[0].params, { paths: `${MEMORY_DIR}, /home/ana/vault/CLAUDE.md` });
+  // A shape no release has shown is never read as "no memory".
+  assert.deepEqual(withPaths(MEMORY_DIR).details[0].params, { paths: MEMORY_DIR });
+  assert.deepEqual(withPaths({ auto: { dir: 'x' } }).details[0].params, { paths: '{"dir":"x"}' });
+  assert.deepEqual(withPaths(true).details[0].params, { paths: 'true' });
+  assert.deepEqual(withPaths({ auto: '' }).details[0].params, { paths: '-' });
+});
+
+test('end to end through the child process: an init event that lists memory paths is caught from the record runModel returns', async () => {
+  const s = scenario({
+    stream: join(FIXTURES, 'connectors-states.jsonl'),
+    rewrite: { replace: [['"permissionMode":"dontAsk"', `"permissionMode":"dontAsk","memory_paths":{"auto":"${MEMORY_DIR}"}`]] },
+  });
+  assertFake(FAKE);
+  const out = await runModel({ claudeBin: FAKE, argv: buildArgv({ mode: 'connectors' }), prompt: 'x', cwd: s.dir, env: s.env, timeoutMs: 20000 });
+  assert.equal(out.exitCode, 0);
+  assert.deepEqual(out.record.init.memory_paths, { auto: MEMORY_DIR });
+  assert.deepEqual(checkIsolation(out.record, { mode: 'connectors' }).problems, ['memory']);
+  // What a run with the switches set reports: no memory paths at all.
+  for (const name of ['connectors-connected', 'connectors-states', 'isolated-run']) assert.equal(parseStream(fixture(name)).init.memory_paths, undefined, name);
 });
 
 // --- checkCli ------------------------------------------------------------------

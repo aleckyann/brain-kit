@@ -90,14 +90,22 @@ test('connectorStates reads the statuses the fixture\'s neutral servers carry as
   });
 });
 
-test('connectorStates says tools_missing when only some of a connected source\'s tools are in the session, with the prefix it did see', () => {
-  // A deny rule removes a tool from the session (measured on 24/09/2026).
+test('connectorStates says tools_missing when only some of a source\'s tools are in the session, or it names none, and a prefix only when one carries every tool (review M5)', () => {
+  // A deny rule removes a tool from the session (measured on 24/09/2026): no prefix carries both tools.
   const init = statesInit((i) => { i.tools = i.tools.filter((n) => n !== 'mcp__claude_ai_Google_Calendar__list_events'); });
-  assert.deepEqual(connectorStates(init, SPECS).calendar, { state: 'tools_missing', rawStatus: 'connected', observedPrefix: CALENDAR.toolPrefix });
+  assert.deepEqual(connectorStates(init, SPECS).calendar, { state: 'tools_missing', rawStatus: 'connected', observedPrefix: null });
   // A tool of the same server under another suffix proves nothing.
   const other = statesInit((i) => { i.tools = i.tools.filter((n) => !CALENDAR.toolSuffixes.some((s) => n === CALENDAR.toolPrefix + s)); });
   assert.ok(other.tools.includes('mcp__claude_ai_Google_Calendar__list_calendars'));
   assert.deepEqual(connectorStates(other, SPECS).calendar, { state: 'tools_missing', rawStatus: 'connected', observedPrefix: null });
+  // One tool of the same name on an unrelated server names no prefix; every tool under one other prefix names it.
+  const unrelated = statesInit((i) => { i.tools = [...other.tools, 'mcp__plugin_example_tasks__get_event']; });
+  assert.deepEqual(connectorStates(unrelated, SPECS).calendar, { state: 'tools_missing', rawStatus: 'connected', observedPrefix: null });
+  const moved = statesInit((i) => { i.tools = [...other.tools, 'mcp__plugin_example_tasks__get_event', 'mcp__plugin_example_tasks__list_events']; });
+  assert.deepEqual(connectorStates(moved, SPECS).calendar, { state: 'tools_missing', rawStatus: 'connected', observedPrefix: 'mcp__plugin_example_tasks__' });
+  // A source that names no tool proves nothing either: never connected.
+  const none = { ...CALENDAR, toolSuffixes: [] };
+  assert.deepEqual(connectorStates(statesInit(), [none]).calendar, { state: 'tools_missing', rawStatus: 'connected', observedPrefix: null });
 });
 
 test('connectorStates fails closed on what it cannot read: no init, no server list, no tool list, and a status that is not a string or names an object property', () => {
@@ -120,8 +128,11 @@ test('connectorStates fails closed on what it cannot read: no init, no server li
   // A tool name that is not a string is skipped, never a crash.
   const odd = statesInit((i) => { i.tools = [42, null, { name: 'x' }, ...i.tools]; });
   assert.deepEqual(connectorStates(odd, [CALENDAR]).calendar, connected(CALENDAR));
-  const oddMissing = statesInit((i) => { i.tools = [42, null, 'mcp__Google_Calendar__list_events']; });
-  assert.deepEqual(connectorStates(oddMissing, [CALENDAR]).calendar, { state: 'tools_missing', rawStatus: 'connected', observedPrefix: 'mcp__Google_Calendar__' });
+  const oddMoved = statesInit((i) => { i.tools = [42, null, 'mcp__Google_Calendar__list_events', 'mcp__Google_Calendar__get_event']; });
+  assert.deepEqual(connectorStates(oddMoved, [CALENDAR]).calendar, { state: 'tools_missing', rawStatus: 'connected', observedPrefix: 'mcp__Google_Calendar__' });
+  // A name with no server before its `__` is no prefix at all.
+  const oddMissing = statesInit((i) => { i.tools = [42, null, '__list_events', '__get_event', 'mcp__Google_Calendar__list_events']; });
+  assert.deepEqual(connectorStates(oddMissing, [CALENDAR]).calendar, { state: 'tools_missing', rawStatus: 'connected', observedPrefix: null });
 });
 
 // --- messages ------------------------------------------------------------------
@@ -162,47 +173,75 @@ test('every state renders in both packs with exactly the params its message take
   }
 });
 
-// --- hasNextPage -----------------------------------------------------------------
+// --- complete and hasNextPage (rulings R-B3 and I2) --------------------------------
 
 // One tool result, as a user event, read alone.
 function resultWith(content) {
   const block = { type: 'tool_result', tool_use_id: 'toolu_fake_page', content };
   return parseStream([JSON.stringify({ type: 'user', message: { role: 'user', content: [block] } })]).toolResults[0];
 }
+const page = (content) => {
+  const { complete, hasNextPage } = resultWith(content);
+  return { complete, hasNextPage };
+};
+const WHOLE_NEXT = { complete: true, hasNextPage: true };
+const WHOLE_LAST = { complete: true, hasNextPage: false };
+const PART = { complete: false, hasNextPage: false };
 
-test('every tool result says whether its text advertises a next page, and the record keeps no text', () => {
+// The text of the first list_events result in the connector run.
+function firstPageText() {
+  return JSON.parse(fixture('connectors-connected').split('\n')[24]).message.content[0].content;
+}
+
+test('every tool result says whether its text is one whole JSON document and whether that document advertises a next page; the record keeps no text', () => {
   const r = parseStream(fixture('connectors-connected'));
-  // ToolSearch, list_events page 1, page 2, get_event, search_files.
-  assert.deepEqual(r.toolResults.map((t) => t.hasNextPage), [false, true, false, false, true]);
-  for (const t of r.toolResults) assert.deepEqual(Object.keys(t).sort(), ['hasNextPage', 'isError', 'toolUseId']);
+  // ToolSearch (tool references, no text), list_events page 1, page 2, get_event, search_files.
+  assert.deepEqual(r.toolResults.map((t) => [t.complete, t.hasNextPage]), [[false, false], [true, true], [true, false], [true, false], [true, true]]);
+  for (const t of r.toolResults) assert.deepEqual(Object.keys(t).sort(), ['complete', 'hasNextPage', 'isError', 'toolUseId']);
   assert.deepEqual(parseStream(fixture('connectors-states')).toolResults, []);
 });
 
-test('an empty token, a null one and none at all are no next page; the fixture\'s token emptied is none', () => {
-  const token = /"nextPageToken":"[^"]+"/.exec(JSON.parse(fixture('connectors-connected').split('\n')[24]).message.content[0].content)[0];
-  const emptied = fixture('connectors-connected').replace(token.replaceAll('"', '\\"'), '\\"nextPageToken\\":\\"\\"');
-  assert.notEqual(emptied, fixture('connectors-connected'));
-  assert.deepEqual(parseStream(emptied).toolResults.map((t) => t.hasNextPage), [false, false, false, false, true]);
-  assert.equal(resultWith('{"events":[],"nextPageToken":""}').hasNextPage, false);
-  assert.equal(resultWith('{"events":[],"nextPageToken":null}').hasNextPage, false);
-  assert.equal(resultWith('{"events":[]}').hasNextPage, false);
-  assert.equal(resultWith('').hasNextPage, false);
+test('a list_events result cut before its token is incomplete and advertises no next page, with or without a notice after it (review I2)', () => {
+  const text = firstPageText();
+  assert.deepEqual(page(text), WHOLE_NEXT);
+  const cut = text.slice(0, text.indexOf('"nextPageToken"'));
+  for (const content of [cut, `${cut}\n[result truncated]`, `${cut.slice(0, 200)}...`, [{ type: 'text', text: cut }], `${text}\n[saved to a file]`]) {
+    assert.deepEqual(page(content), PART, typeof content === 'string' ? content.slice(-40) : 'blocks');
+  }
 });
 
-test('a token is found with spaces around its colon, inside text blocks, and split across them; a token quoted inside a text field is not one', () => {
-  assert.equal(resultWith('{"events":[],"nextPageToken" : "abc="}').hasNextPage, true);
-  assert.equal(resultWith('{\n  "nextPageToken": "abc="\n}').hasNextPage, true);
-  assert.equal(resultWith([{ type: 'text', text: '{"files":[],"nextPageToken":"abc"}' }]).hasNextPage, true);
-  assert.equal(resultWith([{ type: 'image', source: {} }, { type: 'text', text: '{"nextPageToken":"abc"}' }]).hasNextPage, true);
-  assert.equal(resultWith([{ type: 'text', text: '{"files":[],"nextPage' }, { type: 'text', text: 'Token":"abc"}' }]).hasNextPage, true);
-  // Only text blocks count: a token elsewhere in a block, or in a block of another type, is not the result's text.
-  assert.equal(resultWith([{ type: 'tool_reference', tool_name: '"nextPageToken":"abc"' }]).hasNextPage, false);
-  assert.equal(resultWith([{ type: 'thinking', text: '{"nextPageToken":"abc"}' }]).hasNextPage, false);
-  assert.equal(resultWith([{ type: 'text', text: 7 }, null, 'x']).hasNextPage, false);
-  // An event description that mentions a token is escaped inside the JSON text.
-  assert.equal(resultWith(JSON.stringify({ description: 'copy "nextPageToken":"abc" here' })).hasNextPage, false);
-  assert.equal(resultWith({ nextPageToken: 'abc' }).hasNextPage, false);
-  assert.equal(resultWith(undefined).hasNextPage, false);
+test('only a non-empty string at the top level is a next page: empty, null, a number, and a token nested in an event or quoted in a field are none', () => {
+  const emptied = fixture('connectors-connected').replace(/\\"nextPageToken\\":\\"[^\\"]+\\"/, '\\"nextPageToken\\":\\"\\"');
+  assert.notEqual(emptied, fixture('connectors-connected'));
+  assert.deepEqual(parseStream(emptied).toolResults.map((t) => [t.complete, t.hasNextPage]), [[false, false], [true, false], [true, false], [true, false], [true, true]]);
+  for (const content of ['{"events":[],"nextPageToken":""}', '{"events":[],"nextPageToken":null}', '{"events":[]}', '{"nextPageToken":42}', '{"nextPageToken":{"v":"abc"}}', '{"nextPageToken":["abc"]}']) {
+    assert.deepEqual(page(content), WHOLE_LAST, content);
+  }
+  // A third party's event cannot hold the page open, and neither can a mention of a token.
+  assert.deepEqual(page(JSON.stringify({ events: [{ id: 'evt-0001', conferenceData: { parameters: { nextPageToken: 'abc' } } }] })), WHOLE_LAST);
+  assert.deepEqual(page(JSON.stringify({ description: 'copy "nextPageToken":"abc" here' })), WHOLE_LAST);
+  // A document whose top level is not an object has no token.
+  for (const content of ['null', '[{"nextPageToken":"abc"}]', '"nextPageToken"', '5']) assert.deepEqual(page(content), WHOLE_LAST, content);
+  for (const content of ['{"events":[],"nextPageToken" : "abc="}', '{\n  "nextPageToken": "abc="\n}', '{"nextPageToken":" "}']) {
+    assert.deepEqual(page(content), WHOLE_NEXT, content);
+  }
+});
+
+test('a result that is not JSON, or is more than one document, is incomplete: a notice, a saved-file message, two documents, nothing', () => {
+  for (const content of ['Error: the result is too large; it was saved to /home/ana/tmp/result.txt', '{"a":1}{"b":2}', '{"events":[]}\nmore', '', '   ']) {
+    assert.deepEqual(page(content), PART, content);
+  }
+  for (const content of [undefined, null, 7, { nextPageToken: 'abc' }]) assert.deepEqual(page(content), PART, JSON.stringify(content));
+});
+
+test('a result given as blocks is read from its text blocks concatenated; other blocks, and a text that is not a string, are not text', () => {
+  assert.deepEqual(page([{ type: 'text', text: '{"files":[],"nextPageToken":"abc"}' }]), WHOLE_NEXT);
+  assert.deepEqual(page([{ type: 'image', source: {} }, { type: 'text', text: '{"nextPageToken":"abc"}' }]), WHOLE_NEXT);
+  assert.deepEqual(page([{ type: 'text', text: '{"files":[],"nextPage' }, { type: 'text', text: 'Token":"abc"}' }]), WHOLE_NEXT);
+  assert.deepEqual(page([{ type: 'text', text: '{"files":[]}' }, { type: 'text', text: '{"nextPageToken":"abc"}' }]), PART);
+  assert.deepEqual(page([{ type: 'tool_reference', tool_name: 'mcp__claude_ai_Google_Drive__search_files' }]), PART);
+  assert.deepEqual(page([{ type: 'thinking', text: '{"nextPageToken":"abc"}' }]), PART);
+  assert.deepEqual(page([{ type: 'text', text: 7 }, null, 'x']), PART);
 });
 
 // --- the fixtures -------------------------------------------------------------------

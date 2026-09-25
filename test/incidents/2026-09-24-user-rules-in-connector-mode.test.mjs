@@ -44,14 +44,14 @@ test('the rewritten command\'s allow rule reaches neither of the round\'s own li
   assert.equal(allowedTools().includes('Bash(rtk curl *)'), false);
   assert.equal(disallowedTools().includes('Bash(rtk curl *)'), false);
   assert.ok(disallowedTools().includes('Bash(curl:*)'), 'the round denies curl, not the form the hook rewrote it into');
-  const mirror = mirrorUserRules({ files, ownAllowed: allowedTools(), vaultRoot: '/home/ana/vault' });
+  const mirror = mirrorUserRules({ files, ownAllowed: allowedTools(), vaultRoot: '/home/ana/vault', home: '/home/ana' });
   assert.deepEqual(mirror, { deny: ['Bash(rtk curl *)'], widenedReads: [], blocking: [], dropNodeForms: false });
 });
 
 test('end to end through the child process: the connector-mode argument vector carries the mirrored deny and switches the hook off', async () => {
   const configDir = measuredSettings();
   const env = { ...process.env, CLAUDE_CONFIG_DIR: configDir };
-  const mirror = mirrorUserRules({ files: userSettingsFiles(env), ownAllowed: allowedTools(), vaultRoot: '/home/ana/vault' });
+  const mirror = mirrorUserRules({ files: userSettingsFiles(env), ownAllowed: allowedTools(), vaultRoot: '/home/ana/vault', home: '/home/ana' });
   const disallowed = [...disallowedTools(), ...mirror.deny];
   const argv = buildArgv({ mode: 'connectors', allowed: allowedTools(), disallowed });
   const dir = makeTempDir('brain-kit-incident-0924-rules-run-');

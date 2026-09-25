@@ -22,6 +22,20 @@
  */
 
 /**
+ * One entry of the round record's `toolResults`, as `readEvidence` sees it
+ * (src/harness/stream.mjs; rulings R-B3 and I2 of 25/09/2026). A connector
+ * source must treat a result with `complete === false` as a failed call,
+ * the same as `isError`: the model saw only part of it (cut, previewed or
+ * followed by a notice), so neither its content nor the absence of a next
+ * page can be trusted. `hasNextPage` is read only from a complete result.
+ * @typedef {Object} ToolResult
+ * @property {string} toolUseId     the tool_use this answers
+ * @property {boolean} isError      the CLI reported the call as an error
+ * @property {boolean} complete     the result's text parses as one JSON document
+ * @property {boolean} hasNextPage  that document's top-level nextPageToken is a non-empty string
+ */
+
+/**
  * @typedef {Object} Source
  * @property {string} id                         key used in config and in the round's report
  * @property {'local'|'connector'} kind

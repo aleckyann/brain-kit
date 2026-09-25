@@ -76,8 +76,12 @@ function readDirRule(dir) {
 // (whose push ran the hook, outside every allowlist) and wrote the hook
 // back byte for byte, leaving no trace. `propose`, joined to a round,
 // also refuses when any of these differs from HEAD (defense in depth).
+// `.mcp.json` declares MCP servers a session may start before any
+// permission check; connector mode runs without --strict-mcp-config, and
+// whether it starts a working directory's `.mcp.json` is not measured
+// (review M4 of task 2, 25/09/2026).
 export const PROTECTED_PATHS = Object.freeze([
-  '.githooks', '.git', '.github', '.claude', '.brain-kit', 'brain-kit.config.json', '.gitignore', '.gitattributes', '.gitmodules',
+  '.githooks', '.git', '.github', '.claude', '.brain-kit', 'brain-kit.config.json', '.gitignore', '.gitattributes', '.gitmodules', '.mcp.json',
 ]);
 
 // Both forms for every protected path, the path itself and everything

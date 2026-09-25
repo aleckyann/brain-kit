@@ -24,9 +24,12 @@
 //   absent         not in the server list: never connected in claude.ai,
 //                  or disabled for Claude Code; the two cannot be told apart
 //   tools_missing  listed as connected, but a tool the source needs is not
-//                  in the session (the fifth trap of 05 to 08/09/2026);
-//                  `observedPrefix` names the prefix the tools were seen
-//                  under, when one of them is there at all
+//                  in the session (the fifth trap of 05 to 08/09/2026), or
+//                  the source names no tool at all; `observedPrefix` names
+//                  another prefix under which every one of its tools was
+//                  seen (a source configured with the wrong prefix), and is
+//                  null otherwise: one tool of the same name on an
+//                  unrelated server proves nothing (review M5, 25/09/2026)
 //   unknown        any other status, or one that is not a string: a status
 //                  a later release adds stays unknown until it is mapped
 //
@@ -55,13 +58,14 @@ export function connectorStates(init, specs) {
       out[spec.id] = { state: mapped, rawStatus: raw, observedPrefix: null };
       continue;
     }
-    const missing = spec.toolSuffixes.filter((suffix) => !tools.includes(spec.toolPrefix + suffix));
-    if (missing.length === 0) {
+    const suffixes = spec.toolSuffixes;
+    const carries = (prefix) => suffixes.length > 0 && suffixes.every((suffix) => tools.includes(prefix + suffix));
+    if (carries(spec.toolPrefix)) {
       out[spec.id] = { state: 'connected', rawStatus: raw, observedPrefix: spec.toolPrefix };
       continue;
     }
-    const seen = tools.find((name) => typeof name === 'string' && spec.toolSuffixes.some((suffix) => name.endsWith(`__${suffix}`)));
-    const observedPrefix = seen ? seen.slice(0, seen.lastIndexOf('__') + 2) : null;
+    const prefixes = new Set(tools.filter((name) => typeof name === 'string' && name.lastIndexOf('__') > 0).map((name) => name.slice(0, name.lastIndexOf('__') + 2)));
+    const observedPrefix = [...prefixes].find(carries) ?? null;
     out[spec.id] = { state: 'tools_missing', rawStatus: raw, observedPrefix };
   }
   return out;

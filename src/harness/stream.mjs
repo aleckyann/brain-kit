@@ -25,11 +25,21 @@
 // 24/09/2026, test/fixtures/stream/connectors-connected.jsonl) carries its
 // answer as a string of compact JSON in `content`, with the same text in a
 // top-level `tool_use_result`; a list or a search that has more pages holds
-// `"nextPageToken":"<token>"` in that text, and its last page has no such
-// key. Every entry of `toolResults` says whether its text holds a
-// non-empty token (`hasNextPage`, ruling R-B3; a content given as blocks is
-// read from its text blocks, joined), so a source can tell a first page
-// from every page. The text itself is never kept in the record.
+// `"nextPageToken":"<token>"` at the top level of that document, and its
+// last page has no such key. Every entry of `toolResults` carries, besides
+// `toolUseId` and `isError` (rulings R-B3 and I2 of 25/09/2026):
+//   complete     the result's text (its string content, or its text blocks
+//                concatenated) parses as one JSON document. A result the
+//                model saw only in part (cut, previewed, or followed by a
+//                notice) does not, and must read as a failed call: the
+//                capture's keys are sorted, so the token comes right after
+//                the list a size cap would cut first
+//   hasNextPage  that document's top-level `nextPageToken` is a non-empty
+//                string; false whenever `complete` is false, and for a token
+//                nested anywhere else (a third party's event cannot hold a
+//                page open)
+// so a source can tell a first page, or a part of one, from every page.
+// The text itself is never kept in the record.
 
 const KNOWN_SYSTEM_SUBTYPES = new Set([
   'init',
@@ -57,17 +67,25 @@ function contentBlocks(event) {
   return Array.isArray(content) ? content.filter(isObject) : [];
 }
 
-// A next-page token in the form the capture showed. Inside the JSON text a
-// quote that belongs to a string value is escaped, so a description that
-// merely mentions a token does not match.
-const NEXT_PAGE_TOKEN = /"nextPageToken"\s*:\s*"[^"]+"/;
-
 // The text of a tool result: its content when that is a string, the text
 // of its text blocks when it is a list, nothing otherwise.
 function resultText(content) {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
   return content.filter((block) => isObject(block) && block.type === 'text' && typeof block.text === 'string').map((block) => block.text).join('');
+}
+
+// `complete` and `hasNextPage` for one tool result's content (see the
+// header).
+function pageOf(content) {
+  let document;
+  try {
+    document = JSON.parse(resultText(content));
+  } catch {
+    return { complete: false, hasNextPage: false };
+  }
+  const token = isObject(document) ? document.nextPageToken : undefined;
+  return { complete: true, hasNextPage: typeof token === 'string' && token !== '' };
 }
 
 // An incremental reader: `push` one line at a time (runModel feeds it as the
@@ -147,7 +165,7 @@ export function createStreamParser() {
     } else if (type === 'user') {
       for (const block of contentBlocks(event)) {
         if (block.type === 'tool_result') {
-          toolResults.push({ toolUseId: block.tool_use_id, isError: block.is_error === true, hasNextPage: NEXT_PAGE_TOKEN.test(resultText(block.content)) });
+          toolResults.push({ toolUseId: block.tool_use_id, isError: block.is_error === true, ...pageOf(block.content) });
         }
       }
     }

@@ -53,6 +53,17 @@
 // where an allow rule the round keeps says so. src/guards/connectors.mjs
 // reads each connector's state from the same init event.
 //
+// MEMORY (ruling R-C1). Measured by the controller on 25/09/2026 with
+// Claude Code 2.1.281, from the init event (emitted before any model
+// call): with no switch, init.memory_paths lists the auto-memory directory
+// in both launch modes; with CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 and
+// CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 in the environment it is absent. A
+// round's context is the kit's prompt, not the person's memories or global
+// instructions, and a round writes no memory outside the vault: runModel
+// merges ROUND_ENV over whatever environment it is given, so no caller can
+// turn the switches off, and src/guards/isolation.mjs stops a round whose
+// init event still lists memory paths.
+//
 // `--verbose` is required: `-p --output-format stream-json` without it
 // exits 1 ("When using --print, --output-format=stream-json requires
 // --verbose"). The prompt never goes on the argument vector: `--` closes it
@@ -88,6 +99,8 @@ export const CONNECTOR_ARGS = Object.freeze([
   '--tools', ROUND_TOOLS.join(','),
   '--no-session-persistence',
 ]);
+
+export const ROUND_ENV = Object.freeze({ CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1' });
 
 // The flags each launch mode starts with. A mode not listed here is a
 // caller's mistake, never a default.
@@ -229,6 +242,7 @@ function killGroup(child, signal) {
 // run; and a grandchild that holds standard output open after the CLI
 // exited is killed after DRAIN_GRACE_MS, so the run still ends.
 // An `onLine` that throws aborts the run with that error as the reason.
+// The child gets `env` with ROUND_ENV merged over it, always.
 export function runModel({
   claudeBin, argv, prompt, cwd, env = process.env, timeoutMs, onLine, killGraceMs = KILL_GRACE_MS, abortSignal, drainGraceMs = DRAIN_GRACE_MS,
 }) {
@@ -243,7 +257,7 @@ export function runModel({
     let graceTimer = null;
     let drainTimer = null;
 
-    const child = spawn(claudeBin, argv, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
+    const child = spawn(claudeBin, argv, { cwd, env: { ...env, ...ROUND_ENV }, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
 
     const stop = () => {
       if (graceTimer !== null) return;
