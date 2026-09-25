@@ -391,6 +391,11 @@
       "attachments/",
       ".brain-kit/",
       "memory/log.md#full"
+    ],
+    "upcoming_days": 7,
+    "pending": [
+      { "file": "followups", "heading": "open_heading", "date_column": "Deadline", "what_column": "What" },
+      { "file": "promises", "heading": "active_heading", "date_column": "Condition / deadline", "what_column": "What I promised" }
     ]
   }
 }

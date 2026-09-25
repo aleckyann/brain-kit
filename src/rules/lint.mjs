@@ -843,7 +843,11 @@ function unescapeSeparator(text) {
 // `|---|`, splitTableRow's outer-pipe strip leaves the delimiter's pipes
 // in place before its own dash test ever runs), so nothing this format
 // actually offers is declined by requiring one here too.
-function findAllTables(strippedBody) {
+// Exported for src/briefing/pending.mjs, which reads the pending tables'
+// rows with this scanner rather than a second one: a row the briefing
+// read differently from how this rule reads it would be a deadline one of
+// them misses.
+export function findAllTables(strippedBody) {
   const lines = strippedBody.split('\n');
   const found = [];
   let i = 0;

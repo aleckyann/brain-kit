@@ -348,7 +348,9 @@ function captureIo() {
   return { io: { stdout: sink, stderr: sink }, text: () => text };
 }
 
-function ghEnvOf(env) {
+// Exported for the briefing's preflight (src/briefing/facts.mjs), whose
+// `gh pr list` runs with this same environment.
+export function ghEnvOf(env) {
   return { ...gitEnv(env), GIT_TERMINAL_PROMPT: '0', GH_PROMPT_DISABLED: '1' };
 }
 

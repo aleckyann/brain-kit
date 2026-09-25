@@ -664,7 +664,9 @@ function readLastRun(stateDir) {
 // A round that does not see a source's connector (no day for it, a round
 // that stopped before the model) keeps what the last one saw, so a state
 // that stays the same is never announced twice (ruling of task 5).
-function knownStates(previous) {
+// Exported for the briefing's preflight (src/briefing/facts.mjs), which
+// states the carried states with this same reading of them.
+export function knownStates(previous) {
   const out = {};
   const carried = previous?.connectorStates;
   if (carried === null || typeof carried !== 'object' || Array.isArray(carried)) return out;

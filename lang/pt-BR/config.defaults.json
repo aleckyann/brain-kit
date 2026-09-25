@@ -391,6 +391,11 @@
       "anexos/",
       ".brain-kit/",
       "memoria/log.md#inteiro"
+    ],
+    "upcoming_days": 7,
+    "pending": [
+      { "file": "followups", "heading": "open_heading", "date_column": "Prazo", "what_column": "O que" },
+      { "file": "promises", "heading": "active_heading", "date_column": "Condição / prazo", "what_column": "O que prometi" }
     ]
   }
 }

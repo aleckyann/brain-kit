@@ -304,7 +304,20 @@
         "strategy_doc": { "type": "object", "additionalProperties": false, "properties": { "index": { "type": "string" }, "title_contains": { "type": "string" } } },
         "main_metric": { "type": "string" }, "calendar_id": { "type": ["string", "null"] },
         "read": { "type": "array", "items": { "type": "string" } },
-        "never_read": { "type": "array", "items": { "type": "string" } }
+        "never_read": { "type": "array", "items": { "type": "string" } },
+        "upcoming_days": { "type": "integer", "minimum": 0 },
+        "pending": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["file", "heading", "date_column", "what_column"],
+            "properties": {
+              "file": { "type": "string", "minLength": 1 },
+              "heading": { "type": "string", "minLength": 1 },
+              "date_column": { "type": "string", "minLength": 1 },
+              "what_column": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
       }
     }
   }
