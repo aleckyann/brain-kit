@@ -130,6 +130,7 @@ function problemLine(t, { code, detail }) {
     case 'tables_ignored': return t('preflight.problem_tables_ignored', { path: detail.path, heading: detail.heading, count: detail.count });
     case 'column_missing': return t('preflight.problem_column_missing', { path: detail.path, line: detail.line, heading: detail.heading, column: detail.column });
     case 'invalid_date': return t('preflight.problem_invalid_date', { path: detail.path, line: detail.line, value: detail.value });
+    case 'ambiguous_deadline': return t('preflight.problem_ambiguous_deadline', { path: detail.path, line: detail.line, deadline: humanDay(detail.deadline), others: detail.others.map((value) => `"${value}"`) });
     case 'date_without_year': return t('preflight.problem_date_without_year', { path: detail.path, line: detail.line, value: detail.value });
     default: return t('preflight.problem_unknown', { code, detail: JSON.stringify(detail) });
   }

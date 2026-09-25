@@ -26,7 +26,11 @@
 // is due 05/10/2026. A date-shaped text that names no real day (31/02) is
 // a problem naming the file and the line, and when the cell holds no real
 // date at all the item goes to `undated`: an item is never dropped, and
-// "no date" is a bucket of its own, never silence.
+// "no date" is a bucket of its own, never silence. A cell whose deadline
+// was found but which holds any other date-like text (an unreal date, a
+// date with no year, a second full date) keeps that deadline and is a
+// problem naming the other texts: the deadline may not be the one meant
+// (ruling R-T4).
 //
 // Buckets, for `today` in the vault's time zone and N upcoming days:
 //   overdue   deadline before today
@@ -70,15 +74,21 @@ function pad(n, width = 2) {
   return String(n).padStart(width, '0');
 }
 
-// The deadline a cell holds: `{ deadline, invalid, incomplete }`,
+// The deadline a cell holds: `{ deadline, invalid, incomplete, others }`,
 // `deadline` the first real date as YYYY-MM-DD or null, `invalid` every
-// date-shaped text in the cell that names no real day, as written, and
-// `incomplete` every day and month written without a four-digit year.
+// date-shaped text in the cell that names no real day, as written,
+// `incomplete` every day and month written without a four-digit year, and
+// `others` every date-like text in the cell but the one the deadline came
+// from (unreal, yearless, or a second full date), in the cell's order: what
+// makes the deadline possibly not the one the person meant (ruling R-T4).
 export function parseDeadline(cell) {
   const text = typeof cell === 'string' ? cell : '';
   let deadline = null;
+  let chosen = -1;
   const invalid = [];
+  const tokens = [];
   for (const match of text.matchAll(DATE_IN_TEXT)) {
+    tokens.push({ at: match.index, value: match[0] });
     const dmy = match[1] !== undefined;
     const year = Number(dmy ? match[3] : match[4]);
     const month = Number(dmy ? match[2] : match[5]);
@@ -87,10 +97,18 @@ export function parseDeadline(cell) {
       invalid.push(match[0]);
       continue;
     }
-    if (deadline === null) deadline = `${pad(year, 4)}-${pad(month)}-${pad(day)}`;
+    if (deadline === null) {
+      deadline = `${pad(year, 4)}-${pad(month)}-${pad(day)}`;
+      chosen = match.index;
+    }
   }
-  const incomplete = [...text.matchAll(DATE_WITHOUT_YEAR)].map((match) => match[0]);
-  return { deadline, invalid, incomplete };
+  const incomplete = [];
+  for (const match of text.matchAll(DATE_WITHOUT_YEAR)) {
+    incomplete.push(match[0]);
+    tokens.push({ at: match.index, value: match[0] });
+  }
+  const others = tokens.filter((token) => token.at !== chosen).sort((a, b) => a.at - b.at).map((token) => token.value);
+  return { deadline, invalid, incomplete, others };
 }
 
 // Which bucket a deadline falls in: 'overdue' | 'today' | 'upcoming' |
@@ -260,9 +278,15 @@ export function pendingBuckets({ root, config, today, tz }) {
       if (cells.every((cell) => cell === '')) continue;
       const line = prefix + section.start + row.lineIndex;
       const raw = cells[dateAt] ?? '';
-      const { deadline, invalid, incomplete } = parseDeadline(raw);
-      for (const value of invalid) problems.push({ code: 'invalid_date', detail: { path, line, value } });
-      if (deadline === null) for (const value of incomplete) problems.push({ code: 'date_without_year', detail: { path, line, value } });
+      const { deadline, invalid, incomplete, others } = parseDeadline(raw);
+      if (deadline === null) {
+        for (const value of invalid) problems.push({ code: 'invalid_date', detail: { path, line, value } });
+        for (const value of incomplete) problems.push({ code: 'date_without_year', detail: { path, line, value } });
+      } else if (others.length > 0) {
+        // The item keeps its bucket by the first real date, and the cell is
+        // named with every other date-like text in it (ruling R-T4).
+        problems.push({ code: 'ambiguous_deadline', detail: { path, line, deadline, others } });
+      }
       const item = { file: path, line, what: cells[whatAt] ?? '', deadline, raw, order };
       order += 1;
       const bucket = bucketOf(deadline, day, upcomingDays);

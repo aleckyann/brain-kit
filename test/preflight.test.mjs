@@ -660,12 +660,13 @@ test('the text names every weekday, and every pending problem, in both languages
     { code: 'invalid_date', detail: { path: 'a.md', line: 13, value: '31/02/2026' } },
     { code: 'date_without_year', detail: { path: 'a.md', line: 14, value: '05/10' } },
     { code: 'from_the_future', detail: { path: 'a.md' } },
+    { code: 'ambiguous_deadline', detail: { path: 'a.md', line: 15, deadline: '2026-10-12', others: ['05/10', '31/02/2026'] } },
   ];
   for (const lang of ['en', 'pt-BR']) {
     const facts = makeFactsWorld().facts();
     facts.pending.problems = problems;
     const lines = renderPreflight(facts, t[lang], { vault: '/v' }).split('\n');
-    const at = lines.findIndex((line) => /\((14)\):$/.test(line));
+    const at = lines.findIndex((line) => /\((15)\):$/.test(line));
     assert.notEqual(at, -1, lang);
     const rendered = lines.slice(at + 1, at + 1 + problems.length);
     assert.equal(new Set(rendered).size, problems.length, `${lang}: each problem has its own sentence`);
@@ -675,6 +676,7 @@ test('the text names every weekday, and every pending problem, in both languages
     assert.ok(rendered[11].includes('a.md:13') && rendered[11].includes('31/02/2026'), rendered[11]);
     assert.ok(rendered[12].includes('a.md:14') && rendered[12].includes('05/10'), rendered[12]);
     assert.ok(rendered[13].includes('from_the_future') && rendered[13].includes('a.md'), 'an unknown code is named, never taken for another');
+    assert.ok(rendered[14].includes('a.md:15') && rendered[14].includes('12/10/2026') && rendered[14].includes('"05/10", "31/02/2026"'), rendered[14]);
   }
 });
 

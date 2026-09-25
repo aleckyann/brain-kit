@@ -56,10 +56,10 @@ function assertPartition(result, rowCount) {
 // ------------------------------------------------------------ parseDeadline
 
 test('parseDeadline: DD/MM/YYYY, D/M/YYYY and YYYY-MM-DD read as the same day', () => {
-  assert.deepEqual(parseDeadline('05/10/2026'), { deadline: '2026-10-05', invalid: [], incomplete: [] });
-  assert.deepEqual(parseDeadline('5/10/2026'), { deadline: '2026-10-05', invalid: [], incomplete: [] });
-  assert.deepEqual(parseDeadline('2026-10-05'), { deadline: '2026-10-05', invalid: [], incomplete: [] });
-  assert.deepEqual(parseDeadline('31/12/2026'), { deadline: '2026-12-31', invalid: [], incomplete: [] });
+  assert.deepEqual(parseDeadline('05/10/2026'), { deadline: '2026-10-05', invalid: [], incomplete: [], others: [] });
+  assert.deepEqual(parseDeadline('5/10/2026'), { deadline: '2026-10-05', invalid: [], incomplete: [], others: [] });
+  assert.deepEqual(parseDeadline('2026-10-05'), { deadline: '2026-10-05', invalid: [], incomplete: [], others: [] });
+  assert.deepEqual(parseDeadline('31/12/2026'), { deadline: '2026-12-31', invalid: [], incomplete: [], others: [] });
 });
 
 test('parseDeadline: a date inside text is found', () => {
@@ -75,42 +75,71 @@ test('parseDeadline: with two dates the FIRST real one is the deadline, whatever
 });
 
 test('parseDeadline: a date that is not real is reported and never taken; a real one after it still is', () => {
-  assert.deepEqual(parseDeadline('31/02/2026'), { deadline: null, invalid: ['31/02/2026'], incomplete: [] });
-  assert.deepEqual(parseDeadline('2026-02-30'), { deadline: null, invalid: ['2026-02-30'], incomplete: [] });
-  assert.deepEqual(parseDeadline('2026-13-01'), { deadline: null, invalid: ['2026-13-01'], incomplete: [] });
-  assert.deepEqual(parseDeadline('00/10/2026'), { deadline: null, invalid: ['00/10/2026'], incomplete: [] });
-  assert.deepEqual(parseDeadline('31/02/2026 or 05/03/2026'), { deadline: '2026-03-05', invalid: ['31/02/2026'], incomplete: [] });
-  assert.deepEqual(parseDeadline('05/03/2026 or 31/02/2026'), { deadline: '2026-03-05', invalid: ['31/02/2026'], incomplete: [] });
+  assert.deepEqual(parseDeadline('31/02/2026'), { deadline: null, invalid: ['31/02/2026'], incomplete: [], others: ['31/02/2026'] });
+  assert.deepEqual(parseDeadline('2026-02-30'), { deadline: null, invalid: ['2026-02-30'], incomplete: [], others: ['2026-02-30'] });
+  assert.deepEqual(parseDeadline('2026-13-01'), { deadline: null, invalid: ['2026-13-01'], incomplete: [], others: ['2026-13-01'] });
+  assert.deepEqual(parseDeadline('00/10/2026'), { deadline: null, invalid: ['00/10/2026'], incomplete: [], others: ['00/10/2026'] });
+  assert.deepEqual(parseDeadline('31/02/2026 or 05/03/2026'), { deadline: '2026-03-05', invalid: ['31/02/2026'], incomplete: [], others: ['31/02/2026'] });
+  assert.deepEqual(parseDeadline('05/03/2026 or 31/02/2026'), { deadline: '2026-03-05', invalid: ['31/02/2026'], incomplete: [], others: ['31/02/2026'] });
 });
 
 test('parseDeadline: the leap day exists only in a leap year', () => {
   assert.equal(parseDeadline('29/02/2028').deadline, '2028-02-29');
-  assert.deepEqual(parseDeadline('29/02/2026'), { deadline: null, invalid: ['29/02/2026'], incomplete: [] });
-  assert.deepEqual(parseDeadline('29/02/2100'), { deadline: null, invalid: ['29/02/2100'], incomplete: [] });
+  assert.deepEqual(parseDeadline('29/02/2026'), { deadline: null, invalid: ['29/02/2026'], incomplete: [], others: ['29/02/2026'] });
+  assert.deepEqual(parseDeadline('29/02/2100'), { deadline: null, invalid: ['29/02/2100'], incomplete: [], others: ['29/02/2100'] });
   assert.equal(parseDeadline('2000-02-29').deadline, '2000-02-29');
 });
 
 test('parseDeadline: no date, or digits that only look like one, is no deadline and no problem', () => {
   for (const cell of ['', 'someday', 'after the board meeting', '10/2026', '123/10/2026', '05/10/20266', '12026-10-05', '2026-10-5', 'Q4']) {
-    assert.deepEqual(parseDeadline(cell), { deadline: null, invalid: [], incomplete: [] }, cell);
+    assert.deepEqual(parseDeadline(cell), { deadline: null, invalid: [], incomplete: [], others: [] }, cell);
   }
-  assert.deepEqual(parseDeadline(undefined), { deadline: null, invalid: [], incomplete: [] });
+  assert.deepEqual(parseDeadline(undefined), { deadline: null, invalid: [], incomplete: [], others: [] });
 });
 
 test('parseDeadline: a day and month with no four-digit year is named, never taken for a date', () => {
-  assert.deepEqual(parseDeadline('até 05/10'), { deadline: null, invalid: [], incomplete: ['05/10'] });
-  assert.deepEqual(parseDeadline('05/10/26'), { deadline: null, invalid: [], incomplete: ['05/10/26'] });
-  assert.deepEqual(parseDeadline('5/1 or 12/12'), { deadline: null, invalid: [], incomplete: ['5/1', '12/12'] });
-  assert.deepEqual(parseDeadline('05/10/2026'), { deadline: '2026-10-05', invalid: [], incomplete: [] }, 'no part of a full date is incomplete');
-  assert.deepEqual(parseDeadline('1/2/3'), { deadline: null, invalid: [], incomplete: [] });
+  assert.deepEqual(parseDeadline('até 05/10'), { deadline: null, invalid: [], incomplete: ['05/10'], others: ['05/10'] });
+  assert.deepEqual(parseDeadline('05/10/26'), { deadline: null, invalid: [], incomplete: ['05/10/26'], others: ['05/10/26'] });
+  assert.deepEqual(parseDeadline('5/1 or 12/12'), { deadline: null, invalid: [], incomplete: ['5/1', '12/12'], others: ['5/1', '12/12'] });
+  assert.deepEqual(parseDeadline('05/10/2026'), { deadline: '2026-10-05', invalid: [], incomplete: [], others: [] }, 'no part of a full date is incomplete');
+  assert.deepEqual(parseDeadline('1/2/3'), { deadline: null, invalid: [], incomplete: [], others: [] });
 });
 
 test('pendingBuckets: a date with no year is a problem naming the file and line, and the item is undated', () => {
   const { result } = buckets({ [FOLLOWUPS]: followups([['no year', 'até 05/10'], ['with a real one too', '05/10 or 12/10/2026']]), [PROMISES]: promises([]) });
   assert.deepEqual(whats(result.undated), ['no year']);
   assert.equal(result.later, 1, 'the cell with a real date is bucketed by it');
-  assert.deepEqual(result.problems, [{ code: 'date_without_year', detail: { path: FOLLOWUPS, line: 16, value: '05/10' } }],
-    'a cell whose deadline was found says nothing more');
+  assert.deepEqual(result.problems, [
+    { code: 'date_without_year', detail: { path: FOLLOWUPS, line: 16, value: '05/10' } },
+    { code: 'ambiguous_deadline', detail: { path: FOLLOWUPS, line: 17, deadline: '2026-10-12', others: ['05/10'] } },
+  ], 'a cell whose deadline was found names the date it did not take');
+});
+
+test('parseDeadline: others lists every date-like text but the chosen one, in the cell\'s order', () => {
+  assert.deepEqual(parseDeadline('05/10 or 12/10/2026').others, ['05/10']);
+  assert.deepEqual(parseDeadline('12/10/2026, else 05/10').others, ['05/10']);
+  assert.deepEqual(parseDeadline('05/10/2026 or 12/10/2026').others, ['12/10/2026']);
+  assert.deepEqual(parseDeadline('31/02/2026, 05/03/2026 or 2026-03-09, maybe 1/4').others, ['31/02/2026', '2026-03-09', '1/4']);
+  assert.deepEqual(parseDeadline('05/10 or 12/10/2026 or 2026-12-01').others, ['05/10', '2026-12-01'], 'a yearless date before a full one keeps its place');
+  assert.deepEqual(parseDeadline('05/10/2026').others, []);
+  assert.deepEqual(parseDeadline('by 05/10/2026 at the latest').others, []);
+});
+
+test('pendingBuckets: a deadline cell holding more than one date keeps its bucket and is named (ruling R-T4)', () => {
+  const rows = [
+    ['yearless and full', '05/10 or 12/10/2026'],
+    ['two full', '26/09/2026 or 01/12/2026'],
+    ['unreal and full', '31/02/2026, really 27/09/2026'],
+    ['single', '28/09/2026'],
+  ];
+  const { result } = buckets({ [FOLLOWUPS]: followups(rows), [PROMISES]: promises([]) });
+  assert.deepEqual(whats(result.upcoming), ['two full', 'unreal and full', 'single'], 'each keeps the bucket of its first real full date');
+  assert.equal(result.later, 1, '12/10/2026 is past the window');
+  assert.deepEqual(result.problems, [
+    { code: 'ambiguous_deadline', detail: { path: FOLLOWUPS, line: 16, deadline: '2026-10-12', others: ['05/10'] } },
+    { code: 'ambiguous_deadline', detail: { path: FOLLOWUPS, line: 17, deadline: '2026-09-26', others: ['01/12/2026'] } },
+    { code: 'ambiguous_deadline', detail: { path: FOLLOWUPS, line: 18, deadline: '2026-09-27', others: ['31/02/2026'] } },
+  ], 'the single-date cell is not named');
 });
 
 // ------------------------------------------------------------ bucketOf
@@ -165,7 +194,7 @@ test('pendingBuckets: an unreal date is a problem naming the file and the line',
   const { result } = buckets({ [FOLLOWUPS]: followups(rows), [PROMISES]: promises([]) });
   assert.deepEqual(result.problems, [
     { code: 'invalid_date', detail: { path: FOLLOWUPS, line: 17, value: '31/02/2026' } },
-    { code: 'invalid_date', detail: { path: FOLLOWUPS, line: 18, value: '30/02/2026' } },
+    { code: 'ambiguous_deadline', detail: { path: FOLLOWUPS, line: 18, deadline: '2026-10-01', others: ['30/02/2026'] } },
   ]);
   const text = readFileSync(join(makeVault({ files: { [FOLLOWUPS]: followups(rows) } }), FOLLOWUPS), 'utf8').split('\n');
   assert.match(text[16], /\| bad \|/, 'line 17 of the file is the row reported');

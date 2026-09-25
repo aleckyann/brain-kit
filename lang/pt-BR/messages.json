@@ -699,6 +699,7 @@
   "preflight.problem_column_missing": "  {path}:{line}: a tabela sob \"{heading}\" não tem a coluna \"{column}\"; a tabela não foi lida.",
   "preflight.problem_invalid_date": "  {path}:{line}: \"{value}\" não é uma data que existe; o item conta pela primeira data real da célula, ou como sem data.",
   "preflight.default_branch": "o branch padrão",
+  "preflight.problem_ambiguous_deadline": "  {path}:{line}: o prazo foi tomado como {deadline}, a primeira data completa e real da célula, mas a célula também tem {others}; o item pode vencer em outro dia, então diga qual é a data certa.",
   "preflight.problem_date_without_year": "  {path}:{line}: \"{value}\" não tem ano com quatro dígitos, então não foi tomado como data; o item fica sem data.",
   "preflight.problem_unknown": "  um problema para o qual esta versão não tem frase: {code} {detail}",
   "preflight.machine_unreadable": "brain-kit preflight: o machine.json desta máquina não pode ser lido, e nada abaixo vem dele: {detail}",
