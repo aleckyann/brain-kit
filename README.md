@@ -231,7 +231,11 @@ marketplace. Inside a vault:
   began, and keeps that record across compaction;
 - the `Stop` hook asks the session to curate only what it changed itself. It never
   blocks outside a vault, in a copy away from the registered vault path, while another
-  writer holds the lock, or twice in a row;
+  writer holds the lock, or twice in a row, and it leaves out a file whose bytes are
+  still exactly what an earlier `propose` pushed (a proposal never moves the working
+  tree, so its files stay changed until the next `sync` brings them back to the default
+  branch's content; one byte edited after the push makes the file the session's work
+  again);
 - nine skills drive the engine in the vault's own language: `setup`, `curate-session`,
   `capture`, `ask`, `lint`, `review-stale`, `approve`, `seed-rituals` and `briefing`;
 - the `vault-reader` subagent reads notes with Read, Grep and Glob only.

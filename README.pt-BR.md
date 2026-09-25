@@ -237,7 +237,11 @@ pelo marketplace. Dentro de um vault:
   e mantém esse registro depois de uma compactação;
 - o hook `Stop` pede à sessão que cure só o que ela mesma mudou. Ele nunca bloqueia fora
   de um vault, numa cópia longe do caminho registrado do vault, enquanto outro processo
-  segura o lock, nem duas vezes seguidas;
+  segura o lock, nem duas vezes seguidas, e deixa de fora um arquivo cujos bytes ainda
+  são exatamente o que um `propose` anterior enviou (uma proposta nunca mexe na árvore de
+  trabalho, então os arquivos dela continuam mudados até o próximo `sync` devolvê-los ao
+  conteúdo do branch padrão; um byte editado depois do envio torna o arquivo trabalho da
+  sessão de novo);
 - nove skills conduzem o motor no idioma do próprio vault: `setup`, `curate-session`,
   `capture`, `ask`, `lint`, `review-stale`, `approve`, `seed-rituals` e `briefing`;
 - o subagente `vault-reader` lê notas só com Read, Grep e Glob.

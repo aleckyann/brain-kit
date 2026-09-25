@@ -15,9 +15,13 @@
 //   1. An operation left half done (a rebase, a merge, a cherry-pick, a
 //      revert, a bisection) postpones the run, exit 75: checking out
 //      another branch in the middle of one strands it.
-//   2. A dirty working tree (anything `git status` reports but an ignored
-//      file) postpones the run, exit 75, naming every file, before any
-//      fetch: nothing at all is moved.
+//   2. A path whose bytes are still exactly what an earlier `propose`
+//      pushed (the proposed-paths ledger, src/guards/proposed.mjs) is
+//      brought back to HEAD and said, and the ledger pruned: its content
+//      lives on the pushed branch. Then a dirty working tree (anything `git
+//      status` reports but an ignored file) postpones the run, exit 75,
+//      naming every file, before any fetch: nothing else is moved. A path
+//      edited after its push is dirty like any other.
 //   3. The default branch comes from the one resolver (src/git.mjs,
 //      defaultBranch). None, or a configured name that is no branch name,
 //      is exit 1.
@@ -73,6 +77,9 @@ import { CONFIG_FILENAME } from '../config.mjs';
 import { findVaultRoot } from '../vault.mjs';
 import { acquireLock } from '../guards/lock.mjs';
 import { GuardError } from '../guards/location.mjs';
+import {
+  branchesOf, proposedMatch, pruneLedger, readLedger, restoreMatching,
+} from '../guards/proposed.mjs';
 import {
   aheadBehind, currentBranch, defaultBranch, dirtyPaths, defaultBranchUpstream, fetch, ignoredInTheWay, operationInProgress, resolveCommit, runGit, trackedRemote,
 } from '../git.mjs';
@@ -156,6 +163,7 @@ export function syncUnderLock(root, io, t, env, outcome = {}) {
     io.stderr.write(`${t('sync.operation_in_progress', { operation })}\n`);
     return EXIT.TEMPFAIL;
   }
+  restoreProposed(root, io, t, env);
   const dirty = dirtyPaths(root, { env });
   if (dirty.length > 0) {
     io.stderr.write(`${t('sync.dirty', { files: dirty })}\n`);
@@ -239,6 +247,33 @@ export function syncUnderLock(root, io, t, env, outcome = {}) {
     return EXIT.TEMPFAIL;
   }
   return fastForward(root, io, t, env, { branch, upstream, behind, from, to: fetched.sha, ref: fetched.ref });
+}
+
+// Step 2's first half: every dirty path whose bytes are still exactly what
+// an earlier `propose` pushed (the ledger of this working tree,
+// src/guards/proposed.mjs) is brought back to HEAD, under the lock the
+// caller holds, and said; the content lives on the pushed branch, so
+// nothing is lost. After that no dirty path holds proposed bytes any more,
+// so every entry read is done with and pruned (by its branch, commit and
+// paths, so an entry appended meanwhile stays). A path edited after the
+// push does not match, stays dirty, and still postpones the run. A ledger
+// that cannot be read or does not validate changes nothing but one line on
+// stderr.
+function restoreProposed(root, io, t, env) {
+  const ledger = readLedger(root, env);
+  if (ledger.state === 'invalid' || ledger.state === 'unreadable') {
+    io.stderr.write(`${t('proposed.ledger_ignored', { file: ledger.file ?? '-', detail: ledger.detail ?? t('proposed.ledger_not_valid') })}\n`);
+    return;
+  }
+  if (ledger.entries.length === 0) return;
+  const match = proposedMatch(root, ledger.entries, env, { paths: dirtyPaths(root, { env }) });
+  if (match.matching.length > 0) {
+    const branches = branchesOf(match);
+    const restored = restoreMatching(root, match, env);
+    io.stdout.write(`${t('sync.restored_proposed', { count: restored.length, paths: restored, branches })}\n`);
+  }
+  const pruned = pruneLedger(ledger.file, ledger.entries);
+  if (!pruned.ok) io.stderr.write(`${t('sync.ledger_prune_failed', { file: ledger.file, code: pruned.invalid ? 'invalid' : pruned.code })}\n`);
 }
 
 // Checkout, fast-forward, prove, return, prove. Every failure still tries

@@ -65,7 +65,7 @@
 // `deps` carries the environment, the working directory, the clock, the
 // network wait's timing and a step observer, for the tests. Production
 // passes nothing.
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { homedir, constants as osConstants } from 'node:os';
@@ -75,8 +75,7 @@ import { CONFIG_FILENAME, ConfigError, loadConfig, loadMachine } from '../config
 import { createTranslator, SUPPORTED_LANGS } from '../lang.mjs';
 import { findVaultRoot } from '../vault.mjs';
 import { ensureStateDir, stateDirFor, STATE_FILES } from '../state.mjs';
-import { decodeBytes } from '../io.mjs';
-import { dirtyPaths, runGit } from '../git.mjs';
+import { dirtyPaths } from '../git.mjs';
 import { expandHome } from '../doctor/checks.mjs';
 import { acquireLock } from '../guards/lock.mjs';
 import { GuardError } from '../guards/location.mjs';
@@ -97,6 +96,7 @@ import { blockingMessage, mirrorUserRules, userSettingsFiles } from '../curate/u
 import { SOURCES } from '../sources/index.mjs';
 import { syncUnderLock } from './sync.mjs';
 import { parseRoundRecord, roundRecordPath } from './propose.mjs';
+import { proposedMatch, restoreMatching } from '../guards/proposed.mjs';
 import { promptOutsideVault, renderCuratePrompt } from './prompt.mjs';
 
 const ROOT_INDEX = 'index.md';
@@ -689,90 +689,18 @@ function modelEnv(env, machine, token) {
 
 // ---------------------------------------------------------------- cleanup
 
-// Every blob of a commit's tree: decoded name -> { mode, sha, bytes }.
-function treeOf(root, commit, env) {
-  const listed = runGit(root, ['ls-tree', '-r', '-z', '--full-tree', commit], { env, encoding: 'buffer' });
-  if (listed.status !== 0) throw new Error(`git ls-tree ${commit} exited with status ${listed.status}`);
-  const out = new Map();
-  const buf = Buffer.from(listed.stdout);
-  let start = 0;
-  while (start < buf.length) {
-    const end = buf.indexOf(0, start);
-    const record = buf.subarray(start, end === -1 ? buf.length : end);
-    start = end === -1 ? buf.length : end + 1;
-    const tab = record.indexOf(0x09);
-    if (tab === -1) continue;
-    const [mode, type, sha] = record.subarray(0, tab).toString('latin1').split(' ');
-    if (type !== 'blob') continue;
-    const bytes = Buffer.from(record.subarray(tab + 1));
-    out.set(decodeBytes(bytes), { mode, sha, bytes });
-  }
-  return out;
-}
-
-function blobBytes(root, sha, env) {
-  const shown = runGit(root, ['cat-file', 'blob', sha], { env, encoding: 'buffer' });
-  if (shown.status !== 0) throw new Error(`git cat-file blob ${sha} exited with status ${shown.status}`);
-  return Buffer.from(shown.stdout);
-}
-
-// What is on disk at `pathBytes`: null (absent), { link: Buffer } or
-// { file: Buffer }; a directory or anything else is { other: true }.
-function onDisk(root, pathBytes) {
-  const full = Buffer.concat([Buffer.from(root.endsWith('/') ? root : `${root}/`), pathBytes]);
-  let st;
-  try {
-    st = lstatSync(full);
-  } catch (error) {
-    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
-    throw error;
-  }
-  if (st.isSymbolicLink()) return { full, link: readlinkSync(full, { encoding: 'buffer' }) };
-  if (st.isFile()) return { full, file: readFileSync(full) };
-  return { full, other: true };
-}
-
 // Step 15. For each path a proposal named (the latest proposal naming it,
 // when several did), compare the working tree's bytes with that
 // proposal's commit: equal, or absent from both, means the tree holds
 // exactly what was pushed, and the path is brought back to HEAD (restored
 // from HEAD when HEAD has it, deleted when it does not). Anything else was
-// changed after the push and is left alone. Git runs without the caller's
-// git environment (runGit), with literal pathspecs read NUL-separated from
-// standard input, never from the argument vector.
+// changed after the push and is left alone. The comparison and the restore
+// are src/guards/proposed.mjs's, the same ones the Stop hook, `propose` and
+// `sync` use for a proposal made outside a round.
 export function cleanupProposals(root, proposals, env) {
-  const latest = new Map();
-  for (const proposal of proposals) for (const path of proposal.paths) latest.set(path, proposal);
-  const head = treeOf(root, 'HEAD', env);
-  const trees = new Map();
-  const restored = [];
-  const changed = [];
-  const fromHead = [];
-  for (const [path, proposal] of latest) {
-    if (!trees.has(proposal.commit)) trees.set(proposal.commit, treeOf(root, proposal.commit, env));
-    const pushed = trees.get(proposal.commit).get(path) ?? null;
-    const atHead = head.get(path) ?? null;
-    const pathBytes = pushed?.bytes ?? atHead?.bytes ?? Buffer.from(path, 'utf8');
-    const disk = onDisk(root, pathBytes);
-    let same;
-    if (pushed === null) same = disk === null;
-    else if (disk === null || disk.other) same = false;
-    else if (pushed.mode === '120000') same = disk.link !== undefined && disk.link.equals(blobBytes(root, pushed.sha, env));
-    else same = disk.file !== undefined && disk.file.equals(blobBytes(root, pushed.sha, env));
-    if (!same) {
-      changed.push(path);
-      continue;
-    }
-    if (atHead !== null) fromHead.push(atHead.bytes);
-    else if (disk !== null) rmSync(disk.full, { force: true });
-    restored.push(path);
-  }
-  if (fromHead.length > 0) {
-    const input = Buffer.concat(fromHead.flatMap((bytes) => [bytes, Buffer.from([0])]));
-    const done = runGit(root, ['--literal-pathspecs', 'checkout', '-q', 'HEAD', '--pathspec-from-file=-', '--pathspec-file-nul'], { env, input, encoding: 'buffer' });
-    if (done.status !== 0) throw new Error(`git checkout HEAD exited with status ${done.status}: ${decodeBytes(Buffer.from(done.stderr)).trim()}`);
-  }
-  return { restored: restored.sort(), changed: changed.sort() };
+  const match = proposedMatch(root, proposals, env);
+  const restored = restoreMatching(root, match, env);
+  return { restored, changed: match.changed };
 }
 
 // ---------------------------------------------------------------- the command

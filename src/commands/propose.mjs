@@ -58,7 +58,12 @@
 //      snapshot, or one taken more than a day ago (or in the future),
 //      `--all` requires `--yes`. Each of those refusals is exit 2: the run
 //      lacks the confirmation it needs. A submodule pointer or an untracked
-//      nested repository is refused in phase 1, naming it, exit 2.
+//      nested repository is refused in phase 1, naming it, exit 2. Not
+//      joined to a round, a chosen path whose bytes are still exactly what
+//      an earlier proposal pushed (the proposed-paths ledger below) is never
+//      proposed again: every chosen path such, exit 0 in one line naming
+//      the branch that holds them; some, exit 2 naming the ones to drop
+//      from `--only`; `--all` leaves them out and says so.
 //   5. origin (the branch checked out, named in messages only) and base
 //      (the remote default branch: the one resolver, src/git.mjs
 //      defaultBranch, then the upstream it tracks, as sync reads it) are
@@ -119,10 +124,20 @@
 // they may be the only copy. An existing record that does not validate is
 // left exactly as it is and the run is exit 3 (the round then finds the
 // files still dirty and fails loudly); a record that cannot be read or
-// written is exit 3 too, said with its directory and the error code. Not
-// joined, nothing is written and nothing else changes. The token is never
-// printed, and it is removed from the environment of everything this
-// command runs (git, its hooks, gh).
+// written is exit 3 too, said with its directory and the error code. The
+// token is never printed, and it is removed from the environment of
+// everything this command runs (git, its hooks, gh).
+//
+// OUTSIDE A ROUND. Not joined, the same entry, under the same condition,
+// is appended the same way to the proposed-paths ledger of this working
+// tree, `<git dir>/brain-kit-proposed.json` (src/guards/proposed.mjs), so
+// the Stop hook does not ask the session to propose its files again, a
+// second `propose` opens no second pull request, and `sync` (so the next
+// round) brings them back to HEAD instead of postponing on them, for as
+// long as their bytes are exactly what was pushed (final review of phase
+// 4, finding C1). HEAD, the index and the working tree still never move
+// here. A ledger that does not validate is left as it is, and either
+// failure is exit 3, said with the file and an error code at most.
 //
 // `gh` runs with the caller's git environment removed, GIT_TERMINAL_PROMPT=0
 // and GH_PROMPT_DISABLED=1.
@@ -136,10 +151,8 @@
 //
 // `deps` hands in the environment, the working directory, the clock, the
 // temporary directory and walkVault, for the tests and for src/cli.mjs.
-import { randomBytes } from 'node:crypto';
 import {
-  closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync,
-  writeFileSync, writeSync,
+  lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -160,6 +173,12 @@ import {
 import { runValidate } from './validate.mjs';
 import { runLint } from './lint.mjs';
 import { PROTECTED_PATHS } from '../curate/tools.mjs';
+import {
+  appendRecord, branchesOf, ledgerPath, parseRoundRecord, proposedMatch, readLedger, RECORD_GUARD_WAIT_MS,
+} from '../guards/proposed.mjs';
+
+// The round record's reader, where it has always been imported from.
+export { parseRoundRecord };
 
 const ROOT_INDEX = 'index.md';
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -172,7 +191,6 @@ const GIT_OPTS = { maxBuffer: 256 * 1024 * 1024 };
 export const PROPOSALS_DIR = 'brain-kit-proposals';
 const MAX_SUFFIX = 9;
 const GITLINK_MODE = '160000';
-const ROUND_RECORD_FORMAT = 1;
 
 // Where a joined run records what it pushed for the round holding the lock:
 // in the working tree's own git directory, named by the round's token.
@@ -180,45 +198,6 @@ const roundRecordName = (token) => `brain-kit-round-${token}.json`;
 
 export function roundRecordPath(root, token, env = process.env) {
   return join(locateRepository(root, env).gitDir, roundRecordName(token));
-}
-
-// How long a joined run waits for another joined run of the same round to
-// finish its read and write of the record (they hold its guard for a few
-// system calls; a guard older than that was left by a run that died).
-const RECORD_GUARD_WAIT_MS = 5000;
-const COMMIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-const ENTRY_KEYS = ['branch', 'commit', 'opened', 'paths', 'remote'];
-
-function isPlainObject(value) {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function sameKeys(value, keys) {
-  const own = Object.keys(value).sort();
-  return own.length === keys.length && own.every((key, i) => key === keys[i]);
-}
-
-function isEntry(entry) {
-  return isPlainObject(entry) && sameKeys(entry, ENTRY_KEYS)
-    && typeof entry.opened === 'boolean'
-    && typeof entry.remote === 'string' && entry.remote !== ''
-    && typeof entry.branch === 'string' && entry.branch !== ''
-    && typeof entry.commit === 'string' && COMMIT_ID.test(entry.commit)
-    && Array.isArray(entry.paths) && entry.paths.length > 0 && entry.paths.every((path) => typeof path === 'string' && path !== '');
-}
-
-// A round record's text as the round reads it: `{ format: 1, proposals:
-// [entry, ...] }` with every entry well formed and nothing else, or null.
-export function parseRoundRecord(text) {
-  let value;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  if (!isPlainObject(value) || !sameKeys(value, ['format', 'proposals'])) return null;
-  if (value.format !== ROUND_RECORD_FORMAT || !Array.isArray(value.proposals)) return null;
-  return value.proposals.every(isEntry) ? value : null;
 }
 
 class Refusal extends Error {
@@ -402,11 +381,12 @@ export async function runPropose(argv, io, t, deps = {}) {
   // directory and are removed unless the run ends degraded.
   const scratch = { work: null, kept: [], keep: false };
   try {
-    const round = lock.joined ? { token: lock.token, guardWaitMs: deps.recordGuardWaitMs ?? RECORD_GUARD_WAIT_MS } : null;
+    const guardWaitMs = deps.recordGuardWaitMs ?? RECORD_GUARD_WAIT_MS;
+    const round = lock.joined ? { token: lock.token, guardWaitMs } : null;
     // The round's token goes no further than this command: git, the hooks
     // a push runs and gh get the environment without it.
     const { BRAIN_KIT_ROUND_TOKEN: _token, ...childEnv } = env;
-    return await proposeUnderLock({ root, cwd, config, parsed, io, t, env: childEnv, now, walkVault, scratch, temp, round });
+    return await proposeUnderLock({ root, cwd, config, parsed, io, t, env: childEnv, now, walkVault, scratch, temp, round, guardWaitMs });
   } catch (error) {
     if (error instanceof Refusal) {
       io.stderr.write(`${error.message}\n`);
@@ -428,7 +408,7 @@ export async function runPropose(argv, io, t, deps = {}) {
   }
 }
 
-async function proposeUnderLock({ root, cwd, config, parsed, io, t, env, now, walkVault, scratch, temp, round }) {
+async function proposeUnderLock({ root, cwd, config, parsed, io, t, env, now, walkVault, scratch, temp, round, guardWaitMs }) {
   const operation = operationInProgress(root, { env });
   if (operation !== null) throw new Refusal(EXIT.TEMPFAIL, t('propose.operation_in_progress', { operation }));
   const prefix = runGit(root, ['rev-parse', '--show-prefix'], { env });
@@ -456,7 +436,36 @@ async function proposeUnderLock({ root, cwd, config, parsed, io, t, env, now, wa
     io.stdout.write(`${t('propose.nothing_to_propose')}\n`);
     return EXIT.OK;
   }
-  const chosen = parsed.all ? chooseAll(root, dirty, parsed, t, env, now) : chooseOnly(root, cwd, dirty, parsed.only, t);
+  // Not joined, a path whose bytes are still exactly what an earlier
+  // proposal pushed (the ledger, src/guards/proposed.mjs) is never proposed
+  // again: that would be a second pull request for the same change.
+  const proposed = round === null ? alreadyProposed(root, io, t, env, dirty) : null;
+  let chosen;
+  if (parsed.all) {
+    const fresh = proposed === null ? dirty : dirty.filter((path) => !proposed.names.has(decodeBytes(path)));
+    if (proposed !== null && proposed.names.size > 0) {
+      const left = proposed.match.matching;
+      if (fresh.length === 0) {
+        io.stdout.write(`${t('propose.already_proposed_all', { count: left.length, paths: left, branches: branchesOf(proposed.match) })}\n`);
+        return EXIT.OK;
+      }
+      io.stdout.write(`${t('propose.already_proposed_left_out', { count: left.length, paths: left, branches: branchesOf(proposed.match) })}\n`);
+    }
+    chosen = chooseAll(root, fresh, parsed, t, env, now, proposed === null ? new Set() : proposed.names);
+  } else {
+    chosen = chooseOnly(root, cwd, dirty, parsed.only, t);
+    if (proposed !== null) {
+      const again = chosen.map((path) => decodeBytes(path)).filter((name) => proposed.names.has(name));
+      if (again.length > 0) {
+        const branches = [...new Set(again.map((name) => proposed.match.details.get(name).entry.branch))];
+        if (again.length === chosen.length) {
+          io.stdout.write(`${t('propose.already_proposed_all', { count: again.length, paths: again, branches })}\n`);
+          return EXIT.OK;
+        }
+        throw new Refusal(EXIT.USAGE, t('propose.already_proposed_some', { count: again.length, paths: again, branches }));
+      }
+    }
+  }
   const head = treeEntries(root, env, resolveCommit(root, 'HEAD', { env }));
   refuseNested(root, t, chosen, head);
   const names = chosen.map((path) => decodeBytes(path));
@@ -515,13 +524,32 @@ async function proposeUnderLock({ root, cwd, config, parsed, io, t, env, now, wa
     io.stderr.write(`${t('propose.partial_publish', { branch, held: published.held.length > 0 ? published.held : '-', missing, command })}\n`);
     // The result is not needed here: this run is exit 3 whether or not the
     // entry is recorded, and a failure has already been said.
-    if (round !== null && published.held.length > 0) recordRound(root, io, t, env, round, { opened: false, remote, branch, commit, paths: names });
+    if (published.held.length > 0) {
+      const entry = { opened: false, remote, branch, commit, paths: names };
+      if (round !== null) recordRound(root, io, t, env, round, entry);
+      else recordLedger(root, io, t, env, guardWaitMs, entry);
+    }
     return EXIT.DEGRADED;
   }
   record(createCommand);
   const code = openPullRequest(root, io, t, env, { program, base, branch, title, bodyFile, scratch, count: names.length, origin, createCommand });
-  if (round !== null && !recordRound(root, io, t, env, round, { opened: code === EXIT.OK, remote, branch, commit, paths: names })) return EXIT.DEGRADED;
+  const entry = { opened: code === EXIT.OK, remote, branch, commit, paths: names };
+  const recorded = round !== null ? recordRound(root, io, t, env, round, entry) : recordLedger(root, io, t, env, guardWaitMs, entry);
+  if (!recorded) return EXIT.DEGRADED;
   return code;
+}
+
+// The dirty paths an earlier proposal already holds, byte for byte:
+// { names: Set of decoded paths, match }, from the ledger of this working
+// tree. A ledger that cannot be read or does not validate is one line on
+// stderr and counts as none.
+function alreadyProposed(root, io, t, env, dirty) {
+  const ledger = readLedger(root, env);
+  if (ledger.state === 'invalid' || ledger.state === 'unreadable') {
+    io.stderr.write(`${t('proposed.ledger_ignored', { file: ledger.file ?? '-', detail: ledger.detail ?? t('proposed.ledger_not_valid') })}\n`);
+  }
+  const match = proposedMatch(root, ledger.entries, env, { paths: dirty.map((path) => decodeBytes(path)) });
+  return { names: new Set(match.matching), match };
 }
 
 // The decoded paths among `dirty` (tracked or untracked, never ignored)
@@ -530,91 +558,39 @@ function protectedChanges(dirty) {
   return dirty.map((path) => decodeBytes(path)).filter((name) => PROTECTED_PATHS.some((p) => name === p || name.startsWith(`${p}/`)));
 }
 
-// The round record as it is now: undefined when there is none, null when
-// what is there is not a record this version reads (not a regular file, a
-// symbolic link, or text that does not validate), the record otherwise.
-// Opened without following a link and without blocking on a FIFO.
-function readRoundRecord(file) {
-  let fd;
-  try {
-    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  } catch (error) {
-    if (error.code === 'ENOENT') return undefined;
-    if (error.code === 'ELOOP') return null;
-    throw error;
-  }
-  try {
-    if (!fstatSync(fd).isFile()) return null;
-    return parseRoundRecord(readFileSync(fd, 'utf8'));
-  } finally {
-    closeSync(fd);
-  }
-}
-
-// The guard two joined runs of one round take around their read and write
-// of the record, so neither loses the other's entry: a file created
-// exclusively, retried until `waitMs` has passed. True once taken.
-function takeRecordGuard(path, waitMs) {
-  const cell = new Int32Array(new SharedArrayBuffer(4));
-  const deadline = Date.now() + waitMs;
-  for (;;) {
-    try {
-      closeSync(openSync(path, 'wx', 0o600));
-      return true;
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-    }
-    if (Date.now() >= deadline) return false;
-    Atomics.wait(cell, 0, 0, 20);
-  }
-}
-
-// This proposal's entry, appended to the round record: under the guard,
-// the existing record is read and validated, and the whole is written in
-// full to a private file created exclusively beside it and renamed into
-// place, so the round never reads half of one and no entry is ever lost.
-// True when the entry is in place. A record that does not validate is left
-// exactly as it is. Every failure is said with the directory and at most
-// an error code, never an error's own text, which names the file and so
-// the token; the run then ends degraded (the commit is pushed, the round
-// will find its files still dirty and report them).
+// This proposal's entry, appended to the round record (src/guards/proposed.mjs,
+// appendRecord): under the guard, the existing record is read and
+// validated, and the whole is written in full to a private file created
+// exclusively beside it and renamed into place, so the round never reads
+// half of one and no entry is ever lost. True when the entry is in place. A
+// record that does not validate is left exactly as it is. Every failure is
+// said with the directory and at most an error code, never an error's own
+// text, which names the file and so the token; the run then ends degraded
+// (the commit is pushed, the round will find its files still dirty and
+// report them).
 function recordRound(root, io, t, env, round, entry) {
   const dir = locateRepository(root, env).gitDir;
-  const file = join(dir, roundRecordName(round.token));
-  const guard = `${file}.lock`;
-  const failed = (code) => {
-    io.stderr.write(`${t('propose.round_record_failed', { branch: entry.branch, dir, code })}\n`);
-    return false;
-  };
-  const codeOf = (error) => (typeof error.code === 'string' ? error.code : 'error');
-  try {
-    if (!takeRecordGuard(guard, round.guardWaitMs)) return failed('EBUSY');
-  } catch (error) {
-    return failed(codeOf(error));
-  }
-  const tmp = `${file}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
-  try {
-    const existing = readRoundRecord(file);
-    if (existing === null) {
-      io.stderr.write(`${t('propose.round_record_invalid', { branch: entry.branch, dir })}\n`);
-      return false;
-    }
-    const proposals = existing === undefined ? [] : existing.proposals;
-    const text = `${JSON.stringify({ format: ROUND_RECORD_FORMAT, proposals: [...proposals, entry] }, null, 2)}\n`;
-    const fd = openSync(tmp, 'wx', 0o600);
-    try {
-      writeSync(fd, text);
-    } finally {
-      closeSync(fd);
-    }
-    renameSync(tmp, file);
-    return true;
-  } catch (error) {
-    rmSync(tmp, { force: true });
-    return failed(codeOf(error));
-  } finally {
-    rmSync(guard, { force: true });
-  }
+  const done = appendRecord(join(dir, roundRecordName(round.token)), entry, round.guardWaitMs);
+  if (done.ok) return true;
+  if (done.invalid) io.stderr.write(`${t('propose.round_record_invalid', { branch: entry.branch, dir })}\n`);
+  else io.stderr.write(`${t('propose.round_record_failed', { branch: entry.branch, dir, code: done.code })}\n`);
+  return false;
+}
+
+// Not joined, the same entry goes to the proposed-paths ledger of this
+// working tree (src/guards/proposed.mjs), so the Stop hook, a second
+// `propose` and `sync` know these paths are proposed as long as their bytes
+// are what was pushed. True when the entry is in place; a ledger that does
+// not validate is left exactly as it is, and either failure is said with
+// the directory and an error code at most, the run then ending degraded:
+// the commit is pushed, and the Stop hook may ask for these paths again.
+function recordLedger(root, io, t, env, guardWaitMs, entry) {
+  const file = ledgerPath(root, env);
+  const done = appendRecord(file, entry, guardWaitMs);
+  if (done.ok) return true;
+  if (done.invalid) io.stderr.write(`${t('propose.ledger_invalid', { branch: entry.branch, file })}\n`);
+  else io.stderr.write(`${t('propose.ledger_failed', { branch: entry.branch, file, code: done.code })}\n`);
+  return false;
 }
 
 // A proposal an earlier run published and never saw confirmed: removed
@@ -681,13 +657,14 @@ function chooseOnly(root, cwd, dirty, listed, t) {
 // --all: every dirty path, but never one the session snapshot recorded as
 // already there, and never without a recent snapshot, unless --yes. Each
 // refusal is exit 2: what the run lacks is the person's confirmation.
-function chooseAll(root, dirty, parsed, t, env, now) {
+function chooseAll(root, dirty, parsed, t, env, now, proposedNames) {
   if (parsed.yes) return dirty;
   const snapshot = readSnapshot(root, { env });
   if (snapshot === null) throw new Refusal(EXIT.USAGE, t('propose.no_snapshot'));
   const age = now().getTime() - Date.parse(snapshot.at);
   if (!(age >= 0 && age <= DAY_MS)) throw new Refusal(EXIT.USAGE, t('propose.stale_snapshot', { at: snapshot.at }));
-  const { before } = splitDirty(root, snapshot, { env });
+  // A path an earlier proposal holds is left out, never refused.
+  const before = splitDirty(root, snapshot, { env }).before.filter((path) => !proposedNames.has(decodeBytes(path)));
   if (before.length > 0) {
     throw new Refusal(EXIT.USAGE, t('propose.dirty_before', { files: before.map((path) => decodeBytes(path)), at: snapshot.at }));
   }

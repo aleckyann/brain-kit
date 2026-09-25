@@ -1549,3 +1549,129 @@ test('inside a round: the token never reaches what propose runs (the push\'s hoo
     round.release();
   }
 });
+
+// --- the proposed-paths ledger (final review of phase 4, C1) ---------------------
+
+const BRANCH_2 = `${BRANCH}-2`;
+const ledgerFile = (world) => join(world.vault, '.git', 'brain-kit-proposed.json');
+const readLedgerOf = (world) => JSON.parse(readFileSync(ledgerFile(world), 'utf8'));
+const creates = (world) => world.ghCalls().filter((call) => call.args[1] === 'create');
+
+test('not joined: a proposal is recorded in the ledger with the round record\'s entry shape, privately, and no guard or temporary file is left', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  world.write('notes/b.md', note('B'));
+  const run = await propose(world, ['A and B', '--only', 'notes/b.md', 'notes/a.md']);
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  const commit = world.remoteSha(`refs/heads/${BRANCH}`);
+  assert.deepEqual(readLedgerOf(world), { format: 1, proposals: [{ opened: true, remote: 'origin', branch: BRANCH, commit, paths: ['notes/a.md', 'notes/b.md'] }] });
+  assert.ok(parseRoundRecord(readFileSync(ledgerFile(world), 'utf8')));
+  assert.equal(statSync(ledgerFile(world)).mode & 0o777, 0o600);
+  assert.deepEqual(readdirSync(join(world.vault, '.git')).filter((name) => name.startsWith('brain-kit-proposed')), ['brain-kit-proposed.json']);
+});
+
+test('not joined: the same paths proposed again, unchanged, are exit 0 naming the branch that holds them, and nothing is pushed or asked of gh', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  assert.equal((await propose(world, ['A', '--only', 'notes/a.md'])).code, EXIT.OK);
+  const refs = world.remoteRefs();
+  const calls = world.ghCalls().length;
+  const ledger = readFileSync(ledgerFile(world));
+  const again = await propose(world, ['A', '--only', 'notes/a.md']);
+  assert.equal(again.code, EXIT.OK, again.stderr);
+  assert.equal(again.stdout, line('propose.already_proposed_all', { count: 1, paths: ['notes/a.md'], branches: [BRANCH] }));
+  assert.equal(again.stderr, '');
+  assert.equal(world.remoteRefs(), refs, 'nothing pushed');
+  assert.equal(world.ghCalls().length, calls, 'gh asked nothing');
+  assert.deepEqual(readFileSync(ledgerFile(world)), ledger);
+  // --dry says the same, and --all too.
+  assert.equal((await propose(world, ['A', '--only', 'notes/a.md', '--dry'])).stdout, again.stdout);
+  const all = await propose(world, ['A', '--all', '--yes']);
+  assert.equal(all.code, EXIT.OK, all.stderr);
+  assert.equal(all.stdout, again.stdout);
+  assert.equal(world.remoteRefs(), refs);
+});
+
+test('not joined: one byte changed after the push is proposed again, and the ledger then holds both entries', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  assert.equal((await propose(world, ['A', '--only', 'notes/a.md'])).code, EXIT.OK);
+  world.write('notes/a.md', `${note('A')}x`);
+  const again = await propose(world, ['A again', '--only', 'notes/a.md']);
+  assert.equal(again.code, EXIT.OK, again.stderr);
+  assert.equal(creates(world).length, 2);
+  assert.equal(git(world.remote, ['show', `${BRANCH_2}:notes/a.md`]), `${note('A')}x`);
+  assert.deepEqual(readLedgerOf(world).proposals.map((p) => p.branch), [BRANCH, BRANCH_2]);
+});
+
+test('not joined: --only naming a proposed path among new ones is exit 2 naming the ones to drop, nothing pushed', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  assert.equal((await propose(world, ['A', '--only', 'notes/a.md'])).code, EXIT.OK);
+  world.write('notes/b.md', note('B'));
+  const refs = world.remoteRefs();
+  const run = await propose(world, ['A and B', '--only', 'notes/a.md', 'notes/b.md']);
+  assert.equal(run.code, EXIT.USAGE);
+  assert.equal(run.stderr, line('propose.already_proposed_some', { count: 1, paths: ['notes/a.md'], branches: [BRANCH] }));
+  assert.equal(world.remoteRefs(), refs);
+  assert.equal(creates(world).length, 1);
+});
+
+test('not joined: --all leaves a proposed path out, says so, and proposes the rest; with a snapshot, a proposed path from before it is left out, never refused', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  assert.equal((await propose(world, ['A', '--only', 'notes/a.md'])).code, EXIT.OK);
+  takeSnapshot(world.vault, { env: world.env, now: NOW });
+  world.write('notes/b.md', note('B'));
+  const run = await propose(world, ['B', '--all']);
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.ok(run.stdout.startsWith(line('propose.already_proposed_left_out', { count: 1, paths: ['notes/a.md'], branches: [BRANCH] })), run.stdout);
+  assert.deepEqual(world.changedIn(world.remoteSha(`refs/heads/${BRANCH_2}`)), ['A\tnotes/b.md']);
+});
+
+test('not joined: a pull request that cannot be opened still records the pushed commit in the ledger, with opened false', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  const run = await propose(world, ['A', '--only', 'notes/a.md'], { env: { ...world.env, FAKE_GH_MODE: 'fail' } });
+  assert.equal(run.code, EXIT.DEGRADED, run.stderr);
+  assert.deepEqual(readLedgerOf(world).proposals, [{ opened: false, remote: 'origin', branch: BRANCH, commit: world.remoteSha(`refs/heads/${BRANCH}`), paths: ['notes/a.md'] }]);
+});
+
+test('not joined: nothing pushed writes no ledger', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  writeFileSync(join(world.remote, 'hooks', 'pre-receive'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const run = await propose(world, ['A', '--only', 'notes/a.md']);
+  assert.equal(run.code, EXIT.FAILURE, run.stderr);
+  assert.equal(existsSync(ledgerFile(world)), false);
+});
+
+test('not joined: a ledger that does not validate is said and ignored, the proposal still goes out, the ledger is left exactly as it is, exit 3', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  writeFileSync(ledgerFile(world), 'not a ledger');
+  const run = await propose(world, ['A', '--only', 'notes/a.md']);
+  assert.equal(run.code, EXIT.DEGRADED);
+  assert.equal(run.stderr, [
+    line('proposed.ledger_ignored', { file: ledgerFile(world), detail: t('proposed.ledger_not_valid') }),
+    line('propose.ledger_invalid', { branch: BRANCH, file: ledgerFile(world) }),
+  ].join(''));
+  assert.equal(creates(world).length, 1);
+  assert.equal(readFileSync(ledgerFile(world), 'utf8'), 'not a ledger');
+});
+
+test('inside a round: propose writes no ledger (the round record is its record) and never refuses a path the ledger names', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  assert.equal((await propose(world, ['A', '--only', 'notes/a.md'])).code, EXIT.OK);
+  const ledger = readFileSync(ledgerFile(world));
+  const round = holdAsRound(world);
+  try {
+    const run = await propose(world, ['A', '--only', 'notes/a.md'], { env: { ...world.env, BRAIN_KIT_ROUND_TOKEN: round.token } });
+    assert.equal(run.code, EXIT.OK, run.stderr);
+    assert.deepEqual(readFileSync(ledgerFile(world)), ledger);
+    assert.deepEqual(readRecord(world, round.token).proposals.map((p) => p.branch), [BRANCH_2]);
+  } finally {
+    round.release();
+  }
+});

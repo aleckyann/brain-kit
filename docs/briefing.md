@@ -268,6 +268,23 @@ goes into its own table. Then the model runs `validate`, `lint --base worktree` 
 `propose "<summary>" --only <paths>`, naming exactly the files it wrote. With nothing to
 record, it writes nothing and proposes nothing, and says so.
 
+`propose` never moves the working tree, so the files it proposed stay changed after it.
+It records what it pushed in the proposed-paths ledger (`<git dir>/brain-kit-proposed.json`),
+and one comparison reads it everywhere: a file whose bytes are exactly what was pushed is
+proposed already. The Stop hook leaves it out and releases, a second `propose` of it
+opens no second pull request (exit 0, naming the branch that holds it), and the next
+`sync` (so the next curator round, at its step 5) brings it back to the default branch's
+content instead of postponing on it; the content lives on the pushed branch. One byte
+edited after the push makes the file unproposed work again for all three. After you merge
+the pull request, the next round restores the file and fast-forwards the default branch,
+so the merged capture is what ends up on disk.
+
+A question is marked answered only after the `propose` that records its answer exited 0
+or 3 with the commit pushed. When a curator round holds the vault's lock, the kit's
+writing commands exit 75 naming it; the briefing then stops writing, tells you the round
+holds the vault and the exact command to run once it is done, and never marks the
+question answered.
+
 ## What never changes
 
 These rules stay out of configuration: no setting turns them off, and no overlay drops

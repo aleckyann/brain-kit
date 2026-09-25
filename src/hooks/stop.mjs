@@ -23,7 +23,12 @@
 //       (the hook never reclaims or deletes it)
 //    9. no snapshot of this tree for THIS session every dirty path is the session's
 //   10. nothing dirty since the snapshot          release (paths under
-//       .claude/worktrees/, Claude Code's agent worktrees, never count)
+//       .claude/worktrees/, Claude Code's agent worktrees, never count,
+//       and neither does a path whose bytes are still exactly what an
+//       earlier `propose` pushed, read from the proposed-paths ledger,
+//       src/guards/proposed.mjs; the release line says how many and on
+//       which branch; a ledger that cannot be read is one stderr line and
+//       leaves every path in)
 //   11. otherwise                                 BLOCK, naming the session's paths
 //
 // Each release after rung 3 writes one line on stderr saying which rung
@@ -35,6 +40,7 @@ import { canonicalPathMatches, loadMachine, MACHINE_FILENAME } from '../config.m
 import { describeLock, isLockHolderStale } from '../guards/lock.mjs';
 import { locateRepository } from '../guards/location.mjs';
 import { readSnapshot, splitDirty } from '../guards/snapshot.mjs';
+import { branchesOf, proposedMatch, readLedger } from '../guards/proposed.mjs';
 import { decodeBytes } from '../io.mjs';
 import { createTranslator, resolveLang } from '../lang.mjs';
 import { stateDirFor } from '../state.mjs';
@@ -42,8 +48,10 @@ import { parseHookPayload, resolveHookVault } from './payload.mjs';
 
 export const LISTING_CEILING = 20;
 
-const release = (stderr = '') => ({ stdout: '', stderr: stderr === '' ? '' : `${oneLine(stderr)}\n` });
-const block = (reason) => ({ stdout: `${JSON.stringify({ decision: 'block', reason })}\n`, stderr: '' });
+// `note` is an extra stderr line (a ledger that could not be read), or ''.
+const lineOf = (text) => (text === '' ? '' : `${oneLine(text)}\n`);
+const release = (stderr = '', note = '') => ({ stdout: '', stderr: `${lineOf(note)}${lineOf(stderr)}` });
+const block = (reason, note = '') => ({ stdout: `${JSON.stringify({ decision: 'block', reason })}\n`, stderr: lineOf(note) });
 
 function oneLine(text) {
   return text.replace(/\s*\n\s*/g, ' ');
@@ -130,10 +138,19 @@ export function runStop(stdinText, env = process.env) {
     const usable = trust === 'own';
     const split = splitDirty(root, usable ? snapshot : { at: '', root: topLevel, paths: [] }, { env });
     const before = split.before.filter(isVaultPath);
-    const since = split.since.filter(isVaultPath);
-    if (since.length === 0) return release(t('hook.stop.release_clean', { count: before.length }));
-    const reason = blockReason(t, since, before.length, trust);
-    return block(staleLock ? `${reason}\n${t('hook.stop.block_stale_lock', { command: String(holder.command), pid: holder.pid })}` : reason);
+    const changed = split.since.filter(isVaultPath);
+    // A path whose bytes are still exactly what an earlier `propose` pushed
+    // is proposed already (src/guards/proposed.mjs): never this session's to
+    // propose again. A ledger that cannot be read leaves every path in.
+    const proposed = proposedAmong(root, changed, env, t);
+    const since = changed.filter((path) => !proposed.names.has(decodeBytes(path)));
+    const note = proposed.notice;
+    if (since.length === 0) {
+      if (proposed.names.size === 0) return release(t('hook.stop.release_clean', { count: before.length }), note);
+      return release(t('hook.stop.release_proposed', { count: proposed.names.size, branches: proposed.branches, inherited: before.length }), note);
+    }
+    const reason = blockReason(t, since, before.length, trust, proposed);
+    return block(staleLock ? `${reason}\n${t('hook.stop.block_stale_lock', { command: String(holder.command), pid: holder.pid })}` : reason, note);
   } catch (error) {
     return block(t('hook.stop.block_failed', { detail: detailOf(error, t) }));
   }
@@ -155,11 +172,29 @@ export function snapshotTrust(snapshot, topLevel, payload) {
   return 'own';
 }
 
-function blockReason(t, since, inherited, trust) {
+// The session's dirty paths an earlier proposal holds byte for byte, read
+// from the ledger of this working tree: { names, branches, notice }, the
+// notice being a line for stderr when the ledger could not be read or does
+// not validate (then nothing is left out: fail toward blocking). The hook
+// only reads the ledger, never writes it.
+function proposedAmong(root, paths, env, t) {
+  const none = { names: new Set(), branches: [], notice: '' };
+  if (paths.length === 0) return none;
+  const ledger = readLedger(root, env);
+  if (ledger.state === 'invalid' || ledger.state === 'unreadable') {
+    return { ...none, notice: t('proposed.ledger_ignored', { file: ledger.file ?? '-', detail: ledger.detail ?? t('proposed.ledger_not_valid') }) };
+  }
+  if (ledger.entries.length === 0) return none;
+  const match = proposedMatch(root, ledger.entries, env, { paths: paths.map((path) => decodeBytes(path)) });
+  return { names: new Set(match.matching), branches: branchesOf(match), notice: '' };
+}
+
+function blockReason(t, since, inherited, trust, proposed) {
   const lines = [t('hook.stop.block_changed', { count: since.length })];
   for (const path of since.slice(0, LISTING_CEILING)) lines.push(`  ${decodeBytes(path)}`);
   if (since.length > LISTING_CEILING) lines.push(t('hook.stop.block_more', { count: since.length - LISTING_CEILING }));
   lines.push(t('hook.stop.block_inherited', { count: inherited }));
+  if (proposed.names.size > 0) lines.push(t('hook.stop.block_proposed', { count: proposed.names.size, branches: proposed.branches }));
   if (trust === 'missing') lines.push(t('hook.stop.block_no_snapshot'));
   if (trust === 'sessionless') lines.push(t('hook.stop.block_sessionless_snapshot'));
   if (trust === 'foreign') lines.push(t('hook.stop.block_foreign_snapshot'));

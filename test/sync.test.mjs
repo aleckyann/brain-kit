@@ -22,6 +22,9 @@ import { CONFIG_FILENAME } from '../src/config.mjs';
 import { CLEAN_ENV, git, makeRepo } from './helpers/git-repo.mjs';
 import { makeTempDir } from './helpers/tmp.mjs';
 import { assertOk, configText, gitProbe, makeWorld, repoState } from './helpers/sync-world.mjs';
+import { BRANCH as PROPOSE_BRANCH, NOW as PROPOSE_NOW, makeProposeWorld, note } from './helpers/propose-world.mjs';
+import { runPropose } from '../src/commands/propose.mjs';
+import { walkVault } from '../src/vault.mjs';
 
 const CHILD = fileURLToPath(new URL('./helpers/lock-child.mjs', import.meta.url));
 const t = createTranslator('en');
@@ -847,4 +850,80 @@ test('syncUnderLock refuses a dirty tree with the same words and exit as runSync
   const viaUnder = underLock(world);
   assert.equal(viaUnder.code, EXIT.TEMPFAIL);
   assert.deepEqual(viaUnder, viaRun);
+});
+
+// --- what an earlier propose already holds (final review of phase 4, C1) ---------
+
+async function proposeIn(world, argv) {
+  const f = fakeIo();
+  const code = await runPropose(argv, f.io, t, { env: world.env, cwd: world.vault, now: () => PROPOSE_NOW, walkVault, tmpdir: world.tmp });
+  assert.equal(code, EXIT.OK, f.stderr());
+}
+
+const ledgerOf = (world) => join(world.vault, '.git', 'brain-kit-proposed.json');
+
+test('a path an earlier propose pushed, byte for byte, is brought back to HEAD and said, the ledger pruned, and sync goes on instead of postponing', async () => {
+  const world = makeProposeWorld();
+  writeFileSync(join(world.vault, 'index.md'), '# Index\n\nA proposed line.\n');
+  world.write('notes/new.md', note('New'));
+  await proposeIn(world, ['Two', '--only', 'index.md', 'notes/new.md']);
+  const r = await sync(world);
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  assert.equal(r.stderr, '');
+  assert.equal(r.stdout, [
+    line('sync.restored_proposed', { count: 2, paths: ['index.md', 'notes/new.md'], branches: [PROPOSE_BRANCH] }),
+    line('sync.up_to_date', { branch: 'main', upstream: 'origin/main' }),
+  ].join(''));
+  assert.equal(readFileSync(join(world.vault, 'index.md'), 'utf8'), '# Index\n');
+  assert.equal(existsSync(join(world.vault, 'notes', 'new.md')), false, 'a new file HEAD lacks is removed; it lives on the pushed branch');
+  assert.equal(gitProbe(world.vault, ['status', '--porcelain']).stdout, '');
+  assert.equal(existsSync(ledgerOf(world)), false);
+});
+
+test('behind the remote with a proposed path in the tree: restored, then fast-forwarded', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  await proposeIn(world, ['A', '--only', 'notes/a.md']);
+  world.publish(1);
+  const r = await sync(world);
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  assert.ok(r.stdout.startsWith(line('sync.restored_proposed', { count: 1, paths: ['notes/a.md'], branches: [PROPOSE_BRANCH] })), r.stdout);
+  assert.match(r.stdout, /fast-forwarded/);
+});
+
+test('one byte changed after the push still postpones, naming it, and the file is left exactly as it is', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  await proposeIn(world, ['A', '--only', 'notes/a.md']);
+  world.write('notes/a.md', `${note('A')}x`);
+  const r = await sync(world);
+  assert.equal(r.code, EXIT.TEMPFAIL);
+  assert.equal(r.stdout, '');
+  assert.equal(r.stderr, line('sync.dirty', { files: ['notes/a.md'] }));
+  assert.equal(readFileSync(join(world.vault, 'notes', 'a.md'), 'utf8'), `${note('A')}x`);
+});
+
+test('a proposed path is restored and another dirty file still postpones, naming only it', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  await proposeIn(world, ['A', '--only', 'notes/a.md']);
+  world.write('drafts/theirs.md', note('Theirs'));
+  const r = await sync(world);
+  assert.equal(r.code, EXIT.TEMPFAIL);
+  assert.equal(r.stdout, line('sync.restored_proposed', { count: 1, paths: ['notes/a.md'], branches: [PROPOSE_BRANCH] }));
+  assert.equal(r.stderr, line('sync.dirty', { files: ['drafts/theirs.md'] }));
+});
+
+test('a ledger that does not validate changes nothing but one stderr line: the proposed file still postpones, and the ledger is left as it is', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  await proposeIn(world, ['A', '--only', 'notes/a.md']);
+  writeFileSync(ledgerOf(world), '{"format":1}');
+  const r = await sync(world);
+  assert.equal(r.code, EXIT.TEMPFAIL);
+  assert.equal(r.stderr, [
+    line('proposed.ledger_ignored', { file: ledgerOf(world), detail: t('proposed.ledger_not_valid') }),
+    line('sync.dirty', { files: ['notes/a.md'] }),
+  ].join(''));
+  assert.equal(readFileSync(ledgerOf(world), 'utf8'), '{"format":1}');
 });

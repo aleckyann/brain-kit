@@ -319,6 +319,37 @@ test('a dirty tree postpones the round with 75, naming the file, before anything
   assert.equal(traces(w).model, false);
 });
 
+// Final review of phase 4, C1: a proposal made outside a round (a person's
+// session, the morning briefing) leaves its files dirty by design. The
+// round's sync brings them back to HEAD from the proposed-paths ledger
+// instead of postponing on them every day, and a file edited after its
+// push still postpones.
+test('a round after a proposal made outside a round runs instead of postponing: its sync restores the proposed file', () => {
+  const w = makeCurateWorld();
+  w.write('notes/briefing.md', note('Briefing'));
+  const proposed = spawnSync(process.execPath, [BIN, 'propose', 'Briefing', '--only', 'notes/briefing.md'], { cwd: w.vault, env: w.env, encoding: 'utf8' });
+  assert.equal(proposed.status, EXIT.OK, proposed.stderr);
+  assert.equal(w.status(), '?? notes/briefing.md\n');
+  const r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.match(r.stdout, /Brought back to HEAD 1 path\(s\)/);
+  assert.equal(w.status(), '');
+  assert.equal(traces(w).model, true);
+});
+
+test('a file edited after its proposal outside a round still postpones the round with 75, naming it', () => {
+  const w = makeCurateWorld();
+  w.write('notes/briefing.md', note('Briefing'));
+  const proposed = spawnSync(process.execPath, [BIN, 'propose', 'Briefing', '--only', 'notes/briefing.md'], { cwd: w.vault, env: w.env, encoding: 'utf8' });
+  assert.equal(proposed.status, EXIT.OK, proposed.stderr);
+  w.write('notes/briefing.md', `${note('Briefing')}more\n`);
+  const r = w.curate();
+  assert.equal(r.status, EXIT.TEMPFAIL, r.stderr);
+  assert.equal(w.lastRun().reasonCode, 'dirty_tree');
+  assert.match(w.lastRun().reason, /notes\/briefing\.md/);
+  assert.equal(traces(w).model, false);
+});
+
 test('a diverged default branch fails the round with 1 and sync\'s message: a person must act, retrying cannot fix it', () => {
   const w = makeCurateWorld();
   w.publishNotes(1);

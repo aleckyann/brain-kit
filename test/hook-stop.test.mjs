@@ -408,3 +408,97 @@ test('the hook never changes git status of the vault, releasing or blocking', ()
   assertReleased(stop(fx, { stop_hook_active: true }), null);
   assert.equal(status(), before);
 });
+
+// --- what an earlier propose already holds (final review of phase 4, C1) ----------
+
+// A commit holding the working tree's bytes of `paths` on top of HEAD, as
+// `propose` builds one (a temporary index, never the real one), and the
+// ledger entry naming it.
+function proposalOf(fx, paths, branch = 'bot/2026-09-25-09-00-00') {
+  const index = join(fx.base, `index-${Math.random().toString(16).slice(2)}`);
+  const env = { ...process.env, GIT_INDEX_FILE: index };
+  const g = (args, input) => {
+    const r = spawnSync('git', args, { cwd: fx.root, env, encoding: 'utf8', input });
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout.trim();
+  };
+  g(['read-tree', 'HEAD']);
+  g(['update-index', '--add', '--remove', '-z', '--stdin'], paths.map((p) => `${p}\0`).join(''));
+  const tree = g(['write-tree']);
+  const commit = g(['-c', 'user.name=Ana', '-c', 'user.email=ana@example.com', 'commit-tree', tree, '-p', 'HEAD'], 'proposal\n');
+  return { opened: true, remote: 'origin', branch, commit, paths: [...paths].sort() };
+}
+
+function writeLedger(fx, entries) {
+  const file = join(fx.root, '.git', 'brain-kit-proposed.json');
+  writeFileSync(file, `${JSON.stringify({ format: 1, proposals: entries }, null, 2)}\n`);
+  return file;
+}
+
+test('a path whose bytes are exactly what an earlier propose pushed is left out: nothing else dirty releases, naming how many and the branch', () => {
+  const fx = sessionWithWork();
+  const file = writeLedger(fx, [proposalOf(fx, ['mine.md'])]);
+  const ledgerBytes = readFileSync(file);
+  assertReleased(stop(fx), /^brain-kit Stop hook: released, what this session changed is already proposed \(1 path\(s\) whose content is exactly what was pushed to bot\/2026-09-25-09-00-00; 0 path\(s\) that were already there/);
+  assert.deepEqual(readFileSync(file), ledgerBytes, 'the hook never writes the ledger');
+});
+
+test('only the proposed path is left out: another path of the session still blocks, and the reason says one was left out as proposed', () => {
+  const fx = sessionWithWork();
+  writeLedger(fx, [proposalOf(fx, ['mine.md'])]);
+  writeFileSync(join(fx.root, 'other.md'), 'more work\n');
+  const reason = reasonOf(stop(fx));
+  const lines = reason.split('\n');
+  assert.equal(lines[0], 'This session changed 1 path(s) in the vault:');
+  assert.equal(lines[1], '  other.md');
+  assert.doesNotMatch(reason, /mine\.md/);
+  assert.match(reason, /^1 path\(s\) whose content is exactly what was already pushed to bot\/2026-09-25-09-00-00 were left out: they are proposed already\.$/m);
+});
+
+test('one byte changed after the push makes the path this session\'s work again: it blocks, naming it, with no line about proposed paths', () => {
+  const fx = sessionWithWork();
+  writeLedger(fx, [proposalOf(fx, ['mine.md'])]);
+  writeFileSync(join(fx.root, 'mine.md'), 'this session!\n');
+  const reason = reasonOf(stop(fx));
+  assert.match(reason, /^ {2}mine\.md$/m);
+  assert.doesNotMatch(reason, /proposed already/);
+});
+
+test('the latest entry naming a path decides: an older proposal of the same bytes no longer counts once a later one pushed other bytes', () => {
+  const fx = sessionWithWork();
+  const older = proposalOf(fx, ['mine.md'], 'bot/older');
+  writeFileSync(join(fx.root, 'mine.md'), 'a later version\n');
+  const later = proposalOf(fx, ['mine.md'], 'bot/later');
+  writeFileSync(join(fx.root, 'mine.md'), 'this session\n');
+  writeLedger(fx, [older, later]);
+  assert.match(reasonOf(stop(fx)), /^ {2}mine\.md$/m);
+});
+
+test('a ledger that cannot be read or does not validate leaves every path in: it blocks, with one stderr line naming the ledger', () => {
+  for (const text of ['not json', '{"format":1,"proposals":[{"branch":"b"}]}', '{"format":2,"proposals":[]}']) {
+    const fx = sessionWithWork();
+    const file = join(fx.root, '.git', 'brain-kit-proposed.json');
+    writeFileSync(file, text);
+    const r = stop(fx);
+    assert.equal(JSON.parse(r.stdout).decision, 'block', text);
+    assert.match(JSON.parse(r.stdout).reason, /^ {2}mine\.md$/m, text);
+    assert.equal(r.stderr, `brain-kit: the proposed-paths ledger ${file} was ignored (it is not a ledger this version can read), so every changed path counts as not proposed yet. Run brain-kit doctor.\n`, text);
+  }
+});
+
+test('an entry whose commit this repository no longer holds proves nothing: the path blocks', () => {
+  const fx = sessionWithWork();
+  writeLedger(fx, [{ opened: true, remote: 'origin', branch: 'bot/gone', commit: 'a'.repeat(40), paths: ['mine.md'] }]);
+  assert.match(reasonOf(stop(fx)), /^ {2}mine\.md$/m);
+});
+
+test('a proposed deletion counts too: a path absent from both the proposal and the disk is left out', () => {
+  const fx = makeHookVault();
+  writeFileSync(join(fx.root, 'gone.md'), 'x\n');
+  git(fx.root, ['add', 'gone.md']);
+  git(fx.root, ['commit', '-q', '-m', 'gone']);
+  begin(fx);
+  unlinkSync(join(fx.root, 'gone.md'));
+  writeLedger(fx, [proposalOf(fx, ['gone.md'])]);
+  assertReleased(stop(fx), /already proposed \(1 path\(s\)/);
+});
