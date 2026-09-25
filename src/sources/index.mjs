@@ -13,6 +13,22 @@
 // service reached only through the model's tools (calendar, documents).
 // `required` is the source's own default; the vault's configuration
 // (`curate.sources.required` / `best_effort`) decides for a given round.
+//
+// Optional members (phase 3, the connector sources):
+//   - `emptyMeansNothingListed`, true when absent: the phase 2 rule for a
+//     source the model reports `empty`, which counts only when the plan
+//     offered nothing (evidence.expected === 0). A source whose plan never
+//     offers nothing while it is on (the calendar plans one listing per
+//     calendar, and an empty day is a listing with no events) sets it to
+//     false: for it, nothing to read is itself a reading to prove.
+//   - `isConfigured(config)`: whether the vault named what the source reads;
+//     a connector source is off until it did (decision D6).
+//   - `serverSpec(config)`: the connector the source reads through, in the
+//     shape src/guards/connectors.mjs takes. Connector sources only, and
+//     every connector source has one.
+//   - `toolRules(config)`: the permission rules the source asks the round
+//     for, its read tools allowed and its connector's write tools denied.
+//     Connector sources only, and every connector source has one.
 
 /**
  * @typedef {Object} ReadEvidence
@@ -36,15 +52,30 @@
  */
 
 /**
+ * @typedef {Object} ServerSpec
+ * @property {string} id                 the source's id
+ * @property {string} serverDisplayName  the server's name in the init event's mcp_servers
+ * @property {string} toolPrefix         the prefix of its tools, e.g. mcp__claude_ai_<Server>__
+ * @property {string[]} toolSuffixes     the tools the source needs, without the prefix
+ */
+
+/**
  * @typedef {Object} Source
  * @property {string} id                         key used in config and in the round's report
  * @property {'local'|'connector'} kind
  * @property {boolean} required
  * @property {(record: object, plan: object) => ReadEvidence} readEvidence
- * @property {(args: { window: { from: Date, to: Date }, config: object, machine: object, now?: Date }) => object} collect
+ * @property {(args: { window: { from: Date, to: Date, days?: string[], timezone?: string }, config: object, machine?: object, now?: Date }) => object} collect
+ * @property {boolean} [emptyMeansNothingListed]  default true
+ * @property {(config: object) => boolean} [isConfigured]
+ * @property {(config: object) => ServerSpec} [serverSpec]                       connector sources
+ * @property {(config: object) => { allow: string[], deny: string[] }} [toolRules] connector sources
  */
 
 export const SOURCE_KINDS = Object.freeze(['local', 'connector']);
+
+const OPTIONAL_FUNCTIONS = Object.freeze(['isConfigured', 'serverSpec', 'toolRules']);
+const CONNECTOR_FUNCTIONS = Object.freeze(['serverSpec', 'toolRules']);
 
 // Errors, one string each, for an object that does not implement the
 // interface; an empty list when it does.
@@ -58,5 +89,13 @@ export function validateSource(obj) {
   if (typeof obj.required !== 'boolean') errors.push('source.required: must be a boolean');
   if (typeof obj.collect !== 'function') errors.push('source.collect: must be a function');
   if (typeof obj.readEvidence !== 'function') errors.push('source.readEvidence: must be a function');
+  if (obj.emptyMeansNothingListed !== undefined && typeof obj.emptyMeansNothingListed !== 'boolean') {
+    errors.push('source.emptyMeansNothingListed: must be a boolean when present');
+  }
+  for (const member of OPTIONAL_FUNCTIONS) {
+    const required = obj.kind === 'connector' && CONNECTOR_FUNCTIONS.includes(member);
+    if (typeof obj[member] === 'function' || (obj[member] === undefined && !required)) continue;
+    errors.push(`source.${member}: must be a function${required ? ' in a connector source' : ' when present'}`);
+  }
   return errors;
 }

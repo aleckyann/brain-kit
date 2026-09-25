@@ -98,7 +98,10 @@ export function completeDefaults(defaults, answers, { kitVersion } = {}) {
   // token is replaced. A function, not a replacement string, so a "$&" in
   // a person's title stays literal.
   config.git.agent_identity.name = config.git.agent_identity.name.replace(PLACEHOLDERS.vaultTitle, () => answers.title);
-  config.sources.calendar.calendars = email === null ? [] : [email];
+  // sources.calendar.calendars stays the defaults' empty list, whatever the
+  // e-mail: the calendar source is opt in (decision D6 of the phase 3 plan),
+  // and turning it on moves the round into connector mode, which a person
+  // chooses by naming the calendars to read.
   config.briefing.calendar_id = email;
 
   const left = findPlaceholders(config, '$', []);

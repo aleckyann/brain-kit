@@ -78,7 +78,9 @@ function assertFilledFrom(config, answers, defaults) {
   assert.deepEqual(config.vault, { ...defaults.vault, title: answers.title, repo, timezone: answers.timezone });
   assert.deepEqual(config.actors, { ...defaults.actors, human: `human:${answers.handle}` });
   assert.deepEqual(config.git.agent_identity, { ...defaults.git.agent_identity, name: `${answers.title}${suffix}` });
-  assert.deepEqual(config.sources.calendar.calendars, email === null ? [] : [email]);
+  // The calendar source is opt in (decision D6 of the phase 3 plan): an
+  // e-mail names the owner, never a calendar for the round to read.
+  assert.deepEqual(config.sources.calendar.calendars, []);
   assert.equal(config.briefing.calendar_id, email);
   assert.equal(config.lang, answers.lang);
 }
