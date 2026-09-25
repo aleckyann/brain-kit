@@ -1145,6 +1145,7 @@
   "briefing.questions_room": "Room for {count} new question(s) today under briefing.max_questions ({limit}): each goes into the queue first, with `{kit} questions add \"<question>\"`, and then you ask it.",
   "briefing.questions_room_none": "No room for a new question today under briefing.max_questions ({limit}): a new one goes into the queue with `{kit} questions add \"<question>\"` for another day, and you say so.",
   "briefing.questions_marked": "When you are handed this briefing, the kit records the questions above as asked on {day}.",
+  "briefing.questions_not_recorded": "Correction: the kit could not record this briefing's questions as asked today, so the queue did not count them; say so in one line.",
   "briefing.corrupt_encoding": "not UTF-8",
   "briefing.corrupt_json": "not JSON",
   "briefing.corrupt_shape": "not a question: its \"{field}\" is not what a question holds",

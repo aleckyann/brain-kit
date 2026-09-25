@@ -15,7 +15,7 @@ Never open, list or search a path in the list below, not even to check that it e
 
 {{never_read}}
 
-You may open these notes, and the paths a judgement or custom block below gives you to read, and nothing else; a path the never-read list covers stays closed even then:
+You may open these notes, and any path a block below names or gives you to read, and nothing else; a path the never-read list covers stays closed even then:
 
 {{read}}
 

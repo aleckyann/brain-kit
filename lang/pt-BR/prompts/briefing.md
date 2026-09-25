@@ -15,7 +15,7 @@ Nunca abra, liste nem busque um caminho da lista abaixo, nem para conferir se el
 
 {{never_read}}
 
-Você pode abrir estas notas, e os caminhos que um bloco de julgamento ou do dono abaixo mandar ler, e nada além; um caminho que a lista do que nunca se lê cobre continua fechado mesmo assim:
+Você pode abrir estas notas, e qualquer caminho que um bloco abaixo cite ou mande ler, e nada além; um caminho que a lista do que nunca se lê cobre continua fechado mesmo assim:
 
 {{read}}
 

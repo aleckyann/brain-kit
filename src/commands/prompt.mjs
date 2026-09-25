@@ -624,9 +624,13 @@ function runBriefing(io, { startDir, env, now, packsDir, deps }) {
     try {
       markAsked(stateDir, ids, selection.today, { env });
     } catch (error) {
-      if (!(error instanceof GuardError) && typeof error.code !== 'string') throw error;
-      const detail = error instanceof GuardError ? t(error.messageKey, error.params) : `${error.code}: ${firstLineOf(error.message)}`;
+      // Any failure here is the degraded case: the text is still printed,
+      // with one line telling the model the questions were NOT recorded.
+      const detail = error instanceof GuardError
+        ? t(error.messageKey, error.params)
+        : `${typeof error.code === 'string' ? error.code : error.name}: ${firstLineOf(error.message)}`;
       io.stderr.write(`${t('prompt.briefing_mark_failed', { detail })}\n`);
+      text = `${text.replace(/\n*$/, '')}\n\n${t('briefing.questions_not_recorded')}\n`;
       exit = EXIT.DEGRADED;
     }
   }

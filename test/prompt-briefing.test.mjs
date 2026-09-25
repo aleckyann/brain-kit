@@ -385,7 +385,17 @@ test('a record of the asked questions that fails is said on stderr, the text is 
   assert.equal(out.split('\n')[0], loadConfig(world.vault).briefing.signature);
   assert.ok(out.includes(`[${id}]`));
   assert.match(err, /brain-kit prompt briefing: the questions of this briefing could not be recorded as asked today \(.+\); the queue did not count this briefing\./);
+  assert.ok(out.endsWith("\n\nCorrection: the kit could not record this briefing's questions as asked today, so the queue did not count them; say so in one line.\n"), out.slice(-300));
   assert.deepEqual(asked(world.state), [[id, []]]);
+});
+
+// Task 3 re-review: the reading rule named only judgement and custom
+// blocks, so a fact block's own path (a pending table to update) was closed.
+test('the reading rule opens any path a block names, never-read still wins, in both packs', () => {
+  const en = packPrompt('en');
+  const pt = packPrompt('pt-BR');
+  assert.ok(en.includes('You may open these notes, and any path a block below names or gives you to read, and nothing else; a path the never-read list covers stays closed even then:'));
+  assert.ok(pt.includes('Você pode abrir estas notas, e qualquer caminho que um bloco abaixo cite ou mande ler, e nada além; um caminho que a lista do que nunca se lê cobre continua fechado mesmo assim:'));
 });
 
 // Review, Important 2 (ruling R-T9): an overlay without {{blocks}} showed

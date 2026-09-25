@@ -1145,6 +1145,7 @@
   "briefing.questions_room": "Cabem {count} pergunta(s) nova(s) hoje sob briefing.max_questions ({limit}): cada uma entra primeiro na fila, com `{kit} questions add \"<pergunta>\"`, e depois você a faz.",
   "briefing.questions_room_none": "Não cabe pergunta nova hoje sob briefing.max_questions ({limit}): uma nova entra na fila com `{kit} questions add \"<pergunta>\"` para outro dia, e você diz isso.",
   "briefing.questions_marked": "Quando este briefing é entregue a você, o kit registra as perguntas acima como feitas em {day}.",
+  "briefing.questions_not_recorded": "Correção: o kit não conseguiu registrar as perguntas deste briefing como feitas hoje, então a fila não as contou; diga isso em uma linha.",
   "briefing.corrupt_encoding": "não é UTF-8",
   "briefing.corrupt_json": "não é JSON",
   "briefing.corrupt_shape": "não é uma pergunta: o campo \"{field}\" não é o que uma pergunta guarda",
