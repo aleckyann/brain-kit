@@ -477,10 +477,30 @@ test('no machine.json is exit 2, and nothing runs', () => {
   assert.deepEqual(w.roundFiles(), []);
 });
 
+// The network wait's timing, injected (final review of phase 4, I4): the
+// real check runs to its end however slow the machine is, never killed by
+// a wall-clock limit, and each attempt spends the whole (fake) wait, so the
+// loop ends after exactly one attempt without sleeping.
+function oneAttemptNetwork() {
+  const clock = { at: 0 };
+  return {
+    networkTimeoutMs: 1000,
+    networkDeps: {
+      now: () => clock.at,
+      sleep: async () => { throw new Error('a second attempt was never meant to run'); },
+      runArgv: (argv) => {
+        const done = spawnSync(argv[0], argv.slice(1), { stdio: 'ignore' });
+        clock.at += 1000;
+        return done.status === 0;
+      },
+    },
+  };
+}
+
 test('no network after waiting is exit 69, and nothing is fetched', async () => {
   const w = makeCurateWorld();
   w.setMachine({ network_check: [process.execPath, '-e', 'process.exit(1)'] });
-  const r = await curateInProcess(w, [], { networkTimeoutMs: 100 });
+  const r = await curateInProcess(w, [], oneAttemptNetwork());
   assert.equal(r.status, EXIT.UNAVAILABLE, r.stderr);
   assert.equal(traces(w).fetched, false);
   assert.equal(w.lastRun().network.ok, false);
@@ -500,7 +520,7 @@ test('the order: a failing step leaves no trace of any step after it', async () 
   // 4. network fails: the check ran, nothing after it.
   let w = makeCurateWorld();
   w.setMachine({ network_check: [process.execPath, '-e', `require('node:fs').writeFileSync(${JSON.stringify(w.networkMarker)}, ''); process.exit(1)`] });
-  let r = await curateInProcess(w, [], { networkTimeoutMs: 100 });
+  let r = await curateInProcess(w, [], oneAttemptNetwork());
   assert.equal(r.status, EXIT.UNAVAILABLE);
   assert.deepEqual(traces(w), { ...NONE, network: true });
 
