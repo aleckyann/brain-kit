@@ -3,9 +3,11 @@
 > Em construção. A fase 1 está concluída: o validador, o linter, os gates de push, o
 > `init`, o `init --adopt`, o `update`, o `doctor`, o loop de pull request (`sync`,
 > `propose`, `verify`) e o plugin do Claude Code (hooks, skills, um subagente somente
-> leitura) já funcionam hoje, a partir de um clone deste repositório. A fase 2, o curador
-> agendado (`curate`, `watermark`, `schedule`), está construída e em revisão. O briefing
-> matinal ainda está por vir, e o pacote no npm ainda é o esqueleto da fase 0. Acompanhe o
+> leitura) já funcionam hoje, a partir de um clone deste repositório. A fase 2 também está
+> concluída: o curador agendado (`curate`, `watermark`, `schedule`) lê as suas sessões
+> recentes do Claude Code e abre um pull request a partir de uma rodada sem ninguém por
+> perto. As fontes de agenda e de notas de reunião e o briefing matinal ainda estão por
+> vir, e o pacote no npm ainda é o esqueleto da fase 0. Acompanhe o
 > repositório para a primeira versão usável.
 
 Um segundo cérebro em markdown puro, no Open Knowledge Format (OKF) v0.2, mantido por um
@@ -173,7 +175,7 @@ A pasta `evals/` traz um caso de `claude plugin eval` por skill e idioma; veja
 |---|---|---|
 | 0 | Esqueleto, códigos de saída, packs de idioma, schemas de config, trava anti-vazamento, CI, docs | concluída, 0.0.1 no npm |
 | 1 | Validador, lint, propose (loop de PR), hook Stop, init, doctor, skills | concluída |
-| 2 | Curador agendado sobre transcripts locais, templates de agendamento | em revisão |
+| 2 | Curador agendado sobre transcripts locais, templates de agendamento | concluída |
 | 3 | Fontes de agenda e notas de reunião (best effort por desenho) | planejada |
 | 4 | Briefing matinal | planejada |
 | 5 | Migração do vault original para o kit | planejada |
