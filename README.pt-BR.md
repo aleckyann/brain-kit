@@ -210,8 +210,8 @@ mesmos fatos, lendo as tabelas de pendências pelo nome da coluna e pondo cada i
 balde pela primeira data real da célula, com "sem data" como balde próprio e o que for
 ambíguo nomeado junto do item. O julgamento é do modelo. O kit nunca põe no prompt o
 conteúdo de um caminho em `briefing.never_read`: um caminho que ele precisa citar, como
-uma nota vencida, vem marcado "(nunca lido)", e as verificações dele só leem o que o
-`validate` sempre leu, o frontmatter de cada nota. O modelo recebe a instrução de nunca
+uma nota vencida, vem marcado "(nunca lido)", e as verificações dele, como o `validate`,
+leem cada nota e usam só o frontmatter dela. O modelo recebe a instrução de nunca
 abrir, listar ou buscar esses caminhos; é uma instrução ao modelo, não uma caixa de
 areia. Nenhum limite vale se você não definir um (`max_words`, `max_questions` e
 `write_caps` são `null` por padrão), e `briefing.enabled: false` desliga o briefing no

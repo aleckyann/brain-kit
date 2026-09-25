@@ -205,8 +205,8 @@ facts, reading the pending tables by column name and bucketing each item by the 
 date in its cell, with "no date" a bucket of its own and anything ambiguous named next to
 its item. The judgement is the model's. The kit never puts the content of a path in
 `briefing.never_read` in the prompt: a path it must mention, such as a stale note, is
-marked "(never read)", and its own checks read only what `validate` always reads, every
-note's frontmatter. The model is told never to open, list or search those paths; that is
+marked "(never read)", and its own checks, like `validate`, read each note and use only
+its frontmatter. The model is told never to open, list or search those paths; that is
 an instruction to the model, not a sandbox. No limit applies unless you set one
 (`max_words`, `max_questions` and `write_caps` are `null` by default), and
 `briefing.enabled: false` turns the briefing off in the vault.
