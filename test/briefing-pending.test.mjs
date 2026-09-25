@@ -105,6 +105,35 @@ test('parseDeadline: a day and month with no four-digit year is named, never tak
   assert.deepEqual(parseDeadline('1/2/3'), { deadline: null, invalid: [], incomplete: [], others: [] });
 });
 
+test('parseDeadline: a yearless token is date-like only when the calendar allows it (ruling R-T5)', () => {
+  for (const cell of ['50/50', '13/13', '31/04', '0/5', '5/0', '30/02', '32/01', '31/04/26']) {
+    assert.deepEqual(parseDeadline(cell), { deadline: null, invalid: [], incomplete: [], others: [] }, cell);
+  }
+  assert.deepEqual(parseDeadline('29/02'), { deadline: null, invalid: [], incomplete: ['29/02'], others: ['29/02'] }, 'the leap day may be a date');
+  assert.deepEqual(parseDeadline('31/12/26'), { deadline: null, invalid: [], incomplete: ['31/12/26'], others: ['31/12/26'] });
+  assert.deepEqual(parseDeadline('30/04'), { deadline: null, invalid: [], incomplete: ['30/04'], others: ['30/04'] }, 'the last day of April exists');
+  assert.deepEqual(parseDeadline('50/50, due 12/10/2026'), { deadline: '2026-10-12', invalid: [], incomplete: [], others: [] });
+  assert.deepEqual(parseDeadline('3/4 done, due 12/10/2026'), { deadline: '2026-10-12', invalid: [], incomplete: ['3/4'], others: ['3/4'] },
+    '3/4 may be the 3rd of April: the kit cannot tell');
+});
+
+test('pendingBuckets: a ratio the calendar refuses raises nothing; one it allows is named as possibly a date', () => {
+  const rows = [
+    ['ratio refused', '50/50, due 12/10/2026'],
+    ['month 13', '13/13'],
+    ['no 31st of April', '31/04'],
+    ['ratio allowed', '3/4 done, due 12/10/2026'],
+    ['alone and allowed', '3/4'],
+  ];
+  const { result } = buckets({ [FOLLOWUPS]: followups(rows), [PROMISES]: promises([]) });
+  assert.equal(result.later, 2);
+  assert.deepEqual(whats(result.undated), ['month 13', 'no 31st of April', 'alone and allowed']);
+  assert.deepEqual(result.problems, [
+    { code: 'ambiguous_deadline', detail: { path: FOLLOWUPS, line: 19, deadline: '2026-10-12', others: ['3/4'] } },
+    { code: 'date_without_year', detail: { path: FOLLOWUPS, line: 20, value: '3/4' } },
+  ], '50/50, 13/13 and 31/04 raise nothing');
+});
+
 test('pendingBuckets: a date with no year is a problem naming the file and line, and the item is undated', () => {
   const { result } = buckets({ [FOLLOWUPS]: followups([['no year', 'até 05/10'], ['with a real one too', '05/10 or 12/10/2026']]), [PROMISES]: promises([]) });
   assert.deepEqual(whats(result.undated), ['no year']);

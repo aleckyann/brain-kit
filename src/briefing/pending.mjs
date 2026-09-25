@@ -65,8 +65,14 @@ const DATE_IN_TEXT = /(?<!\d)(?:(\d{1,2})\/(\d{1,2})\/(\d{4})|(\d{4})-(\d{2})-(\
 // A day and a month with no year, or a two-digit year ("05/10", "05/10/26"):
 // no day can be computed from it, so the item stays undated, and a problem
 // says which text was not taken for a date. Not glued to a digit or a slash
-// on either side, so no part of a full DD/MM/YYYY matches.
-const DATE_WITHOUT_YEAR = /(?<![\d/])\d{1,2}\/\d{1,2}(?:\/\d{2})?(?![\d/])/g;
+// on either side, so no part of a full DD/MM/YYYY matches. It counts as
+// date-like only when the calendar allows it (ruling R-T5): the day exists
+// in that month of a leap year, read day first as the kit reads dates, so
+// "50/50", "13/13" and "31/04" are not dates and raise nothing. One that
+// the calendar allows ("3/4") is still named, as something that MAY be a
+// date: the kit cannot tell a ratio from the 3rd of April.
+const DATE_WITHOUT_YEAR = /(?<![\d/])(\d{1,2})\/(\d{1,2})(?:\/\d{2})?(?![\d/])/g;
+const LEAP_YEAR = 2000;
 
 const ATX_HEADING = /^ {0,3}(#{1,6})(?:[ \t]|$)/;
 
@@ -77,7 +83,8 @@ function pad(n, width = 2) {
 // The deadline a cell holds: `{ deadline, invalid, incomplete, others }`,
 // `deadline` the first real date as YYYY-MM-DD or null, `invalid` every
 // date-shaped text in the cell that names no real day, as written,
-// `incomplete` every day and month written without a four-digit year, and
+// `incomplete` every day and month the calendar allows (in a leap year)
+// written without a four-digit year, and
 // `others` every date-like text in the cell but the one the deadline came
 // from (unreal, yearless, or a second full date), in the cell's order: what
 // makes the deadline possibly not the one the person meant (ruling R-T4).
@@ -104,6 +111,7 @@ export function parseDeadline(cell) {
   }
   const incomplete = [];
   for (const match of text.matchAll(DATE_WITHOUT_YEAR)) {
+    if (!isValidCalendarDate(LEAP_YEAR, Number(match[2]), Number(match[1]))) continue;
     incomplete.push(match[0]);
     tokens.push({ at: match.index, value: match[0] });
   }

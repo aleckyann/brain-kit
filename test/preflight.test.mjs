@@ -677,6 +677,10 @@ test('the text names every weekday, and every pending problem, in both languages
     assert.ok(rendered[12].includes('a.md:14') && rendered[12].includes('05/10'), rendered[12]);
     assert.ok(rendered[13].includes('from_the_future') && rendered[13].includes('a.md'), 'an unknown code is named, never taken for another');
     assert.ok(rendered[14].includes('a.md:15') && rendered[14].includes('12/10/2026') && rendered[14].includes('"05/10", "31/02/2026"'), rendered[14]);
+    const mayBe = { en: 'which may also be a date', 'pt-BR': 'que também pode ser uma data' };
+    const mayBeOne = { en: '"05/10" may be a date, but', 'pt-BR': '"05/10" pode ser uma data, mas' };
+    assert.ok(rendered[14].includes(mayBe[lang]), `${lang}: the other text is said to be possibly a date, never asserted: ${rendered[14]}`);
+    assert.ok(rendered[12].includes(mayBeOne[lang]), `${lang}: ${rendered[12]}`);
   }
 });
 
