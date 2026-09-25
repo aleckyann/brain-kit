@@ -510,5 +510,5 @@ test('the read list resolves an existing entry by its real path: a link into nev
   const root = vault({ 'people/ana.md': '# Ana\n', 'notes/x.md': '# X\n' });
   symlinkSync(join(root, 'people', 'ana.md'), join(root, 'notes', 'ana-link.md'));
   const config = configWith('en', { read: ['notes/x.md', 'notes/ana-link.md', 'notes/missing.md'], never_read: ['people/'] });
-  assert.deepEqual(briefingReadList(config, root), { paths: ['notes/x.md', 'notes/missing.md'], leftOut: [{ path: 'notes/ana-link.md', problem: 'read_never_read', entry: 'people/' }] });
+  assert.deepEqual(briefingReadList(config, root), { paths: ['notes/x.md', 'notes/missing.md'], unreadable: [], leftOut: [{ path: 'notes/ana-link.md', problem: 'read_never_read', entry: 'people/' }] });
 });

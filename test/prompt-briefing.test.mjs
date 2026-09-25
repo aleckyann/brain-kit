@@ -621,3 +621,27 @@ test('the real binary exits 0 with its one line outside a vault and with a bad t
   assert.equal(bad.stdout.trim().split('\n').length, 1, bad.stdout);
   assert.match(bad.stderr, /\(bad_timezone\)/);
 });
+
+// ------------------------------------------------------------ an unreadable briefing.read entry (final review, M1)
+
+for (const lang of LANGS) {
+  test(`${lang}: a briefing.read entry whose directory cannot be read is said as not verified, never listed as a note to read, and kept out of the blind spots`, { skip: process.getuid?.() === 0 && 'root reads every directory' }, async () => {
+    const world = freshVault(lang, { read: ['index.md', '.private/a.md'], blocks: ['blind_spots'] });
+    const hidden = join(world.vault, '.private');
+    mkdirSync(hidden);
+    writeFileSync(join(hidden, 'a.md'), '# A\n');
+    chmodSync(hidden, 0o000);
+    try {
+      const { code, out } = await briefing(world);
+      assert.equal(code, EXIT.OK, out);
+      assert.ok(!out.includes('- `.private/a.md`'), `${lang}: listed as an ordinary note`);
+      assert.ok(out.includes(createTranslator(lang)('briefing.read_unreadable', { path: '.private/a.md', detail: 'EACCES' })), `${lang}: not said as unreadable`);
+      assert.ok(out.includes('- `index.md`'));
+      const blind = out.slice(out.indexOf('(blind_spots)'));
+      assert.ok(!blind.includes('.private/a.md'), `${lang}: named among the notes to read in the blind spots`);
+      assert.ok(blind.includes('`index.md`'));
+    } finally {
+      chmodSync(hidden, 0o700);
+    }
+  });
+}

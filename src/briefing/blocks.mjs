@@ -597,24 +597,31 @@ export function renderBlocks({ blocks, problems, facts, config, root, t, kit, lo
 // ------------------------------------------------------------ the other placeholders
 
 // `briefing.read`, normalised, with every entry outside the vault or inside
-// never_read left out and said. Nothing here touches the file system: a
+// never_read left out and said. Only the entry's real path is resolved: a
 // note of the list that is not there is the model's to report as not found.
+// One whose resolution fails for another reason (a directory the user
+// cannot read) is `unreadable`, `{ path, detail }`, never an ordinary note
+// (final review of phase 4, M1).
 export function briefingReadList(config, root) {
   const list = briefingSetting(config, 'read');
   const neverRead = neverReadOf(config);
   const paths = [];
+  const unreadable = [];
   const leftOut = [];
   for (const raw of Array.isArray(list) ? list : []) {
     const checked = checkReadPath(root, raw, neverRead, { mustExist: false });
     if (checked.problem !== undefined) leftOut.push({ path: String(raw), problem: checked.problem, entry: checked.entry ?? null });
-    else if (!paths.includes(checked.path)) paths.push(checked.path);
+    else if (checked.unreadable !== undefined) {
+      if (!unreadable.some((item) => item.path === checked.path)) unreadable.push({ path: checked.path, detail: checked.unreadable });
+    } else if (!paths.includes(checked.path)) paths.push(checked.path);
   }
-  return { paths, leftOut };
+  return { paths, unreadable, leftOut };
 }
 
 export function renderReadList(config, root, t) {
-  const { paths, leftOut } = briefingReadList(config, root);
-  const lines = paths.length > 0 ? paths.map((path) => `- \`${path}\``) : [t('briefing.read_none')];
+  const { paths, unreadable, leftOut } = briefingReadList(config, root);
+  const lines = paths.length > 0 || unreadable.length > 0 ? paths.map((path) => `- \`${path}\``) : [t('briefing.read_none')];
+  lines.push(...unreadableLines(t, unreadable));
   for (const item of leftOut) {
     if (item.problem === 'read_never_read') lines.push(t('briefing.read_left_out_never_read', { path: item.path, entry: item.entry }));
     else lines.push(t('briefing.read_left_out_outside', { path: item.path }));
