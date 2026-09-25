@@ -203,6 +203,8 @@ function allSites() {
     ...extractTranslatorCallSites(readSrc('src/sources/meeting-notes-google-drive.mjs'), 'src/sources/meeting-notes-google-drive.mjs'),
     ...extractTranslatorCallSites(readSrc('src/sources/transcripts-claude-code.mjs'), 'src/sources/transcripts-claude-code.mjs'),
     ...extractTranslatorCallSites(readSrc('src/commands/prompt.mjs'), 'src/commands/prompt.mjs'),
+    // Phase 4, task 3: the briefing's blocks, rendered in the vault's language.
+    ...extractTranslatorCallSites(readSrc('src/briefing/blocks.mjs'), 'src/briefing/blocks.mjs'),
     ...extractTranslatorCallSites(readSrc('src/sources/calendar-google.mjs'), 'src/sources/calendar-google.mjs'),
   ];
   return [...rule, ...direct];

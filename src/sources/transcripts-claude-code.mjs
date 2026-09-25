@@ -110,8 +110,13 @@ function userText(content) {
   return texts.length ? texts.join('\n') : null;
 }
 
+// The kit's own sessions: the curator's rounds (curate.signature, and any
+// curate.extra_signatures the person lists) and, always, the morning
+// briefing's (briefing.signature, phase 4 decision B6): what a briefing
+// records it proposes itself, so the curator never reads it again as the
+// person's own work.
 function signaturesOf(config) {
-  const all = [config?.curate?.signature, ...(config?.curate?.extra_signatures ?? [])];
+  const all = [config?.curate?.signature, config?.briefing?.signature, ...(config?.curate?.extra_signatures ?? [])];
   // A blank signature would be a prefix of every message and drop every file.
   return all.filter((sig) => typeof sig === 'string' && sig.trim() !== '');
 }

@@ -190,7 +190,12 @@ test('briefingFacts: today, its human form and its weekday are the vault zone\'s
   assert.deepEqual([late.today, late.todayHuman, late.weekday], ['2026-09-27', '27/09/2026', 'sunday']);
   const monday = world.facts({ now: new Date('2026-09-28T03:05:00Z') });
   assert.deepEqual([monday.today, monday.weekday], ['2026-09-28', 'monday']);
-  assert.equal(facts.questions, null, 'the queue is wired in by task 3');
+  // Task 3 wired the queue in: an empty state directory is an empty queue,
+  // read, with the pack's limits (3 and 45).
+  assert.deepEqual(facts.questions, {
+    ok: true, reason: null, file: join(world.stateDir, 'questions.log'), escalateAfter: 3, maxAgeDays: 45,
+    open: [], escalated: [], toArchive: [], corrupt: [],
+  });
 });
 
 test('briefingFacts: the pending buckets are computed for the vault\'s today', () => {
@@ -505,6 +510,7 @@ test('preflight: the text in English, every section present', async () => {
     'Git: on main, 0 changed path(s) in the working tree.',
     'Git: how main stands against its remote is not known (the repository has no remote to compare it with).',
     'Vault lock: free.',
+    `Question queue: 0 open, 0 escalated, 0 due for archiving, 0 unreadable line(s) (${join(world.stateDir, 'questions.log')}).`,
   ].join('\n');
   assert.equal(out, `${expected}\n`);
 });
@@ -613,7 +619,7 @@ test('renderPreflight: an item with no what reads as a dash, a detached HEAD is 
     pending: { overdue: [], today: [], upcoming: [], undated: [{ file: 'a.md', line: 3, what: '', deadline: null, raw: '' }], later: 2, upcomingDays: 3, problems: [] },
     git: { branch: null, defaultBranch: 'main', upstream: 'origin/main', ahead: 0, behind: 4, dirty: 2, reason: null },
     lock: { held: null, command: null, reason: 'boom' },
-    questions: null,
+    questions: { ok: false, reason: 'EACCES', file: '/s/questions.log', escalateAfter: 3, maxAgeDays: 45, open: null, escalated: null, toArchive: null, corrupt: null },
   };
   const text = renderPreflight(facts, t, { vault: '/v' });
   for (const line of [
@@ -625,6 +631,7 @@ test('renderPreflight: an item with no what reads as a dash, a detached HEAD is 
     'Git: on (detached HEAD), 2 changed path(s) in the working tree.',
     'Git: main is 4 commit(s) behind and 0 ahead of origin/main, as of the last fetch.',
     'Vault lock: not known (boom).',
+    'Question queue: not known, /s/questions.log cannot be read (EACCES).',
   ]) assert.ok(text.includes(line), `${line}\n---\n${text}`);
 });
 

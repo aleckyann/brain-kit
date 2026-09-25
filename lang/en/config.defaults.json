@@ -364,14 +364,14 @@
     "schedule": "0 9 * * 1-5",
     "prompt": ".brain-kit/prompts/briefing.md",
     "signature": "Second brain morning briefing",
-    "max_words": 500,
-    "max_questions": 3,
+    "max_words": null,
+    "max_questions": null,
     "questions_dedup_days": 15,
     "question_escalate_after": 3,
     "question_max_age_days": 45,
     "write_caps": {
-      "captures": 5,
-      "pending_changes": 3
+      "captures": null,
+      "pending_changes": null
     },
     "strategy_doc": {
       "index": "decisions/index.md",
@@ -393,6 +393,7 @@
       "memory/log.md#full"
     ],
     "upcoming_days": 7,
+    "blocks": ["sources", "due", "upcoming", "undated", "open_prs", "stale", "blind_spots", "strategy", "questions"],
     "pending": [
       { "file": "followups", "heading": "open_heading", "date_column": "Deadline", "what_column": "What" },
       { "file": "promises", "heading": "active_heading", "date_column": "Condition / deadline", "what_column": "What I promised" }

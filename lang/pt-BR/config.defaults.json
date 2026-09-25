@@ -364,14 +364,14 @@
     "schedule": "0 9 * * 1-5",
     "prompt": ".brain-kit/prompts/briefing.md",
     "signature": "Briefing matinal do segundo cérebro",
-    "max_words": 500,
-    "max_questions": 3,
+    "max_words": null,
+    "max_questions": null,
     "questions_dedup_days": 15,
     "question_escalate_after": 3,
     "question_max_age_days": 45,
     "write_caps": {
-      "captures": 5,
-      "pending_changes": 3
+      "captures": null,
+      "pending_changes": null
     },
     "strategy_doc": {
       "index": "decisoes/index.md",
@@ -393,6 +393,7 @@
       "memoria/log.md#inteiro"
     ],
     "upcoming_days": 7,
+    "blocks": ["sources", "due", "upcoming", "undated", "open_prs", "stale", "blind_spots", "strategy", "questions"],
     "pending": [
       { "file": "followups", "heading": "open_heading", "date_column": "Prazo", "what_column": "O que" },
       { "file": "promises", "heading": "active_heading", "date_column": "Condição / prazo", "what_column": "O que prometi" }

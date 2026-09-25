@@ -7,7 +7,7 @@
 // vault's time zone, the curator's last round and each source's state, the
 // connector states carried from round to round, the pull requests waiting
 // for a merge, the notes past their stale_after, the pending items by
-// deadline, the working tree and the lock.
+// deadline, the working tree, the lock and the question queue.
 //
 // Every open pull request is listed, never a first page (ruling R-T1).
 //
@@ -41,6 +41,7 @@ import { knownStates } from '../commands/curate.mjs';
 import { ghEnvOf } from '../commands/propose.mjs';
 import { vaultClock } from '../commands/prompt.mjs';
 import { pendingBuckets } from './pending.mjs';
+import { queueFile, queueSummary, questionLimits, readQueue } from './questions.mjs';
 
 // Every open pull request, with no cap (ruling R-T1): `gh pr list` stops at
 // 30 unless given a --limit, and any number there is a cap nobody asked
@@ -219,6 +220,24 @@ function gitFacts(root, env) {
   }
 }
 
+// The question queue as the briefing shows it (src/briefing/questions.mjs):
+// every open question, those escalated and those due for archiving, by the
+// vault's limits (questionLimits: a key left out is the pack's default, an
+// explicit null is never), and every line of the file that could not be
+// read, which is shown and never hidden. A queue that cannot be read at all
+// is `ok: false` with the reason, never an empty queue.
+function questionFacts(stateDir, config, today, env) {
+  const { escalateAfter, maxAgeDays } = questionLimits(config);
+  let file = null;
+  try {
+    file = queueFile(stateDir, { env });
+    const summary = queueSummary(readQueue(stateDir, { env }), { today, escalateAfter, maxAgeDays });
+    return { ok: true, reason: null, file, escalateAfter, maxAgeDays, ...summary };
+  } catch (error) {
+    return { ok: false, reason: firstLine(error.message), file, escalateAfter, maxAgeDays, open: null, escalated: null, toArchive: null, corrupt: null };
+  }
+}
+
 function lockFacts(root, env) {
   try {
     const holder = describeLock(root, { env });
@@ -229,9 +248,9 @@ function lockFacts(root, env) {
 }
 
 // `machine` is the vault's machine.json on this machine, or null; nothing
-// in this task reads it (the question queue, wired in later, lives at its
-// paths.questions_log). The last round is read where the curator writes
-// it, `<stateDir>/last-run.json`.
+// here reads it directly (the question queue finds its own
+// paths.questions_log through queueFile). The last round is read where the
+// curator writes it, `<stateDir>/last-run.json`.
 export function briefingFacts({ root, config, machine = null, stateDir, now = new Date(), env = process.env, deps = {} }) {
   const run = deps.run ?? runCommand;
   const walkVault = deps.walkVault ?? realWalkVault;
@@ -252,6 +271,6 @@ export function briefingFacts({ root, config, machine = null, stateDir, now = ne
     pending: pendingBuckets({ root, config, today, tz }),
     git: gitFacts(root, env),
     lock: lockFacts(root, env),
-    questions: null,
+    questions: questionFacts(stateDir, config, today, env),
   };
 }

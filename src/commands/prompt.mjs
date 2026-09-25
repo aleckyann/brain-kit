@@ -7,6 +7,7 @@
 //
 //   brain-kit prompt skill <name> [--vault <dir>]
 //   brain-kit prompt curate [--vault <dir>]
+//   brain-kit prompt briefing [--vault <dir>]
 //   brain-kit prompt --check [--vault <dir>]
 //
 // `curate` prints the prompt a scheduled curate round hands the model
@@ -18,6 +19,21 @@
 // `brain-kit curate` itself calls renderCuratePrompt with the real block.
 // The prompt's first line is always `{{signature}}`: the transcripts
 // source recognises the curator's own runs by it and leaves them out.
+//
+// `briefing` prints the morning briefing's prompt (phase 4, task 3):
+// lang/<code>/prompts/briefing.md, or the vault's overlay at
+// `briefing.prompt` (`.brain-kit/prompts/briefing.md` by default) when it
+// exists, with its signature line put in front when it lacks one, as for
+// curate. `{{blocks}}` is the vault's own `briefing.blocks`, rendered by
+// src/briefing/blocks.mjs from the facts src/briefing/facts.mjs computes:
+// the model presents the facts and never computes one. The blocks a
+// configuration problem leaves out are named at the top of `{{blocks}}` and
+// on stderr. This real render, and only it (never `--check`, never doctor),
+// records the questions it places in the questions block as asked today
+// (ruling R-T6), through markAsked, which takes the queue lock itself.
+// Every failure still writes one line to stdout, in the vault's language
+// when there is one, saying what to tell the person: the briefing never
+// hands the model an empty prompt.
 //
 // `skill` always exits 0: the body is what a model reads in place of a
 // SKILL.md's own prose, and a failure that left stdout empty would hand
@@ -53,8 +69,16 @@ import { EXIT } from '../exit-codes.mjs';
 import { KIT_ROOT } from '../version.mjs';
 import { createTranslator, resolveLang, SUPPORTED_LANGS } from '../lang.mjs';
 import { findVaultRoot } from '../vault.mjs';
-import { CONFIG_FILENAME, loadConfig, ConfigError } from '../config.mjs';
+import { CONFIG_FILENAME, loadConfig, loadMachine, ConfigError, MACHINE_FILENAME } from '../config.mjs';
 import { kitCommand } from '../curate/tools.mjs';
+import { stateDirFor } from '../state.mjs';
+import { localDay } from '../guards/watermark.mjs';
+import { GuardError } from '../guards/location.mjs';
+import { briefingFacts, humanDay } from '../briefing/facts.mjs';
+import { markAsked } from '../briefing/questions.mjs';
+import {
+  blockProblemLine, briefingBlocks, briefingLimits, renderBlocks, renderLimits, renderNeverRead, renderReadList, selectQuestions, validateBriefingBlocks,
+} from '../briefing/blocks.mjs';
 
 // The eight skills the plugin ships, one skills/<name>/SKILL.md each,
 // and one body per name in every language pack. `seed-rituals` (phase 3,
@@ -73,8 +97,17 @@ const PLACEHOLDER_RE = /\{\{(\w+)\}\}/g;
 // the placeholders a prompt may use. `signature` is prompts only: it is
 // the first line of every prompt, by which the curator's own sessions are
 // told apart from the person's.
-export const PROMPT_NAMES = Object.freeze(['curate']);
+export const PROMPT_NAMES = Object.freeze(['curate', 'briefing']);
 const KNOWN_PROMPT_PLACEHOLDERS = Object.freeze(['parameters', 'kit', 'log', 'capture_marker', 'agent', 'today_iso', 'now_iso', 'signature', 'sources_line']);
+// The briefing's own placeholders. `today_iso` is the log heading the
+// captures go under (`## YYYY-MM-DD`), given so the model never derives it.
+export const BRIEFING_PLACEHOLDERS = Object.freeze([
+  'signature', 'today_human', 'today_iso', 'kit', 'blocks', 'read', 'never_read', 'limits', 'log', 'capture_marker', 'agent', 'now_iso',
+]);
+const PLACEHOLDERS_BY_PROMPT = Object.freeze({ curate: KNOWN_PROMPT_PLACEHOLDERS, briefing: BRIEFING_PLACEHOLDERS });
+function promptPlaceholders(name) {
+  return PLACEHOLDERS_BY_PROMPT[name] ?? KNOWN_PROMPT_PLACEHOLDERS;
+}
 const SIGNATURE_LINE = '{{signature}}';
 
 // The last line a round's model writes, when the caller does not give the
@@ -100,7 +133,16 @@ export const CURATE_RULES = Object.freeze([
   'closed-uncertainty', 'only-kit-commands', 'propose-only', 'sources-line',
   'no-workaround', 'notes-first-class', 'no-access-label', 'third-party-privacy',
 ]);
-const RULES_BY_PROMPT = Object.freeze({ curate: CURATE_RULES });
+// The briefing's contract (phase 4, decision B2: what stays out of
+// configuration), each introduced by its marker in both packs: nothing in
+// the never-read list is opened, every fact comes from the kit, the closed
+// uncertainty vocabulary, no attestation of what was not opened, questions
+// only through the kit's command, the vault changed only by one `propose
+// --only`, and the limits the person set honoured.
+export const BRIEFING_RULES = Object.freeze([
+  'never-read', 'facts-from-kit', 'closed-uncertainty', 'never-empty-unopened', 'questions-by-command', 'propose-only', 'honour-limits',
+]);
+const RULES_BY_PROMPT = Object.freeze({ curate: CURATE_RULES, briefing: BRIEFING_RULES });
 
 export function ruleMarker(rule) {
   return `<!-- rule:${rule} -->`;
@@ -109,6 +151,11 @@ export function ruleMarker(rule) {
 // The contract rules `text` lacks, in CURATE_RULES order.
 export function missingCurateRules(text) {
   return CURATE_RULES.filter((rule) => !text.includes(ruleMarker(rule)));
+}
+
+// The contract rules `text` lacks, in BRIEFING_RULES order.
+export function missingBriefingRules(text) {
+  return BRIEFING_RULES.filter((rule) => !text.includes(ruleMarker(rule)));
 }
 
 function pad2(n) {
@@ -200,14 +247,23 @@ function stripFrontmatter(text) {
   return match ? text.slice(match[0].length) : text;
 }
 
-// Where the curate prompt comes from for this vault: its overlay when the
-// file exists, otherwise the language pack's own.
-export function curatePromptSource({ vaultRoot, config, lang, packsDir = join(KIT_ROOT, 'lang') }) {
+// Where a prompt (`curate` or `briefing`) comes from for this vault: its
+// overlay at `<name>.prompt` when the file exists, otherwise the language
+// pack's own.
+function promptSource(name, { vaultRoot, config, lang, packsDir = join(KIT_ROOT, 'lang') }) {
   if (vaultRoot) {
-    const overlay = join(vaultRoot, config?.curate?.prompt ?? join('.brain-kit', 'prompts', 'curate.md'));
+    const overlay = join(vaultRoot, config?.[name]?.prompt ?? join('.brain-kit', 'prompts', `${name}.md`));
     if (existsSync(overlay)) return { path: overlay, overlay: true };
   }
-  return { path: promptPath(packsDir, lang, 'curate'), overlay: false };
+  return { path: promptPath(packsDir, lang, name), overlay: false };
+}
+
+export function curatePromptSource(options) {
+  return promptSource('curate', options);
+}
+
+export function briefingPromptSource(options) {
+  return promptSource('briefing', options);
 }
 
 // `now` as the vault's own clock reads it: `date` (YYYY-MM-DD) and `iso`
@@ -245,10 +301,11 @@ export function vaultClock(now, timeZone) {
 // Ruling M5 (task 4): the prompt a round runs must be a file of the
 // reviewed tree. A versioned configuration pointing it outside the vault (an
 // absolute path, `..`, or a link leading out) is refused: `curate` exits
-// 2 on it and `prompt --check` reports it as an error. The path outside,
-// or null.
-export function promptOutsideVault(root, config) {
-  const setting = config.curate?.prompt;
+// 2 on it and `prompt --check` reports it as an error. The briefing's
+// `briefing.prompt` is held to the same rule (`section` 'briefing'). The
+// path outside, or null.
+export function promptOutsideVault(root, config, section = 'curate') {
+  const setting = config[section]?.prompt;
   if (typeof setting !== 'string' || setting === '') return null;
   const target = resolve(root, setting);
   const inside = (base, path) => {
@@ -280,8 +337,8 @@ export function lacksSignatureLine(text, signature) {
   return first !== SIGNATURE_LINE && first !== signature;
 }
 
-function signatureFor(config, defaults) {
-  return config?.curate?.signature ?? defaults?.curate?.signature;
+function signatureFor(config, defaults, section = 'curate') {
+  return config?.[section]?.signature ?? defaults?.[section]?.signature;
 }
 
 // The curate prompt, rendered. `parameters` is the block the round
@@ -312,6 +369,48 @@ export function renderCuratePrompt({ vaultRoot, config, lang, parameters, now = 
   return render(text, vars);
 }
 
+// The briefing prompt's text before its placeholders are filled: the
+// vault's overlay or the pack's prompt, frontmatter stripped, with the
+// signature line put in front when the first line is not it. Throws when
+// the file cannot be read.
+export function briefingTemplate({ vaultRoot, config, lang, packsDir = join(KIT_ROOT, 'lang') }) {
+  const defaults = defaultsFor(packsDir, lang);
+  const { path } = briefingPromptSource({ vaultRoot, config, lang, packsDir });
+  const text = stripFrontmatter(readFileSync(path, 'utf8'));
+  return lacksSignatureLine(text, signatureFor(config, defaults, 'briefing')) ? `${SIGNATURE_LINE}\n\n${text}` : text;
+}
+
+// Every briefing placeholder but `{{blocks}}`'s own computation: `blocks` is
+// the text renderBlocks made; `t` translates in the vault's language.
+export function briefingVars({ vaultRoot, config, lang, blocks, now = new Date(), t, packsDir = join(KIT_ROOT, 'lang') }) {
+  const defaults = defaultsFor(packsDir, lang);
+  const clock = vaultClock(now, config?.vault?.timezone);
+  return {
+    signature: signatureFor(config, defaults, 'briefing'),
+    today_human: humanDay(clock.date),
+    today_iso: clock.date,
+    kit: kitCommand(),
+    blocks: String(blocks ?? ''),
+    read: renderReadList(config, vaultRoot, t),
+    never_read: renderNeverRead(config, t),
+    limits: renderLimits(config, t),
+    log: config?.taxonomy?.log ?? defaults.taxonomy.log,
+    capture_marker: config?.taxonomy?.log_markers?.capture ?? defaults.taxonomy.log_markers.capture,
+    agent: `${config?.actors?.agent_prefix ?? defaults.actors.agent_prefix}/<model>`,
+    now_iso: clock.iso,
+  };
+}
+
+// The briefing prompt, rendered, with `blocks` as the text of `{{blocks}}`.
+// Throws when the prompt file cannot be read.
+export function renderBriefingPrompt(options) {
+  return render(briefingTemplate(options), briefingVars(options));
+}
+
+function firstLineOf(text) {
+  return String(text ?? '').trim().split('\n')[0] ?? '';
+}
+
 function parseVaultOption(argv, start, result) {
   let i = start;
   while (i < argv.length) {
@@ -334,6 +433,7 @@ function parseArgs(argv) {
   if (first === '--help' || first === '-h') return { help: true };
   if (first === '--check') return parseVaultOption(argv, 1, { mode: 'check', vault: undefined });
   if (first === 'curate') return parseVaultOption(argv, 1, { mode: 'curate', vault: undefined });
+  if (first === 'briefing') return parseVaultOption(argv, 1, { mode: 'briefing', vault: undefined });
   if (first === 'skill') {
     const name = argv[1];
     if (name === undefined) return { error: 'skill_name_missing' };
@@ -383,6 +483,10 @@ export async function runPrompt(argv, io, t, deps = {}) {
     return runCurate(io, { startDir, env, now, packsDir });
   }
 
+  if (parsed.mode === 'briefing') {
+    return runBriefing(io, { startDir, env, now, packsDir, deps });
+  }
+
   // mode === 'skill'. Unlike the usage errors above (a malformed
   // invocation a SKILL.md's own fixed command line never produces),
   // an unknown skill name is written to STDOUT, not stderr: this is
@@ -429,6 +533,88 @@ function runCurate(io, { startDir, env, now, packsDir }) {
     return EXIT.FAILURE;
   }
   io.stdout.write(text);
+  return EXIT.OK;
+}
+
+// The real briefing render. Every refusal writes one line to stdout, in the
+// vault's language when its configuration loads, and exits 2 (1 for a
+// prompt file that cannot be read); none records a question as asked.
+function runBriefing(io, { startDir, env, now, packsDir, deps }) {
+  const warn = (message) => io.stderr.write(`${message}\n`);
+  const root = findVaultRoot(startDir);
+  if (!root) {
+    const callerT = createTranslator(resolveLang(env), { warn });
+    io.stdout.write(`${callerT('prompt.briefing_no_vault', { dir: startDir })}\n`);
+    return EXIT.USAGE;
+  }
+  let config;
+  try {
+    config = loadConfig(root);
+  } catch (error) {
+    if (!(error instanceof ConfigError)) throw error;
+    const callerT = createTranslator(resolveLang(env), { warn });
+    io.stdout.write(`${callerT('prompt.briefing_config_invalid', { file: CONFIG_FILENAME, detail: firstLineOf(error.message) })}\n`);
+    return EXIT.USAGE;
+  }
+  const lang = langFor(config, env);
+  const t = createTranslator(lang, { warn });
+  const outside = promptOutsideVault(root, config, 'briefing');
+  if (outside !== null) {
+    io.stdout.write(`${t('prompt.briefing_prompt_outside', { file: CONFIG_FILENAME, path: outside })}\n`);
+    return EXIT.USAGE;
+  }
+  try {
+    localDay(now, config.vault.timezone);
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error;
+    io.stdout.write(`${t('prompt.briefing_bad_timezone', { timezone: config.vault.timezone, file: CONFIG_FILENAME })}\n`);
+    return EXIT.USAGE;
+  }
+  // The prompt file first: a briefing whose prompt cannot be read records
+  // no question as asked.
+  let template;
+  try {
+    template = briefingTemplate({ vaultRoot: root, config, lang, packsDir });
+  } catch (error) {
+    const { path } = briefingPromptSource({ vaultRoot: root, config, lang, packsDir });
+    io.stdout.write(`${t('prompt.briefing_unreadable', { path, detail: error.code ?? error.message })}\n`);
+    return EXIT.FAILURE;
+  }
+  const stateDir = stateDirFor(root, env);
+  let machine = null;
+  if (existsSync(join(stateDir, MACHINE_FILENAME))) {
+    try {
+      machine = loadMachine(stateDir);
+    } catch (error) {
+      if (!(error instanceof ConfigError)) throw error;
+      io.stderr.write(`${t('prompt.briefing_machine_unreadable', { detail: error.message })}\n`);
+    }
+  }
+  const facts = briefingFacts({ root, config, machine, stateDir, now, env, deps: deps.facts ?? {} });
+  const { blocks, problems } = briefingBlocks(config, root);
+  for (const problem of problems) io.stderr.write(`${t('prompt.briefing_block_problem', { problem: blockProblemLine(t, problem) })}\n`);
+
+  // Ruling R-T6: exactly the questions placed in the questions block are
+  // recorded as asked today, and only when that block is in the list.
+  let selection = null;
+  let mark = null;
+  if (blocks.some((block) => block.id === 'questions')) {
+    selection = selectQuestions(facts.questions, briefingLimits(config).maxQuestions);
+    const ids = selection.placed.map((question) => question.id);
+    if (ids.length > 0) {
+      try {
+        markAsked(stateDir, ids, facts.today, { env });
+        mark = { ok: true };
+      } catch (error) {
+        if (error instanceof GuardError) mark = { ok: false, detail: t(error.messageKey, error.params) };
+        else if (typeof error.code === 'string') mark = { ok: false, detail: `${error.code}: ${firstLineOf(error.message)}` };
+        else throw error;
+      }
+    }
+  }
+  const log = config.taxonomy?.log ?? defaultsFor(packsDir, lang).taxonomy.log;
+  const blocksText = renderBlocks({ blocks, problems, facts, config, root, t, kit: kitCommand(), log, selection, mark });
+  io.stdout.write(render(template, briefingVars({ vaultRoot: root, config, lang, blocks: blocksText, now, t, packsDir })));
   return EXIT.OK;
 }
 
@@ -545,7 +731,7 @@ function checkPrompts(t, packsDir, problems) {
       }
       const used = placeholdersOf(text);
       placeholdersByLang[lang][name] = used;
-      for (const placeholder of used.filter((p) => !KNOWN_PROMPT_PLACEHOLDERS.includes(p))) {
+      for (const placeholder of used.filter((p) => !promptPlaceholders(name).includes(p))) {
         problems.push(t('prompt.check_prompt_unknown_placeholder', { name, lang, placeholder: `{{${placeholder}}}` }));
       }
       if (text.split(/\r?\n/)[0] !== SIGNATURE_LINE) problems.push(t('prompt.check_prompt_first_line', { name, lang, line: SIGNATURE_LINE }));
@@ -566,10 +752,13 @@ function checkPrompts(t, packsDir, problems) {
 // front) and a placeholder the round does not fill are each a warning on
 // stderr, never a failure, because the overlay is the owner's to write.
 // A curate.prompt that points outside the vault is a problem (ruling M5):
-// the round refuses to run it.
+// the round refuses to run it. The briefing's overlay and its
+// briefing.prompt are checked the same way (checkBriefingOverlay), and each
+// problem of briefing.blocks is a warning.
 function checkOverlay(t, io, startDir, problems) {
   const { root, config } = resolveVault(startDir);
   if (!root) return;
+  if (config) checkBriefingOverlay(t, io, root, config, problems);
   const outside = config ? promptOutsideVault(root, config) : null;
   if (outside !== null) {
     problems.push(t('prompt.check_prompt_outside', { path: outside, file: CONFIG_FILENAME }));
@@ -598,5 +787,34 @@ function checkOverlay(t, io, startDir, problems) {
   // their marks never move (final review M4).
   if (!placeholdersOf(text).includes('sources_line')) {
     io.stderr.write(`${t('prompt.check_overlay_no_sources_line', { path, placeholder: '{{sources_line}}' })}\n`);
+  }
+}
+
+function checkBriefingOverlay(t, io, root, config, problems) {
+  for (const problem of validateBriefingBlocks(config, root)) {
+    io.stderr.write(`${t('prompt.check_blocks_problem', { problem: blockProblemLine(t, problem) })}\n`);
+  }
+  const outside = promptOutsideVault(root, config, 'briefing');
+  if (outside !== null) {
+    problems.push(t('prompt.check_briefing_prompt_outside', { path: outside, file: CONFIG_FILENAME }));
+    return;
+  }
+  const { path, overlay } = briefingPromptSource({ vaultRoot: root, config, lang: SUPPORTED_LANGS[0] });
+  if (!overlay) return;
+  let text;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch (error) {
+    io.stderr.write(`${t('prompt.check_briefing_overlay_unreadable', { path, detail: error.code ?? error.message })}\n`);
+    return;
+  }
+  if (lacksSignatureLine(text, signatureFor(config, null, 'briefing'))) {
+    io.stderr.write(`${t('prompt.check_briefing_overlay_signature_prepended', { path, line: SIGNATURE_LINE })}\n`);
+  }
+  for (const rule of missingBriefingRules(text)) {
+    io.stderr.write(`${t('prompt.check_briefing_overlay_missing_rule', { path, rule })}\n`);
+  }
+  for (const placeholder of placeholdersOf(text).filter((p) => !BRIEFING_PLACEHOLDERS.includes(p))) {
+    io.stderr.write(`${t('prompt.check_briefing_overlay_unknown_placeholder', { path, placeholder: `{{${placeholder}}}` })}\n`);
   }
 }

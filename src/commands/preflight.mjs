@@ -116,7 +116,7 @@ export function renderStale(facts, t) {
   return lines;
 }
 
-function problemLine(t, { code, detail }) {
+export function problemLine(t, { code, detail }) {
   switch (code) {
     case 'not_configured': return t('preflight.problem_not_configured', { file: detail.file });
     case 'heading_not_configured': return t('preflight.problem_heading_not_configured', { file: detail.file, heading: detail.heading });
@@ -136,7 +136,7 @@ function problemLine(t, { code, detail }) {
   }
 }
 
-function itemLines(t, items) {
+export function itemLines(t, items) {
   if (items.length === 0) return [t('preflight.none')];
   return items.map((item) => (item.deadline === null
     ? t('preflight.pending_item_undated', { what: item.what === '' ? '-' : item.what, raw: item.raw, file: item.file, line: item.line })
@@ -191,6 +191,12 @@ export function renderLock(facts, t) {
   return [t('preflight.lock_free')];
 }
 
+export function renderQuestions(facts, t) {
+  const q = facts.questions;
+  if (!q.ok) return [t('preflight.questions_unknown', { file: q.file ?? '-', detail: q.reason ?? '-' })];
+  return [t('preflight.questions', { open: q.open.length, escalated: q.escalated.length, archive: q.toArchive.length, corrupt: q.corrupt.length, file: q.file })];
+}
+
 export function renderPreflight(facts, t, { vault }) {
   return [
     t('preflight.header', { vault, timezone: facts.tz }),
@@ -201,6 +207,7 @@ export function renderPreflight(facts, t, { vault }) {
     ...renderPending(facts, t),
     ...renderGit(facts, t),
     ...renderLock(facts, t),
+    ...renderQuestions(facts, t),
   ].join('\n');
 }
 
