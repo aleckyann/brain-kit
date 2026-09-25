@@ -33,15 +33,14 @@
 // placeholder this command does not know how to fill, and every name in
 // SKILL_NAMES has a body in every supported language (task 4 wrote the
 // first seven and phase 3 the eighth, so a missing one is a broken pack,
-// not unfinished work). It
-// exits 0 when all three hold, 1 otherwise. Phase 2 extends it to
-// lang/<code>/prompts/ (same file set and placeholders in both packs,
-// the signature as first line, every contract marker present) and, when
-// run inside a vault or with --vault, reads that vault's curate overlay
-// and warns on stderr, never failing, for each contract marker it lacks,
-// for a first line that is not the signature (the round puts the
-// signature in front) and for each placeholder the round does not fill.
-// It never writes to a vault.
+// not unfinished work). It exits 0 when all three hold, 1 otherwise.
+// Phase 2 extends it to lang/<code>/prompts/ (same file set and
+// placeholders in both packs, the signature as first line, every
+// contract marker present) and, when run inside a vault or with
+// --vault, reads that vault's curate overlay and warns on stderr, never
+// failing, for each contract marker it lacks, for a first line that is
+// not the signature (the round puts the signature in front) and for
+// each placeholder the round does not fill. It never writes to a vault.
 //
 // `deps.packsDir` is the one seam this module offers: production always
 // reads lang/<code>/skills/ under KIT_ROOT, and a test pointing `--check`

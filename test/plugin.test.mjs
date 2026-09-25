@@ -227,14 +227,24 @@ test('the setup body runs init from an answers file, never interactively', () =>
 // window, a first page read as every page, a title matched unquoted or
 // unescaped (docs/incidents.md, "the deduplication key had to be the
 // escaped literal title"), and a row written before the person saw it.
+// Fix round 1: the key is compared as exact text, never as a regular
+// expression (in a Grep pattern `\|` is a bare bar, in grep's basic
+// syntax an alternation: the escaped key misses its own row or hits
+// another one), and a feeds note inside `privacy.confidential_dirs` is
+// written as a path in backticks, never linked (the `privacy` lint rule
+// refuses the link, and propose with it, after the person confirmed).
 test('the seed-rituals body reads four weeks with explicit bounds and every page, writes escaped literal titles and asks before writing', () => {
   const words = {
     en: {
-      weeks: /last four weeks/, times: /three times/, header: /header row/, stop: /say so and stop/, raw: /in the file's raw text/,
+      weeks: /last four weeks/, times: /three times/, header: /header row/, stop: /say so and stop/,
+      exact: /compare the key, as exact text,/, noRegex: /Never run this search as a regular expression or through Grep/,
+      confidential: /goes in as its path in backticks, never as a link/,
       confirm: /Ask for confirmation and wait/, confirmed: /Write only the confirmed rows/,
     },
     'pt-BR': {
-      weeks: /últimas quatro semanas/, times: /três vezes/, header: /linha de cabeçalho/, stop: /diga isso à pessoa e pare/, raw: /no texto cru do arquivo/,
+      weeks: /últimas quatro semanas/, times: /três vezes/, header: /linha de cabeçalho/, stop: /diga isso à pessoa e pare/,
+      exact: /compare a chave, como texto exato,/, noRegex: /Nunca faça essa busca com expressão regular nem pelo Grep/,
+      confidential: /entra como o caminho dela entre crases, nunca como link/,
       confirm: /Peça confirmação e espere/, confirmed: /Escreva só as linhas confirmadas/,
     },
   };
@@ -244,7 +254,7 @@ test('the seed-rituals body reads four weeks with explicit bounds and every page
     for (const token of [
       'ToolSearch', 'list_events', 'startTime', 'endTime', '{{today_iso}}T00:00:00', 'eventType: ["DEFAULT"]', 'pageSize: 250',
       'nextPageToken', 'pageToken', 'recurringEventId', 'organizer', 'sources.calendar.calendars', '`primary`',
-      'team_calendars_consent_noted', 'taxonomy.files.rituals', 'generated: { by: {{agent}}',
+      'team_calendars_consent_noted', 'taxonomy.files.rituals', 'generated: { by: {{agent}}', 'privacy.confidential_dirs',
     ]) {
       assert.ok(body.includes(token), `${lang}: missing ${token}`);
     }
