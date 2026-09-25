@@ -1,7 +1,11 @@
 // The `schedule` command: installs, removes or reports the scheduler entry
 // that runs `brain-kit curate` for one vault.
 //
-//   brain-kit schedule install|uninstall|status [dir] [--platform systemd|launchd|cron] [--dry]
+//   brain-kit schedule install|uninstall|status [dir] [--job curate|briefing] [--platform systemd|launchd|cron] [--dry]
+//
+// `--job briefing` (phase 4, task 4, ruling R-T11) is the morning
+// briefing's task in the Claude desktop application instead: see the
+// section at the end of this file. `--job curate` is the default.
 //
 // One entry per vault, named by what it does and whose it is,
 // `brain-kit-curate-<vault_id>`, never by the time it runs
@@ -60,7 +64,7 @@
 // and the kit's entry point, for the tests. Production passes nothing.
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { EXIT } from '../exit-codes.mjs';
 import { CONFIG_FILENAME, canonicalPathMatches, loadConfig, loadMachine } from '../config.mjs';
 import { findVaultRoot } from '../vault.mjs';
@@ -68,9 +72,15 @@ import { STATE_FILES, stateDirFor } from '../state.mjs';
 import { KIT_ROOT } from '../version.mjs';
 import { run } from '../exec.mjs';
 import { expandHome, findExecutable, resolveClaude, shownInstant } from '../doctor/checks.mjs';
+import { kitCommand } from '../curate/tools.mjs';
+import { briefingSetting } from '../briefing/blocks.mjs';
+import { createTranslator, resolveLang, SUPPORTED_LANGS } from '../lang.mjs';
 
 const ROOT_INDEX = 'index.md';
 const ACTIONS = Object.freeze(['install', 'uninstall', 'status']);
+// What an entry runs: the scheduled curator (the default), or the morning
+// briefing's task in the desktop application.
+export const JOBS = Object.freeze(['curate', 'briefing']);
 export const PLATFORMS = Object.freeze(['systemd', 'launchd', 'cron']);
 export const DAYTIME_FROM = '07:00';
 export const DAYTIME_UNTIL = '23:00';
@@ -88,11 +98,15 @@ const TEMPLATES = join(KIT_ROOT, 'templates', 'schedule');
 const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
 
 function parseArgs(argv) {
-  const result = { action: undefined, dir: undefined, platform: null, dry: false, help: false };
+  const result = { action: undefined, dir: undefined, platform: null, dry: false, help: false, job: 'curate' };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--help' || arg === '-h') result.help = true;
     else if (arg === '--dry') result.dry = true;
+    else if (arg === '--job') {
+      if (i + 1 >= argv.length) return { error: 'job_value' };
+      result.job = argv[++i];
+    } else if (arg.startsWith('--job=')) result.job = arg.slice('--job='.length);
     else if (arg === '--platform') {
       if (i + 1 >= argv.length) return { error: 'platform_value' };
       result.platform = argv[++i];
@@ -103,6 +117,9 @@ function parseArgs(argv) {
     else return { error: 'argument', arg };
   }
   if (result.dry && result.action === 'status') return { error: 'argument', arg: '--dry' };
+  // The briefing's task lives in the desktop application, not in a
+  // scheduler this command writes: no platform to choose.
+  if (result.job === 'briefing' && result.platform !== null) return { error: 'argument', arg: '--platform' };
   return result;
 }
 
@@ -309,6 +326,7 @@ export function runScheduleSync(argv, io, t, deps = {}) {
 
   const parsed = parseArgs(argv);
   if (parsed.error === 'platform_value') return usageError(t('schedule.platform_needs_value'));
+  if (parsed.error === 'job_value') return usageError(t('schedule.job_needs_value', { jobs: JOBS }));
   if (parsed.error) return usageError(t('schedule.bad_argument', { arg: parsed.arg }));
   if (parsed.help) {
     say(t('schedule.usage'));
@@ -319,6 +337,7 @@ export function runScheduleSync(argv, io, t, deps = {}) {
     return EXIT.USAGE;
   }
   if (!ACTIONS.includes(parsed.action)) return usageError(t('schedule.unknown_action', { action: parsed.action }));
+  if (!JOBS.includes(parsed.job)) return usageError(t('schedule.bad_job', { job: parsed.job, jobs: JOBS }));
   if (parsed.platform !== null && !PLATFORMS.includes(parsed.platform)) {
     return usageError(t('schedule.bad_platform', { platform: parsed.platform, platforms: PLATFORMS }));
   }
@@ -349,6 +368,9 @@ export function runScheduleSync(argv, io, t, deps = {}) {
   if (!canonicalPathMatches(machine.canonical_path, root)) {
     complain(t('schedule.moved', { recorded: machine.canonical_path, root }));
     return EXIT.USAGE;
+  }
+  if (parsed.job === 'briefing') {
+    return briefingJob({ action: parsed.action, root, config, machine, env, t, say, complain, now: deps.now ?? new Date(), localZone: deps.localZone });
   }
 
   const node = deps.node ?? process.execPath;
@@ -749,4 +771,204 @@ function status(context, rendered, windows, lastRun, now) {
   }
   say(lastRunSummary(t, lastRun));
   return found.state === 'active' ? EXIT.OK : EXIT.FAILURE;
+}
+
+// --- the morning briefing's desktop task (phase 4, task 4) -------------------
+//
+// The briefing asks the person questions, so it runs in a session of their
+// own, started by a scheduled task of the Claude desktop application
+// (`~/.claude/scheduled-tasks/<taskId>/SKILL.md`, a cron in the machine's
+// local time, run while the application is open and on its next launch when
+// it was closed). Such a task can be created only from inside the
+// application, with its scheduled-task tool: `install --job briefing`
+// prints what to register there and exits 3 (a human step remains), and the
+// setup skill's model creates it with those values exactly.
+//
+// That tool takes no working directory (measured 25/09/2026: taskId,
+// prompt, description, cronExpression or fireAt, title,
+// notifyOnCompletion), so the task's session does not start in the vault
+// and the plugin's skill could not find it from there (ruling R-T11). The
+// task's prompt is therefore exactly two lines: the briefing's signature,
+// which the transcripts source's self-trace filter reads on a session's
+// first user line to keep the briefing's own sessions away from the curator
+// (decision B6); and one instruction, in the vault's language, to run the
+// kit's own `prompt briefing --vault "<vault>"` with Bash and follow what
+// it prints. The kit's path in that line is absolute, so a plugin update
+// that moves the plugin's cache leaves it pointing at nothing: `status
+// --job briefing` and doctor's `briefing` check read the task back and say
+// so, with the fix (install again and update the task).
+
+export const BRIEFING_TASK_PREFIX = 'brain-kit-briefing-';
+// Five cron fields, the only shape the application's cronExpression takes.
+const CRON_FIELDS = /^\S+(\s+\S+){4}$/;
+// Characters a double-quoted bash word keeps special.
+const BASH_SPECIAL = /[\\"$`]/g;
+// A kit path kitCommand() quotes as it is, so none of these may be in it.
+const KIT_UNSAFE = /["\\$`]/;
+// The command line of the task's second line, as the kit writes it.
+const BRIEFING_COMMAND = /node "((?:[^"\\]|\\.)*)" prompt briefing --vault "((?:[^"\\]|\\.)*)"/;
+
+export function briefingTaskId(vaultId) {
+  return `${BRIEFING_TASK_PREFIX}${vaultId}`;
+}
+
+// Where the desktop application keeps the task of `taskId`, under `env`'s HOME.
+export function briefingTaskFile(env, taskId) {
+  return join(env.HOME || homedir(), '.claude', 'scheduled-tasks', taskId, 'SKILL.md');
+}
+
+function hasControl(value) {
+  return [...value].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127);
+}
+
+// One bash word in double quotes: a vault named `Ana's "brain"` is still
+// the one argument it is.
+function bashQuoted(value) {
+  return `"${value.replace(BASH_SPECIAL, (c) => `\\${c}`)}"`;
+}
+
+function bashUnquoted(inner) {
+  return inner.replace(/\\(.)/g, '$1');
+}
+
+function vaultLang(config, env) {
+  return SUPPORTED_LANGS.includes(config?.lang) ? config.lang : resolveLang(env);
+}
+
+// What to register for the vault at `root` (its real path), or { problem }
+// naming why it cannot be registered: the task's id, title, cron,
+// description and two-line prompt, the title, description and second line
+// in the vault's own language.
+export function briefingTask({ root, config, vaultId, env = process.env }) {
+  const signature = briefingSetting(config, 'signature');
+  if (typeof signature !== 'string' || signature.trim() === '' || /[\r\n]/.test(signature)) {
+    return { problem: { key: 'schedule.briefing_no_signature', params: { file: CONFIG_FILENAME } } };
+  }
+  const cron = briefingSetting(config, 'schedule');
+  if (typeof cron !== 'string' || !CRON_FIELDS.test(cron.trim())) {
+    return { problem: { key: 'schedule.briefing_bad_cron', params: { value: JSON.stringify(cron), file: CONFIG_FILENAME } } };
+  }
+  const kit = kitCommand();
+  if (KIT_UNSAFE.test(kit.slice(1, -1)) || hasControl(kit)) {
+    return { problem: { key: 'schedule.briefing_unsafe_path', params: { path: kit.slice(1, -1) } } };
+  }
+  if (hasControl(root)) return { problem: { key: 'schedule.briefing_unsafe_path', params: { path: root } } };
+  const vt = createTranslator(vaultLang(config, env));
+  const command = `node ${kit} prompt briefing --vault ${bashQuoted(root)}`;
+  const title = typeof config?.vault?.title === 'string' && config.vault.title.trim() !== '' ? config.vault.title.trim() : basename(root);
+  return {
+    taskId: briefingTaskId(vaultId),
+    title: vt('schedule.briefing_title', { title }),
+    cronExpression: cron.trim().split(/\s+/).join(' '),
+    description: vt('schedule.briefing_description', { vault: root }),
+    prompt: `${signature}\n${vt('schedule.briefing_run_line', { command })}`,
+    signature,
+    command,
+  };
+}
+
+function samePath(a, b) {
+  const real = (p) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return resolve(p);
+    }
+  };
+  return real(a) === real(b);
+}
+
+// A task file's prompt: its text after any frontmatter the application
+// writes above it.
+function taskPrompt(text) {
+  const match = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(text);
+  return match ? text.slice(match[0].length) : text;
+}
+
+// The registered task, read back: { state, taskId, file, ... } where state
+// is 'absent', 'unreadable' (detail), 'unsigned' (its prompt's first line
+// is not the signature: its sessions would reach the curator), 'no_command'
+// (no line runs the kit's briefing), 'kit_missing' (kit: the path its line
+// names, which no longer exists), 'vault_differs' (vault: the vault its
+// line names) or 'ok' (kit). Only 'ok' is the task working.
+export function readBriefingTask({ root, config, vaultId, env = process.env }) {
+  const taskId = briefingTaskId(vaultId);
+  const file = briefingTaskFile(env, taskId);
+  let text;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return { state: 'absent', taskId, file };
+    return { state: 'unreadable', taskId, file, detail: error.code ?? error.message };
+  }
+  const signature = briefingSetting(config, 'signature');
+  const first = taskPrompt(text).split(/\r?\n/).find((line) => line.trim() !== '')?.trim() ?? '';
+  if (typeof signature !== 'string' || signature.trim() === '' || first !== signature.trim()) {
+    return { state: 'unsigned', taskId, file, signature, first };
+  }
+  const match = BRIEFING_COMMAND.exec(text);
+  if (match === null) return { state: 'no_command', taskId, file };
+  const kit = bashUnquoted(match[1]);
+  const vault = bashUnquoted(match[2]);
+  if (!existsSync(kit)) return { state: 'kit_missing', taskId, file, kit };
+  if (!samePath(vault, root)) return { state: 'vault_differs', taskId, file, kit, vault };
+  return { state: 'ok', taskId, file, kit };
+}
+
+function briefingJob({ action, root, config, machine, env, t, say, complain, now, localZone }) {
+  const enabled = briefingSetting(config, 'enabled') === true;
+  const vaultId = machine.vault_id;
+  if (action === 'uninstall') {
+    const taskId = briefingTaskId(vaultId);
+    say(t('schedule.briefing_uninstall', { taskId, file: briefingTaskFile(env, taskId) }));
+    return EXIT.DEGRADED;
+  }
+  if (action === 'status') {
+    const found = readBriefingTask({ root, config, vaultId, env });
+    const { taskId, file } = found;
+    if (!enabled) {
+      if (found.state === 'absent') {
+        say(t('schedule.briefing_status_disabled', { file: CONFIG_FILENAME }));
+        return EXIT.OK;
+      }
+      say(t('schedule.briefing_status_disabled_registered', { taskId, file, config: CONFIG_FILENAME }));
+      return EXIT.FAILURE;
+    }
+    const again = 'brain-kit schedule install --job briefing';
+    switch (found.state) {
+      case 'absent': say(t('schedule.briefing_status_absent', { taskId, file, command: again })); break;
+      case 'unreadable': say(t('schedule.briefing_status_unreadable', { taskId, file, detail: found.detail })); break;
+      case 'unsigned': say(t('schedule.briefing_status_unsigned', { taskId, file, signature: found.signature, command: again })); break;
+      case 'no_command': say(t('schedule.briefing_status_no_command', { taskId, file, command: again })); break;
+      case 'kit_missing': say(t('schedule.briefing_status_kit_missing', { taskId, kit: found.kit, command: again })); break;
+      case 'vault_differs': say(t('schedule.briefing_status_vault_differs', { taskId, vault: found.vault, root, command: again })); break;
+      default: say(t('schedule.briefing_status_ok', { taskId, file, kit: found.kit }));
+    }
+    return found.state === 'ok' ? EXIT.OK : EXIT.FAILURE;
+  }
+  // install
+  if (!enabled) {
+    complain(t('schedule.briefing_disabled', { file: CONFIG_FILENAME }));
+    return EXIT.USAGE;
+  }
+  const task = briefingTask({ root, config, vaultId, env });
+  if (task.problem) {
+    complain(t(task.problem.key, task.problem.params));
+    return EXIT.USAGE;
+  }
+  const zone = localZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const timezone = config.vault?.timezone;
+  if (isValidTimeZone(zone) && isValidTimeZone(timezone) && !sameClock(zone, timezone, now)) {
+    complain(t('schedule.briefing_timezone_differs', { local: zone, vault: timezone }));
+  }
+  say(t('schedule.briefing_register', { taskId: task.taskId }));
+  // The field names are the application tool's own parameters, never
+  // translated; the values of title and description are the vault's.
+  say(t('schedule.briefing_field', { field: 'taskId', value: task.taskId }));
+  say(t('schedule.briefing_field', { field: 'title', value: task.title }));
+  say(t('schedule.briefing_field', { field: 'cronExpression', value: task.cronExpression }));
+  say(t('schedule.briefing_field', { field: 'description', value: task.description }));
+  say(t('schedule.briefing_prompt_follows'));
+  say(task.prompt);
+  return EXIT.DEGRADED;
 }

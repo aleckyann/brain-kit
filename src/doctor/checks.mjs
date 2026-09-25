@@ -38,8 +38,8 @@ import { basename, delimiter, isAbsolute, join, relative, resolve, sep } from 'n
 import { run } from '../exec.mjs';
 import { EXIT } from '../exit-codes.mjs';
 import { decodeBytes } from '../io.mjs';
-import { CONFIG_FILENAME, MACHINE_FILENAME, canonicalPathMatches, findMachineOnlyKeys, validateConfig, validateMachine } from '../config.mjs';
-import { STATE_FILES, stateDirFor } from '../state.mjs';
+import { CONFIG_FILENAME, ConfigError, MACHINE_FILENAME, canonicalPathMatches, findMachineOnlyKeys, loadConfig, validateConfig, validateMachine } from '../config.mjs';
+import { STATE_FILES, stateDirFor, vaultIdFor } from '../state.mjs';
 import { KIT_ROOT, kitVersion } from '../version.mjs';
 import { localGitVarNames, withoutLocalGitVars } from '../git-env.mjs';
 import { loadPatterns } from '../leak.mjs';
@@ -63,7 +63,11 @@ import { addDays, daysBetween, localDay, readWatermark, WatermarkError } from '.
 // module uses the other's exports while it loads, only inside functions,
 // so either may be imported first (test/doctor.test.mjs loads each
 // on its own in a fresh process to hold that).
-import { installedRoundPath, ROUND_COMMANDS, roundPath, runScheduleSync } from '../commands/schedule.mjs';
+import { installedRoundPath, readBriefingTask, ROUND_COMMANDS, roundPath, runScheduleSync } from '../commands/schedule.mjs';
+// The briefing's own modules, asked the same questions `prompt briefing`
+// asks: its reading of briefing.blocks and of the question queue.
+import { blockProblemLine, briefingSetting, validateBriefingBlocks } from '../briefing/blocks.mjs';
+import { queueFile, readQueue } from '../briefing/questions.mjs';
 // The same kind of cycle with curate.mjs, which imports expandHome from
 // here: the connectors check asks the round's own choice of launch mode
 // (chooseMode) and its own reading of a source that is off, so doctor and
@@ -1547,6 +1551,79 @@ export async function probeConnectors(ctx, { prompt }) {
   };
 }
 
+// --- the morning briefing (phase 4, task 4) ----------------------------------
+//
+// What would make tomorrow's briefing wrong or absent, each finding under
+// the one id: the configuration's own briefing.blocks, each problem the
+// briefing itself would report (a warning: the briefing still runs, without
+// that block, and says why); the question queue, which a briefing cannot be
+// prepared without (unreadable: a failure) and whose unreadable lines it
+// leaves out (a warning); and the desktop task, read back as `schedule
+// status --job briefing` reads it. A task not registered is a warning,
+// never a failure: registering it is the person's step, in the desktop
+// application, and a briefing asked for by hand still works. A task that is
+// there but unsigned, pointing at a kit that is gone, or at another vault
+// is a failure: it runs every morning and either fails or hands the curator
+// the briefing's own sessions.
+const SCHEDULE_BRIEFING_COMMAND = 'brain-kit schedule install --job briefing';
+
+// A translator that makes a message instead of a sentence, so a problem
+// the briefing's own module phrases (blockProblemLine) reaches the report
+// as { messageKey, params } and is rendered in the report's language.
+function asMessage(messageKey, params = {}) {
+  return { messageKey, params };
+}
+
+function briefingTaskResult(id, found, root) {
+  const { taskId, file } = found;
+  const command = SCHEDULE_BRIEFING_COMMAND;
+  switch (found.state) {
+    case 'absent': return { id, status: 'warn', messageKey: 'doctor.briefing.task_absent', params: { taskId, command } };
+    case 'unreadable': return { id, status: 'fail', messageKey: 'doctor.briefing.task_unreadable', params: { taskId, file, detail: found.detail } };
+    case 'unsigned': return { id, status: 'fail', messageKey: 'doctor.briefing.task_unsigned', params: { taskId, file, signature: found.signature, command } };
+    case 'no_command': return { id, status: 'fail', messageKey: 'doctor.briefing.task_no_command', params: { taskId, file, command } };
+    case 'kit_missing': return { id, status: 'fail', messageKey: 'doctor.briefing.task_kit_missing', params: { taskId, kit: found.kit, command } };
+    case 'vault_differs': return { id, status: 'fail', messageKey: 'doctor.briefing.task_vault_differs', params: { taskId, vault: found.vault, root, command } };
+    case 'ok': return { id, status: 'ok', messageKey: 'doctor.briefing.ok', params: { taskId, kit: found.kit } };
+    default: throw new Error(`unknown briefing task state ${found.state}`);
+  }
+}
+
+function briefingCheck(ctx) {
+  const id = 'briefing';
+  let config;
+  try {
+    config = loadConfig(ctx.root);
+  } catch (error) {
+    if (!(error instanceof ConfigError)) throw error;
+    return { id, status: 'warn', messageKey: 'doctor.briefing.config_unknown', params: { file: ctx.configFile } };
+  }
+  const root = ctx.realRoot();
+  const machineId = machineObject(ctx)?.vault_id;
+  const vaultId = typeof machineId === 'string' && machineId !== '' ? machineId : vaultIdFor(root);
+  const task = readBriefingTask({ root, config, vaultId, env: ctx.env });
+  if (briefingSetting(config, 'enabled') !== true) {
+    if (task.state === 'absent') return { id, status: 'ok', messageKey: 'doctor.briefing.disabled', params: { file: ctx.configFile } };
+    return { id, status: 'warn', messageKey: 'doctor.briefing.disabled_registered', params: { taskId: task.taskId, file: task.file, config: ctx.configFile } };
+  }
+  const results = [];
+  for (const problem of validateBriefingBlocks(config, ctx.root)) {
+    results.push({ id, status: 'warn', messageKey: 'doctor.briefing.block_problem', params: { problem: blockProblemLine(asMessage, problem) } });
+  }
+  let file = join(ctx.stateDir, STATE_FILES.QUESTIONS_LOG);
+  try {
+    file = queueFile(ctx.stateDir, { env: ctx.env });
+    const corrupt = readQueue(ctx.stateDir, { env: ctx.env }).filter((item) => item.corrupt === true);
+    if (corrupt.length > 0) {
+      results.push({ id, status: 'warn', messageKey: 'doctor.briefing.queue_corrupt', params: { count: corrupt.length, file, lines: corrupt.map((item) => item.line) } });
+    }
+  } catch (error) {
+    results.push({ id, status: 'fail', messageKey: 'doctor.briefing.queue_unreadable', params: { file, detail: error.code ?? firstLine(error.message) } });
+  }
+  results.push(briefingTaskResult(id, task, root));
+  return results;
+}
+
 // id -> check, in the order the report prints them.
 export const CHECKS = new Map([
   ['node-version', nodeVersion],
@@ -1573,6 +1650,7 @@ export const CHECKS = new Map([
   ['last-run', lastRunCheck],
   ['schedule', scheduleCheck],
   ['notify', notifyCheck],
+  ['briefing', briefingCheck],
 ]);
 
 export const CHECK_IDS = Object.freeze([...CHECKS.keys()]);

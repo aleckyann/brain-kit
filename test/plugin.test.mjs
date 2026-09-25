@@ -110,12 +110,15 @@ test('every SKILL.md names its directory, describes itself in ASCII English and 
     assert.match(fields.description, /^Use (when|at|after) /, `${name}: description must start with "Use when", "Use at" or "Use after"`);
     const lines = body.split('\n').filter((line) => line.trim() !== '');
     const command = `node "\${CLAUDE_PLUGIN_ROOT}/bin/brain-kit.mjs" prompt skill ${name}`;
-    assert.deepEqual(lines, [`!\`${command}\``], `${name}: the body must be the single ! line`);
+    // The briefing (phase 4, task 4) runs its body, then the briefing
+    // itself, which the body says is the session's instructions.
+    const commands = name === 'briefing' ? [command, 'node "${CLAUDE_PLUGIN_ROOT}/bin/brain-kit.mjs" prompt briefing'] : [command];
+    assert.deepEqual(lines, commands.map((c) => `!\`${c}\``), `${name}: the body must be its ! line(s) and nothing else`);
     // Without this grant the ! line is not run before the model reads the
     // skill: Claude Code hands the model "run this first" instead, and in a
     // session where Bash is not allowed (the first eval run, 24/09/2026)
-    // the model got no body at all. The grant is the one command, exactly.
-    assert.equal(fields['allowed-tools'], `Bash(${command})`, `${name}: allowed-tools must grant exactly its own ! command`);
+    // the model got no body at all. The grant is its own commands, exactly.
+    assert.equal(fields['allowed-tools'], commands.map((c) => `Bash(${c})`).join(', '), `${name}: allowed-tools must grant exactly its own ! command(s)`);
   }
 });
 
@@ -193,7 +196,7 @@ test('evals stay out of the npm package', () => {
   assert.ok(!pkg.files.some((entry) => entry.startsWith('evals')));
 });
 
-test('the eight SKILL.md descriptions are exactly the agreed text', () => {
+test('the nine SKILL.md descriptions are exactly the agreed text', () => {
   const expected = {
     setup: 'Use when the person wants to start a second brain with brain-kit, adopt an existing markdown vault, or check that the kit, git, gh and the plugin are ready on this machine.',
     'curate-session': "Use at the end of a working session in a brain-kit vault, or when asked to curate: sync, capture what was learned, compile it into notes, validate, lint and open a pull request with only this session's files.",
@@ -203,7 +206,9 @@ test('the eight SKILL.md descriptions are exactly the agreed text', () => {
     'review-stale': 'Use when notes in the brain-kit vault are past their stale_after date, or the person asks to review what may be out of date.',
     approve: 'Use after the owner merged a brain-kit pull request and wants the merged notes stamped verified.',
     'seed-rituals': "Use when the person wants the brain-kit vault's weekly rhythm table filled from their calendar: read the last four weeks, find recurring events, and propose the rows.",
+    briefing: "Use when the person asks for their morning briefing from the brain-kit vault, or when the scheduled briefing task starts: facts from the kit, the vault's own blocks, open questions, and one pull request for what gets recorded.",
   };
+  assert.deepEqual(Object.keys(expected).sort(), [...SKILL_NAMES].sort());
   for (const name of SKILL_NAMES) {
     assert.equal(frontmatterOf(readFileSync(join(SKILLS_DIR, name, 'SKILL.md'), 'utf8')).fields.description, expected[name], name);
   }
@@ -272,5 +277,24 @@ test('the seed-rituals body reads four weeks with explicit bounds and every page
     assert.match(body, /\{\{kit\}\} validate/, lang);
     assert.match(body, /\{\{kit\}\} lint/, lang);
     assert.match(body, /\{\{kit\}\} propose "<[^>]+>" --only /, lang);
+  }
+});
+
+// Phase 4, task 4: the setup body offers the morning briefing and registers
+// its desktop task from what `schedule install --job briefing` prints,
+// every field exactly as printed, and says when the task runs.
+test('the setup body offers the briefing and creates its desktop task exactly as the kit prints it', () => {
+  const words = {
+    en: { offer: /Offer the morning briefing/, wait: /Ask and wait/, exact: /exactly as printed, the prompt's two lines unchanged/, open: /runs while the application is open, and on its next launch when it was closed/, missing: /If the tool is not in this session, say so/ },
+    'pt-BR': { offer: /Ofereça o briefing matinal/, wait: /Pergunte e espere/, exact: /exatamente como impressos, as duas linhas do prompt sem mudança/, open: /roda enquanto o aplicativo está aberto, e na próxima abertura dele quando estava fechado/, missing: /Se a ferramenta não estiver nesta sessão, diga isso/ },
+  };
+  for (const [lang, word] of Object.entries(words)) {
+    const body = readFileSync(join(KIT_ROOT, 'lang', lang, 'skills', 'setup.md'), 'utf8');
+    assert.match(body, /\{\{kit\}\} schedule install --job briefing <dir>/, lang);
+    for (const field of ['`taskId`', '`title`', '`cronExpression`', '`description`', '`prompt`', '`create_scheduled_task`', '`ToolSearch`']) assert.ok(body.includes(field), `${lang}: ${field}`);
+    for (const [name, pattern] of Object.entries(word)) assert.match(body, pattern, `${lang}: ${name}`);
+    // The briefing is offered before the final doctor, so doctor's briefing
+    // check sees the task the person just registered.
+    assert.ok(body.indexOf('--job briefing') < body.lastIndexOf('{{kit}} doctor'), lang);
   }
 });

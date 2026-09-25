@@ -67,8 +67,29 @@ function assertEveryPlaceholderResolved(text, names = KNOWN_PLACEHOLDER_NAMES) {
   }
 }
 
-test('SKILL_NAMES lists exactly the eight skills, in order', () => {
-  assert.deepEqual([...SKILL_NAMES], ['setup', 'curate-session', 'capture', 'ask', 'lint', 'review-stale', 'approve', 'seed-rituals']);
+test('SKILL_NAMES lists exactly the nine skills, in order', () => {
+  assert.deepEqual([...SKILL_NAMES], ['setup', 'curate-session', 'capture', 'ask', 'lint', 'review-stale', 'approve', 'seed-rituals', 'briefing']);
+});
+
+// Phase 4, task 4: the briefing's body says only that the briefing below
+// is the session's instructions, and what to do when it is the one line
+// saying it could not be loaded.
+test('the briefing body renders in both languages, under 60 lines, naming the kit\'s doctor for the could-not-load line', async () => {
+  const words = {
+    en: [/The briefing below, printed by the kit, is this session's instructions/, /a single line saying the briefing could not be loaded or prepared, or that no vault was found/, /and stop\. Write no file\./],
+    'pt-BR': [/O briefing abaixo, impresso pelo kit, é a instrução desta sessão/, /uma única linha dizendo que o briefing não pôde ser carregado ou preparado, ou que nenhum vault foi encontrado/, /e pare\. Não escreva nenhum arquivo\./],
+  };
+  for (const [lang, patterns] of Object.entries(words)) {
+    const { vault, state } = freshVault(lang);
+    const c = collector();
+    const code = await runPrompt(['skill', 'briefing'], c.io, noopT(), { cwd: vault, env: testEnv(state) });
+    assert.equal(code, EXIT.OK, `${lang}: ${c.stdout}${c.stderr}`);
+    assert.equal(c.stderr, '', lang);
+    assert.doesNotMatch(c.stdout, /\{\{\w+\}\}/, lang);
+    assert.ok(c.stdout.split('\n').length < 60, lang);
+    for (const pattern of patterns) assert.match(c.stdout, pattern, lang);
+    assert.match(c.stdout, /`node "[^"]+bin[/\\]brain-kit\.mjs" doctor`/, lang);
+  }
 });
 
 test('the seed-rituals body renders in both languages inside a vault, every placeholder resolved, the four weeks ending today', async () => {

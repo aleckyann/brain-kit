@@ -6,10 +6,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
-import { CRON_LINE_LIMIT, nextFireTimes, sameClock } from '../src/commands/schedule.mjs';
+import { CRON_LINE_LIMIT, briefingTask, briefingTaskFile, nextFireTimes, sameClock } from '../src/commands/schedule.mjs';
+import { kitCommand } from '../src/curate/tools.mjs';
+import { createTranslator } from '../src/lang.mjs';
+import { INSIDE, PROJECT, assistant, makeWorld as makeTranscriptsWorld, paths, user } from './helpers/transcripts-world.mjs';
 import {
   ACCENTED, VAULT_ID, cronCommand, dryFiles, makeScheduleWorld, systemdWords, unitValues, xmlText,
 } from './helpers/schedule-world.mjs';
@@ -575,4 +578,252 @@ test('status compares with the PATH recorded in the installed unit: run from a s
   const changed = await world.run(['status', '--platform', 'systemd'], { env: { PATH: world.fakeBin }, ...deps });
   assert.equal(changed.status, 1);
   assert.match(changed.stdout, new RegExp(world.t('schedule.status_outdated', { name: world.name, platform: 'systemd' }).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+});
+
+// ------------------------------------------------ phase 4, task 4: the briefing's desktop task
+
+const BRIEFING_TASK_ID = `brain-kit-briefing-${VAULT_ID}`;
+
+function setConfig(world, mutate) {
+  const file = join(world.vault, 'brain-kit.config.json');
+  const config = JSON.parse(readFileSync(file, 'utf8'));
+  mutate(config);
+  writeFileSync(file, JSON.stringify(config, null, 2));
+  return config;
+}
+
+function configOf(world) {
+  return JSON.parse(readFileSync(join(world.vault, 'brain-kit.config.json'), 'utf8'));
+}
+
+// What `install --job briefing` prints on stdout, taken apart: the
+// explanation, the four fields, the line that announces the prompt, and
+// the prompt's two lines.
+function registration(stdout) {
+  const lines = stdout.replace(/\n$/, '').split('\n');
+  assert.equal(lines.length, 8, stdout);
+  const field = (line, name) => {
+    assert.ok(line.startsWith(`${name}: `), `${name}: ${line}`);
+    return line.slice(name.length + 2);
+  };
+  return {
+    explanation: lines[0],
+    taskId: field(lines[1], 'taskId'),
+    title: field(lines[2], 'title'),
+    cronExpression: field(lines[3], 'cronExpression'),
+    description: field(lines[4], 'description'),
+    follows: lines[5],
+    prompt: lines.slice(6).join('\n'),
+    promptLines: lines.slice(6),
+  };
+}
+
+// The task file as the desktop application would keep it, with a
+// frontmatter of its own above the prompt.
+function writeTask(world, prompt, { frontmatter = true } = {}) {
+  const file = briefingTaskFile(world.env, BRIEFING_TASK_ID);
+  mkdirSync(dirname(file), { recursive: true });
+  const head = frontmatter ? `---\nname: ${BRIEFING_TASK_ID}\ndescription: the briefing\n---\n\n` : '';
+  writeFileSync(file, `${head}${prompt}\n`);
+  return file;
+}
+
+async function registeredPrompt(world) {
+  const r = await world.run(['install', '--job', 'briefing']);
+  assert.equal(r.status, 3, r.stderr);
+  return registration(r.stdout).prompt;
+}
+
+test('install --job briefing prints the task to register in the vault\'s language and exits 3, for a vault under a path with a space and an accent', async () => {
+  const expected = {
+    en: { title: "brain-kit morning briefing: Ana's Second Brain", run: /^Run exactly this command with Bash and follow what it prints as this session's instructions: / },
+    'pt-BR': { title: "Briefing matinal do brain-kit: Ana's Second Brain", run: /^Rode exatamente este comando com o Bash e siga o que ele imprimir como as instruções desta sessão: / },
+  };
+  for (const [lang, want] of Object.entries(expected)) {
+    const world = makeScheduleWorld({ vaultName: 'meu cérebro' });
+    const config = setConfig(world, (c) => { c.lang = lang; });
+    assert.ok(world.vault.includes(' ') && world.vault.includes(ACCENTED), world.vault);
+    const r = await world.run(['install', '--job', 'briefing']);
+    assert.equal(r.status, 3, `${lang}: ${r.stdout}${r.stderr}`);
+    assert.equal(r.stderr, '', lang);
+    const got = registration(r.stdout);
+    // The explanation is in the caller's language (the world's translator
+    // is English); the task's own texts are in the vault's.
+    assert.equal(got.explanation, world.t('schedule.briefing_register', { taskId: BRIEFING_TASK_ID }), lang);
+    assert.equal(got.follows, world.t('schedule.briefing_prompt_follows'), lang);
+    assert.equal(got.taskId, BRIEFING_TASK_ID, lang);
+    assert.equal(got.title, want.title, lang);
+    assert.equal(got.cronExpression, '0 9 * * 1-5', lang);
+    assert.equal(got.description, createTranslator(lang)('schedule.briefing_description', { vault: world.vault }), lang);
+    // Exactly two lines: the signature, then the one instruction.
+    assert.equal(got.promptLines.length, 2, lang);
+    assert.equal(got.promptLines[0], config.briefing.signature, lang);
+    assert.match(got.promptLines[1], want.run, lang);
+    assert.ok(got.promptLines[1].endsWith(`node ${kitCommand()} prompt briefing --vault "${world.vault}"`), `${lang}: ${got.promptLines[1]}`);
+    // Nothing is written: the task exists only once the application creates it.
+    assert.equal(existsSync(join(world.home, '.claude')), false, lang);
+    assert.deepEqual(world.commands(), [], lang);
+  }
+});
+
+test('the command in the task\'s second line runs, through bash, the kit\'s prompt briefing for exactly this vault, whatever the vault\'s name holds', async () => {
+  const world = makeScheduleWorld({ vaultName: `Ana's "brain" $HOME \`x\` \\ 100%` });
+  const prompt = await registeredPrompt(world);
+  const command = prompt.split('\n')[1].slice(prompt.split('\n')[1].indexOf('node "'));
+  // A stand-in for node on PATH that prints the arguments bash hands it.
+  const bin = join(world.base, 'argv-bin');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, 'node'), "#!/bin/sh\nprintf '%s\\n' \"$@\"\n", { mode: 0o755 });
+  const ran = spawnSync('bash', ['-c', command], { env: { PATH: `${bin}:/usr/bin:/bin` }, encoding: 'utf8' });
+  assert.equal(ran.status, 0, ran.stderr);
+  assert.deepEqual(ran.stdout.replace(/\n$/, '').split('\n'), [KIT_BIN, 'prompt', 'briefing', '--vault', world.vault]);
+});
+
+test('the task\'s prompt, as a session\'s first user message, is dropped by the transcripts source as the briefing\'s own run (decision B6)', async () => {
+  for (const lang of ['en', 'pt-BR']) {
+    const transcripts = makeTranscriptsWorld({ lang, extraSignatures: [] });
+    const task = briefingTask({ root: '/home/ana/vault', config: transcripts.config, vaultId: VAULT_ID, env: {} });
+    assert.equal(task.problem, undefined, lang);
+    transcripts.write(PROJECT, 'briefing.jsonl', [user(task.prompt, INSIDE), assistant('Good morning, Ana.', INSIDE)]);
+    const human = transcripts.write(PROJECT, 'ana.jsonl', [user(`Ana pastes the task: ${task.prompt}`, INSIDE)]);
+    const plan = transcripts.collect();
+    assert.deepEqual(paths(plan), [human], lang);
+    assert.equal(plan.dropped.selfTrace, 1, lang);
+  }
+});
+
+test('install --job briefing refuses with exit 2 when the briefing is off, its signature is empty or two lines, or its schedule is not a cron expression', async () => {
+  const cases = [
+    [(c) => { c.briefing.enabled = false; }, (w) => w.t('schedule.briefing_disabled', { file: 'brain-kit.config.json' })],
+    [(c) => { c.briefing.signature = '   '; }, (w) => w.t('schedule.briefing_no_signature', { file: 'brain-kit.config.json' })],
+    [(c) => { c.briefing.signature = 'Morning\nbriefing'; }, (w) => w.t('schedule.briefing_no_signature', { file: 'brain-kit.config.json' })],
+    [(c) => { c.briefing.schedule = '09:00'; }, (w) => w.t('schedule.briefing_bad_cron', { value: '"09:00"', file: 'brain-kit.config.json' })],
+  ];
+  for (const [mutate, message] of cases) {
+    const world = makeScheduleWorld();
+    setConfig(world, mutate);
+    const r = await world.run(['install', '--job', 'briefing']);
+    assert.deepEqual([r.status, r.stdout, r.stderr], [2, '', `${message(world)}\n`]);
+  }
+});
+
+test('install --job briefing warns on stderr when the machine\'s clock and the vault\'s zone differ, and still prints the task', async () => {
+  const world = makeScheduleWorld({ timezone: 'America/Argentina/Buenos_Aires' });
+  const r = await world.run(['install', '--job', 'briefing'], { localZone: 'Europe/Lisbon' });
+  assert.equal(r.status, 3);
+  assert.equal(r.stderr, `${world.t('schedule.briefing_timezone_differs', { local: 'Europe/Lisbon', vault: 'America/Argentina/Buenos_Aires' })}\n`);
+  assert.equal(registration(r.stdout).taskId, BRIEFING_TASK_ID);
+});
+
+test('--job takes curate or briefing; --platform means nothing for the briefing', async () => {
+  const world = makeScheduleWorld();
+  const usage = world.t('schedule.usage');
+  const cases = [
+    [['install', '--job', 'nightly'], `${world.t('schedule.bad_job', { job: 'nightly', jobs: 'curate, briefing' })}\n${usage}\n`],
+    [['install', '--job'], `${world.t('schedule.job_needs_value', { jobs: 'curate, briefing' })}\n${usage}\n`],
+    [['status', '--job', 'briefing', '--platform', 'cron'], `${world.t('schedule.bad_argument', { arg: '--platform' })}\n${usage}\n`],
+  ];
+  for (const [argv, stderr] of cases) {
+    const r = await world.run(argv);
+    assert.deepEqual([r.status, r.stderr], [2, stderr], argv.join(' '));
+  }
+  // --job curate is the default, spelled out.
+  const curate = await world.run(['install', '--job=curate', '--platform', 'systemd', '--dry']);
+  assert.equal(curate.status, 0, curate.stderr);
+  assert.ok(curate.stdout.includes(`${world.name}.service`), curate.stdout);
+});
+
+test('uninstall --job briefing removes nothing, says the task is deleted in the application, and exits 3', async () => {
+  const world = makeScheduleWorld();
+  const file = writeTask(world, await registeredPrompt(world));
+  const r = await world.run(['uninstall', '--job', 'briefing']);
+  assert.deepEqual([r.status, r.stdout], [3, `${world.t('schedule.briefing_uninstall', { taskId: BRIEFING_TASK_ID, file })}\n`]);
+  assert.ok(existsSync(file));
+  assert.deepEqual(world.commands(), []);
+});
+
+test('status --job briefing: absent, present and signed, unsigned, and without the kit\'s command (HOME in scratch)', async () => {
+  const world = makeScheduleWorld();
+  const file = briefingTaskFile(world.env, BRIEFING_TASK_ID);
+  assert.ok(file.startsWith(world.home), file);
+  const command = 'brain-kit schedule install --job briefing';
+
+  let r = await world.run(['status', '--job', 'briefing']);
+  assert.deepEqual([r.status, r.stdout], [1, `${world.t('schedule.briefing_status_absent', { taskId: BRIEFING_TASK_ID, file, command })}\n`]);
+
+  const prompt = await registeredPrompt(world);
+  writeTask(world, prompt);
+  r = await world.run(['status', '--job', 'briefing']);
+  assert.deepEqual([r.status, r.stdout], [0, `${world.t('schedule.briefing_status_ok', { taskId: BRIEFING_TASK_ID, file, kit: KIT_BIN })}\n`]);
+  // Without a frontmatter, the same.
+  writeTask(world, prompt, { frontmatter: false });
+  r = await world.run(['status', '--job', 'briefing']);
+  assert.equal(r.status, 0, r.stdout);
+
+  // The signature anywhere but the first line is no signature.
+  const signature = configOf(world).briefing.signature;
+  writeTask(world, `Good morning\n${prompt}`);
+  r = await world.run(['status', '--job', 'briefing']);
+  assert.deepEqual([r.status, r.stdout], [1, `${world.t('schedule.briefing_status_unsigned', { taskId: BRIEFING_TASK_ID, file, signature, command })}\n`]);
+  // A signature changed in the configuration after registering: the task's
+  // sessions would no longer be recognised.
+  writeTask(world, prompt);
+  setConfig(world, (c) => { c.briefing.signature = 'Another signature'; });
+  r = await world.run(['status', '--job', 'briefing']);
+  assert.equal(r.status, 1);
+  assert.equal(r.stdout, `${world.t('schedule.briefing_status_unsigned', { taskId: BRIEFING_TASK_ID, file, signature: 'Another signature', command })}\n`);
+  setConfig(world, (c) => { c.briefing.signature = signature; });
+
+  writeTask(world, `${signature}\nRun the brain-kit briefing.`);
+  r = await world.run(['status', '--job', 'briefing']);
+  assert.deepEqual([r.status, r.stdout], [1, `${world.t('schedule.briefing_status_no_command', { taskId: BRIEFING_TASK_ID, file, command })}\n`]);
+});
+
+test('status --job briefing: a kit path that no longer exists (a plugin update moved it) and a task for another vault each say to install again', async () => {
+  const world = makeScheduleWorld();
+  const command = 'brain-kit schedule install --job briefing';
+  const prompt = await registeredPrompt(world);
+  const gone = join(world.base, 'plugins', 'cache', 'brain-kit', '0.0.1', 'bin', 'brain-kit.mjs');
+  writeTask(world, prompt.replace(kitCommand(), `"${gone}"`));
+  let r = await world.run(['status', '--job', 'briefing']);
+  assert.deepEqual([r.status, r.stdout], [1, `${world.t('schedule.briefing_status_kit_missing', { taskId: BRIEFING_TASK_ID, kit: gone, command })}\n`]);
+
+  const other = join(world.base, 'other vault');
+  mkdirSync(other);
+  writeTask(world, prompt.replace(`--vault "${world.vault}"`, `--vault "${other}"`));
+  r = await world.run(['status', '--job', 'briefing']);
+  assert.deepEqual([r.status, r.stdout], [1, `${world.t('schedule.briefing_status_vault_differs', { taskId: BRIEFING_TASK_ID, vault: other, root: world.vault, command })}\n`]);
+});
+
+test('status --job briefing: a task file that cannot be read is said, never read as absent', { skip: process.getuid?.() === 0 && 'root reads every file' }, async () => {
+  const world = makeScheduleWorld();
+  const file = writeTask(world, await registeredPrompt(world));
+  chmodSync(file, 0o000);
+  try {
+    const r = await world.run(['status', '--job', 'briefing']);
+    assert.deepEqual([r.status, r.stdout], [1, `${world.t('schedule.briefing_status_unreadable', { taskId: BRIEFING_TASK_ID, file, detail: 'EACCES' })}\n`]);
+  } finally {
+    chmodSync(file, 0o600);
+  }
+});
+
+test('status --job briefing with briefing.enabled false: nothing registered is fine, a task still registered is not', async () => {
+  const world = makeScheduleWorld();
+  const prompt = await registeredPrompt(world);
+  setConfig(world, (c) => { c.briefing.enabled = false; });
+  let r = await world.run(['status', '--job', 'briefing']);
+  assert.deepEqual([r.status, r.stdout], [0, `${world.t('schedule.briefing_status_disabled', { file: 'brain-kit.config.json' })}\n`]);
+  const file = writeTask(world, prompt);
+  r = await world.run(['status', '--job', 'briefing']);
+  assert.deepEqual([r.status, r.stdout], [1, `${world.t('schedule.briefing_status_disabled_registered', { taskId: BRIEFING_TASK_ID, file, config: 'brain-kit.config.json' })}\n`]);
+});
+
+test('the CLI routes schedule install --job briefing to the task, exit 3, in the vault\'s language', () => {
+  const world = makeScheduleWorld();
+  setConfig(world, (c) => { c.lang = 'pt-BR'; });
+  const r = spawnSync(process.execPath, [KIT_BIN, 'schedule', 'install', '--job', 'briefing', world.vault], { env: { ...world.env, BRAIN_KIT_LANG: 'en' }, encoding: 'utf8' });
+  assert.equal(r.status, 3, r.stderr);
+  const got = registration(r.stdout);
+  assert.equal(got.taskId, BRIEFING_TASK_ID);
+  assert.match(got.promptLines[1], /^Rode exatamente este comando/);
 });

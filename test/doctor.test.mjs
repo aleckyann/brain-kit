@@ -32,7 +32,8 @@ import { createTranslator } from '../src/lang.mjs';
 import { stateDirFor } from '../src/state.mjs';
 import { renderMessage, runDoctor } from '../src/commands/doctor.mjs';
 import { CHECK_IDS, exitCodeFor, roundFlags, runChecks } from '../src/doctor/checks.mjs';
-import { runScheduleSync } from '../src/commands/schedule.mjs';
+import { briefingTask, briefingTaskFile, runScheduleSync } from '../src/commands/schedule.mjs';
+import { kitCommand } from '../src/curate/tools.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
 import { LOCAL_GIT_VARS, localGitVarNames } from '../src/git-env.mjs';
 import { TEMPLATE_HOOK as SHIPPED_HOOK } from '../src/init/skeleton.mjs';
@@ -286,6 +287,25 @@ function readyCurator({ root, home, env, stateDir }) {
     // A fixture whose configuration or machine file is broken on purpose
     // has no schedule to install; the checks under test say why.
   }
+  registerBriefingTask({ root, home, env });
+}
+
+// The briefing's desktop task as the application keeps it after the person
+// created it from `schedule install --job briefing`: a frontmatter of the
+// application's own, then the two-line prompt, under the fixture's HOME.
+function registerBriefingTask({ root, home, env, prompt = null }) {
+  let config;
+  try {
+    config = JSON.parse(readFileSync(join(root, 'brain-kit.config.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+  const task = briefingTask({ root: realpathSync(root), config, vaultId: 'ana-brain', env });
+  if (task.problem) return null;
+  const file = briefingTaskFile({ HOME: home }, task.taskId);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `---\nname: ${task.taskId}\ndescription: ${task.description}\n---\n\n${prompt ?? task.prompt}\n`);
+  return { file, task };
 }
 
 function lastRun(overrides = {}) {
@@ -344,11 +364,12 @@ test('a ready vault under a path with a space, an accented letter and both quote
   assert.deepEqual(report.counts, { ok: CHECK_IDS.length + 1, warn: 0, fail: 0 });
 });
 
-test('the check table is exactly the phase 1, 2 and 3 set, each named by what it prevents', () => {
+test('the check table is exactly the phase 1, 2, 3 and 4 set, each named by what it prevents', () => {
   assert.deepEqual(CHECK_IDS, [
     'node-version', 'git-present', 'default-branch-known', 'hooks-path', 'brain-kit-on-path', 'config-valid', 'manifest-valid', 'machine-valid',
     'state-dir-resolves', 'state-dir-mode', 'kit-version', 'gh-present', 'claude-present', 'gitignore-node-modules', 'privacy-keywords',
     'claude-real', 'claude-isolation-flags', 'round-scope', 'include-projects', 'connectors', 'watermark', 'last-run', 'schedule', 'notify',
+    'briefing',
   ]);
 });
 
@@ -2716,9 +2737,148 @@ test('runChecks reports a check that returns an empty list as that check\'s fail
 // --- load order --------------------------------------------------------------
 
 test('checks.mjs, schedule.mjs and curate.mjs import each other in a cycle and load whichever comes first', () => {
-  for (const file of ['src/doctor/checks.mjs', 'src/commands/schedule.mjs', 'src/commands/curate.mjs', 'src/commands/doctor.mjs']) {
+  for (const file of ['src/doctor/checks.mjs', 'src/commands/schedule.mjs', 'src/commands/curate.mjs', 'src/commands/doctor.mjs', 'src/briefing/questions.mjs', 'src/briefing/blocks.mjs']) {
     const url = new URL(`../${file}`, import.meta.url).href;
     const r = spawnSync(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(url)});`], { encoding: 'utf8' });
     assert.equal(r.status, 0, `${file}: ${r.stderr}`);
   }
+});
+
+// --- briefing (phase 4, task 4) -------------------------------------------------
+
+const BRIEFING_TASK = 'brain-kit-briefing-ana-brain';
+const BRIEFING_INSTALL = 'brain-kit schedule install --job briefing';
+
+function briefingResults(report) {
+  return report.checks.filter((c) => c.id === 'briefing');
+}
+
+function editConfig(fx, mutate) {
+  const file = join(fx.root, 'brain-kit.config.json');
+  const config = JSON.parse(readFileSync(file, 'utf8'));
+  mutate(config);
+  writeFileSync(file, JSON.stringify(config, null, 2));
+  return config;
+}
+
+function taskFileOf(fx) {
+  return briefingTaskFile({ HOME: fx.home }, BRIEFING_TASK);
+}
+
+test('briefing: blocks in order, a readable queue and a task registered, signed and pointing at this kit pass as one ok line', async () => {
+  const fx = setup();
+  const { report, code } = await doctor(fx, ['--only', 'briefing']);
+  assert.equal(briefingResults(report).length, 1, JSON.stringify(report.checks));
+  const c = assertCheck(report, 'briefing', 'ok', 'doctor.briefing.ok');
+  assert.deepEqual(c.params, { taskId: BRIEFING_TASK, kit: kitCommand().slice(1, -1) });
+  assert.equal(code, EXIT.OK);
+});
+
+test('briefing: no task registered is a warning, never a failure, naming the command that prints it', async () => {
+  const fx = setup();
+  rmSync(join(fx.home, '.claude', 'scheduled-tasks'), { recursive: true });
+  const { report, code } = await doctor(fx, ['--only', 'briefing']);
+  const c = assertCheck(report, 'briefing', 'warn', 'doctor.briefing.task_absent');
+  assert.deepEqual(c.params, { taskId: BRIEFING_TASK, command: BRIEFING_INSTALL });
+  assert.equal(code, EXIT.OK);
+});
+
+test('briefing: a task whose prompt does not start with the signature fails, since its sessions would reach the curator', async () => {
+  const fx = setup();
+  const signature = JSON.parse(readFileSync(join(fx.root, 'brain-kit.config.json'), 'utf8')).briefing.signature;
+  const { task } = registerBriefingTask({ root: fx.root, home: fx.home, env: fx.env });
+  registerBriefingTask({ root: fx.root, home: fx.home, env: fx.env, prompt: `Good morning.\n${task.prompt}` });
+  const { report, code } = await doctor(fx, ['--only', 'briefing']);
+  const c = assertCheck(report, 'briefing', 'fail', 'doctor.briefing.task_unsigned');
+  assert.deepEqual(c.params, { taskId: BRIEFING_TASK, file: taskFileOf(fx), signature, command: BRIEFING_INSTALL });
+  assert.equal(code, EXIT.FAILURE);
+});
+
+test('briefing: a task pointing at a kit path that is gone, at another vault, or at no kit command fails, saying to install again', async () => {
+  const fx = setup();
+  const { task } = registerBriefingTask({ root: fx.root, home: fx.home, env: fx.env });
+  const gone = join(fx.base, 'plugins', 'cache', 'brain-kit', '0.0.1', 'bin', 'brain-kit.mjs');
+  registerBriefingTask({ root: fx.root, home: fx.home, env: fx.env, prompt: task.prompt.replace(kitCommand(), `"${gone}"`) });
+  let r = await doctor(fx, ['--only', 'briefing']);
+  let c = assertCheck(r.report, 'briefing', 'fail', 'doctor.briefing.task_kit_missing');
+  assert.deepEqual(c.params, { taskId: BRIEFING_TASK, kit: gone, command: BRIEFING_INSTALL });
+
+  const other = join(fx.base, 'other');
+  mkdirSync(other);
+  const vaultWord = task.command.slice(task.command.indexOf('--vault ') + '--vault '.length);
+  registerBriefingTask({ root: fx.root, home: fx.home, env: fx.env, prompt: task.prompt.replace(vaultWord, `"${other}"`) });
+  r = await doctor(fx, ['--only', 'briefing']);
+  c = assertCheck(r.report, 'briefing', 'fail', 'doctor.briefing.task_vault_differs');
+  assert.deepEqual(c.params, { taskId: BRIEFING_TASK, vault: other, root: realpathSync(fx.root), command: BRIEFING_INSTALL });
+
+  registerBriefingTask({ root: fx.root, home: fx.home, env: fx.env, prompt: `${task.signature}\nRun the briefing.` });
+  r = await doctor(fx, ['--only', 'briefing']);
+  assertCheck(r.report, 'briefing', 'fail', 'doctor.briefing.task_no_command');
+  assert.equal(r.code, EXIT.FAILURE);
+});
+
+test('briefing: each problem of briefing.blocks is its own warning, in the briefing\'s own words, before the task\'s line', async () => {
+  const fx = setup();
+  editConfig(fx, (c) => { c.briefing.blocks = ['sources', 'weather', 'sources']; });
+  const { report, code } = await doctor(fx, ['--only', 'briefing']);
+  const results = briefingResults(report);
+  assert.deepEqual(results.map((r) => [r.status, r.messageKey]), [
+    ['warn', 'doctor.briefing.block_problem'], ['warn', 'doctor.briefing.block_problem'], ['ok', 'doctor.briefing.ok'],
+  ]);
+  assert.equal(results[0].params.problem.messageKey, 'briefing.problem_unknown');
+  assert.equal(results[0].params.problem.params.id, 'weather');
+  assert.equal(results[1].params.problem.messageKey, 'briefing.problem_duplicate');
+  assert.match(results[0].message, /^briefing\.blocks: entry 2, "weather": no block of the kit has this id/);
+  assert.equal(code, EXIT.OK);
+  // Rendered in the report's language, from the same message.
+  assert.match(renderMessage(createTranslator('pt-BR'), results[1].messageKey, results[1].params), /^briefing\.blocks: item 3, "sources"/);
+});
+
+test('briefing: a custom block naming a never-read note is reported by name', async () => {
+  const fx = setup();
+  editConfig(fx, (c) => { c.briefing.blocks = ['sources', { id: 'team', title: 'Team', read: ['people/ana.md'], instruction: 'Say how the team is.' }]; });
+  const { report } = await doctor(fx, ['--only', 'briefing']);
+  const problem = briefingResults(report).find((r) => r.messageKey === 'doctor.briefing.block_problem');
+  assert.ok(problem, JSON.stringify(report.checks));
+  assert.equal(problem.params.problem.messageKey, 'briefing.problem_read_never_read');
+  assert.equal(problem.params.problem.params.path, 'people/ana.md');
+});
+
+test('briefing: unreadable lines of the question queue are a warning naming them; a queue that cannot be read at all is a failure', { skip: process.getuid?.() === 0 && 'root reads every file' }, async () => {
+  const fx = setup();
+  const queue = join(fx.stateDir, 'questions.log');
+  const good = { id: 'q-0123abcd', text: 'Which budget?', normalized: 'which budget', createdOn: '2026-09-20', askedOn: [], status: 'open' };
+  writeFileSync(queue, `${JSON.stringify(good)}\nnot json\n{"id":"q-1"}\n`, { mode: 0o600 });
+  let r = await doctor(fx, ['--only', 'briefing']);
+  let c = assertCheck(r.report, 'briefing', 'warn', 'doctor.briefing.queue_corrupt');
+  assert.deepEqual(c.params, { count: 2, file: queue, lines: [2, 3] });
+  assert.equal(r.code, EXIT.OK);
+
+  chmodSync(queue, 0o000);
+  try {
+    r = await doctor(fx, ['--only', 'briefing']);
+    c = assertCheck(r.report, 'briefing', 'fail', 'doctor.briefing.queue_unreadable');
+    assert.deepEqual(c.params, { file: queue, detail: 'EACCES' });
+    assert.equal(r.code, EXIT.FAILURE);
+  } finally {
+    chmodSync(queue, 0o600);
+  }
+});
+
+test('briefing: briefing.enabled false with no task is ok and says the briefing is off; with a task still registered, a warning', async () => {
+  const fx = setup();
+  editConfig(fx, (c) => { c.briefing.enabled = false; });
+  let r = await doctor(fx, ['--only', 'briefing']);
+  const c = assertCheck(r.report, 'briefing', 'warn', 'doctor.briefing.disabled_registered');
+  assert.deepEqual(c.params, { taskId: BRIEFING_TASK, file: taskFileOf(fx), config: join(fx.root, 'brain-kit.config.json') });
+  rmSync(join(fx.home, '.claude', 'scheduled-tasks'), { recursive: true });
+  r = await doctor(fx, ['--only', 'briefing']);
+  assertCheck(r.report, 'briefing', 'ok', 'doctor.briefing.disabled');
+  assert.equal(briefingResults(r.report).length, 1);
+});
+
+test('briefing: a configuration doctor cannot load is a warning, config-valid says why', async () => {
+  const fx = setup({ configText: '{ not json' });
+  const { report } = await doctor(fx, ['--only', 'briefing']);
+  assertCheck(report, 'briefing', 'warn', 'doctor.briefing.config_unknown');
 });
