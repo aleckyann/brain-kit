@@ -126,11 +126,13 @@ test('25/09/2026 replayed: after propose, the Stop hook releases, a second propo
   // sync, what every round runs at its step 5, restores instead of postponing.
   const synced = w.kit(['sync']);
   assert.equal(synced.status, EXIT.OK, synced.stderr);
-  assert.ok(synced.stdout.startsWith(t('sync.restored_proposed', { count: 1, paths: [LOG], branches: [branch] })), synced.stdout);
+  const ref = `refs/brain-kit/proposed/${branch.replace(/\//g, '-')}`;
+  assert.ok(synced.stdout.startsWith(t('sync.restored_proposed', { count: 1, paths: [LOG], branches: [branch], refs: [ref], recover: [`git restore --source=${ref} -- ${LOG}`] })), synced.stdout);
   assert.equal(w.status(), '');
   assert.equal(readFileSync(join(w.root, LOG), 'utf8'), atHead);
   assert.equal(existsSync(w.ledger), false, 'the ledger is pruned once nothing holds proposed bytes');
   assert.deepEqual(git(w.remote, ['show', `${branch}:${LOG}`]), captured.toString('utf8'), 'the capture lives on the pushed branch');
+  assert.equal(git(w.root, ['show', `${ref}:${LOG}`]), captured.toString('utf8'), 'and on this machine, in the local ref, until the default branch holds it');
 
   // A new edit is this session's work again.
   w.capture('Ana asked for a shorter reading list.');
@@ -185,4 +187,43 @@ test('the day after the owner merged: propose says it is proposed already and sy
   assert.equal(w.status(), '');
   assert.equal(readFileSync(join(w.root, LOG), 'utf8'), captured, 'the merged capture is on disk, from the default branch');
   assert.equal(existsSync(w.ledger), false);
+  assert.equal(git(w.root, ['for-each-ref', 'refs/brain-kit/proposed/']), '', 'the local ref goes once the default branch holds its content');
+});
+
+// Re-review of the final fix, N1 (ruling R-F2): a proposal whose pull request
+// was never opened, and whose pushed branch someone then deleted on the
+// remote, left its capture only as an unreachable local commit after `sync`
+// brought the file back to HEAD saying "nothing is lost". The ledger entry now
+// comes with a local ref at the pushed commit, and `sync` names it.
+test('pushed, gh failed, the remote branch deleted, then sync: the file goes back to HEAD, and its bytes stay reachable through the local ref sync names, gc included', () => {
+  const w = makeWorld();
+  w.capture('(morning briefing) Ana asked for a shorter reading list.');
+  const captured = readFileSync(join(w.root, LOG), 'utf8');
+  const failing = join(w.base, 'failbin');
+  mkdirSync(failing);
+  writeFileSync(join(failing, 'gh'), '#!/bin/sh\necho "gh: not authenticated" >&2\nexit 4\n');
+  chmodSync(join(failing, 'gh'), 0o755);
+  const env = { ...w.env, PATH: `${failing}:${w.env.PATH}` };
+  const proposed = spawnSync(process.execPath, [BIN, 'propose', 'Briefing captures', '--only', LOG], { cwd: w.root, env, encoding: 'utf8' });
+  assert.equal(proposed.status, EXIT.DEGRADED, proposed.stderr);
+  const [entry] = JSON.parse(readFileSync(w.ledger, 'utf8')).proposals;
+  assert.equal(entry.opened, false);
+  const ref = `refs/brain-kit/proposed/${entry.branch.replace(/\//g, '-')}`;
+  assert.equal(git(w.root, ['rev-parse', ref]).trim(), entry.commit, 'the ref is made with the entry, at its commit');
+
+  // Nothing published is left: the pushed branch is deleted on the remote.
+  git(w.remote, ['branch', '-D', entry.branch]);
+  const again = w.kit(['propose', 'Briefing captures', '--only', LOG]);
+  assert.equal(again.status, EXIT.OK, again.stderr);
+  assert.ok(again.stdout.includes(t('propose.already_proposed_unopened', { count: 1, paths: [LOG], branches: [entry.branch] })), again.stdout);
+  assert.doesNotMatch(again.stdout, /whose pull request carries them/);
+
+  const synced = w.kit(['sync']);
+  assert.equal(synced.status, EXIT.OK, synced.stderr);
+  assert.ok(synced.stdout.includes(`git restore --source=${ref} -- ${LOG}`), synced.stdout);
+  assert.notEqual(readFileSync(join(w.root, LOG), 'utf8'), captured, 'the file is back at HEAD');
+  git(w.root, ['gc', '-q', '--prune=now']);
+  assert.equal(git(w.root, ['show', `${ref}:${LOG}`]), captured, 'reachable after gc');
+  git(w.root, ['restore', `--source=${ref}`, '--', LOG]);
+  assert.equal(readFileSync(join(w.root, LOG), 'utf8'), captured, 'the command sync names brings the file back');
 });

@@ -1689,3 +1689,63 @@ test('not joined: a partial publish records the commit one url holds in the ledg
   const commit = git(first, ['rev-parse', `refs/heads/${BRANCH}`]).trim();
   assert.deepEqual(readLedgerOf(world).proposals, [{ opened: false, remote: 'origin', branch: BRANCH, commit, paths: ['notes/a.md'] }]);
 });
+
+const proposedRefOf = (branch) => `refs/brain-kit/proposed/${branch.replace(/\//g, '-')}`;
+
+test('not joined: the ledger entry comes with a local ref at the pushed commit, the only reference propose writes (ruling R-F2)', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  const refsBefore = git(world.vault, ['for-each-ref', '--format=%(refname) %(objectname)']);
+  assert.equal((await propose(world, ['A', '--only', 'notes/a.md'])).code, EXIT.OK);
+  const commit = world.remoteSha(`refs/heads/${BRANCH}`);
+  assert.equal(git(world.vault, ['rev-parse', proposedRefOf(BRANCH)]).trim(), commit);
+  const lines = (text) => text.split('\n').filter(Boolean).sort();
+  assert.deepEqual(lines(git(world.vault, ['for-each-ref', '--format=%(refname) %(objectname)'])), lines(`${refsBefore}${proposedRefOf(BRANCH)} ${commit}\n`));
+});
+
+test('not joined: a ref that cannot be made (one of that name already there) means no entry, exit 3, said, and the other ref untouched', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  const head = git(world.vault, ['rev-parse', 'HEAD']).trim();
+  git(world.vault, ['update-ref', proposedRefOf(BRANCH), head]);
+  const run = await propose(world, ['A', '--only', 'notes/a.md']);
+  assert.equal(run.code, EXIT.DEGRADED);
+  assert.ok(run.stderr.startsWith(t('propose.ledger_pin_failed', { branch: BRANCH, ref: proposedRefOf(BRANCH), detail: '' }).split('()')[0]), run.stderr);
+  assert.equal(existsSync(ledgerFile(world)), false);
+  assert.equal(git(world.vault, ['rev-parse', proposedRefOf(BRANCH)]).trim(), head);
+  assert.equal(creates(world).length, 1, 'the pull request itself was opened');
+});
+
+test('not joined: after a pull request that could not be opened, a second propose never says a pull request carries the paths (re-review N4)', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  assert.equal((await propose(world, ['A', '--only', 'notes/a.md'], { env: { ...world.env, FAKE_GH_MODE: 'fail' } })).code, EXIT.DEGRADED);
+  const again = await propose(world, ['A', '--only', 'notes/a.md'], { env: { ...world.env, FAKE_GH_MODE: 'fail' } });
+  assert.equal(again.code, EXIT.OK, again.stderr);
+  assert.equal(again.stdout, line('propose.already_proposed_unopened', { count: 1, paths: ['notes/a.md'], branches: [BRANCH] }));
+  assert.match(again.stderr, /gh pr create/, 'the finishing command is printed');
+  const all = await propose(world, ['A', '--all', '--yes'], { env: { ...world.env, FAKE_GH_MODE: 'fail' } });
+  assert.equal(all.stdout, again.stdout);
+});
+
+test('not joined: a proposal whose local ref was dropped counts as unproposed, and is proposed again', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  assert.equal((await propose(world, ['A', '--only', 'notes/a.md'])).code, EXIT.OK);
+  git(world.vault, ['update-ref', '-d', proposedRefOf(BRANCH)]);
+  const again = await propose(world, ['A', '--only', 'notes/a.md'], { now: new Date(NOW.getTime() + 1000) });
+  assert.equal(again.code, EXIT.OK, again.stderr);
+  assert.equal(creates(world).length, 2);
+});
+
+test('not joined: when one of the proposals holding the paths opened no pull request, the line says so', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  assert.equal((await propose(world, ['A', '--only', 'notes/a.md'])).code, EXIT.OK);
+  world.write('notes/b.md', note('B'));
+  const later = new Date(NOW.getTime() + 1000);
+  assert.equal((await propose(world, ['B', '--only', 'notes/b.md'], { now: later, env: { ...world.env, FAKE_GH_MODE: 'fail' } })).code, EXIT.DEGRADED);
+  const both = await propose(world, ['A and B', '--only', 'notes/a.md', 'notes/b.md']);
+  assert.equal(both.code, EXIT.OK, both.stderr);
+  assert.equal(both.stdout, line('propose.already_proposed_unopened', { count: 2, paths: ['notes/a.md', 'notes/b.md'], branches: [BRANCH, 'bot/2026-09-23-12-00-01'] }));
+});

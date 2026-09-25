@@ -137,7 +137,11 @@
 // long as their bytes are exactly what was pushed (final review of phase
 // 4, finding C1). HEAD, the index and the working tree still never move
 // here. A ledger that does not validate is left as it is, and either
-// failure is exit 3, said with the file and an error code at most.
+// failure is exit 3, said with the file and an error code at most. Before
+// the entry, a local ref `refs/brain-kit/proposed/<branch slug>` is made at
+// the pushed commit (ruling R-F2), so the bytes `sync` may bring back to
+// HEAD stay reachable here whatever happens to the pushed branch; no ref,
+// no entry. That ref is the one reference this command writes.
 //
 // `gh` runs with the caller's git environment removed, GIT_TERMINAL_PROMPT=0
 // and GH_PROMPT_DISABLED=1.
@@ -174,7 +178,7 @@ import { runValidate } from './validate.mjs';
 import { runLint } from './lint.mjs';
 import { PROTECTED_PATHS } from '../curate/tools.mjs';
 import {
-  appendRecord, branchesOf, ledgerPath, parseRoundRecord, proposedMatch, readLedger, RECORD_GUARD_WAIT_MS,
+  appendRecord, branchesOf, ledgerPath, parseRoundRecord, pinEntry, pinnedEntries, proposedMatch, readLedger, RECORD_GUARD_WAIT_MS,
 } from '../guards/proposed.mjs';
 
 // The round record's reader, where it has always been imported from.
@@ -446,7 +450,7 @@ async function proposeUnderLock({ root, cwd, config, parsed, io, t, env, now, wa
     if (proposed !== null && proposed.names.size > 0) {
       const left = proposed.match.matching;
       if (fresh.length === 0) {
-        io.stdout.write(`${t('propose.already_proposed_all', { count: left.length, paths: left, branches: branchesOf(proposed.match) })}\n`);
+        io.stdout.write(`${alreadyAllLine(t, proposed.match, left)}\n`);
         return EXIT.OK;
       }
       io.stdout.write(`${t('propose.already_proposed_left_out', { count: left.length, paths: left, branches: branchesOf(proposed.match) })}\n`);
@@ -459,7 +463,7 @@ async function proposeUnderLock({ root, cwd, config, parsed, io, t, env, now, wa
       if (again.length > 0) {
         const branches = [...new Set(again.map((name) => proposed.match.details.get(name).entry.branch))];
         if (again.length === chosen.length) {
-          io.stdout.write(`${t('propose.already_proposed_all', { count: again.length, paths: again, branches })}\n`);
+          io.stdout.write(`${alreadyAllLine(t, proposed.match, again)}\n`);
           return EXIT.OK;
         }
         throw new Refusal(EXIT.USAGE, t('propose.already_proposed_some', { count: again.length, paths: again, branches }));
@@ -548,8 +552,21 @@ function alreadyProposed(root, io, t, env, dirty) {
   if (ledger.state === 'invalid' || ledger.state === 'unreadable') {
     io.stderr.write(`${t('proposed.ledger_ignored', { file: ledger.file ?? '-', detail: ledger.detail ?? t('proposed.ledger_not_valid') })}\n`);
   }
-  const match = proposedMatch(root, ledger.entries, env, { paths: dirty.map((path) => decodeBytes(path)) });
+  // Only an entry whose local ref still keeps its commit counts.
+  const { pinned } = pinnedEntries(root, ledger.entries, env);
+  const match = proposedMatch(root, pinned, env, { paths: dirty.map((path) => decodeBytes(path)) });
   return { names: new Set(match.matching), match };
+}
+
+// The one line for "every chosen path is proposed already": it says a pull
+// request carries them only when every entry holding them opened one; an
+// entry whose pull request was not confirmed says so, and the finishing
+// command is the one step 2 prints while that pull request is missing.
+function alreadyAllLine(t, match, names) {
+  const entries = [...new Set(names.map((name) => match.details.get(name).entry))];
+  const branches = [...new Set(entries.map((entry) => entry.branch))];
+  const key = entries.every((entry) => entry.opened) ? 'propose.already_proposed_all' : 'propose.already_proposed_unopened';
+  return t(key, { count: names.length, paths: names, branches });
 }
 
 // The decoded paths among `dirty` (tracked or untracked, never ignored)
@@ -586,6 +603,16 @@ function recordRound(root, io, t, env, round, entry) {
 // the commit is pushed, and the Stop hook may ask for these paths again.
 function recordLedger(root, io, t, env, guardWaitMs, entry) {
   const file = ledgerPath(root, env);
+  // The local ref first (src/guards/proposed.mjs, ruling R-F2), so an entry
+  // never exists without the ref that keeps its bytes reachable. A ref that
+  // cannot be made means no entry: the files stay unproposed work, the safe
+  // direction. An entry that then cannot be written leaves the ref in place:
+  // it only keeps the pushed bytes, and `sync` drops it once they are merged.
+  const pinned = pinEntry(root, entry, env);
+  if (!pinned.ok) {
+    io.stderr.write(`${t('propose.ledger_pin_failed', { branch: entry.branch, ref: pinned.ref, detail: pinned.detail })}\n`);
+    return false;
+  }
   const done = appendRecord(file, entry, guardWaitMs);
   if (done.ok) return true;
   if (done.invalid) io.stderr.write(`${t('propose.ledger_invalid', { branch: entry.branch, file })}\n`);

@@ -14,8 +14,9 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { acquireLock, currentIdentity } from '../src/guards/lock.mjs';
 import { GUARD_FILES } from '../src/guards/location.mjs';
+import { proposedMatch, proposedRef } from '../src/guards/proposed.mjs';
 import { git, makeRepo, pathUnder } from './helpers/git-repo.mjs';
-import { makeHookVault, runHookProcess } from './helpers/hook-world.mjs';
+import { hookEnv, makeHookVault, runHookProcess } from './helpers/hook-world.mjs';
 
 // Characters built at run time: no escape is typed into a file here.
 const A_ACUTE = String.fromCodePoint(0xe1);
@@ -429,7 +430,10 @@ function proposalOf(fx, paths, branch = 'bot/2026-09-25-09-00-00') {
   return { opened: true, remote: 'origin', branch, commit, paths: [...paths].sort() };
 }
 
-function writeLedger(fx, entries) {
+// The ledger, each entry with the local ref propose makes for it (ruling
+// R-F2) unless `pin` is false.
+function writeLedger(fx, entries, { pin = true } = {}) {
+  if (pin) for (const entry of entries) git(fx.root, ['update-ref', proposedRef(entry.branch), entry.commit]);
   const file = join(fx.root, '.git', 'brain-kit-proposed.json');
   writeFileSync(file, `${JSON.stringify({ format: 1, proposals: entries }, null, 2)}\n`);
   return file;
@@ -488,7 +492,7 @@ test('a ledger that cannot be read or does not validate leaves every path in: it
 
 test('an entry whose commit this repository no longer holds proves nothing: the path blocks', () => {
   const fx = sessionWithWork();
-  writeLedger(fx, [{ opened: true, remote: 'origin', branch: 'bot/gone', commit: 'a'.repeat(40), paths: ['mine.md'] }]);
+  writeLedger(fx, [{ opened: true, remote: 'origin', branch: 'bot/gone', commit: 'a'.repeat(40), paths: ['mine.md'] }], { pin: false });
   assert.match(reasonOf(stop(fx)), /^ {2}mine\.md$/m);
 });
 
@@ -511,4 +515,21 @@ test('an entry whose path is clean (its proposal merged and pulled) is not count
   git(fx.root, ['commit', '-q', '-m', 'merged and pulled']);
   writeLedger(fx, [merged, proposalOf(fx, ['mine.md'])]);
   assertReleased(stop(fx), /already proposed \(1 path\(s\) whose content is exactly what was pushed to bot\/2026-09-25-09-00-00;/);
+});
+
+test('an entry whose local ref is gone or moved does not count: its path blocks as this session\'s work (ruling R-F2)', () => {
+  const fx = sessionWithWork();
+  const entry = proposalOf(fx, ['mine.md']);
+  writeLedger(fx, [entry], { pin: false });
+  assert.match(reasonOf(stop(fx)), /^ {2}mine\.md$/m);
+  git(fx.root, ['update-ref', proposedRef(entry.branch), 'HEAD']);
+  assert.match(reasonOf(stop(fx)), /^ {2}mine\.md$/m);
+  git(fx.root, ['update-ref', proposedRef(entry.branch), entry.commit]);
+  assertReleased(stop(fx), /already proposed \(1 path\(s\)/);
+});
+
+test('proposedMatch: an entry whose commit this repository no longer holds proves nothing, its path is changed, never an error (the round cleanup reads it too)', () => {
+  const fx = sessionWithWork();
+  const match = proposedMatch(fx.root, [{ opened: true, remote: 'origin', branch: 'bot/gone', commit: 'a'.repeat(40), paths: ['mine.md'] }], hookEnv(fx.base));
+  assert.deepEqual([match.matching, match.changed], [[], ['mine.md']]);
 });

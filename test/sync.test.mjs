@@ -861,6 +861,10 @@ async function proposeIn(world, argv) {
 }
 
 const ledgerOf = (world) => join(world.vault, '.git', 'brain-kit-proposed.json');
+const PROPOSED_REF = `refs/brain-kit/proposed/${PROPOSE_BRANCH.replace(/\//g, '-')}`;
+const restoredParams = (paths) => ({
+  count: paths.length, paths, branches: [PROPOSE_BRANCH], refs: [PROPOSED_REF], recover: paths.map((path) => `git restore --source=${PROPOSED_REF} -- ${path}`),
+});
 
 test('a path an earlier propose pushed, byte for byte, is brought back to HEAD and said, the ledger pruned, and sync goes on instead of postponing', async () => {
   const world = makeProposeWorld();
@@ -871,7 +875,7 @@ test('a path an earlier propose pushed, byte for byte, is brought back to HEAD a
   assert.equal(r.code, EXIT.OK, r.stderr);
   assert.equal(r.stderr, '');
   assert.equal(r.stdout, [
-    line('sync.restored_proposed', { count: 2, paths: ['index.md', 'notes/new.md'], branches: [PROPOSE_BRANCH] }),
+    line('sync.restored_proposed', restoredParams(['index.md', 'notes/new.md'])),
     line('sync.up_to_date', { branch: 'main', upstream: 'origin/main' }),
   ].join(''));
   assert.equal(readFileSync(join(world.vault, 'index.md'), 'utf8'), '# Index\n');
@@ -887,7 +891,7 @@ test('behind the remote with a proposed path in the tree: restored, then fast-fo
   world.publish(1);
   const r = await sync(world);
   assert.equal(r.code, EXIT.OK, r.stderr);
-  assert.ok(r.stdout.startsWith(line('sync.restored_proposed', { count: 1, paths: ['notes/a.md'], branches: [PROPOSE_BRANCH] })), r.stdout);
+  assert.ok(r.stdout.startsWith(line('sync.restored_proposed', restoredParams(['notes/a.md']))), r.stdout);
   assert.match(r.stdout, /fast-forwarded/);
 });
 
@@ -910,7 +914,7 @@ test('a proposed path is restored and another dirty file still postpones, naming
   world.write('drafts/theirs.md', note('Theirs'));
   const r = await sync(world);
   assert.equal(r.code, EXIT.TEMPFAIL);
-  assert.equal(r.stdout, line('sync.restored_proposed', { count: 1, paths: ['notes/a.md'], branches: [PROPOSE_BRANCH] }));
+  assert.equal(r.stdout, line('sync.restored_proposed', restoredParams(['notes/a.md'])));
   assert.equal(r.stderr, line('sync.dirty', { files: ['drafts/theirs.md'] }));
 });
 
@@ -926,4 +930,65 @@ test('a ledger that does not validate changes nothing but one stderr line: the p
     line('sync.dirty', { files: ['notes/a.md'] }),
   ].join(''));
   assert.equal(readFileSync(ledgerOf(world), 'utf8'), '{"format":1}');
+});
+
+test('an entry whose local ref is gone is not restored: the file is left exactly as it is, said, and postpones; the entry is pruned (ruling R-F2)', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  await proposeIn(world, ['A', '--only', 'notes/a.md']);
+  git(world.vault, ['update-ref', '-d', PROPOSED_REF]);
+  const r = await sync(world);
+  assert.equal(r.code, EXIT.TEMPFAIL);
+  assert.equal(r.stdout, '');
+  assert.equal(r.stderr, [
+    line('sync.proposed_unpinned', { count: 1, paths: ['notes/a.md'], refs: [PROPOSED_REF] }),
+    line('sync.dirty', { files: ['notes/a.md'] }),
+  ].join(''));
+  assert.equal(readFileSync(join(world.vault, 'notes', 'a.md'), 'utf8'), note('A'));
+  assert.equal(existsSync(ledgerOf(world)), false);
+});
+
+test('a ref moved to another commit counts as gone: nothing is restored', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  await proposeIn(world, ['A', '--only', 'notes/a.md']);
+  git(world.vault, ['update-ref', PROPOSED_REF, 'HEAD']);
+  const r = await sync(world);
+  assert.equal(r.code, EXIT.TEMPFAIL);
+  assert.equal(readFileSync(join(world.vault, 'notes', 'a.md'), 'utf8'), note('A'));
+});
+
+test('the local ref stays while the default branch lacks its content, and goes once it holds it, squashed or merged', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  await proposeIn(world, ['A', '--only', 'notes/a.md']);
+  const pinned = git(world.vault, ['rev-parse', PROPOSED_REF]).trim();
+  world.publish(1);
+  const first = await sync(world);
+  assert.equal(first.code, EXIT.OK, first.stderr);
+  assert.equal(git(world.vault, ['rev-parse', PROPOSED_REF]).trim(), pinned, 'not merged: kept');
+  // The owner squashes the proposal onto main: same bytes, not an ancestor.
+  git(world.elsewhere, ['pull', '-q', 'origin', 'main']);
+  mkdirSync(join(world.elsewhere, 'notes'), { recursive: true });
+  writeFileSync(join(world.elsewhere, 'notes', 'a.md'), note('A'));
+  git(world.elsewhere, ['add', '-A']);
+  git(world.elsewhere, ['commit', '-q', '-m', 'squash']);
+  git(world.elsewhere, ['push', '-q', 'origin', 'main']);
+  const second = await sync(world);
+  assert.equal(second.code, EXIT.OK, second.stderr);
+  assert.ok(second.stdout.startsWith(line('sync.proposed_refs_dropped', { count: 1, refs: [PROPOSED_REF] })), second.stdout);
+  assert.equal(gitProbe(world.vault, ['rev-parse', '-q', '--verify', PROPOSED_REF]).status, 1);
+});
+
+test('an entry with a path edited after the push is kept by a sync that postpones, so reverting the edit makes it proposed again (re-review N2)', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  await proposeIn(world, ['A', '--only', 'notes/a.md']);
+  world.write('notes/a.md', `${note('A')}x`);
+  assert.equal((await sync(world)).code, EXIT.TEMPFAIL);
+  assert.equal(JSON.parse(readFileSync(ledgerOf(world), 'utf8')).proposals.length, 1, 'the entry is kept');
+  world.write('notes/a.md', note('A'));
+  const r = await sync(world);
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  assert.ok(r.stdout.startsWith(line('sync.restored_proposed', restoredParams(['notes/a.md']))), r.stdout);
 });

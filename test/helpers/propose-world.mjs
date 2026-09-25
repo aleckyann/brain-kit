@@ -14,7 +14,8 @@
 //     answers only for a head a successful `pr create` named. Each call also
 //     records its working directory and the git and prompt variables it saw. `absentPath()` is a PATH with the real git and no gh at
 //     all, so a gh installed on this machine can never answer a test.
-//   - `fingerprint(dir)`: HEAD, every reference in every namespace,
+//   - `fingerprint(dir)`: HEAD, every reference in every namespace (but
+//     refs/brain-kit/proposed/, which a proposal writes on purpose),
 //     packed-refs, .git/config, the index's
 //     bytes and every working-tree file's bytes, mode and modification
 //     time, in one comparable value: what propose must never move.
@@ -167,7 +168,9 @@ export function fingerprint(dir) {
   return {
     head: head.status === 0 ? head.stdout.trim() : null,
     headSha: gitProbe(dir, ['rev-parse', '-q', '--verify', 'HEAD']).stdout.trim(),
-    refs: git(dir, ['for-each-ref', '--format=%(refname) %(objectname) %(symref)']),
+    // Every reference but the one a non-joined propose writes on purpose,
+    // under refs/brain-kit/proposed/ (ruling R-F2), which its own tests pin.
+    refs: git(dir, ['for-each-ref', '--format=%(refname) %(objectname) %(symref)']).split('\n').filter((line) => !line.startsWith('refs/brain-kit/proposed/')).join('\n'),
     packedRefs: readOrNull(join(dir, '.git', 'packed-refs')),
     config: readOrNull(join(dir, '.git', 'config')),
     index: sha256(readFileSync(join(dir, '.git', 'index'))),

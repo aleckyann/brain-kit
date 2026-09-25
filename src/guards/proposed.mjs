@@ -204,6 +204,78 @@ export function pruneLedger(file, drop, waitMs = RECORD_GUARD_WAIT_MS) {
   return rewriteRecord(file, (proposals) => proposals.filter((entry) => !keys.has(entryKey(entry))), waitMs);
 }
 
+// ------------------------------------------------------------ the pin
+//
+// What the ledger promises (ruling R-F2, re-review N1): an entry's bytes stay
+// reachable on this machine for as long as `sync` may bring its files back
+// to HEAD. The pushed branch alone does not promise that (a person deletes an
+// orphan branch, a host keeps no pull-request ref, and the commit then lives
+// only as an unreachable object until gc). So every ledger entry has a local
+// ref at its commit, `refs/brain-kit/proposed/<branch slug>`, created before
+// the entry is written (an entry never exists without it). Only an entry
+// whose ref still points at its commit counts as proposed, for the Stop
+// hook, `propose` and `sync` alike. The ref is removed only when the
+// proposal's content is on the default branch (dropMergedRefs, run by `sync`
+// after a proved fetch) or by the person, with `git update-ref -d <ref>`
+// (docs/briefing.md). Such a ref is never pushed or fetched by default.
+
+export const PROPOSED_REF_PREFIX = 'refs/brain-kit/proposed/';
+
+export function proposedRef(branch) {
+  return `${PROPOSED_REF_PREFIX}${branch.replace(/[^A-Za-z0-9._-]/g, '-')}`;
+}
+
+// The ref of `entry`, created at its commit and only if it does not exist
+// yet. { ok: true, ref } or { ok: false, ref, detail }.
+export function pinEntry(root, entry, env = process.env) {
+  const ref = proposedRef(entry.branch);
+  const made = runGit(root, ['update-ref', '-m', `brain-kit propose ${entry.branch}`, ref, entry.commit, ''], { env });
+  if (made.status === 0) return { ok: true, ref };
+  return { ok: false, ref, detail: String(made.stderr || `exit status ${made.status}`).trim().split('\n')[0] };
+}
+
+function refCommit(root, ref, env) {
+  const got = runGit(root, ['rev-parse', '-q', '--verify', `${ref}^{commit}`], { env });
+  return got.status === 0 ? got.stdout.trim() : null;
+}
+
+// The entries whose ref still points at their own commit (`pinned`), and
+// the others (`unpinned`: ref removed, moved, or never made).
+export function pinnedEntries(root, entries, env = process.env) {
+  const pinned = [];
+  const unpinned = [];
+  for (const entry of entries) (refCommit(root, proposedRef(entry.branch), env) === entry.commit ? pinned : unpinned).push(entry);
+  return { pinned, unpinned };
+}
+
+// Every proposed ref whose content is on `tip` (the default branch's proved
+// tip): its commit is an ancestor of the tip (a merge), or every path the
+// commit changed against its parent holds the same blob, or the same
+// absence, at the tip (a squash or a rebase). Those refs are deleted, each
+// only if it still points where it was read. Returns the deleted refs.
+export function dropMergedRefs(root, tip, env = process.env) {
+  const listed = runGit(root, ['for-each-ref', '--format=%(refname) %(objectname)', PROPOSED_REF_PREFIX], { env });
+  if (listed.status !== 0) return [];
+  const dropped = [];
+  for (const line of listed.stdout.split('\n').filter(Boolean)) {
+    const [ref, sha] = line.split(' ');
+    if (!mergedInto(root, sha, tip, env)) continue;
+    if (runGit(root, ['update-ref', '-d', ref, sha], { env }).status === 0) dropped.push(ref);
+  }
+  return dropped;
+}
+
+function mergedInto(root, commit, tip, env) {
+  if (runGit(root, ['merge-base', '--is-ancestor', commit, tip], { env }).status === 0) return true;
+  const changed = runGit(root, ['diff-tree', '-r', '-z', '--no-commit-id', '--no-renames', '--name-only', `${commit}^`, commit], { env, encoding: 'buffer' });
+  if (changed.status !== 0) return false;
+  const names = Buffer.from(changed.stdout).toString('latin1').split('\0').filter(Boolean).map((name) => decodeBytes(Buffer.from(name, 'latin1')));
+  if (names.length === 0) return false;
+  const mine = treeOf(root, commit, env);
+  const theirs = treeOf(root, tip, env);
+  return names.every((name) => (mine.get(name)?.sha ?? null) === (theirs.get(name)?.sha ?? null) && (mine.get(name)?.mode ?? null) === (theirs.get(name)?.mode ?? null));
+}
+
 // ------------------------------------------------------------ the comparison
 
 // Every blob of a commit's tree: decoded name -> { mode, sha, bytes }.

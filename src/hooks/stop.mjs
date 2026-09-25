@@ -40,7 +40,7 @@ import { canonicalPathMatches, loadMachine, MACHINE_FILENAME } from '../config.m
 import { describeLock, isLockHolderStale } from '../guards/lock.mjs';
 import { locateRepository } from '../guards/location.mjs';
 import { readSnapshot, splitDirty } from '../guards/snapshot.mjs';
-import { branchesOf, proposedMatch, readLedger } from '../guards/proposed.mjs';
+import { branchesOf, pinnedEntries, proposedMatch, readLedger } from '../guards/proposed.mjs';
 import { decodeBytes } from '../io.mjs';
 import { createTranslator, resolveLang } from '../lang.mjs';
 import { stateDirFor } from '../state.mjs';
@@ -185,7 +185,9 @@ function proposedAmong(root, paths, env, t) {
     return { ...none, notice: t('proposed.ledger_ignored', { file: ledger.file ?? '-', detail: ledger.detail ?? t('proposed.ledger_not_valid') }) };
   }
   if (ledger.entries.length === 0) return none;
-  const match = proposedMatch(root, ledger.entries, env, { paths: paths.map((path) => decodeBytes(path)) });
+  // Only an entry whose local ref still keeps its commit counts.
+  const { pinned } = pinnedEntries(root, ledger.entries, env);
+  const match = proposedMatch(root, pinned, env, { paths: paths.map((path) => decodeBytes(path)) });
   return { names: new Set(match.matching), branches: branchesOf(match), notice: '' };
 }
 

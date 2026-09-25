@@ -425,7 +425,11 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   exactly what was pushed is proposed already: the Stop hook leaves it out, a second
   `propose` of it opens no second pull request, and `sync` (so the next round) brings it
   back to HEAD instead of postponing on it. One byte edited after the push makes it
-  unproposed work again. The comparison is the round cleanup's, extracted.
+  unproposed work again. The comparison is the round cleanup's, extracted. Each entry comes
+  with a local ref at the pushed commit (`refs/brain-kit/proposed/<branch>`), and only an
+  entry whose ref still holds its commit counts, so what `sync` brings back to HEAD stays
+  reachable on the machine, even when the pushed branch is gone; `sync` names the ref and
+  the recovery command, and removes the ref once the default branch holds its content.
 - The briefing marks a question answered only after the `propose` that records its answer
   pushed, and a kit command refused with 75 (a round holds the vault) stops the writing
   and is told to the owner with the commands to run later.

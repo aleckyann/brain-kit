@@ -18,10 +18,12 @@
 //   2. A path whose bytes are still exactly what an earlier `propose`
 //      pushed (the proposed-paths ledger, src/guards/proposed.mjs) is
 //      brought back to HEAD and said, and the ledger pruned: its content
-//      lives on the pushed branch. Then a dirty working tree (anything `git
-//      status` reports but an ignored file) postpones the run, exit 75,
-//      naming every file, before any fetch: nothing else is moved. A path
-//      edited after its push is dirty like any other.
+//      is kept by a local ref (`refs/brain-kit/proposed/<slug>`, removed
+//      after a proved fetch once the default branch holds that content). A
+//      path whose entry lost its ref is left as it is. Then a dirty working
+//      tree (anything `git status` reports but an ignored file) postpones
+//      the run, exit 75, naming every file, before any fetch: nothing else
+//      is moved. A path edited after its push is dirty like any other.
 //   3. The default branch comes from the one resolver (src/git.mjs,
 //      defaultBranch). None, or a configured name that is no branch name,
 //      is exit 1.
@@ -78,7 +80,7 @@ import { findVaultRoot } from '../vault.mjs';
 import { acquireLock } from '../guards/lock.mjs';
 import { GuardError } from '../guards/location.mjs';
 import {
-  branchesOf, proposedMatch, pruneLedger, readLedger, restoreMatching,
+  branchesOf, dropMergedRefs, pinnedEntries, proposedMatch, proposedRef, pruneLedger, readLedger, restoreMatching,
 } from '../guards/proposed.mjs';
 import {
   aheadBehind, currentBranch, defaultBranch, dirtyPaths, defaultBranchUpstream, fetch, ignoredInTheWay, operationInProgress, resolveCommit, runGit, trackedRemote,
@@ -219,6 +221,8 @@ export function syncUnderLock(root, io, t, env, outcome = {}) {
     return EXIT.FAILURE;
   }
 
+  dropMerged(root, io, t, env, fetched.sha);
+
   const localRef = `refs/heads/${branch}`;
   const from = resolveCommit(root, localRef, { env });
   if (from === null) {
@@ -252,13 +256,18 @@ export function syncUnderLock(root, io, t, env, outcome = {}) {
 // Step 2's first half: every dirty path whose bytes are still exactly what
 // an earlier `propose` pushed (the ledger of this working tree,
 // src/guards/proposed.mjs) is brought back to HEAD, under the lock the
-// caller holds, and said; the content lives on the pushed branch, so
-// nothing is lost. After that no dirty path holds proposed bytes any more,
-// so every entry read is done with and pruned (by its branch, commit and
-// paths, so an entry appended meanwhile stays). A path edited after the
-// push does not match, stays dirty, and still postpones the run. A ledger
-// that cannot be read or does not validate changes nothing but one line on
-// stderr.
+// caller holds, but only when the entry's local ref
+// (`refs/brain-kit/proposed/<branch slug>`) still points at the entry's
+// commit: the bytes then stay reachable here whatever happened to the pushed
+// branch (ruling R-F2), and the line names the ref and the command that
+// brings a file back. A path whose entry has lost its ref is left exactly as
+// it is, said, and postpones the run like any dirty file. Then every entry
+// that lost its ref, and every entry none of whose paths is still dirty, is
+// pruned (by its branch, commit and paths, so an entry appended meanwhile
+// stays); an entry with a path edited after the push stays, so reverting the
+// edit makes the path proposed again. A path edited after the push does not
+// match, stays dirty, and still postpones the run. A ledger that cannot be
+// read or does not validate changes nothing but one line on stderr.
 function restoreProposed(root, io, t, env) {
   const ledger = readLedger(root, env);
   if (ledger.state === 'invalid' || ledger.state === 'unreadable') {
@@ -266,14 +275,33 @@ function restoreProposed(root, io, t, env) {
     return;
   }
   if (ledger.entries.length === 0) return;
-  const match = proposedMatch(root, ledger.entries, env, { paths: dirtyPaths(root, { env }) });
+  const { pinned, unpinned } = pinnedEntries(root, ledger.entries, env);
+  const dirty = dirtyPaths(root, { env });
+  const match = proposedMatch(root, pinned, env, { paths: dirty });
   if (match.matching.length > 0) {
     const branches = branchesOf(match);
     const restored = restoreMatching(root, match, env);
-    io.stdout.write(`${t('sync.restored_proposed', { count: restored.length, paths: restored, branches })}\n`);
+    const refs = [...new Set(restored.map((path) => proposedRef(match.details.get(path).entry.branch)))];
+    const recover = restored.map((path) => `git restore --source=${proposedRef(match.details.get(path).entry.branch)} -- ${path}`);
+    io.stdout.write(`${t('sync.restored_proposed', { count: restored.length, paths: restored, branches, refs, recover })}\n`);
   }
-  const pruned = pruneLedger(ledger.file, ledger.entries);
+  const orphaned = proposedMatch(root, unpinned, env, { paths: dirty });
+  if (orphaned.matching.length > 0) {
+    const refs = [...new Set(orphaned.matching.map((path) => proposedRef(orphaned.details.get(path).entry.branch)))];
+    io.stderr.write(`${t('sync.proposed_unpinned', { count: orphaned.matching.length, paths: orphaned.matching, refs })}\n`);
+  }
+  const still = new Set(dirtyPaths(root, { env }));
+  const drop = [...unpinned, ...pinned.filter((entry) => !entry.paths.some((path) => still.has(path)))];
+  if (drop.length === 0) return;
+  const pruned = pruneLedger(ledger.file, drop);
   if (!pruned.ok) io.stderr.write(`${t('sync.ledger_prune_failed', { file: ledger.file, code: pruned.invalid ? 'invalid' : pruned.code })}\n`);
+}
+
+// After a proved fetch: every proposed ref whose content the default
+// branch's tip now holds (merged, squashed or rebased) is removed, and said.
+function dropMerged(root, io, t, env, tip) {
+  const dropped = dropMergedRefs(root, tip, env);
+  if (dropped.length > 0) io.stdout.write(`${t('sync.proposed_refs_dropped', { count: dropped.length, refs: dropped })}\n`);
 }
 
 // Checkout, fast-forward, prove, return, prove. Every failure still tries
