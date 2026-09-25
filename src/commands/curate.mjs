@@ -22,8 +22,10 @@
 //    8. a dirty tree: exit 75 naming every file
 //    9. the round's own snapshot
 //   10. the CLI is a real program; not: exit 1
-//   11. collect the sources, each over its own days (the round's days after
-//       its own mark, phase 3 decision D5); a listed source that is off is
+//   11. collect the sources, each over its own days (its open days after
+//       its own mark, its own oldest seven, phase 3 decision D5 and ruling
+//       C1 of task 5's review; the round's window is their union); a
+//       listed source that is off is
 //       recorded (said when it is half configured, ruling R-E1; exit 1 when
 //       it is required); a required source misconfigured: exit 1 and no
 //       mark moves; a required source listing a file it cannot read, or a
@@ -173,6 +175,16 @@ export function lineStates(source) {
   ];
 }
 
+// Every state a last line may hold. Anything else the model writes after
+// `<id>=` is recorded as `invalid`, never as written: the round's log and
+// last-run hold no text of the model's (ruling I1 of task 5's review).
+export const LINE_STATES = Object.freeze(['ok', 'empty', 'failed', 'unavailable', 'partial']);
+
+function reportedOf(sourcesLine, id) {
+  if (sourcesLine === null || !Object.hasOwn(sourcesLine, id)) return null;
+  return LINE_STATES.includes(sourcesLine[id]) ? sourcesLine[id] : 'invalid';
+}
+
 // The last line for a round that offers `sources`, in their order.
 export function sourcesLineFor(sources) {
   return `${SOURCES_LINE_PREFIX} ${sources.map((source) => `${source.id}=<${lineStates(source).join('|')}>`).join(' ')}`;
@@ -268,15 +280,36 @@ function offOnPurpose(source, config, problems) {
   return config?.sources?.[source.id]?.enabled === false || problems.some((p) => p.code === 'disabled');
 }
 
-// The window: from the earliest mark among the sources the round runs (an
-// unset mark reads only yesterday), so no source loses a day. `days` holds
-// each source's own days (decision D5): the round's days after that
-// source's own mark, an unset mark taking yesterday only, so a source that
-// is ahead never reads a day it already covered, and each one advances
-// only through the days it read. A source's days are always the newest of
-// the round's (every day after its mark), so its own window runs from the
-// start of its first day to the round's end. A mark later than yesterday on
-// any source is the error state windowFor reports as `future`.
+// The second door of the meeting notes (docs/incidents.md, 11/08/2026):
+// the documents attached to the events of a day, reached only through a
+// listing of the calendar over that day in the same round. While the
+// calendar is configured, a meeting-notes day closes only when the calendar
+// was read over it in that round (ruling I2 of task 5's review), so the
+// calendar is offered every day the meeting notes still have open, those it
+// already closed included ("relisted": listed again for their attachments
+// only).
+export const SECOND_DOOR = Object.freeze({ source: 'meeting_notes', through: 'calendar' });
+
+// The round's window: the union of the sources' own days, from the first
+// instant of the first one to the end of the last one. `remaining` is the
+// largest number of open days a source leaves for a later round.
+function unionWindow(days, remaining, now, tz) {
+  const all = [...new Set(Object.values(days).flat())].sort();
+  if (all.length === 0) {
+    const today = startOfDay(localDay(now, tz), tz);
+    return { days: [], from: today, to: today, remaining: 0 };
+  }
+  return { days: all, from: startOfDay(all[0], tz), to: startOfDay(addDays(all.at(-1), 1), tz), remaining: Math.max(0, ...Object.values(remaining)) };
+}
+
+// Each source's own days (decision D5, ruling C1 of task 5's review): its
+// open days after its own mark (an unset mark reads only yesterday),
+// oldest first, at most DEFAULT_MAX_DAYS of them, each source clipped on
+// its own; `remaining[id]` counts the newer open days it leaves for the
+// next round. A source that cannot move its mark therefore never takes a
+// day from another. The round's window is their union. A mark later than
+// yesterday on any source is the error state windowFor reports as
+// `future`.
 function computeWindow(stateDir, sources, now, tz) {
   const mark = readWatermark(stateDir);
   const yesterday = addDays(localDay(now, tz), -1);
@@ -286,31 +319,57 @@ function computeWindow(stateDir, sources, now, tz) {
     const day = mark.sources[source.id];
     if (day !== undefined && windowFor(day, now, tz).future) return { future: { source: source.id, day, yesterday } };
   }
-  let earliest = null;
-  for (const source of sources) {
-    const effective = mark.sources[source.id] ?? addDays(yesterday, -1);
-    if (earliest === null || effective < earliest) earliest = effective;
-  }
-  const window = windowFor(earliest ?? addDays(yesterday, -1), now, tz);
   const days = {};
+  const remaining = {};
   for (const source of sources) {
-    const after = mark.sources[source.id] ?? addDays(yesterday, -1);
-    days[source.id] = window.days.filter((day) => day > after);
+    const own = windowFor(mark.sources[source.id] ?? addDays(yesterday, -1), now, tz);
+    days[source.id] = own.days;
+    remaining[source.id] = own.remaining;
   }
-  return { window, days, marks: mark.sources };
+  // The calendar also covers every day the meeting notes have open, as one
+  // listing: from the first of either to the last of either.
+  let relisted = [];
+  const notes = SECOND_DOOR.source;
+  const cal = SECOND_DOOR.through;
+  if (Object.hasOwn(days, notes) && Object.hasOwn(days, cal) && days[notes].length > 0) {
+    const both = [...days[notes], ...days[cal]].sort();
+    const range = [];
+    for (let day = both[0]; day <= both.at(-1); day = addDays(day, 1)) range.push(day);
+    const calMark = mark.sources[cal];
+    relisted = range.filter((day) => calMark !== undefined && day <= calMark);
+    days[cal] = range;
+  }
+  return { window: unionWindow(days, remaining, now, tz), days, remaining, relisted, marks: mark.sources };
 }
 
 // Each source collected over its own window: from the start of its first
-// day to the round's end, with its own days. A source with no day in the
-// round is never collected.
-function collectPlans(sources, window, days, config, machine, env, now, tz) {
+// day to the end of its last, with its own days. A source with no day in
+// the round is never collected.
+function collectPlans(sources, days, config, machine, env, now, tz) {
   const plans = {};
   const home = env.HOME || undefined;
   for (const source of sources) {
     const own = days[source.id];
-    plans[source.id] = source.collect({ window: { from: startOfDay(own[0], tz), to: window.to, days: own, timezone: tz }, config, machine, now, ...(home ? { home } : {}) });
+    plans[source.id] = source.collect({ window: { from: startOfDay(own[0], tz), to: startOfDay(addDays(own.at(-1), 1), tz), days: own, timezone: tz }, config, machine, now, ...(home ? { home } : {}) });
   }
   return plans;
+}
+
+// The days a source with a whole-day cap (plan.daysCovered, C1 of the
+// phase 2 final review) leaves for the next round: its own days end at its
+// last covered day, and no other source's days change (ruling C1 of task
+// 5's review: that cap bounds only its own source). Returns one entry per
+// capped source: { source, last, deferred, cap }.
+function capDays(offered, plans, days) {
+  const out = [];
+  for (const source of offered) {
+    const covered = plans[source.id]?.daysCovered;
+    if (!Array.isArray(covered) || covered.length === 0 || covered.length >= days[source.id].length) continue;
+    const deferred = days[source.id].filter((day) => !covered.includes(day));
+    days[source.id] = days[source.id].filter((day) => covered.includes(day));
+    out.push({ source, last: days[source.id].at(-1), deferred, cap: plans[source.id].cap });
+  }
+  return out;
 }
 
 // How many files a local source's plan offers, for the report; null for a
@@ -329,32 +388,6 @@ function sourceEntry(source, plan) {
 function planLogOf(source, plan, days) {
   if (source.kind === 'local') return { kept: keptOf(plan), dropped: plan.dropped };
   return { days, problems: (plan.problems ?? []).map((p) => p.code) };
-}
-
-// The whole days every source could take within its cap (plan.daysCovered,
-// C1 of the final review): the window a round curates, and advances
-// through, ends at the earliest last covered day among them. Returns null
-// when every day is covered, otherwise the narrowed window, the deferred
-// days, and the source that set the bound. A source that does not report
-// daysCovered takes every day; one whose plan was collected over the wider
-// window is collected again over the narrowed one.
-function narrowWindow(window, plans, sources, tz) {
-  let bound = null;
-  for (const source of sources) {
-    const covered = plans[source.id]?.daysCovered;
-    if (!Array.isArray(covered)) continue;
-    const last = covered.at(-1);
-    if (last === undefined || last >= window.days.at(-1)) continue;
-    if (bound === null || last < bound.last) bound = { last, source };
-  }
-  if (bound === null) return null;
-  const days = window.days.filter((day) => day <= bound.last);
-  return {
-    window: { ...window, days, to: startOfDay(addDays(bound.last, 1), tz) },
-    deferred: window.days.filter((day) => day > bound.last),
-    source: bound.source,
-    cap: plans[bound.source.id].cap,
-  };
 }
 
 // curate.network_min_wait_ms, read before the round's lock and sync (the
@@ -387,7 +420,7 @@ function problemText(problems) {
 // instead, saying so with its state and forbidding any other way to it; a
 // source whose connector was still connecting at the round's first launch
 // (`pending`, a set of ids) is told so on a relaunch (ruling R-B1).
-function renderParameters(t, { window, tz, plans, sources, days, config, deferred, unavailable = new Map(), pending = new Set() }) {
+function renderParameters(t, { window, tz, plans, sources, days, config, deferred, unavailable = new Map(), pending = new Set(), relisted = [] }) {
   const lines = [];
   lines.push(t('curate.params.days', { days: window.days.map(shown).join(', '), timezone: tz }));
   lines.push(t('curate.params.window', { from: window.from.toISOString(), to: window.to.toISOString() }));
@@ -408,6 +441,8 @@ function renderParameters(t, { window, tz, plans, sources, days, config, deferre
       lines.push(t('curate.params.connector', { source: source.id, connector: source.serverSpec(config).serverDisplayName }));
       if (pending.has(source.id)) lines.push(t('curate.params.pending', { source: source.id }));
     }
+    const again = source.id === SECOND_DOOR.through ? own.filter((day) => relisted.includes(day)) : [];
+    if (again.length > 0) lines.push(t('curate.params.relisted', { days: again.map(shown).join(', '), notes: SECOND_DOOR.source }));
     lines.push(plans[source.id].promptBlock);
     const caps = SOURCE_CAPS[source.id];
     if (caps !== undefined) {
@@ -550,6 +585,24 @@ function sourceLines(t, { active, plans, days, unavailable, config, blocks }) {
     else if ((plan.problems ?? []).length > 0) lines.push(t('curate.source_warning', { source: source.id, problems: problemText(plan.problems) }));
   }
   return lines;
+}
+
+// For the meeting notes while the calendar is configured (SECOND_DOOR,
+// ruling I2 of task 5's review): the last of their days, in order, that
+// the calendar was read over in this round (offered, available, its
+// evidence ok), as { through }, `through` null when not even the first one
+// was. For any other source, or with the calendar not configured, null:
+// the source's own evidence alone decides.
+function secondDoor(source, { active, offered, days, evidence, unavailable }) {
+  if (source.id !== SECOND_DOOR.source || !active.some((s) => s.id === SECOND_DOOR.through)) return null;
+  const cal = SECOND_DOOR.through;
+  const read = offered.some((s) => s.id === cal) && !unavailable.has(cal) && evidence[cal]?.ok === true ? days[cal] : [];
+  let through = null;
+  for (const day of days[source.id]) {
+    if (!read.includes(day)) break;
+    through = day;
+  }
+  return { through };
 }
 
 // The message saying why a source is blocked by the person's rules.
@@ -758,7 +811,7 @@ export async function runCurate(argv, io, t, deps = {}) {
     if (writesState) {
       try {
         ensureStateDir(stateDir);
-        writePrivate(join(stateDir, STATE_FILES.LAST_RUN), `${JSON.stringify({ at: now.toISOString(), durationMs: Date.now() - started, exit: EXIT.USAGE, reasonCode: 'machine_invalid', reason }, null, 2)}\n`);
+        writePrivate(join(stateDir, STATE_FILES.LAST_RUN), `${JSON.stringify({ at: now.toISOString(), durationMs: Date.now() - started, exit: EXIT.USAGE, reasonCode: 'machine_invalid', reason, connectorStates: knownStates(readLastRun(stateDir)) }, null, 2)}\n`);
       } catch {
         // as above
       }
@@ -935,15 +988,18 @@ export async function runCurate(argv, io, t, deps = {}) {
       run.reason = t('curate.up_to_date', {});
       return EXIT.OK;
     }
-    let lastDay = window.days.at(-1);
-    if (window.remaining > 0) {
-      // Catching up oldest first: the mark moves through the last day read
-      // here, and the newer days wait for the next round (never closed).
-      run.remainingDays = window.remaining;
-      const text = t('curate.days_remaining', { count: window.remaining, last: shown(lastDay) });
+    // Catching up oldest first, each source on its own: its mark moves
+    // through the last day it reads here, and its newer days wait for its
+    // next round (never closed).
+    run.remainingDays = window.remaining;
+    for (const source of active) {
+      const count = computed.remaining[source.id];
+      if (!(count > 0)) continue;
+      const last = days[source.id].at(-1);
+      const text = t('curate.days_remaining', { source: source.id, count, last: shown(last) });
       run.warnings.push(text);
       io.stderr.write(`${text}\n`);
-      log('days_remaining', { count: window.remaining, through: lastDay });
+      log('days_remaining', { source: source.id, count, through: last });
     }
 
     // 8. A dirty tree postpones the round.
@@ -996,7 +1052,7 @@ export async function runCurate(argv, io, t, deps = {}) {
     for (const source of active) {
       if (days[source.id].length === 0) log('source_no_day', { source: source.id, mark: computed.marks[source.id] ?? null });
     }
-    let plans = collectPlans(offered, window, days, config, machine, env, now, tz);
+    const plans = collectPlans(offered, days, config, machine, env, now, tz);
     for (const source of offered) {
       const plan = plans[source.id];
       run.sources[source.id] = sourceEntry(source, plan);
@@ -1041,32 +1097,23 @@ export async function runCurate(argv, io, t, deps = {}) {
       log('plan', { [source.id]: { kept: 0, dropped: plans[source.id].dropped, overCap: over } });
       return fail(EXIT.SOURCE_UNREAD, 'cap_exceeded', t('curate.cap_exceeded', { day: shown(over.day), count: over.files, cap: plans[source.id].cap, setting }));
     }
-    // Days past the cap wait for the next round; this one curates, and
-    // advances through, only the whole days it could take. Every source's
-    // own days end there too, and a source left with none is not offered.
-    const narrowed = narrowWindow(window, plans, offered, tz);
+    // Days past a source's whole-day cap wait for its next round; it
+    // curates, and advances through, only the whole days it could take. No
+    // other source's days change.
     let deferred = [];
-    if (narrowed !== null) {
-      ({ window, deferred } = narrowed);
-      lastDay = window.days.at(-1);
-      for (const source of active) days[source.id] = days[source.id].filter((day) => day <= lastDay);
-      for (const source of offered.filter((s) => days[s.id].length === 0)) {
-        delete plans[source.id];
-        delete run.sources[source.id];
-        log('source_no_day', { source: source.id, mark: computed.marks[source.id] ?? null });
-      }
-      offered = offered.filter((source) => days[source.id].length > 0);
-      const again = offered.filter((source) => !Array.isArray(plans[source.id].daysCovered));
-      if (again.length > 0) plans = { ...plans, ...collectPlans(again, window, days, config, machine, env, now, tz) };
-      for (const source of offered) if (source.kind === 'local') run.sources[source.id].kept = keptOf(plans[source.id]) ?? 0;
-      recordWindow();
+    for (const capped of capDays(offered, plans, days)) {
+      deferred = capped.deferred;
       run.deferredDays = deferred;
-      const setting = `${CONFIG_FILENAME} curate.caps.${narrowed.source.id}`;
-      const text = t('curate.days_deferred', { last: shown(lastDay), count: deferred.length, days: deferred.map(shown).join(', '), setting, cap: narrowed.cap });
+      run.sources[capped.source.id].kept = keptOf(plans[capped.source.id]) ?? 0;
+      const setting = `${CONFIG_FILENAME} curate.caps.${capped.source.id}`;
+      const text = t('curate.days_deferred', { last: shown(capped.last), count: deferred.length, days: deferred.map(shown).join(', '), setting, cap: capped.cap });
       run.warnings.push(text);
       io.stderr.write(`${text}\n`);
-      log('days_deferred', { through: lastDay, days: deferred, source: narrowed.source.id });
+      log('days_deferred', { through: capped.last, days: deferred, source: capped.source.id });
     }
+    window = unionWindow(Object.fromEntries(offered.map((s) => [s.id, days[s.id]])), computed.remaining, now, tz);
+    run.remainingDays = window.remaining;
+    recordWindow();
     log('plan', Object.fromEntries(offered.map((s) => [s.id, planLogOf(s, plans[s.id], days[s.id])])));
     // Nothing to curate: only a round whose offered sources all list files
     // and list none (a connector source's plan lists no file, so it is
@@ -1121,7 +1168,7 @@ export async function runCurate(argv, io, t, deps = {}) {
     const offeredLine = sourcesLineFor(offered);
     const promptNow = () => renderCuratePrompt({
       vaultRoot: root, config, lang: vaultLang, now, sourcesLine: offeredLine,
-      parameters: renderParameters(tv, { window, tz, plans, sources: offered, days, config, deferred, unavailable, pending }),
+      parameters: renderParameters(tv, { window, tz, plans, sources: offered, days, config, deferred, unavailable, pending, relisted: computed.relisted }),
     });
     let prompt = promptNow();
     let argvList = modelArgv(config, machine, choice.tools, choice.mode);
@@ -1291,13 +1338,16 @@ export async function runCurate(argv, io, t, deps = {}) {
       run.sources[source.id].state = entry.state;
       run.sources[source.id].observedPrefix = entry.observedPrefix;
       if (entry.state === 'pending') continue;
+      // A source never seen before counts as connected for the notify-once
+      // rule, and its first notice does not claim it was.
+      const seenBefore = run.connectorStates[source.id] !== undefined;
       const before = run.connectorStates[source.id]?.state ?? 'connected';
       run.connectorStates[source.id] = { state: entry.state, at: run.at };
       if (entry.state === before || required.includes(source.id)) continue;
       log('connector_state_changed', { source: source.id, from: before, to: entry.state });
-      notices.push(entry.state === 'connected'
-        ? t('curate.connector_restored', { source: source.id, previous: before, doc: CONNECTORS_DOC })
-        : t('curate.connector_changed', { source: source.id, state: entry.state, previous: before, detail: entry.detail, doc: CONNECTORS_DOC }));
+      if (entry.state === 'connected') notices.push(t('curate.connector_restored', { source: source.id, previous: before, doc: CONNECTORS_DOC }));
+      else if (!seenBefore) notices.push(t('curate.connector_seen', { source: source.id, state: entry.state, detail: entry.detail, doc: CONNECTORS_DOC }));
+      else notices.push(t('curate.connector_changed', { source: source.id, state: entry.state, previous: before, detail: entry.detail, doc: CONNECTORS_DOC }));
     }
     const offeredIds = offered.map((source) => source.id);
 
@@ -1355,7 +1405,7 @@ export async function runCurate(argv, io, t, deps = {}) {
       entry.read = evidence[source.id].read;
       if (source.kind !== 'connector') continue;
       entry.expected = evidence[source.id].expected;
-      entry.reported = sourcesLine !== null && Object.hasOwn(sourcesLine, source.id) ? sourcesLine[source.id] : null;
+      entry.reported = reportedOf(sourcesLine, source.id);
       if (Object.hasOwn(entry, 'documents')) entry.documents = evidence[source.id].documents ?? null;
     }
     let proposals = [];
@@ -1450,11 +1500,14 @@ export async function runCurate(argv, io, t, deps = {}) {
     const stuck = [];
     if (exit === EXIT.OK || exit === EXIT.DEGRADED) {
       for (const source of offered) {
-        const through = days[source.id].at(-1);
-        const reported = sourcesLine !== null && Object.hasOwn(sourcesLine, source.id) ? sourcesLine[source.id] : null;
-        const moved = advanceWatermark(stateDir, source.id, through, {
-          modelExit: modelOk ? 0 : 1, evidence: evidence[source.id], sourcesLine, timezone: tz, now, emptyMeansNothingListed: source.emptyMeansNothingListed !== false,
-        });
+        const door = secondDoor(source, { active, offered, days, evidence, unavailable });
+        const through = door === null ? days[source.id].at(-1) : door.through;
+        const reported = reportedOf(sourcesLine, source.id);
+        const moved = through === null
+          ? { advanced: false, reason: 'second_door_unread' }
+          : advanceWatermark(stateDir, source.id, through, {
+            modelExit: modelOk ? 0 : 1, evidence: evidence[source.id], sourcesLine, timezone: tz, now, emptyMeansNothingListed: source.emptyMeansNothingListed !== false,
+          });
         run.sources[source.id].advanced = moved.advanced;
         log('watermark', { source: source.id, day: through, reported, ...moved });
         if (!moved.advanced) io.stderr.write(`${t('curate.not_advanced', { source: source.id, reason: moved.reason })}\n`);
@@ -1585,7 +1638,7 @@ function dryRun({ root, stateDir, machine, claudeBin, io, env, now }) {
     io.stderr.write(`${t('curate.watermark_future', { source, day: shown(day), yesterday: shown(yesterday), command })}\n`);
     return EXIT.FAILURE;
   }
-  let { window } = computed;
+  const { window } = computed;
   const days = { ...computed.days };
   if (window.days.length === 0) {
     io.stdout.write(`${t('curate.up_to_date', {})}\n`);
@@ -1594,21 +1647,15 @@ function dryRun({ root, stateDir, machine, claudeBin, io, env, now }) {
   io.stdout.write(`${t('curate.check_window', { days: window.days.map(shown).join(', '), from: window.from.toISOString(), to: window.to.toISOString() })}\n`);
   for (const id of [...unknownRequired, ...unknownBestEffort]) io.stdout.write(`${t('curate.source_skipped', { source: id })}\n`);
   for (const source of off) io.stdout.write(`${t('curate.check_source_off', { source: source.id, problems: problemText(offProblems(source, config, now, tz)) || '-' })}\n`);
-  let offered = active.filter((source) => days[source.id].length > 0);
-  let plans = collectPlans(offered, window, days, config, machine, env, now, tz);
+  const offered = active.filter((source) => days[source.id].length > 0);
+  const plans = collectPlans(offered, days, config, machine, env, now, tz);
   for (const source of offered) {
     const over = plans[source.id].overCap;
     if (over) io.stdout.write(`${t('curate.dry_cap_exceeded', { day: shown(over.day), count: over.files, cap: plans[source.id].cap, setting: `${CONFIG_FILENAME} curate.caps.${source.id}` })}\n`);
   }
-  const narrowed = narrowWindow(window, plans, offered, tz);
-  if (narrowed !== null) {
-    const setting = `${CONFIG_FILENAME} curate.caps.${narrowed.source.id}`;
-    io.stdout.write(`${t('curate.dry_days_deferred', { last: shown(narrowed.window.days.at(-1)), count: narrowed.deferred.length, days: narrowed.deferred.map(shown).join(', '), setting, cap: narrowed.cap })}\n`);
-    ({ window } = narrowed);
-    for (const source of active) days[source.id] = days[source.id].filter((day) => day <= window.days.at(-1));
-    offered = offered.filter((source) => days[source.id].length > 0);
-    const again = offered.filter((source) => !Array.isArray(plans[source.id].daysCovered));
-    if (again.length > 0) plans = { ...plans, ...collectPlans(again, window, days, config, machine, env, now, tz) };
+  for (const capped of capDays(offered, plans, days)) {
+    const setting = `${CONFIG_FILENAME} curate.caps.${capped.source.id}`;
+    io.stdout.write(`${t('curate.dry_days_deferred', { last: shown(capped.last), count: capped.deferred.length, days: capped.deferred.map(shown).join(', '), setting, cap: capped.cap })}\n`);
   }
   const connectorDenies = [...new Set(active.filter((s) => s.kind === 'connector').flatMap((s) => s.toolRules(config).deny))];
   const choice = chooseMode({ config, root, env, readFiles: readFilesOf(offered, plans), candidates: offered.filter((s) => s.kind === 'connector'), connectorDenies });

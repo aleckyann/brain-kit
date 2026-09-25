@@ -56,7 +56,7 @@ test('a round whose calendar connector is disabled: the state is named in the ou
   assert.equal(w.ghCalls().filter((call) => call.args[1] === 'create').length, 1);
   const notes = w.notifications();
   assert.equal(notes.length, 1);
-  assert.match(notes[0].at(-1), /the source calendar is now absent \(it was connected\)/);
+  assert.match(notes[0].at(-1), /the source calendar is absent\./);
   assert.match(notes[0].at(-1), /docs\/connectors\.md/);
 
   // The next session in the vault is told, with the round's date.
