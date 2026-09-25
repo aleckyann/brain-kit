@@ -2882,3 +2882,33 @@ test('briefing: a configuration doctor cannot load is a warning, config-valid sa
   const { report } = await doctor(fx, ['--only', 'briefing']);
   assertCheck(report, 'briefing', 'warn', 'doctor.briefing.config_unknown');
 });
+
+// --- briefing, fix round 1 (rulings R-T12 and Minor b) -------------------------
+
+test('briefing: a signature with space at either end fails naming its key, the briefing\'s and the curator\'s alike', async () => {
+  const fx = setup();
+  editConfig(fx, (c) => { c.briefing.signature = ` ${c.briefing.signature}`; c.curate.extra_signatures = ["Ana's old curator "]; });
+  const { report, code } = await doctor(fx, ['--only', 'briefing']);
+  const bad = briefingResults(report).filter((r) => r.messageKey === 'doctor.briefing.bad_signature');
+  assert.deepEqual(bad.map((r) => [r.status, r.params.key]), [['fail', 'briefing.signature'], ['fail', 'curate.extra_signatures[0]']]);
+  assert.equal(bad[0].params.value, JSON.stringify(` ${JSON.parse(readFileSync(join(KIT_ROOT, 'test', 'fixtures', 'config', 'valid.json'), 'utf8')).briefing.signature}`));
+  // The registered task is never called working under such a signature.
+  assert.equal(briefingResults(report).some((r) => r.messageKey === 'doctor.briefing.ok'), false);
+  assert.equal(code, EXIT.FAILURE);
+});
+
+test('briefing: a task running an existing kit that is not this one is a warning naming both', async () => {
+  const fx = setup();
+  const { task } = registerBriefingTask({ root: fx.root, home: fx.home, env: fx.env });
+  const oldKit = join(fx.base, 'old kit', 'bin', 'brain-kit.mjs');
+  mkdirSync(dirname(oldKit), { recursive: true });
+  writeFileSync(oldKit, '');
+  registerBriefingTask({ root: fx.root, home: fx.home, env: fx.env, prompt: task.prompt.replace(kitCommand(), `"${oldKit}"`) });
+  const { report, code } = await doctor(fx, ['--only', 'briefing']);
+  const c = assertCheck(report, 'briefing', 'warn', 'doctor.briefing.task_kit_other');
+  assert.equal(c.params.kit, oldKit);
+  assert.equal(c.params.version, '-');
+  assert.equal(c.params.current, kitCommand().slice(1, -1));
+  assert.equal(c.params.currentVersion, kitVersion());
+  assert.equal(code, EXIT.OK);
+});

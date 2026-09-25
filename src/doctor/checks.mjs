@@ -68,6 +68,7 @@ import { installedRoundPath, readBriefingTask, ROUND_COMMANDS, roundPath, runSch
 // asks: its reading of briefing.blocks and of the question queue.
 import { blockProblemLine, briefingSetting, validateBriefingBlocks } from '../briefing/blocks.mjs';
 import { queueFile, readQueue } from '../briefing/questions.mjs';
+import { signatureProblems } from '../sources/transcripts-claude-code.mjs';
 // The same kind of cycle with curate.mjs, which imports expandHome from
 // here: the connectors check asks the round's own choice of launch mode
 // (chooseMode) and its own reading of a source that is off, so doctor and
@@ -1584,6 +1585,13 @@ function briefingTaskResult(id, found, root) {
     case 'no_command': return { id, status: 'fail', messageKey: 'doctor.briefing.task_no_command', params: { taskId, file, command } };
     case 'kit_missing': return { id, status: 'fail', messageKey: 'doctor.briefing.task_kit_missing', params: { taskId, kit: found.kit, command } };
     case 'vault_differs': return { id, status: 'fail', messageKey: 'doctor.briefing.task_vault_differs', params: { taskId, vault: found.vault, root, command } };
+    case 'kit_other': return {
+      id, status: 'warn', messageKey: 'doctor.briefing.task_kit_other',
+      params: { taskId, kit: found.kit, version: found.version, current: found.current, currentVersion: found.currentVersion, command },
+    };
+    // The configured signature itself is refused, which briefingCheck has
+    // already reported as a failure naming its key.
+    case 'bad_signature': return null;
     case 'ok': return { id, status: 'ok', messageKey: 'doctor.briefing.ok', params: { taskId, kit: found.kit } };
     default: throw new Error(`unknown briefing task state ${found.state}`);
   }
@@ -1602,11 +1610,16 @@ function briefingCheck(ctx) {
   const machineId = machineObject(ctx)?.vault_id;
   const vaultId = typeof machineId === 'string' && machineId !== '' ? machineId : vaultIdFor(root);
   const task = readBriefingTask({ root, config, vaultId, env: ctx.env });
+  // Ruling R-T12: a signature the transcripts source cannot match reliably
+  // lets the kit's own sessions reach the curator, whatever else is right.
+  const results = signatureProblems(config).map((entry) => ({
+    id, status: 'fail', messageKey: 'doctor.briefing.bad_signature', params: { key: entry.key, value: JSON.stringify(entry.value), file: ctx.configFile },
+  }));
   if (briefingSetting(config, 'enabled') !== true) {
-    if (task.state === 'absent') return { id, status: 'ok', messageKey: 'doctor.briefing.disabled', params: { file: ctx.configFile } };
-    return { id, status: 'warn', messageKey: 'doctor.briefing.disabled_registered', params: { taskId: task.taskId, file: task.file, config: ctx.configFile } };
+    if (task.state === 'absent') results.push({ id, status: 'ok', messageKey: 'doctor.briefing.disabled', params: { file: ctx.configFile } });
+    else results.push({ id, status: 'warn', messageKey: 'doctor.briefing.disabled_registered', params: { taskId: task.taskId, file: task.file, config: ctx.configFile } });
+    return results;
   }
-  const results = [];
   for (const problem of validateBriefingBlocks(config, ctx.root)) {
     results.push({ id, status: 'warn', messageKey: 'doctor.briefing.block_problem', params: { problem: blockProblemLine(asMessage, problem) } });
   }
@@ -1620,7 +1633,8 @@ function briefingCheck(ctx) {
   } catch (error) {
     results.push({ id, status: 'fail', messageKey: 'doctor.briefing.queue_unreadable', params: { file, detail: error.code ?? firstLine(error.message) } });
   }
-  results.push(briefingTaskResult(id, task, root));
+  const taskResult = briefingTaskResult(id, task, root);
+  if (taskResult !== null) results.push(taskResult);
   return results;
 }
 

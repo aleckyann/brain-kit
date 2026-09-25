@@ -14,7 +14,7 @@
 // stays in.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { INSIDE, PROJECT, assistant, customTitle, makeWorld, paths, user } from '../helpers/transcripts-world.mjs';
+import { INSIDE, PROJECT, assistant, customTitle, makeWorld, meta, paths, user } from '../helpers/transcripts-world.mjs';
 
 const LATER = '2026-09-23T15:00:00.000Z';
 
@@ -65,3 +65,29 @@ test('the curator\'s own signature still drops its runs next to the briefing\'s'
   assert.equal(plan.dropped.selfTrace, 2);
   assert.match(plan.promptBlock, /2 transcripts left out as the curator's own runs or the briefing's/);
 });
+
+// Ruling R-T14 (phase 4, task 4 fix round 1): a briefing the person asks
+// for in their own session is THEIR session, and the curator reads it (in
+// doubt, include: the kit's rule). Only a session whose first user message
+// starts with a signature, which is what the desktop task's prompt is, is
+// dropped; nothing looks at what the session later contains.
+for (const lang of ['en', 'pt-BR']) {
+  test(`${lang}: an interactively requested briefing, whose skill expansion carries the signature, is the person's session and is kept`, () => {
+    const world = makeWorld({ lang, extraSignatures: [] });
+    const signature = world.config.briefing.signature;
+    const expansion = `# Morning briefing\n\nThe briefing below, printed by the kit, is this session's instructions.\n\n${signature}\n\nToday is 23/09/2026.`;
+    const asMeta = world.write(PROJECT, 'asked.jsonl', [
+      user(lang === 'en' ? 'give me my morning rundown' : 'me dá o resumo da manhã do meu cérebro', INSIDE),
+      meta(expansion, INSIDE),
+      assistant('Good morning, Ana.', LATER),
+    ]);
+    // The same expansion as an ordinary user line, later: still not the first.
+    const asUser = world.write(PROJECT, 'asked-2.jsonl', [
+      user('Ana asks for the briefing', INSIDE),
+      user(expansion, INSIDE),
+    ]);
+    const plan = world.collect();
+    assert.deepEqual(paths(plan).sort(), [asMeta, asUser].sort());
+    assert.equal(plan.dropped.selfTrace, 0);
+  });
+}

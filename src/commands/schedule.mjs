@@ -75,6 +75,7 @@ import { expandHome, findExecutable, resolveClaude, shownInstant } from '../doct
 import { kitCommand } from '../curate/tools.mjs';
 import { briefingSetting } from '../briefing/blocks.mjs';
 import { createTranslator, resolveLang, SUPPORTED_LANGS } from '../lang.mjs';
+import { signatureProblem, signatureProblems, startsWithSignature } from '../sources/transcripts-claude-code.mjs';
 
 const ROOT_INDEX = 'index.md';
 const ACTIONS = Object.freeze(['install', 'uninstall', 'status']);
@@ -120,6 +121,8 @@ function parseArgs(argv) {
   // The briefing's task lives in the desktop application, not in a
   // scheduler this command writes: no platform to choose.
   if (result.job === 'briefing' && result.platform !== null) return { error: 'argument', arg: '--platform' };
+  // Nor anything to dry-run: install --job briefing writes nothing anyway.
+  if (result.job === 'briefing' && result.dry) return { error: 'argument', arg: '--dry' };
   return result;
 }
 
@@ -397,6 +400,13 @@ export function runScheduleSync(argv, io, t, deps = {}) {
 
   if (parsed.action === 'install' && config.curate.enabled !== true) {
     complain(t('schedule.disabled', { file: CONFIG_FILENAME }));
+    return EXIT.USAGE;
+  }
+  // Ruling R-T12: a round whose signature the transcripts source cannot
+  // match reliably would read its own runs back as the person's work.
+  const badCurate = signatureProblems(config).filter((entry) => entry.key !== 'briefing.signature');
+  if (parsed.action === 'install' && badCurate.length > 0) {
+    for (const entry of badCurate) complain(t('schedule.bad_signature', { key: entry.key, value: JSON.stringify(entry.value), file: CONFIG_FILENAME }));
     return EXIT.USAGE;
   }
   if (windows.length === 0) {
@@ -841,8 +851,8 @@ function vaultLang(config, env) {
 // in the vault's own language.
 export function briefingTask({ root, config, vaultId, env = process.env }) {
   const signature = briefingSetting(config, 'signature');
-  if (typeof signature !== 'string' || signature.trim() === '' || /[\r\n]/.test(signature)) {
-    return { problem: { key: 'schedule.briefing_no_signature', params: { file: CONFIG_FILENAME } } };
+  if (signatureProblem(signature) !== null) {
+    return { problem: { key: 'schedule.bad_signature', params: { key: 'briefing.signature', value: JSON.stringify(signature), file: CONFIG_FILENAME } } };
   }
   const cron = briefingSetting(config, 'schedule');
   if (typeof cron !== 'string' || !CRON_FIELDS.test(cron.trim())) {
@@ -885,13 +895,30 @@ function taskPrompt(text) {
   return match ? text.slice(match[0].length) : text;
 }
 
-// The registered task, read back: { state, taskId, file, ... } where state
-// is 'absent', 'unreadable' (detail), 'unsigned' (its prompt's first line
-// is not the signature: its sessions would reach the curator), 'no_command'
-// (no line runs the kit's briefing), 'kit_missing' (kit: the path its line
-// names, which no longer exists), 'vault_differs' (vault: the vault its
-// line names) or 'ok' (kit). Only 'ok' is the task working.
-export function readBriefingTask({ root, config, vaultId, env = process.env }) {
+// The version recorded in the package.json of the kit whose entry point is
+// `kit` (<kit root>/bin/brain-kit.mjs), or '-' when it cannot be read.
+function kitVersionAt(kit) {
+  try {
+    const version = JSON.parse(readFileSync(join(dirname(dirname(kit)), 'package.json'), 'utf8')).version;
+    return typeof version === 'string' && version !== '' ? version : '-';
+  } catch {
+    return '-';
+  }
+}
+
+// The registered task, read back: { state, signed, taskId, file, ... }
+// where state is 'absent', 'unreadable' (detail), 'bad_signature' (the
+// configured signature itself is refused by signatureProblem: problem),
+// 'unsigned' (its prompt does not start with the signature: its sessions
+// would reach the curator), 'no_command' (no line runs the kit's
+// briefing), 'kit_missing' (kit: the path its line names, which no longer
+// exists), 'vault_differs' (vault: the vault its line names), 'kit_other'
+// (kit and current: it runs an existing kit that is not this one, with
+// version and currentVersion) or 'ok' (kit). `signed` is the transcripts
+// source's own predicate (startsWithSignature, ruling R-T12) applied to the
+// task's prompt: exactly whether the curator would drop the session the
+// task starts. 'ok' and 'kit_other' are the task working.
+export function readBriefingTask({ root, config, vaultId, env = process.env, currentKit = kitCommand().slice(1, -1) }) {
   const taskId = briefingTaskId(vaultId);
   const file = briefingTaskFile(env, taskId);
   let text;
@@ -902,17 +929,23 @@ export function readBriefingTask({ root, config, vaultId, env = process.env }) {
     return { state: 'unreadable', taskId, file, detail: error.code ?? error.message };
   }
   const signature = briefingSetting(config, 'signature');
-  const first = taskPrompt(text).split(/\r?\n/).find((line) => line.trim() !== '')?.trim() ?? '';
-  if (typeof signature !== 'string' || signature.trim() === '' || first !== signature.trim()) {
-    return { state: 'unsigned', taskId, file, signature, first };
-  }
-  const match = BRIEFING_COMMAND.exec(text);
-  if (match === null) return { state: 'no_command', taskId, file };
+  const prompt = taskPrompt(text);
+  const signed = startsWithSignature(prompt, [signature]);
+  const problem = signatureProblem(signature);
+  if (problem !== null) return { state: 'bad_signature', signed, taskId, file, signature, problem };
+  if (!signed) return { state: 'unsigned', signed, taskId, file, signature };
+  // Only the prompt: a field of the frontmatter the application writes is
+  // never the command.
+  const match = BRIEFING_COMMAND.exec(prompt);
+  if (match === null) return { state: 'no_command', signed, taskId, file };
   const kit = bashUnquoted(match[1]);
   const vault = bashUnquoted(match[2]);
-  if (!existsSync(kit)) return { state: 'kit_missing', taskId, file, kit };
-  if (!samePath(vault, root)) return { state: 'vault_differs', taskId, file, kit, vault };
-  return { state: 'ok', taskId, file, kit };
+  if (!existsSync(kit)) return { state: 'kit_missing', signed, taskId, file, kit };
+  if (!samePath(vault, root)) return { state: 'vault_differs', signed, taskId, file, kit, vault };
+  if (!samePath(kit, currentKit)) {
+    return { state: 'kit_other', signed, taskId, file, kit, version: kitVersionAt(kit), current: currentKit, currentVersion: kitVersionAt(currentKit) };
+  }
+  return { state: 'ok', signed, taskId, file, kit };
 }
 
 function briefingJob({ action, root, config, machine, env, t, say, complain, now, localZone }) {
@@ -935,6 +968,11 @@ function briefingJob({ action, root, config, machine, env, t, say, complain, now
       return EXIT.FAILURE;
     }
     const again = 'brain-kit schedule install --job briefing';
+    const signature = briefingSetting(config, 'signature');
+    if (signatureProblem(signature) !== null) {
+      say(t('schedule.bad_signature', { key: 'briefing.signature', value: JSON.stringify(signature), file: CONFIG_FILENAME }));
+      return EXIT.FAILURE;
+    }
     switch (found.state) {
       case 'absent': say(t('schedule.briefing_status_absent', { taskId, file, command: again })); break;
       case 'unreadable': say(t('schedule.briefing_status_unreadable', { taskId, file, detail: found.detail })); break;
@@ -942,9 +980,13 @@ function briefingJob({ action, root, config, machine, env, t, say, complain, now
       case 'no_command': say(t('schedule.briefing_status_no_command', { taskId, file, command: again })); break;
       case 'kit_missing': say(t('schedule.briefing_status_kit_missing', { taskId, kit: found.kit, command: again })); break;
       case 'vault_differs': say(t('schedule.briefing_status_vault_differs', { taskId, vault: found.vault, root, command: again })); break;
-      default: say(t('schedule.briefing_status_ok', { taskId, file, kit: found.kit }));
+      // A task that works, with the kit of another install: said, never a
+      // failure (doctor run from a clone differs from the plugin's cache).
+      case 'kit_other': say(t('schedule.briefing_status_kit_other', { taskId, kit: found.kit, version: found.version, current: found.current, currentVersion: found.currentVersion, command: again })); break;
+      case 'ok': say(t('schedule.briefing_status_ok', { taskId, file, kit: found.kit })); break;
+      default: throw new Error(`unknown briefing task state ${found.state}`);
     }
-    return found.state === 'ok' ? EXIT.OK : EXIT.FAILURE;
+    return found.state === 'ok' || found.state === 'kit_other' ? EXIT.OK : EXIT.FAILURE;
   }
   // install
   if (!enabled) {

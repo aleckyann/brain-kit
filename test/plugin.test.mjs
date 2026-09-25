@@ -206,7 +206,7 @@ test('the nine SKILL.md descriptions are exactly the agreed text', () => {
     'review-stale': 'Use when notes in the brain-kit vault are past their stale_after date, or the person asks to review what may be out of date.',
     approve: 'Use after the owner merged a brain-kit pull request and wants the merged notes stamped verified.',
     'seed-rituals': "Use when the person wants the brain-kit vault's weekly rhythm table filled from their calendar: read the last four weeks, find recurring events, and propose the rows.",
-    briefing: "Use when the person asks for their morning briefing from the brain-kit vault, or when the scheduled briefing task starts: facts from the kit, the vault's own blocks, open questions, and one pull request for what gets recorded.",
+    briefing: "Use when the person asks for their morning briefing from the brain-kit vault: facts from the kit, the vault's own blocks, open questions, and one pull request for what gets recorded.",
   };
   assert.deepEqual(Object.keys(expected).sort(), [...SKILL_NAMES].sort());
   for (const name of SKILL_NAMES) {

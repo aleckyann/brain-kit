@@ -9,7 +9,8 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
-import { CRON_LINE_LIMIT, briefingTask, briefingTaskFile, nextFireTimes, sameClock } from '../src/commands/schedule.mjs';
+import { CRON_LINE_LIMIT, briefingTask, briefingTaskFile, nextFireTimes, readBriefingTask, sameClock } from '../src/commands/schedule.mjs';
+import { startsWithSignature } from '../src/sources/transcripts-claude-code.mjs';
 import { kitCommand } from '../src/curate/tools.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { INSIDE, PROJECT, assistant, makeWorld as makeTranscriptsWorld, paths, user } from './helpers/transcripts-world.mjs';
@@ -692,11 +693,16 @@ test('the task\'s prompt, as a session\'s first user message, is dropped by the 
   }
 });
 
-test('install --job briefing refuses with exit 2 when the briefing is off, its signature is empty or two lines, or its schedule is not a cron expression', async () => {
+test('install --job briefing refuses with exit 2 when the briefing is off, its signature is blank, two lines or padded, or its schedule is not a cron expression', async () => {
+  const bad = (value) => (w) => w.t('schedule.bad_signature', { key: 'briefing.signature', value: JSON.stringify(value), file: 'brain-kit.config.json' });
   const cases = [
     [(c) => { c.briefing.enabled = false; }, (w) => w.t('schedule.briefing_disabled', { file: 'brain-kit.config.json' })],
-    [(c) => { c.briefing.signature = '   '; }, (w) => w.t('schedule.briefing_no_signature', { file: 'brain-kit.config.json' })],
-    [(c) => { c.briefing.signature = 'Morning\nbriefing'; }, (w) => w.t('schedule.briefing_no_signature', { file: 'brain-kit.config.json' })],
+    [(c) => { c.briefing.signature = '   '; }, bad('   ')],
+    [(c) => { c.briefing.signature = 'Morning\nbriefing'; }, bad('Morning\nbriefing')],
+    // The review's reproduction (ruling R-T12): a leading space, which the
+    // curator's trimmed comparison never matches, and a trailing one.
+    [(c) => { c.briefing.signature = ' Second brain morning briefing'; }, bad(' Second brain morning briefing')],
+    [(c) => { c.briefing.signature = 'Second brain morning briefing '; }, bad('Second brain morning briefing ')],
     [(c) => { c.briefing.schedule = '09:00'; }, (w) => w.t('schedule.briefing_bad_cron', { value: '"09:00"', file: 'brain-kit.config.json' })],
   ];
   for (const [mutate, message] of cases) {
@@ -715,13 +721,14 @@ test('install --job briefing warns on stderr when the machine\'s clock and the v
   assert.equal(registration(r.stdout).taskId, BRIEFING_TASK_ID);
 });
 
-test('--job takes curate or briefing; --platform means nothing for the briefing', async () => {
+test('--job takes curate or briefing; --platform and --dry mean nothing for the briefing', async () => {
   const world = makeScheduleWorld();
   const usage = world.t('schedule.usage');
   const cases = [
     [['install', '--job', 'nightly'], `${world.t('schedule.bad_job', { job: 'nightly', jobs: 'curate, briefing' })}\n${usage}\n`],
     [['install', '--job'], `${world.t('schedule.job_needs_value', { jobs: 'curate, briefing' })}\n${usage}\n`],
     [['status', '--job', 'briefing', '--platform', 'cron'], `${world.t('schedule.bad_argument', { arg: '--platform' })}\n${usage}\n`],
+    [['install', '--job', 'briefing', '--dry'], `${world.t('schedule.bad_argument', { arg: '--dry' })}\n${usage}\n`],
   ];
   for (const [argv, stderr] of cases) {
     const r = await world.run(argv);
@@ -826,4 +833,101 @@ test('the CLI routes schedule install --job briefing to the task, exit 3, in the
   const got = registration(r.stdout);
   assert.equal(got.taskId, BRIEFING_TASK_ID);
   assert.match(got.promptLines[1], /^Rode exatamente este comando/);
+});
+
+// ------------------------------------------------ fix round 1, ruling R-T12: one predicate signs a session
+
+// What the curator does with a session whose first user message is `text`,
+// under a configuration whose briefing signature is `signature`: true when
+// the transcripts source drops it as one of the kit's own runs.
+function curatorDrops(signature, text) {
+  const transcripts = makeTranscriptsWorld({ extraSignatures: [] });
+  transcripts.config.briefing.signature = signature;
+  transcripts.write(PROJECT, 'session.jsonl', [user(text, INSIDE), assistant('Good morning.', INSIDE)]);
+  const plan = transcripts.collect();
+  assert.equal(plan.dropped.selfTrace + paths(plan).length, 1, JSON.stringify(plan.dropped));
+  return plan.dropped.selfTrace === 1;
+}
+
+test('status and the curator\'s filter agree, on every signature and first line, whether a task\'s sessions are the briefing\'s own', async () => {
+  const world = makeScheduleWorld();
+  const line2 = (await registeredPrompt(world)).split('\n')[1];
+  const sig = 'Second brain morning briefing';
+  const signatures = [sig, ` ${sig}`, `${sig} `, `${sig}\t`, 'Second brain'];
+  const prompts = [
+    `${sig}\n${line2}`, ` ${sig}\n${line2}`, `${sig} \n${line2}`, `\n\n${sig}\n${line2}`, `${sig} extra words\n${line2}`,
+    `Good morning\n${sig}\n${line2}`, `${sig.toLowerCase()}\n${line2}`, `Second brain\n${line2}`, `${line2}\n${sig}`,
+  ];
+  let signedSeen = 0;
+  let unsignedSeen = 0;
+  for (const signature of signatures) {
+    const config = configOf(world);
+    config.briefing.signature = signature;
+    for (const prompt of prompts) {
+      for (const frontmatter of [true, false]) {
+        writeTask(world, prompt, { frontmatter });
+        const found = readBriefingTask({ root: world.vault, config, vaultId: VAULT_ID, env: world.env });
+        const drops = curatorDrops(signature, prompt);
+        assert.equal(found.signed, drops, `${JSON.stringify(signature)} / ${JSON.stringify(prompt.split('\n')[0])}: status says signed=${found.signed} (${found.state}), the curator drops=${drops}`);
+        assert.equal(found.signed, startsWithSignature(prompt, [signature]));
+        // "Working" is only ever said of a session the curator drops.
+        if (found.state === 'ok' || found.state === 'kit_other') assert.equal(drops, true);
+        if (found.signed) signedSeen += 1; else unsignedSeen += 1;
+      }
+    }
+  }
+  assert.ok(signedSeen > 0 && unsignedSeen > 0, `${signedSeen} ${unsignedSeen}`);
+});
+
+test('the review\'s leading-space signature end to end: install refuses naming the key, a hand-written task reads refused, and the curator keeps its sessions', async () => {
+  const world = makeScheduleWorld();
+  const line2 = (await registeredPrompt(world)).split('\n')[1];
+  const padded = ' Second brain morning briefing';
+  setConfig(world, (c) => { c.briefing.signature = padded; });
+  const message = world.t('schedule.bad_signature', { key: 'briefing.signature', value: JSON.stringify(padded), file: 'brain-kit.config.json' });
+  const install = await world.run(['install', '--job', 'briefing']);
+  assert.deepEqual([install.status, install.stdout, install.stderr], [2, '', `${message}\n`]);
+  // The task the person might write by hand from the configuration.
+  writeTask(world, `${padded}\n${line2}`);
+  const status = await world.run(['status', '--job', 'briefing']);
+  assert.deepEqual([status.status, status.stdout], [1, `${message}\n`]);
+  const found = readBriefingTask({ root: world.vault, config: configOf(world), vaultId: VAULT_ID, env: world.env });
+  assert.equal(found.state, 'bad_signature');
+  assert.equal(found.signed, false);
+  assert.equal(curatorDrops(padded, `${padded}\n${line2}`), false);
+});
+
+test('install of the curator refuses a curate signature or extra signature with space at either end, naming each key', async () => {
+  const world = makeScheduleWorld();
+  setConfig(world, (c) => { c.curate.signature = 'Second brain curator '; c.curate.extra_signatures = ['ok one', ' padded']; });
+  const r = await world.run(['install', '--platform', 'systemd']);
+  const line = (key, value) => world.t('schedule.bad_signature', { key, value: JSON.stringify(value), file: 'brain-kit.config.json' });
+  assert.deepEqual([r.status, r.stderr], [2, `${line('curate.signature', 'Second brain curator ')}\n${line('curate.extra_signatures[1]', ' padded')}\n`]);
+  assert.equal(existsSync(world.unitDir), false);
+});
+
+test('status --job briefing: a task running an existing kit that is not this one warns with both paths and versions, never fails', async () => {
+  const world = makeScheduleWorld();
+  const prompt = await registeredPrompt(world);
+  const oldKit = join(world.base, 'plugins', 'cache', 'brain-kit', '0.0.1', 'bin', 'brain-kit.mjs');
+  mkdirSync(dirname(oldKit), { recursive: true });
+  writeFileSync(oldKit, '');
+  writeFileSync(join(dirname(dirname(oldKit)), 'package.json'), JSON.stringify({ name: 'brain-kit', version: '0.0.1' }));
+  writeTask(world, prompt.replace(kitCommand(), `"${oldKit}"`));
+  const currentVersion = JSON.parse(readFileSync(join(KIT_ROOT, 'package.json'), 'utf8')).version;
+  const r = await world.run(['status', '--job', 'briefing']);
+  assert.deepEqual([r.status, r.stdout], [0, `${world.t('schedule.briefing_status_kit_other', {
+    taskId: BRIEFING_TASK_ID, kit: oldKit, version: '0.0.1', current: KIT_BIN, currentVersion, command: 'brain-kit schedule install --job briefing',
+  })}\n`]);
+});
+
+test('status --job briefing reads the command from the prompt only, never from a frontmatter field the application writes', async () => {
+  const world = makeScheduleWorld();
+  const prompt = await registeredPrompt(world);
+  const file = briefingTaskFile(world.env, BRIEFING_TASK_ID);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `---\nname: ${BRIEFING_TASK_ID}\ndescription: was node "/nowhere/bin/brain-kit.mjs" prompt briefing --vault "/elsewhere"\n---\n\n${prompt}\n`);
+  const r = await world.run(['status', '--job', 'briefing']);
+  assert.equal(r.status, 0, r.stdout);
+  assert.equal(r.stdout, `${world.t('schedule.briefing_status_ok', { taskId: BRIEFING_TASK_ID, file, kit: KIT_BIN })}\n`);
 });

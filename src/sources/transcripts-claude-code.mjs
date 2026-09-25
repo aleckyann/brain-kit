@@ -115,10 +115,50 @@ function userText(content) {
 // briefing's (briefing.signature, phase 4 decision B6): what a briefing
 // records it proposes itself, so the curator never reads it again as the
 // person's own work.
-function signaturesOf(config) {
+export function signaturesOf(config) {
   const all = [config?.curate?.signature, config?.briefing?.signature, ...(config?.curate?.extra_signatures ?? [])];
   // A blank signature would be a prefix of every message and drop every file.
   return all.filter((sig) => typeof sig === 'string' && sig.trim() !== '');
+}
+
+// THE one predicate that says a session is one of the kit's own (ruling
+// R-T12, phase 4 fix round 1): `text` is the session's first user message
+// with text, and it is the kit's own when, trimmed, it starts with one of
+// `signatures`. A blank signature never counts. `schedule status --job
+// briefing` and doctor's `briefing` check call this same function on the
+// desktop task's prompt, so "the task is signed" and "the curator drops
+// its sessions" can never disagree.
+export function startsWithSignature(text, signatures) {
+  if (typeof text !== 'string') return false;
+  const trimmed = text.trim();
+  return signatures.some((sig) => typeof sig === 'string' && sig.trim() !== '' && trimmed.startsWith(sig));
+}
+
+// Why a configured signature cannot sign anything reliably, or null: not a
+// string, blank, more than one line, or with whitespace at either end. The
+// predicate above compares against a trimmed message, so a signature with
+// a leading space never matches, and one with a trailing space matches or
+// not depending on how the application stores the task's prompt (ruling
+// R-T12: refused, never guessed at).
+export function signatureProblem(value) {
+  if (typeof value !== 'string') return 'not_text';
+  if (value.trim() === '') return 'blank';
+  if (/[\r\n]/.test(value)) return 'multiline';
+  if (value !== value.trim()) return 'padded';
+  return null;
+}
+
+// Every configured signature that signatureProblem refuses: [{ key, value,
+// problem }], with `key` the configuration path, in the order
+// curate.signature, briefing.signature, curate.extra_signatures[i].
+export function signatureProblems(config) {
+  const entries = [['curate.signature', config?.curate?.signature], ['briefing.signature', config?.briefing?.signature]];
+  const extra = config?.curate?.extra_signatures;
+  if (Array.isArray(extra)) extra.forEach((value, index) => entries.push([`curate.extra_signatures[${index}]`, value]));
+  return entries
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => ({ key, value, problem: signatureProblem(value) }))
+    .filter((entry) => entry.problem !== null);
 }
 
 // One pass over a file, `size` bytes of it (the size stat reported, so a
@@ -161,8 +201,7 @@ function scanFile(path, size, sampleFrom, window, starts, signatures, io, limits
       const content = userText(line.message?.content);
       if (content !== null) {
         firstUserSeen = true;
-        const trimmed = content.trim();
-        selfTrace = signatures.some((sig) => trimmed.startsWith(sig));
+        selfTrace = startsWithSignature(content, signatures);
       }
     }
     if (typeof line.timestamp !== 'string') return;
