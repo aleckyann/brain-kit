@@ -25,7 +25,12 @@
 // deny) is what this test proves against the real CLI.
 //
 // Nothing the connectors return is asserted on or printed: only states,
-// counts, the tool names the model called, the cost and the paths.
+// counts, the tool names the model called, the cost and the paths. The
+// round runs with --keep-stream, so the scratch state logs (mode 0700,
+// under os.tmpdir()) DO hold the real calendar and document content the
+// model read: delete the scratch folder once the run has been read (final
+// review M7). The real CLI also updates the person's own ~/.claude.json
+// for the scratch working directory, as any use of the real login does.
 //
 // What a passing run proves (the phase 3 criterion, against real
 // connectors): exit 0; the round ran in connector mode, or the recorded
@@ -202,6 +207,8 @@ test('a real round through the person\'s own connectors reads each source or rec
   const logs = join(state, 'logs');
   const logFile = readdirSync(logs).filter((name) => name.endsWith('.log')).map((name) => join(logs, name))[0];
   const states = Object.fromEntries(CONNECTOR_SOURCES.map((id) => [id, lastRun.sources?.[id]?.state ?? null]));
+  // The meeting notes left out because the calendar was not read (final review I2).
+  const waiting = Object.fromEntries(CONNECTOR_SOURCES.map((id) => [id, lastRun.sources?.[id]?.waitingFor ?? null]));
   const summary = `exit ${round.status}, cost ${lastRun.costUsd} USD, ${lastRun.numTurns} turn(s), mode ${lastRun.mode}, relaunched ${lastRun.relaunched}, `
     + `states ${CONNECTOR_SOURCES.map((id) => `${id}=${states[id]}`).join(' ')}, documents ${JSON.stringify(lastRun.sources?.meeting_notes?.documents ?? null)}, log ${logFile}`;
   t.diagnostic(summary);
@@ -212,6 +219,7 @@ test('a real round through the person\'s own connectors reads each source or rec
   // Connector mode, or the states say why not.
   if (lastRun.mode !== 'connectors') {
     for (const id of CONNECTOR_SOURCES) {
+      if (waiting[id] !== null) continue;
       assert.ok(typeof states[id] === 'string' && states[id] !== 'connected', `mode ${lastRun.mode}, but ${id} records the state ${states[id]}`);
     }
   }
@@ -228,7 +236,7 @@ test('a real round through the person\'s own connectors reads each source or rec
       assert.ok(entry.expected > 0 && entry.read === entry.expected, `${id} advanced without its evidence: ${JSON.stringify(entry)}`);
       assert.equal(mark[id], yesterday, `${id}'s mark`);
     } else {
-      assert.equal(typeof entry.state, 'string', `${id} was not read and records no state: ${JSON.stringify(entry)}`);
+      assert.ok(typeof entry.state === 'string' || waiting[id] !== null, `${id} was not read and records no state: ${JSON.stringify(entry)}`);
       assert.equal(mark[id], undefined, `${id}'s mark moved without a reading`);
     }
   }

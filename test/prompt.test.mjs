@@ -87,6 +87,8 @@ test('the seed-rituals body renders in both languages inside a vault, every plac
     // The window's end is today's own date, rendered from {{today_iso}}.
     assert.match(c.stdout, /2026-09-25T00:00:00/, lang);
     assert.match(c.stdout, /node "[^"]+bin[/\\]brain-kit\.mjs" propose "<[^>]+>" --only /, lang);
+    // A title holding a privacy keyword never becomes a row (review M2 of task 7).
+    assert.ok(c.stdout.includes('`privacy.third_party_keywords`'), `${lang}: the privacy keywords are named`);
   }
 });
 

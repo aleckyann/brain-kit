@@ -197,7 +197,7 @@ test('every tool result says whether its text is one whole JSON document and whe
   const r = parseStream(fixture('connectors-connected'));
   // ToolSearch (tool references, no text), list_events page 1, page 2, get_event, search_files.
   assert.deepEqual(r.toolResults.map((t) => [t.complete, t.hasNextPage]), [[false, false], [true, true], [true, false], [true, false], [true, true]]);
-  for (const t of r.toolResults) assert.deepEqual(Object.keys(t).sort(), ['complete', 'hasNextPage', 'isError', 'toolUseId']);
+  for (const t of r.toolResults) assert.deepEqual(Object.keys(t).sort(), ['complete', 'hasNextPage', 'isError', 'items', 'toolUseId']);
   assert.deepEqual(parseStream(fixture('connectors-states')).toolResults, []);
 });
 
@@ -220,10 +220,27 @@ test('only a non-empty string at the top level is a next page: empty, null, a nu
   // A third party's event cannot hold the page open, and neither can a mention of a token.
   assert.deepEqual(page(JSON.stringify({ events: [{ id: 'evt-0001', conferenceData: { parameters: { nextPageToken: 'abc' } } }] })), WHOLE_LAST);
   assert.deepEqual(page(JSON.stringify({ description: 'copy "nextPageToken":"abc" here' })), WHOLE_LAST);
-  // A document whose top level is not an object has no token.
-  for (const content of ['null', '[{"nextPageToken":"abc"}]', '"nextPageToken"', '5']) assert.deepEqual(page(content), WHOLE_LAST, content);
+  // A document whose top level is not an object is no page at all (review N2 of task 2).
+  for (const content of ['null', '[{"nextPageToken":"abc"}]', '"nextPageToken"', '5', '"{\\"events\\":[]}"', 'true']) assert.deepEqual(page(content), PART, content);
   for (const content of ['{"events":[],"nextPageToken" : "abc="}', '{\n  "nextPageToken": "abc="\n}', '{"nextPageToken":" "}']) {
     assert.deepEqual(page(content), WHOLE_NEXT, content);
+  }
+});
+
+// --- items (ruling R-F1) ---------------------------------------------------------------
+
+test('every tool result counts the top-level events of a listing or files of a search, and nothing else: no list, a nested list, a list of another name, or an incomplete result is null', () => {
+  const items = (content) => resultWith(content).items;
+  assert.equal(items('{"events":[]}'), 0);
+  assert.equal(items('{"events":[{"id":"evt-0001"},{"id":"evt-0002"}],"nextPageToken":"abc"}'), 2);
+  assert.equal(items('{"files":[{"id":"file-0001"}]}'), 1);
+  assert.equal(items('{"files":[]}'), 0);
+  assert.equal(items([{ type: 'text', text: '{"files":[{"id":"file-0001"},' }, { type: 'text', text: '{"id":"file-0002"}]}' }]), 2);
+  // The listing's own list wins over a files key beside it.
+  assert.equal(items('{"events":[{"id":"evt-0001"}],"files":[]}'), 1);
+  assert.equal(items('{"events":{"id":"evt-0001"},"files":[{"id":"file-0001"}]}'), 1);
+  for (const content of ['{"id":"evt-0001","summary":"Reading group"}', '{"events":null}', '{"events":"[]"}', '{"result":{"events":[]}}', '{"items":[1]}', '[]', '{"events":[]', 'not json', '{"events":[]}\n[truncated]', null]) {
+    assert.equal(items(content), null, JSON.stringify(content));
   }
 });
 

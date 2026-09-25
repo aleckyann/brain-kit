@@ -197,7 +197,7 @@ test('parseStream reads the isolated run: dontAsk, no hooks, no MCP server, the 
   assert.equal(r.hookEvents, 0);
   assert.deepEqual(r.toolUses.map((u) => [u.name, u.input.command]), [['Bash', '/opt/brain-kit/bin/brain-kit.mjs propose example']]);
   // The kit's own command answers in plain text: not one JSON document, so not a complete connector result.
-  assert.deepEqual(r.toolResults, [{ toolUseId: r.toolUses[0].id, isError: false, complete: false, hasNextPage: false }]);
+  assert.deepEqual(r.toolResults, [{ toolUseId: r.toolUses[0].id, isError: false, complete: false, hasNextPage: false, items: null }]);
   assert.equal(r.result.costUsd, 0.041879);
   assert.equal(r.result.numTurns, 2);
   assert.deepEqual(r.denials, []);
@@ -217,7 +217,8 @@ test('parseStream reads the connector run: deferred tools loaded first, every ca
   assert.equal(typeof answer(r.toolUses[1]), 'string');
   assert.equal(r.toolUses[2].input.pageToken, JSON.parse(answer(r.toolUses[1])).nextPageToken);
   // ToolSearch answers with tool references, no text; every connector answers with one JSON document.
-  assert.deepEqual(r.toolResults, r.toolUses.map((u, i) => ({ toolUseId: u.id, isError: false, complete: i > 0, hasNextPage: i === 1 || i === 4 })));
+  // The two listing pages hold two events each, get_event is one event (no list), the search found one file.
+  assert.deepEqual(r.toolResults, r.toolUses.map((u, i) => ({ toolUseId: u.id, isError: false, complete: i > 0, hasNextPage: i === 1 || i === 4, items: [null, 2, 2, null, 1][i] })));
   assert.deepEqual(r.unknownTypes, []);
   assert.equal(r.invalidLines, 0);
   assert.equal(r.result.subtype, 'success');
@@ -227,7 +228,7 @@ test('parseStream reads a denial: the tool result is an error and the denial nam
   const r = parseStream(fixtureLines('denied-run'));
   const curl = r.toolUses.find((u) => u.input.command === 'curl -s https://example.com');
   assert.deepEqual(r.denials, [{ toolName: 'Bash', toolUseId: curl.id, input: { command: 'curl -s https://example.com', description: 'Fetch example.com' } }]);
-  assert.deepEqual(r.toolResults.filter((t) => t.isError), [{ toolUseId: curl.id, isError: true, complete: false, hasNextPage: false }]);
+  assert.deepEqual(r.toolResults.filter((t) => t.isError), [{ toolUseId: curl.id, isError: true, complete: false, hasNextPage: false, items: null }]);
   const denied = r.events.find((e) => e.type === 'user' && e.message.content[0].tool_use_id === curl.id);
   assert.equal(denied.message.content[0].content, 'Permission to use Bash with command curl -s https://example.com has been denied.');
   assert.equal(r.result.subtype, 'success');

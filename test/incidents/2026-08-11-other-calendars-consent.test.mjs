@@ -68,8 +68,8 @@ test('without recorded consent, the squad calendar is ignored and the round is t
   // A model that lists it anyway gains nothing: the source expects the
   // owner's calendar only.
   const p = plan({ team_calendars_consent_noted: false });
-  assert.deepEqual(evidenceFor([calendarSource], { calendar: p }, streamListing([SQUAD])).calendar, { read: 0, expected: 1, ok: false });
-  assert.deepEqual(evidenceFor([calendarSource], { calendar: p }, streamListing([OWNER, SQUAD])).calendar, { read: 1, expected: 1, ok: true });
+  assert.deepEqual(evidenceFor([calendarSource], { calendar: p }, streamListing([SQUAD])).calendar, { read: 0, expected: 1, ok: false, listed: null });
+  assert.deepEqual(evidenceFor([calendarSource], { calendar: p }, streamListing([OWNER, SQUAD])).calendar, { read: 1, expected: 1, ok: true, listed: 1 });
 });
 
 test('with recorded consent, the squad calendar is planned with the same exact inputs, and the day is read only with it', () => {
@@ -77,8 +77,8 @@ test('with recorded consent, the squad calendar is planned with the same exact i
   assert.deepEqual(p.otherCalendars, [SQUAD]);
   assert.deepEqual(p.problems, []);
   assert.ok(p.promptBlock.includes(`{"calendarId":"${SQUAD}","startTime":"${FROM.toISOString()}","endTime":"${TO.toISOString()}","eventType":["DEFAULT"],"pageSize":250,"timeZone":"${TIMEZONE}"}`), p.promptBlock);
-  assert.deepEqual(evidenceFor([calendarSource], { calendar: p }, streamListing([OWNER])).calendar, { read: 1, expected: 2, ok: false });
-  assert.deepEqual(evidenceFor([calendarSource], { calendar: p }, streamListing([OWNER, SQUAD])).calendar, { read: 2, expected: 2, ok: true });
+  assert.deepEqual(evidenceFor([calendarSource], { calendar: p }, streamListing([OWNER])).calendar, { read: 1, expected: 2, ok: false, listed: 1 });
+  assert.deepEqual(evidenceFor([calendarSource], { calendar: p }, streamListing([OWNER, SQUAD])).calendar, { read: 2, expected: 2, ok: true, listed: 2 });
 });
 
 test('the block that plans other people calendars skips the events the owner attends, deduplicates by id and carries the privacy policy', () => {

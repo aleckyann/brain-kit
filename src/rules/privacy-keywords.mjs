@@ -41,6 +41,12 @@
 //   not strip, or a lone CR left by an old editor. Read as a space it
 //   bounds a word as any whitespace does, and it cannot split a phrase in
 //   two ("sick", CR, "leave" is the phrase "sick leave").
+// - With typographic apostrophes read as the straight one, and every run
+//   of whitespace inside the line (a no-break space, a tab, two spaces)
+//   read as one space,
+//   in the keyword and in the line alike (review M3 of task 6): an editor
+//   that curls "doctor's" or a line wrapped with two spaces writes the same
+//   phrase a person reads.
 //
 // A listed entry that is not a string, or is blank, is dropped rather than
 // compiled: an empty phrase bounded on both sides matches almost every
@@ -50,6 +56,17 @@ import { isUnderPath } from '../vault.mjs';
 
 const REGEXP_SYNTAX = /[.*+?^${}()|[\]\\]/g;
 const CARRIAGE_RETURN = /\r/g;
+// The left and right single quotation marks and the modifier letter
+// apostrophe, built from their code points so this file stays ASCII.
+const APOSTROPHES = new RegExp(`[${[0x2018, 0x2019, 0x02bc].map((code) => String.fromCharCode(code)).join('')}]`, 'g');
+// A line feed is not whitespace inside a line: it ends one.
+const WHITESPACE_RUN = /[^\S\n]+/gu;
+
+// The text a keyword is looked for in, and looked for as: composed (NFC),
+// its typographic apostrophes straight, each whitespace run one space.
+function comparable(text) {
+  return text.normalize('NFC').replace(APOSTROPHES, "'").replace(WHITESPACE_RUN, ' ');
+}
 const NOT_AFTER_WORD = '(?<![\\p{L}\\p{N}])';
 const NOT_BEFORE_WORD = '(?![\\p{L}\\p{N}])';
 
@@ -66,7 +83,7 @@ export function keywordMatchers(config) {
     .filter((entry) => typeof entry === 'string' && entry.trim() !== '')
     .map((keyword) => ({
       keyword,
-      pattern: new RegExp(`${NOT_AFTER_WORD}${literal(keyword.normalize('NFC'))}${NOT_BEFORE_WORD}`, 'iu'),
+      pattern: new RegExp(`${NOT_AFTER_WORD}${literal(comparable(keyword))}${NOT_BEFORE_WORD}`, 'iu'),
     }));
 }
 
@@ -74,7 +91,7 @@ export function keywordMatchers(config) {
 // reading left to right, and on a tie the one listed first, so a line is
 // named once and always the same way. null when it holds none.
 export function firstKeyword(line, matchers) {
-  const text = line.replace(CARRIAGE_RETURN, ' ').normalize('NFC');
+  const text = comparable(line.replace(CARRIAGE_RETURN, ' '));
   let found = null;
   let foundAt = Infinity;
   for (const { keyword, pattern } of matchers) {

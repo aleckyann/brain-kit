@@ -2274,10 +2274,12 @@ test('round-scope: every allow rule the vault adds that reads or writes outside 
 
 test('round-scope: in connector mode a user read rule the round records instead of denying is named, with the settings file', async () => {
   const fx = setup({ config: connectorConfig() });
-  const env = userSettings(fx, { permissions: { allow: ['Read(//etc/**)', 'Bash(rtk curl *)'] } });
+  // A read rule over the vault, and one over the transcripts folder a round could list from (ruling R-F2); one
+  // disjoint from both is mirrored as a deny and not named.
+  const env = userSettings(fx, { permissions: { allow: ['Read(//etc/**)', 'Read(//**)', 'Glob(~/.claude/projects/**)', 'Bash(rtk curl *)'] } });
   let { report } = await doctor(fx, ['--only', 'round-scope'], { env });
   const c = assertCheck(report, 'round-scope', 'warn', 'doctor.round_scope.user_reads');
-  assert.deepEqual(c.params, { rules: ['Read(//etc/**)'], files: [join(env.CLAUDE_CONFIG_DIR, 'settings.json')] });
+  assert.deepEqual(c.params, { rules: ['Read(//**)', 'Glob(~/.claude/projects/**)'], files: [join(env.CLAUDE_CONFIG_DIR, 'settings.json')] });
   // Connector mode refused (a bare Bash): the round runs isolated, and the
   // read rule reaches nothing.
   const refused = userSettings(fx, { permissions: { allow: ['Read(//etc/**)', 'Bash'] } });
@@ -2352,7 +2354,7 @@ test('connectors: a state other than connected fails only for a source in curate
   const { report, code } = await doctor(fx, ['--only', 'connectors']);
   assert.equal(lineFor(report, 'calendar').status, 'warn');
   assert.match(lineFor(report, 'calendar').message, /disabled for Claude Code/);
-  assert.equal(lineFor(report, 'meeting_notes').status, 'fail');
+  assert.equal(lineFor(report, 'meeting_notes', 'doctor.connectors.state').status, 'fail');
   assert.equal(code, EXIT.FAILURE);
 });
 
@@ -2380,8 +2382,36 @@ test('connectors: a carried blocked_by_user_rules, and a state this version does
   writeRoundWith(fx, { at, connectorStates: { calendar: { state: 'blocked_by_user_rules', at }, meeting_notes: { state: 'sleeping', at } } });
   const { report } = await doctor(fx, ['--only', 'connectors']);
   assert.match(lineFor(report, 'calendar').message, /refused connector mode in that round/);
-  assert.match(lineFor(report, 'meeting_notes').message, /does not know that state/);
-  assert.equal(lineFor(report, 'meeting_notes').status, 'warn');
+  assert.match(lineFor(report, 'meeting_notes', 'doctor.connectors.state').message, /does not know that state/);
+  assert.equal(lineFor(report, 'meeting_notes', 'doctor.connectors.state').status, 'warn');
+  // The calendar was not read in that round, so the meeting notes wait for it.
+  assert.equal(lineFor(report, 'meeting_notes', 'doctor.connectors.waiting').params.state, 'blocked_by_user_rules');
+});
+
+test('connectors: the meeting notes wait for a calendar whose last state, or the probe\'s, is not connected, or that a user rule blocks; a pending or connected calendar, or none configured, holds nothing (final review I2)', async () => {
+  const at = new Date().toISOString();
+  for (const [state, waits] of [['needs_auth', true], ['absent', true], ['tools_missing', true], ['failed', true], ['connected', false], ['pending', false]]) {
+    const fx = setup({ config: connectorConfig() });
+    writeRoundWith(fx, { at, connectorStates: { calendar: { state, at }, meeting_notes: { state: 'connected', at } } });
+    const { report, code } = await doctor(fx, ['--only', 'connectors']);
+    const lines = connectorLines(report).filter((line) => line.messageKey === 'doctor.connectors.waiting');
+    assert.equal(lines.length, waits ? 1 : 0, state);
+    if (!waits) continue;
+    assert.equal(lines[0].status, 'warn', state);
+    assert.deepEqual(lines[0].params, { source: 'meeting_notes', calendar: 'calendar', state, reason: 'waiting_for_calendar' });
+    assert.match(lines[0].message, new RegExp(`meeting_notes waits for calendar: .*the calendar is ${state}, so no round reads it \\(waiting_for_calendar\\)`));
+    assert.equal(code, EXIT.OK, 'best effort: a warning');
+  }
+  // A rule that denies the calendar its own tools blocks it before any round: the notes wait, a required one fails.
+  const fx = setup({ config: connectorConfig((c) => { c.curate.sources.required = ['transcripts', 'meeting_notes']; }) });
+  const env = userSettings(fx, { permissions: { allow: ['mcp__claude_ai_Google_Calendar__*'] } });
+  const { report } = await doctor(fx, ['--only', 'connectors'], { env });
+  assert.equal(lineFor(report, 'meeting_notes', 'doctor.connectors.waiting').status, 'fail');
+  // No calendar on: nothing to wait for.
+  const alone = setup({ config: connectorConfig((c) => { c.sources.calendar.enabled = false; }) });
+  writeRoundWith(alone, { at, connectorStates: { meeting_notes: { state: 'connected', at } } });
+  const r = await doctor(alone, ['--only', 'connectors']);
+  assert.equal(connectorLines(r.report).some((line) => line.messageKey === 'doctor.connectors.waiting'), false);
 });
 
 test('connectors: a user rule that refuses connector mode is named with its file, once for every source, and no state is shown for them', async () => {

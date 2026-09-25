@@ -231,20 +231,23 @@ function negated(query, clause) {
   return false;
 }
 
-// Whether the search chain that starts at uses[start] reached a last page:
-// every result that does not say `hasNextPage: false` must be followed, later
-// in the round, by a successful call of the same tool with the same query and
-// a page token. A call whose result failed is skipped, so a retry of a page
-// counts; none after it breaks the chain.
+// The pages of the search chain that starts at uses[start] when it reached
+// a last page, null otherwise: every result that does not say
+// `hasNextPage: false` must be followed, later in the round, by a
+// successful call of the same tool with the same query and a page token. A
+// call whose result failed is skipped, so a retry of a page counts; none
+// after it breaks the chain.
 function reachedLastPage(uses, succeeded, results, start) {
   const { name, input: { query } } = uses[start];
+  const pages = [start];
   let at = start;
   while (results.get(uses[at].id).hasNextPage !== false) {
     const next = uses.findIndex((use, index) => index > at && use.name === name && use.input?.query === query && hasPageToken(use) && succeeded(use));
-    if (next === -1) return false;
+    if (next === -1) return null;
+    pages.push(next);
     at = next;
   }
-  return true;
+  return pages;
 }
 
 // readEvidence(record, plan): the source counts as read when the record
@@ -258,7 +261,10 @@ function reachedLastPage(uses, succeeded, results, start) {
 // not a read. A plan that is not configured is never read. `expected` is
 // always 1: the kit cannot know how many documents exist, so `documents`
 // only counts the read_file_content results, succeeded and failed, for the
-// round's report.
+// round's report. `listed` counts the files the pages of the chain that
+// read the source listed (the stream parser's `items`), null when there is
+// no such chain or a page gave no count: `empty` counts only when it is 0
+// (ruling R-F1, src/guards/watermark.mjs).
 // A result succeeded only when it says so (`isError: false`) and its text
 // was whole (`complete` is not false: a truncated answer is a failed call,
 // ruling I2 of task 2's review, which extends R-B3; a record without the
@@ -281,17 +287,24 @@ function readEvidence(record, plan) {
     else documents.failed += 1;
   }
 
-  let read = 0;
+  let pages = null;
   if (plan?.configured === true) {
     const title = titleClause(plan.literal);
     const bound = modifiedClause(plan.since);
-    const found = uses.some((use, index) => use.name === prefix + SEARCH_SUFFIX && noPageToken(use) && succeeded(use)
-      && typeof use.input?.query === 'string' && use.input.query.includes(title) && use.input.query.includes(bound)
-      && !negated(use.input.query, title) && !negated(use.input.query, bound)
-      && reachedLastPage(uses, succeeded, results, index));
-    if (found) read = 1;
+    for (let index = 0; index < uses.length && pages === null; index += 1) {
+      const use = uses[index];
+      if (use.name === prefix + SEARCH_SUFFIX && noPageToken(use) && succeeded(use)
+        && typeof use.input?.query === 'string' && use.input.query.includes(title) && use.input.query.includes(bound)
+        && !negated(use.input.query, title) && !negated(use.input.query, bound)) pages = reachedLastPage(uses, succeeded, results, index);
+    }
   }
-  return { read, expected: 1, ok: read === 1, documents };
+  const read = pages === null ? 0 : 1;
+  let listed = null;
+  if (pages !== null) {
+    const counts = pages.map((index) => results.get(uses[index].id)?.items);
+    listed = counts.every((n) => Number.isInteger(n) && n >= 0) ? counts.reduce((sum, n) => sum + n, 0) : null;
+  }
+  return { read, expected: 1, ok: read === 1, documents, listed };
 }
 
 export const meetingNotesSource = Object.freeze({

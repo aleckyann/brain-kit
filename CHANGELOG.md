@@ -334,6 +334,18 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   (`not_enabled`), until `sources.calendar.enabled` is `true`; the meeting notes stay off,
   and their old defaults need checking before they are turned on; there is no privacy
   keyword list, which `doctor` reports. `brain-kit update` adds no configuration key.
+- After the phase review: while the calendar is on, a round that will not read it offers
+  the meeting notes no work at all, and their days stay open (`waiting_for_calendar`, in the
+  log, `last-run.json` and `doctor`), instead of distilling the same notes every round; the
+  calendar's listing for the meeting notes keeps its seven-day cap. A connector source
+  reported `empty` whose reads listed events or files keeps its day open
+  (`inconsistent_empty`; `listed` in `last-run.json`). A mirrored user path rule is passed in
+  its resolved absolute form, never as written; a user read rule disjoint from the vault
+  and the round's own reads is mirrored too; a scope ending in a backslash or with an odd
+  number of double quotes, a relative `HOME`, or a path rule whose resolved form no rule can
+  carry refuses connector mode. `privacy.third_party_keywords` match across typographic
+  apostrophes and runs of whitespace. `prompt --check` warns about a curate overlay without
+  `{{sources_line}}`.
 
 ## 0.0.1 (published on npm on 18/09/2026)
 

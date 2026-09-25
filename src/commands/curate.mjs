@@ -89,7 +89,7 @@ import { connectorStateMessage, connectorStates } from '../guards/connectors.mjs
 import { evidenceFor, unreadRequired } from '../guards/read-evidence.mjs';
 import { emptyWindow } from '../guards/empty-window.mjs';
 import {
-  addDays, advanceWatermark, localDay, parseSourcesLine, readWatermark, SOURCES_LINE_PREFIX, startOfDay, windowFor, WatermarkError,
+  addDays, advanceWatermark, DEFAULT_MAX_DAYS, localDay, parseSourcesLine, readWatermark, SOURCES_LINE_PREFIX, startOfDay, windowFor, WatermarkError,
 } from '../guards/watermark.mjs';
 import { buildArgv, runModel, unscopedRules } from '../harness/claude-code.mjs';
 import { allowedTools, disallowedTools, KIT_SUBCOMMANDS, kitCommand } from '../curate/tools.mjs';
@@ -148,6 +148,13 @@ export const RELAUNCH_STATES = Object.freeze(['needs_auth', 'failed', 'absent', 
 // The state of a connector source whose tools a user rule of the person's
 // would widen or deny (decision D3).
 export const BLOCKED_BY_USER_RULES = 'blocked_by_user_rules';
+
+// Why the meeting notes are not offered in a round whose calendar, though
+// configured, is not read (ruling I2 of the final review): their day could
+// not close without the calendar's listing over it (SECOND_DOOR), so the
+// model is given no work on them at all, and no round distils the same
+// notes again and again while the calendar stays away.
+export const WAITING_FOR_CALENDAR = 'waiting_for_calendar';
 
 // The guide a changed connector state points the person to.
 const CONNECTORS_DOC = 'docs/connectors.md';
@@ -288,7 +295,13 @@ export function offOnPurpose(source, config, problems) {
 // was read over it in that round (ruling I2 of task 5's review), so the
 // calendar is offered every day the meeting notes still have open, those it
 // already closed included ("relisted": listed again for their attachments
-// only).
+// only). That listing is one window, from the first day of either source to
+// the last of either, and it keeps the seven-day cap of every source (final
+// review M2): past it, the oldest seven are listed, and the meeting-notes
+// days beyond them wait for a later round with the calendar's own. While
+// the calendar is configured but not read in a round (unavailable,
+// blocked, or not offered), the meeting notes are not offered at all
+// (WAITING_FOR_CALENDAR).
 export const SECOND_DOOR = Object.freeze({ source: 'meeting_notes', through: 'calendar' });
 
 // The round's window: the union of the sources' own days, from the first
@@ -335,8 +348,18 @@ function computeWindow(stateDir, sources, now, tz) {
   if (Object.hasOwn(days, notes) && Object.hasOwn(days, cal) && days[notes].length > 0) {
     const both = [...days[notes], ...days[cal]].sort();
     const range = [];
-    for (let day = both[0]; day <= both.at(-1); day = addDays(day, 1)) range.push(day);
+    for (let day = both[0]; day <= both.at(-1) && range.length < DEFAULT_MAX_DAYS; day = addDays(day, 1)) range.push(day);
+    const last = range.at(-1);
+    const later = days[notes].filter((day) => day > last);
+    days[notes] = days[notes].filter((day) => day <= last);
+    remaining[notes] += later.length;
     const calMark = mark.sources[cal];
+    // The calendar's open days after the listing's last: its own after its
+    // mark (only yesterday while unset), those the listing did not reach.
+    let open = 0;
+    const first = calMark === undefined ? yesterday : addDays(calMark, 1);
+    for (let day = first > last ? first : addDays(last, 1); day <= yesterday; day = addDays(day, 1)) open += 1;
+    remaining[cal] = open;
     relisted = range.filter((day) => calMark !== undefined && day <= calMark);
     days[cal] = range;
   }
@@ -382,7 +405,7 @@ function keptOf(plan) {
 // What the round records about a source before the model runs.
 function sourceEntry(source, plan) {
   if (source.kind === 'local') return { kept: keptOf(plan) ?? 0, read: 0, advanced: false, noTimestamp: plan.dropped?.noTimestamp ?? 0 };
-  return { state: null, observedPrefix: null, read: 0, expected: null, advanced: false, reported: null, ...(source.id === 'meeting_notes' ? { documents: null } : {}) };
+  return { state: null, observedPrefix: null, read: 0, expected: null, listed: null, advanced: false, reported: null, ...(source.id === 'meeting_notes' ? { documents: null } : {}) };
 }
 
 // What the plan log line says about a source.
@@ -436,7 +459,7 @@ function renderParameters(t, { window, tz, plans, sources, days, config, deferre
     }
     const own = days[source.id];
     if (own.length !== window.days.length) {
-      lines.push(t('curate.params.source_days', { days: own.map(shown).join(', '), from: startOfDay(own[0], tz).toISOString(), to: window.to.toISOString() }));
+      lines.push(t('curate.params.source_days', { days: own.map(shown).join(', '), from: startOfDay(own[0], tz).toISOString(), to: startOfDay(addDays(own.at(-1), 1), tz).toISOString() }));
     }
     if (source.kind === 'connector') {
       lines.push(t('curate.params.connector', { source: source.id, connector: source.serverSpec(config).serverDisplayName }));
@@ -999,10 +1022,14 @@ export async function runCurate(argv, io, t, deps = {}) {
       const count = computed.remaining[source.id];
       if (!(count > 0)) continue;
       const last = days[source.id].at(-1);
-      const text = t('curate.days_remaining', { source: source.id, count, last: shown(last) });
+      // The meeting notes can have no day this round while the calendar's
+      // listing catches up on its own older days (SECOND_DOOR).
+      const text = last === undefined
+        ? t('curate.days_remaining_none', { source: source.id, count, calendar: SECOND_DOOR.through })
+        : t('curate.days_remaining', { source: source.id, count, last: shown(last) });
       run.warnings.push(text);
       io.stderr.write(`${text}\n`);
-      log('days_remaining', { source: source.id, count, through: last });
+      log('days_remaining', { source: source.id, count, through: last ?? null });
     }
 
     // 8. A dirty tree postpones the round.
@@ -1164,10 +1191,35 @@ export async function runCurate(argv, io, t, deps = {}) {
         log('source_blocked', { source: id, rules });
       }
     };
+    // The meeting notes leave the round, before any model work on them,
+    // when the calendar they need is configured but will not be read
+    // (WAITING_FOR_CALENDAR). True when they just left.
+    const waitForCalendar = () => {
+      const notes = SECOND_DOOR.source;
+      const cal = SECOND_DOOR.through;
+      if (!offered.some((s) => s.id === notes) || unavailable.has(notes) || !active.some((s) => s.id === cal)) return false;
+      const calOffered = offered.some((s) => s.id === cal);
+      if (calOffered && !unavailable.has(cal)) return false;
+      const state = calOffered ? unavailable.get(cal) : 'not_offered';
+      unavailable.set(notes, WAITING_FOR_CALENDAR);
+      run.sources[notes].waitingFor = { source: cal, state };
+      const text = t('curate.source_waiting', { source: notes, calendar: cal, state });
+      run.warnings.push(text);
+      io.stderr.write(`${text}\n`);
+      log('source_waiting', { source: notes, through: cal, state });
+      return true;
+    };
+    const connectorsLeft = () => offered.filter((s) => s.kind === 'connector' && !unavailable.has(s.id));
     let choice = chooseMode({ config, root, env, readFiles, candidates: offered.filter((s) => s.kind === 'connector'), connectorDenies });
     run.mode = choice.mode;
     run.userRules = choice.userRules;
     block(choice.blocked);
+    if (waitForCalendar()) {
+      choice = chooseMode({ config, root, env, readFiles, candidates: connectorsLeft(), connectorDenies });
+      run.mode = choice.mode;
+      run.userRules = choice.userRules ?? run.userRules;
+      block(choice.blocked);
+    }
     const offeredLine = sourcesLineFor(offered);
     const promptNow = () => renderCuratePrompt({
       vaultRoot: root, config, lang: vaultLang, now, sourcesLine: offeredLine,
@@ -1312,10 +1364,11 @@ export async function runCurate(argv, io, t, deps = {}) {
           pending.add(source.id);
         }
       }
+      if (waitForCalendar()) gone.push(SECOND_DOOR.source);
       log('relaunch', { without: gone, states: Object.fromEntries(gone.map((id) => [id, unavailable.get(id)])) });
       readable = offered.filter((source) => !unavailable.has(source.id));
       if (readable.length > 0) {
-        choice = chooseMode({ config, root, env, readFiles, candidates: readable.filter((s) => s.kind === 'connector'), connectorDenies });
+        choice = chooseMode({ config, root, env, readFiles, candidates: connectorsLeft(), connectorDenies });
         run.userRules = choice.userRules ?? run.userRules;
         block(choice.blocked);
         readable = offered.filter((source) => !unavailable.has(source.id));
@@ -1377,6 +1430,10 @@ export async function runCurate(argv, io, t, deps = {}) {
         run.sources[source.id].advanced = moved.advanced;
         log('watermark', { source: source.id, day: through, vacuous: true, ...moved });
       }
+      for (const source of offered.filter((s) => unavailable.get(s.id) === WAITING_FOR_CALENDAR)) {
+        log('watermark', { source: source.id, day: null, advanced: false, reason: WAITING_FOR_CALENDAR });
+        io.stderr.write(`${t('curate.not_advanced', { source: source.id, reason: WAITING_FOR_CALENDAR })}\n`);
+      }
       const listed = offered.filter((source) => unavailable.has(source.id)).map((source) => `${source.id} (${unavailable.get(source.id)})`).join(', ');
       run.exit = EXIT.OK;
       run.reasonCode = 'nothing_available';
@@ -1408,6 +1465,7 @@ export async function runCurate(argv, io, t, deps = {}) {
       entry.read = evidence[source.id].read;
       if (source.kind !== 'connector') continue;
       entry.expected = evidence[source.id].expected;
+      entry.listed = Number.isInteger(evidence[source.id].listed) ? evidence[source.id].listed : null;
       entry.reported = reportedOf(sourcesLine, source.id);
       if (Object.hasOwn(entry, 'documents')) entry.documents = evidence[source.id].documents ?? null;
     }
@@ -1503,14 +1561,18 @@ export async function runCurate(argv, io, t, deps = {}) {
     const stuck = [];
     if (exit === EXIT.OK || exit === EXIT.DEGRADED) {
       for (const source of offered) {
-        const door = secondDoor(source, { active, offered, days, evidence, unavailable });
-        const through = door === null ? days[source.id].at(-1) : door.through;
+        const waiting = unavailable.get(source.id) === WAITING_FOR_CALENDAR;
+        // A source unavailable on its own account keeps its day open by its
+        // own evidence, never reported as a second door left unread.
+        const door = unavailable.has(source.id) ? null : secondDoor(source, { active, offered, days, evidence, unavailable });
+        const through = waiting ? null : door === null ? days[source.id].at(-1) : door.through;
         const reported = reportedOf(sourcesLine, source.id);
-        const moved = through === null
-          ? { advanced: false, reason: 'second_door_unread' }
-          : advanceWatermark(stateDir, source.id, through, {
-            modelExit: modelOk ? 0 : 1, evidence: evidence[source.id], sourcesLine, timezone: tz, now, emptyMeansNothingListed: source.emptyMeansNothingListed !== false,
-          });
+        let moved;
+        if (waiting) moved = { advanced: false, reason: WAITING_FOR_CALENDAR };
+        else if (through === null) moved = { advanced: false, reason: 'second_door_unread' };
+        else moved = advanceWatermark(stateDir, source.id, through, {
+          modelExit: modelOk ? 0 : 1, evidence: evidence[source.id], sourcesLine, timezone: tz, now, emptyMeansNothingListed: source.emptyMeansNothingListed !== false,
+        });
         run.sources[source.id].advanced = moved.advanced;
         log('watermark', { source: source.id, day: through, reported, ...moved });
         if (!moved.advanced) io.stderr.write(`${t('curate.not_advanced', { source: source.id, reason: moved.reason })}\n`);
@@ -1661,10 +1723,23 @@ function dryRun({ root, stateDir, machine, claudeBin, io, env, now }) {
     io.stdout.write(`${t('curate.dry_days_deferred', { last: shown(capped.last), count: capped.deferred.length, days: capped.deferred.map(shown).join(', '), setting, cap: capped.cap })}\n`);
   }
   const connectorDenies = [...new Set(active.filter((s) => s.kind === 'connector').flatMap((s) => s.toolRules(config).deny))];
-  const choice = chooseMode({ config, root, env, readFiles: readFilesOf(offered, plans), candidates: offered.filter((s) => s.kind === 'connector'), connectorDenies });
-  const unavailable = new Map([...choice.blocked.keys()].map((id) => [id, BLOCKED_BY_USER_RULES]));
+  const readFiles = readFilesOf(offered, plans);
+  let choice = chooseMode({ config, root, env, readFiles, candidates: offered.filter((s) => s.kind === 'connector'), connectorDenies });
+  const blocked = choice.blocked;
+  const unavailable = new Map([...blocked.keys()].map((id) => [id, BLOCKED_BY_USER_RULES]));
+  // The meeting notes wait for a calendar the round will not read, as the
+  // round itself decides (WAITING_FOR_CALENDAR).
+  const notes = SECOND_DOOR.source;
+  const cal = SECOND_DOOR.through;
+  let waiting = null;
+  if (offered.some((s) => s.id === notes) && !unavailable.has(notes) && active.some((s) => s.id === cal) && (!offered.some((s) => s.id === cal) || unavailable.has(cal))) {
+    waiting = unavailable.get(cal) ?? 'not_offered';
+    unavailable.set(notes, WAITING_FOR_CALENDAR);
+    choice = chooseMode({ config, root, env, readFiles, candidates: offered.filter((s) => s.kind === 'connector' && !unavailable.has(s.id)), connectorDenies });
+  }
   for (const line of modeLines(t, choice)) io.stdout.write(`${line}\n`);
-  for (const [id, entry] of choice.blocked) io.stdout.write(`${t('curate.source_blocked', { source: id, reason: blockedMessage(t, SOURCES[id], config, entry) })}\n`);
+  for (const [id, entry] of blocked) io.stdout.write(`${t('curate.source_blocked', { source: id, reason: blockedMessage(t, SOURCES[id], config, entry) })}\n`);
+  if (waiting !== null) io.stdout.write(`${t('curate.source_waiting', { source: notes, calendar: cal, state: waiting })}\n`);
   for (const line of sourceLines(t, { active, plans, days, unavailable, config, blocks: false })) io.stdout.write(`${line}\n`);
   const argv = modelArgv(config, machine, choice.tools, choice.mode);
   io.stdout.write(`${t('curate.check_argv', { bin: claudeBin, argv: JSON.stringify(argv) })}\n`);

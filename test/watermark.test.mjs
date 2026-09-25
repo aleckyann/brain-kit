@@ -234,7 +234,7 @@ test('advance, vacuous (no model ran): only when the evidence expected nothing',
 test('advance, a source that lists something whenever it is on: "empty" counts with its evidence ok and something expected, never with nothing expected', () => {
   const dir = stateDir();
   const connector = { emptyMeansNothingListed: false };
-  const listed = { read: 1, expected: 1, ok: true };
+  const listed = { read: 1, expected: 1, ok: true, listed: 0 };
   assert.deepEqual(advance(dir, 'calendar', '2026-09-23', { modelExit: 0, evidence: { ...listed, ok: false }, sourcesLine: { calendar: 'empty' }, ...connector }), { advanced: false, reason: 'no_evidence' });
   assert.deepEqual(advance(dir, 'calendar', '2026-09-23', { modelExit: 0, evidence: { read: 0, expected: 0, ok: true }, sourcesLine: { calendar: 'empty' }, ...connector }), { advanced: false, reason: 'empty_nothing_listed' });
   assert.equal(existsSync(join(dir, 'watermark.json')), false);
@@ -248,6 +248,21 @@ test('advance, a source that lists something whenever it is on: "empty" counts w
     assert.deepEqual(advance(dir, 'transcripts', '2026-09-23', { modelExit: 0, evidence: listed, sourcesLine: { transcripts: 'empty' }, ...member }), { advanced: false, reason: 'empty_with_files' });
   }
   assert.deepEqual(markOf(dir).sources, { calendar: '2026-09-23', meeting_notes: '2026-09-23' });
+});
+
+test('advance, ruling R-F1: a connector source\'s "empty" counts only when its reads listed nothing; a listing that found something, or no count, is inconsistent_empty, while "ok" does not look at the count', () => {
+  const dir = stateDir();
+  const connector = { emptyMeansNothingListed: false };
+  const read = { read: 1, expected: 1, ok: true };
+  for (const listed of [2, 1, null, undefined, -1, '0', 0.5]) {
+    const evidence = listed === undefined ? read : { ...read, listed };
+    assert.deepEqual(advance(dir, 'meeting_notes', '2026-09-23', { modelExit: 0, evidence, sourcesLine: { meeting_notes: 'empty' }, ...connector }), { advanced: false, reason: 'inconsistent_empty' }, String(listed));
+  }
+  assert.equal(existsSync(join(dir, 'watermark.json')), false);
+  assert.deepEqual(advance(dir, 'calendar', '2026-09-23', { modelExit: 0, evidence: { ...read, listed: 3 }, sourcesLine: { calendar: 'ok' }, ...connector }), { advanced: true, previous: null });
+  assert.deepEqual(advance(dir, 'meeting_notes', '2026-09-23', { modelExit: 0, evidence: { ...read, listed: 0 }, sourcesLine: { meeting_notes: 'empty' }, ...connector }), { advanced: true, previous: null });
+  // A local source's empty is phase 2's rule: the count plays no part.
+  assert.deepEqual(advance(dir, 'transcripts', '2026-09-23', { modelExit: 0, evidence: { read: 0, expected: 0, ok: true, listed: 4 }, sourcesLine: { transcripts: 'empty' } }), { advanced: true, previous: null });
 });
 
 test('advance, vacuous: never for a source that lists something whenever it is on, even with nothing expected', () => {

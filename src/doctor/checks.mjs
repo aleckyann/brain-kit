@@ -54,6 +54,7 @@ import { buildArgv, rulesIn, runModel, unscopedRules } from '../harness/claude-c
 import { checkIsolation } from '../guards/isolation.mjs';
 import { CONNECTOR_STATES, connectorStateMessage, connectorStates } from '../guards/connectors.mjs';
 import { blockingMessage, userSettingsFiles } from '../curate/user-rules.mjs';
+import { unsafeRuleCharacters } from '../curate/rule-path.mjs';
 import { keywordMatchers } from '../rules/privacy-keywords.mjs';
 import { SOURCES } from '../sources/index.mjs';
 import { addDays, daysBetween, localDay, readWatermark, WatermarkError } from '../guards/watermark.mjs';
@@ -67,7 +68,7 @@ import { installedRoundPath, ROUND_COMMANDS, roundPath, runScheduleSync } from '
 // here: the connectors check asks the round's own choice of launch mode
 // (chooseMode) and its own reading of a source that is off, so doctor and
 // the round cannot disagree.
-import { BLOCKED_BY_USER_RULES, chooseMode, offOnPurpose, offProblems, problemText } from '../commands/curate.mjs';
+import { BLOCKED_BY_USER_RULES, chooseMode, offOnPurpose, offProblems, problemText, SECOND_DOOR, WAITING_FOR_CALENDAR } from '../commands/curate.mjs';
 
 export const MINIMUM_NODE_MAJOR = 24;
 export const HOOKS_DIR = '.githooks';
@@ -1328,9 +1329,21 @@ function configuredSafe(source, config) {
 // connector sources curate.sources lists (the required ones first), those
 // that are on, and the round's own choice of launch mode for them
 // (chooseMode, in src/commands/curate.mjs: the person's user settings read
-// and mirrored exactly as a round does). Doctor lists no transcript, which
-// changes only whether a user read rule naming one of them counts as the
-// round's own or as widening reads.
+// and mirrored exactly as a round does). Doctor lists no transcript: it
+// hands the transcripts folder instead as the round's read root, so a user
+// read rule overlapping any transcript a round could list counts as
+// widening reads here, where a round would mirror one disjoint from the
+// files it lists that day (ruling R-F2): doctor may warn where a round
+// mirrors, never the reverse.
+function transcriptsRoot(ctx) {
+  const read = ctx.machine();
+  const machine = read.ok && isObject(read.value) ? read.value : {};
+  const home = ctx.env.HOME || homedir();
+  const configured = typeof machine.transcripts_dir === 'string' ? machine.transcripts_dir : join('~', '.claude', 'projects');
+  const root = expandHome(configured, ctx.env);
+  return isAbsolute(root) && isAbsolute(home) && unsafeRuleCharacters(root).length === 0 ? [root] : [];
+}
+
 function connectorsPlan(ctx) {
   const read = ctx.config();
   if (!read.ok || !isObject(read.value)) return { unknown: true };
@@ -1344,7 +1357,7 @@ function connectorsPlan(ctx) {
     .map((item) => SOURCES[item]);
   const on = listed.filter((source) => configuredSafe(source, config));
   const connectorDenies = [...new Set(on.flatMap((source) => source.toolRules(config).deny))];
-  const choice = on.length === 0 ? null : chooseMode({ config, root: ctx.root, env: ctx.env, readFiles: [], candidates: on, connectorDenies });
+  const choice = on.length === 0 ? null : chooseMode({ config, root: ctx.root, env: ctx.env, readFiles: transcriptsRoot(ctx), candidates: on, connectorDenies });
   return { config, required, listed, on, choice };
 }
 
@@ -1425,6 +1438,9 @@ function connectorsCheck(ctx) {
   const read = ctx.lastRun();
   const lastRun = read.ok && isObject(read.value) ? read.value : null;
   const carried = lastRun !== null && isObject(lastRun.connectorStates) ? lastRun.connectorStates : {};
+  // The state each source that is on was last seen in, or was blocked in,
+  // for the meeting notes' wait on the calendar below.
+  const known = {};
   for (const source of listed) {
     const setting = `sources.${source.id}`;
     if (!on.includes(source)) {
@@ -1441,11 +1457,14 @@ function connectorsCheck(ctx) {
     }
     const spec = source.serverSpec(config);
     const blocked = choice.blocked.get(source.id);
+    // A rule refusing connector mode for every source is said once, above.
+    if (blocked?.rules) known[source.id] = BLOCKED_BY_USER_RULES;
     if (blocked?.rules) {
       results.push({ id, status: severity(source), messageKey: 'doctor.connectors.denied', params: { source: source.id, detail: deniedMessage(source, config, blocked.rules) } });
     } else if (blocked === undefined) {
       const asked = probe?.states?.[source.id] ?? null;
       const entry = isObject(carried[source.id]) && typeof carried[source.id].state === 'string' ? carried[source.id] : null;
+      known[source.id] = asked?.state ?? entry?.state ?? null;
       if (asked !== null) {
         results.push(stateLine(id, source, spec, asked, whenProbe(), severity(source)));
       } else if (entry === null) {
@@ -1462,6 +1481,15 @@ function connectorsCheck(ctx) {
     if (consent !== undefined) {
       results.push({ id, status: 'warn', messageKey: 'doctor.connectors.consent', params: { source: source.id, detail: consentMessage(consent.detail) } });
     }
+  }
+  // The meeting notes close a day only with the calendar read over it, and
+  // a round whose calendar is not read offers them no work at all
+  // (WAITING_FOR_CALENDAR, final review I2): said here, with the state that
+  // holds them.
+  const notes = on.find((source) => source.id === SECOND_DOOR.source);
+  const calendarState = known[SECOND_DOOR.through];
+  if (notes !== undefined && on.some((source) => source.id === SECOND_DOOR.through) && typeof calendarState === 'string' && !['connected', 'pending'].includes(calendarState)) {
+    results.push({ id, status: severity(notes), messageKey: 'doctor.connectors.waiting', params: { source: notes.id, calendar: SECOND_DOOR.through, state: calendarState, reason: WAITING_FOR_CALENDAR } });
   }
   return results;
 }

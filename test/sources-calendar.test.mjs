@@ -81,13 +81,21 @@ function record(calls) {
     if (call.unanswered) return;
     const result = { toolUseId: id, isError: call.error === true, hasNextPage: call.more === true };
     if (call.complete !== undefined) result.complete = call.complete;
+    if (Object.hasOwn(call, 'items')) result.items = call.items;
     toolResults.push(result);
   });
   return { toolUses, toolResults };
 }
 
+// Every field of the evidence but `listed`, which the tests of ruling R-F1
+// check on their own.
+function readCore(round, plan) {
+  const { listed, ...rest } = calendarSource.readEvidence(round, plan);
+  return rest;
+}
+
 function evidence(calls, options) {
-  return calendarSource.readEvidence(record(calls), collect(options));
+  return readCore(record(calls), collect(options));
 }
 
 const READ = Object.freeze({ read: 1, expected: 1, ok: true });
@@ -170,7 +178,7 @@ test('a vault made before the calendar source asked for enabled stays off after 
   assert.deepEqual(plan.calendars, []);
   assert.deepEqual(plan.problems, [{ code: 'not_enabled', detail: '1' }]);
   assert.match(plan.promptBlock, /sources\.calendar\.calendars lists 1 calendar\(s\), but the calendar source is off because sources\.calendar\.enabled is not true/);
-  assert.deepEqual(calendarSource.readEvidence(record([{ input: listing() }]), plan), { read: 0, expected: 0, ok: false });
+  assert.deepEqual(readCore(record([{ input: listing() }]), plan), { read: 0, expected: 0, ok: false });
   assert.deepEqual(calendarSource.toolRules(old).allow, [], 'an off source asks for no tool');
   const same = config({ calendar: { enabled: undefined } });
   delete same.sources.calendar.enabled;
@@ -293,7 +301,7 @@ test('calendar ids are planned trimmed, so the ids the model is given are the id
   assert.deepEqual(plan.calendars, [OWNER]);
   assert.deepEqual(plan.otherCalendars, [TEAM[0]]);
   assert.ok(plan.promptBlock.includes(JSON.stringify(listing())), plan.promptBlock);
-  assert.deepEqual(calendarSource.readEvidence(record([{ input: listing() }, { input: listing({ calendarId: TEAM[0] }) }]), plan), { read: 2, expected: 2, ok: true });
+  assert.deepEqual(readCore(record([{ input: listing() }, { input: listing({ calendarId: TEAM[0] }) }]), plan), { read: 2, expected: 2, ok: true });
 });
 
 test('no team calendar at all is no problem, with or without consent', () => {
@@ -311,7 +319,7 @@ test('an unconfigured calendar source plans nothing, reads nothing and says so',
       assert.deepEqual(plan.problems, [{ code: 'not_configured', detail: '' }], 'only why it is off, never the consent of a source that reads nothing');
       assert.match(plan.promptBlock, /sources\.calendar\.calendars/);
       assert.ok(!plan.promptBlock.includes(LIST), plan.promptBlock);
-      assert.deepEqual(calendarSource.readEvidence(record([{ input: listing() }]), plan), { read: 0, expected: 0, ok: false });
+      assert.deepEqual(readCore(record([{ input: listing() }]), plan), { read: 0, expected: 0, ok: false });
     }
   }
 });
@@ -414,10 +422,10 @@ test('readEvidence never takes an instant it could not read for the epoch', () =
   // window that ends at the epoch.
   const plan = collect();
   const early = listing({ startTime: '1969-12-31T00:00:00.000Z' });
-  assert.deepEqual(calendarSource.readEvidence(record([{ input: early }]), { ...plan, window: { ...plan.window, from: 'today' } }), UNREAD);
+  assert.deepEqual(readCore(record([{ input: early }]), { ...plan, window: { ...plan.window, from: 'today' } }), UNREAD);
   const epoch = { ...plan, window: { from: '1969-12-31T00:00:00.000Z', to: '1970-01-01T00:00:00.000Z', timezone: TIMEZONE } };
-  assert.deepEqual(calendarSource.readEvidence(record([{ input: listing({ startTime: '1969-12-31T00:00:00.000Z', endTime: 'later' }) }]), epoch), UNREAD);
-  assert.deepEqual(calendarSource.readEvidence(record([{ input: listing({ startTime: '1969-12-31T00:00:00.000Z', endTime: '1970-01-01T00:00:00Z' }) }]), epoch), READ);
+  assert.deepEqual(readCore(record([{ input: listing({ startTime: '1969-12-31T00:00:00.000Z', endTime: 'later' }) }]), epoch), UNREAD);
+  assert.deepEqual(readCore(record([{ input: listing({ startTime: '1969-12-31T00:00:00.000Z', endTime: '1970-01-01T00:00:00Z' }) }]), epoch), READ);
 });
 
 test('readEvidence: a listing with no eventType does not read the calendar', () => {
@@ -594,8 +602,8 @@ test('readEvidence: other people calendars planned with consent are expected too
 });
 
 test('readEvidence reads a record with no tool use as nothing read', () => {
-  assert.deepEqual(calendarSource.readEvidence({ toolUses: [], toolResults: [] }, collect()), UNREAD);
-  assert.deepEqual(calendarSource.readEvidence({}, collect()), UNREAD);
+  assert.deepEqual(readCore({ toolUses: [], toolResults: [] }, collect()), UNREAD);
+  assert.deepEqual(readCore({}, collect()), UNREAD);
 });
 
 test('readEvidence passes over a call whose input is not an object', () => {
@@ -605,18 +613,18 @@ test('readEvidence passes over a call whose input is not an object', () => {
 test('readEvidence reads nothing against a plan whose window is not two instants', () => {
   const plan = collect();
   for (const window of [{ ...plan.window, to: 'tomorrow' }, { ...plan.window, from: 'today' }, {}]) {
-    assert.deepEqual(calendarSource.readEvidence(record([{ input: listing() }]), { ...plan, window }), UNREAD, JSON.stringify(window));
+    assert.deepEqual(readCore(record([{ input: listing() }]), { ...plan, window }), UNREAD, JSON.stringify(window));
   }
 });
 
 test('the anonymized capture of 24/09/2026 reads its calendar: two pages over the whole day with the private-event filter', () => {
   const lines = readFileSync(FIXTURE, 'utf8').split('\n');
   const plan = collect({ calendar: { calendars: ['primary'] } });
-  assert.deepEqual(calendarSource.readEvidence(parseStream(lines), plan), READ);
+  assert.deepEqual(readCore(parseStream(lines), plan), READ);
   // Without the second page's call and result, the first page was not every page.
   const cut = lines.filter((line) => !line.includes('toolu_fake_connectors_3'));
   assert.equal(cut.length, lines.length - 2);
-  assert.deepEqual(calendarSource.readEvidence(parseStream(cut), plan), UNREAD);
+  assert.deepEqual(readCore(parseStream(cut), plan), UNREAD);
 });
 
 // ---------------------------------------------------------------- serverSpec and toolRules
@@ -723,4 +731,23 @@ test('the schema holds enabled to a boolean and leaves the tool prefix and tools
   odd.sources.calendar.tool_suffixes = ['list_events', 'create_event'];
   assert.deepEqual(validateConfig(odd), [], 'refused by the source, never by the schema');
   assert.equal(calendarSource.isConfigured(odd), false);
+});
+
+// ---------------------------------------------------------------- listed (ruling R-F1)
+
+test('readEvidence: listed sums the events on the pages of the listing that read each calendar, and no other call', () => {
+  const listed = (calls, options) => calendarSource.readEvidence(record(calls), collect(options)).listed;
+  assert.equal(listed([{ input: listing(), items: 0 }]), 0);
+  assert.equal(listed([{ input: listing(), items: 3 }]), 3);
+  assert.equal(listed([{ input: listing(), more: true, items: 2 }, { input: listing({ pageToken: 'page-2' }), items: 1 }]), 3, 'every page of the listing');
+  assert.equal(listed([{ input: listing(), more: true, items: 0 }, { input: listing({ pageToken: 'page-2' }), error: true, items: 5 }, { input: listing({ pageToken: 'page-2' }), items: 0 }]), 0, 'a failed page taken over by its retry');
+  assert.equal(listed([{ input: listing({ startTime: undefined }), items: 4 }, { input: listing(), items: 0 }]), 0, 'a listing that did not read the calendar does not count');
+  assert.equal(listed([{ input: listing(), items: 0 }, { input: listing(), items: 6 }]), 0, 'the first listing read to its last page, not a later one');
+  assert.equal(listed([{ input: listing(), items: 1 }, { input: listing({ calendarId: 'primary' }), items: 2 }], { calendar: { calendars: [OWNER, 'primary'] } }), 3, 'every calendar');
+  assert.equal(listed([{ input: listing() }]), null, 'a page with no count');
+  assert.equal(listed([{ input: listing(), more: true, items: 0 }, { input: listing({ pageToken: 'page-2' }), items: null }]), null, 'one page with no count');
+  assert.equal(listed([{ input: listing({ startTime: undefined }), items: 0 }]), null, 'nothing read');
+  const twice = record([{ input: listing(), items: 0 }]);
+  twice.toolResults.push({ ...twice.toolResults[0], items: 0 });
+  assert.equal(calendarSource.readEvidence(twice, collect()).listed, null, 'two results for one call');
 });

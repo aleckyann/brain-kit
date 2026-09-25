@@ -76,7 +76,7 @@ test('the evidence is the title search alone: attachments opened without it leav
     toolResults: calls.map((call, index) => ({ toolUseId: `toolu_${index}`, isError: false, hasNextPage: false })),
   });
   const attachmentsOnly = round([[`${PREFIX}read_file_content`, { fileId: 'file-0001' }], [`${PREFIX}read_file_content`, { fileId: 'file-0002' }]]);
-  assert.deepEqual(meetingNotesSource.readEvidence(attachmentsOnly, plan), { read: 0, expected: 1, ok: false, documents: { read: 2, failed: 0 } });
+  assert.deepEqual(meetingNotesSource.readEvidence(attachmentsOnly, plan), { read: 0, expected: 1, ok: false, documents: { read: 2, failed: 0 }, listed: null });
   const searchOnly = round([[`${PREFIX}search_files`, { query: plan.query }]]);
-  assert.deepEqual(meetingNotesSource.readEvidence(searchOnly, plan), { read: 1, expected: 1, ok: true, documents: { read: 0, failed: 0 } });
+  assert.deepEqual(meetingNotesSource.readEvidence(searchOnly, plan), { read: 1, expected: 1, ok: true, documents: { read: 0, failed: 0 }, listed: null });
 });

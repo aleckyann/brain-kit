@@ -30,7 +30,7 @@ You are proposing the rows of the vault's weekly rhythm table from the person's 
 8. Count each event once, by its `id`, even when it appears on more than one calendar. A ritual is an event that repeats: its occurrences share one `recurringEventId`, or the same title (`summary`) appears at least three times in the four weeks.
 9. Never count as a ritual:
    - an event from someone else's calendar, unless the configuration records consent (`sources.calendar.team_calendars_consent_noted: true`), and even then only the events the person takes part in;
-   - a private event: marked private on the calendar, or with a title carrying a word from `sources.calendar.privacy.exclude_keywords`. Leave it out without copying its title anywhere.
+   - a private event: marked private on the calendar, or with a title carrying a word from `sources.calendar.privacy.exclude_keywords`, or a title holding a phrase from `privacy.third_party_keywords` (the list `lint` refuses on an added line). Leave it out without copying its title anywhere.
 10. For each ritual, note:
    - the title exactly as the calendar has it, letter for letter, never translated or summarised;
    - the cadence, read from the dates (every week, every other week, Monday to Friday, once a month);

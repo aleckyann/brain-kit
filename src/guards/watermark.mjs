@@ -260,7 +260,13 @@ export function setWatermark(stateDir, sourceId, day) {
 // for it `empty` counts when its evidence is ok, which is the listing or
 // search made (an empty day is a listing with no events), and only with
 // something expected; and it never advances vacuously, since no model ran
-// to make that listing.
+// to make that listing. And it counts only when that listing or search
+// listed nothing: `evidence.listed`, the events or files on the pages that
+// read the source (src/harness/stream.mjs, `items`), must be exactly 0; an
+// `empty` over a listing that found something, or whose count is not
+// known, is `inconsistent_empty` (ruling R-F1: the search found two
+// documents, none was opened, and the model said empty, the 10/08/2026
+// shape).
 // Never moves the mark backwards or onto the day it already holds, and
 // never onto a day later than yesterday in `timezone` (the vault's zone,
 // required) as of `now`: no round can have swept a day that has not ended.
@@ -286,6 +292,7 @@ export function advanceWatermark(stateDir, sourceId, day, {
     if (state === 'empty') {
       if (listsNothing && evidence.expected !== 0) return { advanced: false, reason: 'empty_with_files' };
       if (!listsNothing && !(Number.isInteger(evidence.expected) && evidence.expected > 0)) return { advanced: false, reason: 'empty_nothing_listed' };
+      if (!listsNothing && evidence.listed !== 0) return { advanced: false, reason: 'inconsistent_empty' };
     } else if (state !== 'ok') {
       return { advanced: false, reason: 'reported_failed' };
     }

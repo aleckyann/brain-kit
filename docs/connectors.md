@@ -46,6 +46,15 @@ Events are deduplicated by their id. In someone else's calendar, an event that a
 includes you is skipped, since your own listing has it. The documents attached to the
 events are the second door to meeting notes, below.
 
+Some calendar settings in the configuration are read by no code of the round:
+`sources.calendar.privacy` (`exclude_event_types`, `exclude_keywords`,
+`team_personal_events`), `skip_events_with_owner`, `focus_blocks_as_ruler` and `dedup_by`.
+The event-type filter is fixed at `DEFAULT` whatever `exclude_event_types` says, and the
+privacy rules the model follows are the prompt's own (see "Privacy" below). Only the
+`seed-rituals` skill reads `exclude_keywords`, to leave matching titles out of the rituals
+table. A keyword you add there filters nothing in a round: `privacy.third_party_keywords`
+is the list that `lint` enforces.
+
 ### The meeting notes
 
 Meeting notes have two doors (incident of 11/08/2026):
@@ -57,15 +66,35 @@ Meeting notes have two doors (incident of 11/08/2026):
   '<instant>'`, and must follow every next page. The source counts as read only when the
   record shows that search, with both clauses as given and neither negated, answered
   without an error and whole to its last page.
-- **The documents attached to the calendar's events**, when the calendar source is read in
-  the same round: all of them when `attached_title_prefix` is empty (the default), or only
-  those whose title starts with it. This door sees only the days the calendar reads: on a
-  day that only the meeting notes have open, attachments are not looked at, and the
-  source's day still closes on the search alone.
+- **The documents attached to the calendar's events**, reached through the calendar
+  source's listing in the same round: all of them when `attached_title_prefix` is empty
+  (the default), or only those whose title starts with it.
+
+While the calendar source is on, a meeting-notes day closes only when the calendar was also
+read over that day in the same round; the title search alone does not close it, and the
+watermark line says `second_door_unread`. So the calendar is listed over every day the
+meeting notes have open, including days the calendar itself already closed: such a day is
+listed again only for its attachments, the parameters say so, and the model is told to
+capture nothing new from it. That listing keeps the calendar's own cap of seven days: when
+the two sources are further apart, the oldest seven days are listed, and the meeting-notes
+days after them wait for a later round.
+
+When the calendar is on but a round will not read it (its connector `needs_auth`,
+`failed`, `absent`, `tools_missing` or `unknown` at the first launch, or a user rule that
+blocks it), the meeting notes are not offered in that round at all. No search runs, no
+model work is spent on them, and their days stay open with the reason
+`waiting_for_calendar`: in the log (`source_waiting`, and the `watermark` line), in
+`last-run.json` (`waitingFor`, naming the calendar and its state) and in `brain-kit
+doctor`. Without that rule, a calendar that stayed away for days would have every round
+distil the same notes again, at full model cost, into a new pull request. With the
+calendar off, the title search alone closes a meeting-notes day.
 
 For every note, the model reads the whole document, every tab and not only its summary,
 and distills it into the vault's log under its literal title in straight quotes; a title
-the log already holds is not distilled again. A speaker attribution that looks wrong is a
+the log already holds is not distilled again. That check reads the log as the round's
+checkout has it, the default branch: notes distilled into a pull request that is not merged
+yet are not there, so a later round can distil the same notes again into a second pull
+request. Merge or close a round's pull request before the next one runs to avoid that. A speaker attribution that looks wrong is a
 divergence to confirm, never a fact. Before opening an attached document the model checks
 its metadata, and it never opens an audio or video file, nor a document the meeting service
 marks as a recording or a full transcription: those are listed by title as not read. The
@@ -173,8 +202,13 @@ each part measured on its own:
   denied it, because a deny wins over an allow. So every allow rule in the `settings.json`
   and `settings.local.json` of your user settings folder (`CLAUDE_CONFIG_DIR` when it is
   set, `~/.claude` otherwise) is mirrored as a deny, except a rule the round's own allow
-  list already holds, a read rule (below), and a write rule inside the vault, which the
-  round's own rules already govern;
+  list already holds, some read rules (below), and a write rule inside the vault, which the
+  round's own rules already govern. A path rule (`Edit`, `Write`, `NotebookEdit`,
+  `MultiEdit`, or a read rule) is passed in its resolved absolute form, `Edit(//<path>)`,
+  never as written: in a settings file `/x` is anchored at that file's folder, but a rule
+  on the command line has no settings file, and where the CLI would anchor it there is not
+  measured. `~/x` is resolved with the round's home, `/x` with the settings folder, and
+  `./x` or `x` with the vault;
 - **memory:** measured on 25/09/2026, the CLI's first event lists the auto-memory folder in
   both launch modes unless `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` and
   `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` are in its environment. Every round sets both.
@@ -188,9 +222,14 @@ connector mode for the round:
 
 - a bare `Bash`, `Bash(*)`, or a Bash rule that covers one of the kit's own commands;
 - an `Edit` or `Write` rule on the vault, or on a folder that holds it;
-- a settings file that cannot be read, or a rule the kit cannot read with a known meaning
-  (one that splits into several rules, or holds a parenthesis or a control character in its
-  scope).
+- a settings file that cannot be read, or one the kit cannot locate (a relative
+  `CLAUDE_CONFIG_DIR`, or with it unset a relative `HOME`);
+- a rule the kit cannot read with a known meaning: one that splits into several rules, holds
+  a parenthesis or a control character in its scope, ends its scope in a backslash or holds
+  an odd number of double quotes; a write rule whose scope could climb out of its literal
+  prefix (a `..` segment, or `{` alternatives); or a path rule to mirror whose resolved form
+  would hold a character no rule can carry (a comma, a parenthesis, a bracket or a
+  backslash, in your home or settings folder path, say).
 
 The round then runs isolated, on the transcripts alone. Every connector source gets the
 state `blocked_by_user_rules`, and the rule and its file are named in the log, in
@@ -203,14 +242,20 @@ What connector mode cannot switch off:
 - **Your MCP servers start.** Every server your user settings declare is started for the
   round. Under `dontAsk` their tools run only where an allow rule the round keeps says so,
   and the round keeps none for them.
-- **A user rule that allows reads widens what the model can read.** A read rule (`Read`,
-  `Glob`, `Grep`, `LS`) is never mirrored, because a mirrored bare `Read` would deny the
-  round's own reads. One that reaches outside the vault is recorded as widening reads
+- **Some user rules that allow reads widen what the model can read.** A read rule (`Read`,
+  `Glob`, `Grep`, `LS`) whose scope is disjoint from the vault and from every read the round
+  itself allows (the transcripts its plan lists, a read rule of
+  `curate.allowed_tools_extra`) is mirrored like any other. A bare one, or one whose scope
+  overlaps the vault or those reads, is never mirrored, because the deny would take the
+  round's own reads: one that reaches outside the vault is recorded as widening reads
   (`userRules.widenedReads` in `last-run.json`), and `brain-kit doctor` names it (check
-  `round-scope`). Scope such rules to what you need.
+  `round-scope`; doctor judges against the whole transcripts folder, so it may name a rule
+  a round would mirror). Scope such rules to what you need.
 - **Not measured, so not relied on:** `permissions.additionalDirectories` in your user
-  settings, managed or policy settings (loaded in both modes), and the older per-project
-  `allowedTools` in `~/.claude.json`. Whether your own `~/.claude/CLAUDE.md` reaches a
+  settings, managed or policy settings (loaded in both modes), the older per-project
+  `allowedTools` in `~/.claude.json`, and the user settings that are not permissions: your
+  output style, the `env` block, the model settings. They reach a connector-mode round as
+  you wrote them, and the round's first event is not checked for them. Whether your own `~/.claude/CLAUDE.md` reaches a
   connector-mode round could not be asked on 25/09/2026, because the CLI's login had
   expired; the memory switches above are what the CLI offers against it.
 
@@ -288,7 +333,9 @@ round's exit code: the transcripts are still curated and proposed. Listed in
 **One window per source.** Each source reads only its own open days, the days after its own
 mark, oldest first and at most seven, and advances only through the days it read
 ([scheduling.md](scheduling.md), "The watermark"). A calendar two days behind the
-transcripts reads its two days, while the transcripts read only theirs.
+transcripts reads its two days, while the transcripts read only theirs. The one exception
+is the calendar while the meeting notes are on: it is also listed over the meeting notes'
+open days, within its own seven, for their attachments (see "The meeting notes" above).
 
 **The notification.** When a best-effort source's connector state differs from the one the
 previous round saw (no earlier state counts as `connected`), `machine.notify_command` runs
@@ -300,8 +347,10 @@ was not connected in the last round, with the date of that round.
 **`brain-kit doctor`**, check `connectors`, says for each connector source listed: that it
 is off, and why when it is half configured; the state the last round saw, with that round's
 date; the prefix the tools were seen under, when it is not the configured one, naming both
-and the setting; other people's calendars listed without the recorded consent; and every
-user rule that refuses connector mode, with its file. A state other than `connected` is a
+and the setting; other people's calendars listed without the recorded consent; every user
+rule that refuses connector mode, with its file; and that the meeting notes wait for the
+calendar (`waiting_for_calendar`) when the calendar's last state, or a user rule, keeps it
+from being read. A state other than `connected` is a
 warning, and a failure only for a source in `curate.sources.required`.
 
 **`brain-kit doctor --probe`** asks the CLI now, without a round. It launches the round's own
@@ -321,11 +370,15 @@ brain-kit doctor --only connectors --probe
 
 The evidence is the record of the calls the model made, and some things are not in it:
 
-- The text of a result is not kept, only whether it came back whole and whether it
-  advertised a next page. So a page token the connector accepts that is not the one it
-  advertised, an error written inside a result that is not marked as one, a connector that
-  caps a listing without saying so, and a next-page key renamed by a later release (which
-  reads as a last page) cannot be seen.
-- How many documents a search found is not kept either, so "found two, opened none" reads
-  like "found none", and that day closes.
+- The text of a result is not kept, only whether it came back whole (one JSON object),
+  whether it advertised a next page, and how many events or files its page listed. So a
+  page token the connector accepts that is not the one it advertised, an error written
+  inside a result that is not marked as one, a connector that caps a listing without saying
+  so, and a next-page key renamed by a later release (which reads as a last page) cannot be
+  seen.
+- A source reported `empty` whose reads listed something does not move its mark: the
+  watermark line says `inconsistent_empty`, and `listed` in `last-run.json` holds the count
+  (so "the search found two, opened none, reported empty" keeps the day open). A source
+  reported `ok` closes its day however many of the documents found were opened: how many a
+  round opens is never a condition.
 - How much of a document the model read: opening it counts, as opening a transcript does.

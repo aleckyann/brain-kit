@@ -48,7 +48,11 @@ function planFor(overrides = {}, lang = 'en', window = WINDOW) {
   return meetingNotesSource.collect({ window, config: configWith(overrides, lang), now: NOW });
 }
 
-const evidence = (record, plan) => meetingNotesSource.readEvidence(record, plan);
+// Every field but `listed`, which the tests of ruling R-F1 below check on their own.
+const evidence = (record, plan) => {
+  const { listed, ...rest } = meetingNotesSource.readEvidence(record, plan);
+  return rest;
+};
 
 // A round record from a list of calls, in order. Each call answers with no
 // error and no next page unless it says otherwise; `answered: false` leaves
@@ -64,6 +68,7 @@ function record(calls) {
     if (call.answered === false) return;
     const result = { toolUseId: id, isError: call.isError === true, hasNextPage: call.hasNextPage === true };
     if (Object.hasOwn(call, 'complete')) result.complete = call.complete;
+    if (Object.hasOwn(call, 'items')) result.items = call.items;
     toolResults.push(result);
   });
   return { toolUses, toolResults };
@@ -503,4 +508,22 @@ test('serverSpec names the connector, its prefix and the tools the source needs,
   const init = parseStream(readFileSync(join(FIXTURES, 'connectors-connected.jsonl'), 'utf8')).init;
   assert.deepEqual(connectorStates(init, [spec]), { meeting_notes: { state: 'connected', rawStatus: 'connected', observedPrefix: PREFIX } },
     'the captured session holds every tool the pack configures');
+});
+
+// --- listed (ruling R-F1) -------------------------------------------------------------
+
+test('readEvidence: listed sums the files on the pages of the search chain that read the source, and no other call', () => {
+  const plan = planFor();
+  const q = plan.query;
+  const listed = (calls) => meetingNotesSource.readEvidence(record(calls), plan).listed;
+  assert.equal(listed([search(q, { items: 0 })]), 0);
+  assert.equal(listed([search(q, { items: 2 })]), 2);
+  assert.equal(listed([search(q, { hasNextPage: true, items: 1 }), search(q, { pageToken: 'page-2', items: 2 })]), 3, 'every page');
+  assert.equal(listed([search(q, { hasNextPage: true, items: 0 }), search(q, { pageToken: 'page-2', complete: false, items: 9 }), search(q, { pageToken: 'page-2', items: 0 })]), 0, 'a cut page taken over by its retry');
+  assert.equal(listed([search('title contains \'x\'', { items: 5 }), search(q, { items: 0 })]), 0, 'another search does not count');
+  assert.equal(listed([search(q, { items: 0 }), readDoc('file-0001', { items: 3 })]), 0, 'a document read is no listing');
+  assert.equal(listed([search(q)]), null, 'a page with no count');
+  assert.equal(listed([search(q, { hasNextPage: true, items: 0 }), search(q, { pageToken: 'page-2', items: null })]), null, 'one page with no count');
+  assert.equal(listed([search('title contains \'x\'', { items: 0 })]), null, 'nothing read');
+  assert.equal(meetingNotesSource.readEvidence(record([search(q, { items: 0 })]), { ...plan, configured: false }).listed, null, 'a source that is off');
 });

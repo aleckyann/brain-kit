@@ -450,3 +450,21 @@ test('lint against a repository: a lone carriage return anywhere in the note can
   writeFileSync(join(third, 'notes', 'cal.md'), '# Calendar\n\nWeekly planning.\r\nNothing else.\r\nBruno: sick\rleave, Friday.\r\n');
   assert.deepEqual((await lintRun(third, ['--base', 'worktree'])).keywords, [['notes/cal.md', 5, 'sick leave']]);
 });
+
+// Review M3 of task 6: near-spellings an editor makes.
+test('a typographic apostrophe reads as the straight one and a run of whitespace as one space, in the keyword and in the line', async () => {
+  const { firstKeyword, keywordMatchers } = await import('../src/rules/privacy-keywords.mjs');
+  const curly = String.fromCharCode(0x2019);
+  const left = String.fromCharCode(0x2018);
+  const modifier = String.fromCharCode(0x02bc);
+  const nbsp = String.fromCharCode(0x00a0);
+  const matchers = keywordMatchers({ privacy: { third_party_keywords: ["doctor's appointment", 'sick leave', `dentist${curly}s visit`, 'consulta  médica'] } });
+  for (const line of [`Ana: doctor${curly}s appointment at 10`, `doctor${left}s appointment`, `doctor${modifier}s appointment`, "doctor's  appointment", `doctor's${nbsp}appointment`, "doctor's\tappointment"]) {
+    assert.equal(firstKeyword(line, matchers), "doctor's appointment", JSON.stringify(line));
+  }
+  for (const line of ['Ana on sick   leave', `sick${nbsp}leave`, 'sick \t leave', 'sick\r \rleave']) assert.equal(firstKeyword(line, matchers), 'sick leave', JSON.stringify(line));
+  assert.equal(firstKeyword("the dentist's visit", matchers), `dentist${curly}s visit`, 'the keyword itself curled, reported as configured');
+  assert.equal(firstKeyword('uma consulta médica', matchers), 'consulta  médica', 'a keyword with two spaces matches one');
+  // Still literal otherwise: no apostrophe is not an apostrophe, and a hyphen is not a space.
+  for (const line of ['doctors appointment', 'sick-leave', 'sickleave', 'doctor"s appointment']) assert.equal(firstKeyword(line, matchers), null, line);
+});

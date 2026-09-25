@@ -189,15 +189,37 @@ is read tomorrow, once it has ended.
   through the last of them. The round's window is their union, from the earliest mark. A
   calendar two days behind the transcripts reads its own two days while the transcripts
   read only theirs, and no source reads a day it already covered, so nothing is captured
-  twice.
+  twice. The one exception is the calendar while the meeting notes are on: it is listed
+  over every day the meeting notes have open too, within its own seven, so the notes can
+  reach the documents attached to those days' events; a day the calendar already closed is
+  listed again for that alone, and the model is told to capture nothing new from it. When
+  the two are more than seven days apart, the oldest seven are listed and the later
+  meeting-notes days wait ([connectors.md](connectors.md), "The meeting notes").
 - **When it moves.** Only on exit 0 or 3, and for each source only when the model exited
   0, the source's evidence shows it read (every file the plan offered, for the
   transcripts; every calendar listed, for the calendar; the literal search, for the
-  meeting notes), and the model's last line reports the source `ok`, or `empty` when that
+  meeting notes, and, while the calendar is on, the calendar's listing of the same day in
+  the same round), and the model's last line reports the source `ok`, or `empty` when that
   means nothing was there: for the transcripts, a plan that offered nothing; for a
-  connector source, a listing or search that was made. `partial` (the meeting notes past
-  their caps), `unavailable` and `failed` never move a mark. A round that dies halfway
-  leaves the day open, and the next round reads it again.
+  connector source, a listing or search that was made and listed nothing. `partial` (the
+  meeting notes past their caps), `unavailable` and `failed` never move a mark. A round
+  that dies halfway leaves the day open, and the next round reads it again.
+- **The meeting notes wait for the calendar.** While the calendar is on, a round that will
+  not read it (its connector missing at the first launch, or a user rule that blocks it)
+  does not offer the meeting notes at all: no model work is spent on them, and their days
+  stay open (`waiting_for_calendar`) until a round reads the calendar again.
+- **Why a mark did not move** is the reason on the `watermark` log line and in the
+  `the watermark of <source> did not move (<reason>)` line on stderr: `model_exit` (the
+  model did not exit 0), `no_evidence` (the record does not show the read), `no_sources_line`
+  and `not_reported` (the last line is missing, or does not name the source),
+  `reported_failed` (any state but `ok` or `empty`, `invalid` included), `empty_with_files`
+  (the transcripts reported empty with files offered), `empty_nothing_listed` and
+  `inconsistent_empty` (a connector source reported empty with no listing made, or with a
+  listing that found something), `second_door_unread` (meeting notes whose day the
+  calendar did not list in the same round), `waiting_for_calendar` (meeting notes not
+  offered, above), `not_vacuous` (no model ran, and the source could not close on
+  nothing), `future_day`, and `not_later` (the mark already covers the day; never
+  reported as a problem).
 - **The last line** names every source the round offered, with the states each may be
   given:
 
@@ -269,7 +291,7 @@ otherwise `~/.local/state/brain-kit/<vault name>-<hash>/` (or under `$XDG_STATE_
 | `window` | the days read (`days`), the instants the window spans, `remaining` days left for the next round, and `sources`, each source's own days |
 | `deferredDays` | the open days left for the next round because they would pass the transcripts cap |
 | `network` | whether the network answered, after how long, and the `did_not_wait` note |
-| `sources` | per source: for the transcripts, files kept by the plan, files read, whether its mark advanced, and `noTimestamp`, the files left out for holding no conversation; for a connector source, its `state`, the tool prefix its tools were seen under (`observedPrefix`), `read` against `expected` (calendars listed, or the search made), whether its mark advanced, what the model `reported` for it, the `rules` that blocked it when a user rule did, and for the meeting notes `documents` (how many opened, how many failed) |
+| `sources` | per source: for the transcripts, files kept by the plan, files read, whether its mark advanced, and `noTimestamp`, the files left out for holding no conversation; for a connector source, its `state`, the tool prefix its tools were seen under (`observedPrefix`), `read` against `expected` (calendars listed, or the search made), `listed` (how many events or files the pages that read it listed, null when not known), whether its mark advanced, what the model `reported` for it (`invalid` when the last line gave a value that is not a state, never the value itself), the `rules` that blocked it when a user rule did, for the meeting notes `documents` (how many opened, how many failed), and `waitingFor` (the calendar and its state) when they were not offered because the calendar was not read |
 | `mode`, `relaunched` | the last launch's mode (`isolated` or `connectors`), and whether the round launched a second time |
 | `notConfigured` | each listed source that is off, with its problems |
 | `userRules` | in a round with a connector source to read: the user allow rules mirrored as denies (`mirrored`), those recorded as widening reads (`widenedReads`), and those that refused connector mode (`blocking`); null otherwise |
@@ -285,12 +307,13 @@ The log is `logs/curate-YYYY-MM-DD.log`, one file per day, one line per event:
 `<instant> <event> <json>`. The events are `start`, `network_did_not_wait`,
 `days_remaining`, `days_deferred`, `source_skipped`, `source_off` (a listed source half
 configured), `source_warning`, `source_no_day` (a source with no open day of its own),
-`source_blocked` (a connector source a user rule blocked, with the rule), `plan`,
+`source_blocked` (a connector source a user rule blocked, with the rule), `source_waiting`
+(the meeting notes left out because the calendar is not read, with its state), `plan`,
 `model_start` and `model_end` (one of each per launch, with its number and, on
 `model_start`, its mode), `connectors` (each connector's state in a launch's first event),
 `relaunch` (the sources the second launch goes without, and why), `model_result` (the
 denials and the isolation verdict), `connector_state_changed`, `cleanup`, `watermark` (with
-what the model reported), `exit`, `notify_state` (a state-change notification) and
+what the model reported, and the reason when the mark did not move), `exit`, `notify_state` (a state-change notification) and
 `notify_failed`. The log never holds what a tool returned, the model's final text, anything
 read from a transcript, a calendar or a document, or the round's token.
 `brain-kit curate --keep-stream` (or `keep_stream: true` in `machine.json`) also keeps the

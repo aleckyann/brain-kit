@@ -52,6 +52,15 @@ test('userSettingsFiles lists settings.json and settings.local.json of CLAUDE_CO
   assert.deepEqual(userSettingsFiles({ HOME: home, CLAUDE_CONFIG_DIR: configDir({}) }), []);
 });
 
+test('with CLAUDE_CONFIG_DIR unset, a HOME that is set but not absolute gives both names under it as they are, and the mirror refuses them (review N5 of task 2)', () => {
+  assert.deepEqual(userSettingsFiles({ HOME: 'rel-home' }), [join('rel-home', '.claude', 'settings.json'), join('rel-home', '.claude', 'settings.local.json')]);
+  assert.deepEqual(userSettingsFiles({ HOME: './home/ana' }), [join('home', 'ana', '.claude', 'settings.json'), join('home', 'ana', '.claude', 'settings.local.json')]);
+  const files = userSettingsFiles({ HOME: 'rel-home' });
+  assert.deepEqual(mirrorUserRules({ files, ownAllowed: OWN, vaultRoot: VAULT, home: HOME, kit: KIT }).blocking, files.map((file) => ({ rule: null, file, reason: 'unreadable' })));
+  // An absolute CLAUDE_CONFIG_DIR still decides, whatever HOME says.
+  assert.deepEqual(userSettingsFiles({ HOME: 'rel-home', CLAUDE_CONFIG_DIR: configDir({}) }), []);
+});
+
 test('a CLAUDE_CONFIG_DIR that is set but not absolute, empty included, gives both names as they are, and the mirror refuses them (review M3)', () => {
   const home = makeTempDir('brain-kit-user-rules-home-');
   mkdirSync(join(home, '.claude'));
@@ -74,7 +83,7 @@ test('the brief\'s rules, from settings.json and settings.local.json, one unread
     'settings.json': {
       permissions: {
         allow: [
-          'Bash(rtk curl *)', 'Bash(node:*)', 'Bash', 'Bash(*)', 'Bash("/opt/brain-kit/bin/brain:*)',
+          'Bash(rtk curl *)', 'Bash(node:*)', 'Bash', 'Bash(*)', 'Bash("/opt/brain-kit/bin/brain*")',
           'Edit(~/**)', 'Edit(//tmp/other/**)', 'Edit(./notes/**)', 'Read', 'Read(//etc/**)',
         ],
       },
@@ -85,12 +94,12 @@ test('the brief\'s rules, from settings.json and settings.local.json, one unread
   const [settings, local, broken] = ['settings.json', 'settings.local.json', 'broken.json'].map((f) => join(dir, f));
   const out = mirrorUserRules({ files: [settings, broken, local], ownAllowed: OWN, vaultRoot: VAULT, home: HOME, kit: KIT });
   assert.deepEqual(out, {
-    deny: ['Bash(rtk curl *)', 'Bash(node:*)', 'Edit(//tmp/other/**)', 'mcp__claude_ai_Gmail__send_email', 'WebFetch'],
-    widenedReads: ['Read', 'Read(//etc/**)'],
+    deny: ['Bash(rtk curl *)', 'Bash(node:*)', 'Edit(//tmp/other/**)', 'Read(//etc/**)', 'mcp__claude_ai_Gmail__send_email', 'WebFetch'],
+    widenedReads: ['Read'],
     blocking: [
       { rule: 'Bash', file: settings, reason: 'covers_kit' },
       { rule: 'Bash(*)', file: settings, reason: 'covers_kit' },
-      { rule: 'Bash("/opt/brain-kit/bin/brain:*)', file: settings, reason: 'covers_kit' },
+      { rule: 'Bash("/opt/brain-kit/bin/brain*")', file: settings, reason: 'covers_kit' },
       { rule: 'Edit(~/**)', file: settings, reason: 'covers_vault' },
       { rule: null, file: broken, reason: 'unreadable' },
     ],
@@ -110,10 +119,40 @@ test('a user rule the round\'s own allow list already holds is skipped; one char
   assert.deepEqual(withExtra, { deny: ['mcp__claude_ai_Gmail__send_email'], widenedReads: [], blocking: [], dropNodeForms: false });
 });
 
-test('read rules are never mirrored: each one reaching outside the vault is recorded as widening reads, and one inside it is not', () => {
-  const widening = ['Read', 'Read(//etc/**)', 'Glob(//**)', 'Grep(~/**)', 'LS(//home/ana/vault*)', 'Read(/**)', 'Read(./../**)', 'Glob(//home/ana/vault2/**)', 'Read( //etc/**)'];
+test('ruling R-F2: a read rule that is bare or overlaps the vault is recorded as widening reads; one disjoint from the vault and the round\'s reads is mirrored in its absolute form; one inside the vault is skipped', () => {
+  const widening = ['Read', 'Glob(//**)', 'Grep(~/**)', 'LS(//home/ana/vault*)', 'Read(./../**)', 'Glob(//home/**)'];
+  const disjoint = ['Read(//etc/**)', 'Read(/**)', 'Glob(//home/ana/vault2/**)', 'Read( //etc/**)', 'Grep(~/other/**)', 'LS(./../other/*)'];
   const inside = ['Read(./notes/**)', 'Glob(//home/ana/vault/notes/*.md)', 'Grep(notes/**)', 'LS(./no*)', 'Read(**)', 'Read(//home/ana/vault)'];
-  assert.deepEqual(mirrorOf([...widening, ...inside]).out, { deny: [], widenedReads: widening, blocking: [], dropNodeForms: false });
+  const { file, out } = mirrorOf([...widening, ...disjoint, ...inside]);
+  const dir = file.slice(0, -'/settings.json'.length);
+  assert.deepEqual(out, {
+    deny: ['Read(//etc/**)', `Read(/${dir}/**)`, 'Glob(//home/ana/vault2/**)', 'Grep(//home/ana/other/**)', 'LS(//home/ana/other/*)'],
+    widenedReads: widening,
+    blocking: [],
+    dropNodeForms: false,
+  });
+  for (const rule of out.deny) assert.deepEqual(rulesIn(rule), [rule], rule);
+});
+
+test('ruling R-F2: a read rule overlapping one of the round\'s own reads (a transcript its plan lists, a folder an extra rule reads) stays unmirrored, since the deny would take that read; disjoint from them, it is mirrored', () => {
+  const transcript = '/home/ana/.claude/projects/-home-ana-vault/s-0001.jsonl';
+  const own = [...OWN, `Read(/${transcript})`, 'Read(//srv/shared/**)', 'Glob(//opt/ref*)'];
+  const dir = configDir({ 'settings.json': { permissions: { allow: [
+    'Read(~/.claude/**)', 'Read(~/.claude/projects/-home-ana-vault/*.jsonl)', `Read(/${transcript})`, 'Read(//srv/**)', 'Read(//srv/shared/a.md)', 'Grep(//opt/reference/**)',
+    'Read(~/.claude/projects/-home-ana-other/**)', 'Read(//srv/sharedx/**)', 'Read(//opt/other/**)',
+  ] } } });
+  const file = join(dir, 'settings.json');
+  const out = mirrorUserRules({ files: [file], ownAllowed: own, vaultRoot: VAULT, home: HOME, kit: KIT });
+  assert.deepEqual(out.widenedReads, ['Read(~/.claude/**)', 'Read(~/.claude/projects/-home-ana-vault/*.jsonl)', 'Read(//srv/**)', 'Read(//srv/shared/a.md)', 'Grep(//opt/reference/**)']);
+  assert.deepEqual(out.deny, ['Read(//home/ana/.claude/projects/-home-ana-other/**)', 'Read(//srv/sharedx/**)', 'Read(//opt/other/**)']);
+  assert.deepEqual(out.blocking, []);
+  // The vault counts as one of the round's reads even when the own list does not name it.
+  assert.deepEqual(mirrorUserRules({ files: [file], ownAllowed: [], vaultRoot: VAULT, home: HOME, kit: KIT }).widenedReads.includes('Read(~/.claude/**)'), false, 'disjoint from the vault alone');
+  const overVault = mirrorOf([]).file;
+  writeFileSync(overVault, JSON.stringify({ permissions: { allow: ['Read(//home/**)', 'Read(//etc/**)'] } }));
+  assert.deepEqual(mirrorUserRules({ files: [overVault], ownAllowed: [], vaultRoot: VAULT, home: HOME, kit: KIT }), { deny: ['Read(//etc/**)'], widenedReads: ['Read(//home/**)'], blocking: [], dropNodeForms: false });
+  // A bare read in the round's own list overlaps everything: no read rule is mirrored.
+  assert.deepEqual(mirrorUserRules({ files: [file], ownAllowed: [...OWN, 'Read'], vaultRoot: VAULT, home: HOME, kit: KIT }).deny, []);
 });
 
 test('write rules covering the vault or a folder above it refuse connector mode; inside the vault they are skipped; outside, mirrored', () => {
@@ -123,17 +162,23 @@ test('write rules covering the vault or a folder above it refuse connector mode;
   // A folder whose name only starts like the vault's name or its parent's (va, an) is a sibling, not a holder.
   const outside = ['Edit(//tmp/other/**)', 'Write(//home/ana/vault2/**)', 'Edit(//home/an)', 'Edit(//home/ana/va/**)', 'MultiEdit(/hooks/**)', 'Write(./../other/**)', 'Edit( //tmp/other/**)'];
   const { file, out } = mirrorOf([...covering, ...inside, ...outside]);
+  const dir = file.slice(0, -'/settings.json'.length);
   assert.deepEqual(out, {
-    deny: outside,
+    // Each in its resolved absolute form, once (final review I3).
+    deny: ['Edit(//tmp/other/**)', 'Write(//home/ana/vault2/**)', 'Edit(//home/an)', 'Edit(//home/ana/va/**)', `MultiEdit(/${dir}/hooks/**)`, 'Write(//home/ana/other/**)'],
     widenedReads: [],
     blocking: covering.map((rule) => ({ rule, file, reason: 'covers_vault' })),
     dropNodeForms: false,
   });
 });
 
-test('a write rule is resolved the way user settings resolve paths: //x from the root, ~/x from home, /x from the settings file\'s folder, the rest from the vault', () => {
-  // The settings file's own folder is not the vault: /x there is mirrored.
-  assert.deepEqual(mirrorOf(['Edit(/**)']).out.deny, ['Edit(/**)']);
+test('a write rule is resolved the way user settings resolve paths: //x from the root, ~/x from home, /x from the settings file\'s folder, the rest from the vault; mirrored, it is passed in that resolved absolute form, never as written (final review I3)', () => {
+  // The settings file's own folder is not the vault: /x there is mirrored, anchored at that folder, since on the
+  // command line a rule has no settings file and a single leading slash would be anchored elsewhere.
+  const alone = mirrorOf(['Edit(/**)', 'Write(/notes/**)']);
+  const own = alone.file.slice(0, -'/settings.json'.length);
+  assert.deepEqual(alone.out.deny, [`Edit(/${own}/**)`, `Write(/${own}/notes/**)`]);
+  for (const rule of alone.out.deny) assert.ok(rule.includes('(//'), rule);
   // With the vault under that folder, the same rule covers it.
   const dir = configDir({ 'settings.json': { permissions: { allow: ['Edit(/**)', 'Write(/vault/**)', 'Edit(/vault/notes/**)'] } } });
   const file = join(dir, 'settings.json');
@@ -142,15 +187,47 @@ test('a write rule is resolved the way user settings resolve paths: //x from the
     deny: [], widenedReads: [], blocking: [{ rule: 'Edit(/**)', file, reason: 'covers_vault' }, { rule: 'Write(/vault/**)', file, reason: 'covers_vault' }], dropNodeForms: false,
   });
   // The same file, with the vault somewhere else: all three are outside it.
-  assert.deepEqual(mirrorUserRules({ files: [file], ownAllowed: OWN, vaultRoot: VAULT, home: HOME, kit: KIT }).deny, ['Edit(/**)', 'Write(/vault/**)', 'Edit(/vault/notes/**)']);
+  assert.deepEqual(mirrorUserRules({ files: [file], ownAllowed: OWN, vaultRoot: VAULT, home: HOME, kit: KIT }).deny, [`Edit(/${dir}/**)`, `Write(/${dir}/vault/**)`, `Edit(/${dir}/vault/notes/**)`]);
   // ~ is the home given, whatever the vault's parent is.
-  const tilde = mirrorOf(['Edit(~/**)']).file;
-  assert.deepEqual(mirrorUserRules({ files: [tilde], ownAllowed: OWN, vaultRoot: VAULT, home: '/srv/ana', kit: KIT }).deny, ['Edit(~/**)']);
+  const tilde = mirrorOf(['Edit(~/**)', 'Write(~/notes/)', 'Edit(~//notes/*.md)', 'Edit(~)', 'Write(~/no*)']).file;
+  assert.deepEqual(mirrorUserRules({ files: [tilde], ownAllowed: OWN, vaultRoot: VAULT, home: '/srv/ana', kit: KIT }).deny, ['Edit(//srv/ana/**)', 'Write(//srv/ana/notes/)', 'Edit(//srv/ana/notes/*.md)', 'Edit(//srv/ana)', 'Write(//srv/ana/no*)']);
+  // A relative scope that leaves the vault is anchored at the vault, and a rule already absolute keeps its text.
+  assert.deepEqual(mirrorOf(['Write(../other/**)', 'Edit(./../x.md)', 'Edit(//tmp/a b/**)', 'Edit(///tmp/c/**)']).out.deny, ['Write(//home/ana/other/**)', 'Edit(//home/ana/x.md)', 'Edit(//tmp/a b/**)', 'Edit(//tmp/c/**)']);
+});
+
+test('a path rule to mirror whose resolved form holds a character no rule can carry refuses connector mode as unreadable, naming the rule as written (final review I3)', () => {
+  // The base carries it: a home or a settings folder with a comma, a parenthesis, a bracket or a backslash.
+  for (const home of ['/srv/ana,b', '/srv/ana (old)', '/srv/ana[1]', '/srv/an\\a', '/srv/a}b']) {
+    const { file } = mirrorOf([]);
+    writeFileSync(file, JSON.stringify({ permissions: { allow: ['Edit(~/notes/**)', 'Read(~/docs/**)'] } }));
+    assert.deepEqual(mirrorUserRules({ files: [file], ownAllowed: OWN, vaultRoot: VAULT, home, kit: KIT }).blocking, [
+      { rule: 'Edit(~/notes/**)', file, reason: 'unreadable' }, { rule: 'Read(~/docs/**)', file, reason: 'unreadable' },
+    ], home);
+  }
+  const odd = makeTempDir('brain-kit-user-rules-a,b-');
+  writeFileSync(join(odd, 'settings.json'), JSON.stringify({ permissions: { allow: ['Write(/x/**)', 'WebFetch'] } }));
+  const file = join(odd, 'settings.json');
+  assert.deepEqual(mirrorUserRules({ files: [file], ownAllowed: OWN, vaultRoot: VAULT, home: HOME, kit: KIT }), {
+    deny: ['WebFetch'], widenedReads: [], blocking: [{ rule: 'Write(/x/**)', file, reason: 'unreadable' }], dropNodeForms: false,
+  });
+  // The scope carries it: a comma, a stray bracket, a backslash in the rest of the scope.
+  const { file: scoped, out } = mirrorOf(['Write(//tmp/x, y/**)', 'Edit(//tmp/a]b/**)', 'Edit(//tmp/a/*\\*)', 'Read(//etc/*,x)']);
+  assert.deepEqual(out, { deny: [], widenedReads: [], blocking: ['Write(//tmp/x, y/**)', 'Edit(//tmp/a]b/**)', 'Edit(//tmp/a/*\\*)', 'Read(//etc/*,x)'].map((rule) => ({ rule, file: scoped, reason: 'unreadable' })), dropNodeForms: false });
+  // A rule that is skipped or refused anyway is not judged by its form.
+  assert.deepEqual(mirrorUserRules({ files: [mirrorOf(['Edit(~/**)', 'Edit(~/vault/notes/**)']).file], ownAllowed: OWN, vaultRoot: VAULT, home: '/home/ana', kit: KIT }).blocking.map((b) => b.reason), ['covers_vault']);
+});
+
+test('a scope ending in a backslash, or holding an odd number of double quotes, is never mirrored: connector mode is refused, naming it (review N3 of task 2)', () => {
+  const rules = ['Bash(foo \\)', 'Bash(echo "a)', 'Bash(echo "a" "b)', 'WebFetch(domain:example.com\\)', 'Edit(//tmp/"x/**)'];
+  const { file, out } = mirrorOf(rules);
+  assert.deepEqual(out, { deny: [], widenedReads: [], blocking: rules.map((rule) => ({ rule, file, reason: 'unreadable' })), dropNodeForms: false });
+  // An even number of quotes, or a backslash inside, is judged as usual.
+  assert.deepEqual(mirrorOf(['Bash(echo "a b":*)', 'Bash(printf a\\nb)']).out.deny, ['Bash(echo "a b":*)', 'Bash(printf a\\nb)']);
 });
 
 test('Bash rules granting every command or the kit\'s own refuse connector mode; one for node is mirrored and drops the round\'s node forms; the rest is mirrored', () => {
   const covering = [
-    'Bash', 'Bash(*)', 'Bash(:*)', 'Bash( * )', 'Bash()', 'Bash("/opt/brain-kit/bin/brain:*)', `Bash(${KIT}:*)`, `Bash(${KIT} v*)`, `Bash(${KIT} lint --fix:*)`,
+    'Bash', 'Bash(*)', 'Bash(:*)', 'Bash( * )', 'Bash()', 'Bash("/opt/brain-kit/bin/brain*")', `Bash(${KIT}:*)`, `Bash(${KIT} v*)`, `Bash(${KIT} lint --fix:*)`,
   ];
   const mirrored = ['Bash(rtk curl *)', `Bash(${KIT} doctor:*)`, 'Bash(node --version)', 'Bash(git status:*)', 'Bash(npm run build)'];
   const { file, out } = mirrorOf([...covering, ...mirrored]);
@@ -211,7 +288,7 @@ test('a rule with a parenthesis inside its scope is never mirrored: connector mo
 test('every rule the mirror denies is exactly one rule where the CLI splits its deny list, spaces and commas inside the scope included', () => {
   const rules = [
     'Bash(rtk curl *)', 'Bash(npm run build)', 'Bash(git log --oneline, --stat:*)', 'WebFetch(domain:example.com,other)', 'Edit(//tmp/a b/**)',
-    'mcp__claude_ai_Gmail__send_email', 'Bash(node:*)', 'Write(//tmp/x, y/**)', 'Bash(echo "a  b":*)',
+    'mcp__claude_ai_Gmail__send_email', 'Bash(node:*)', 'Write(//tmp/x y/**)', 'Bash(echo "a  b":*)',
   ];
   const { out } = mirrorOf(rules);
   assert.deepEqual(out.deny, rules);
@@ -244,24 +321,35 @@ test('a vault, a home or a folder reached through a link is judged by where the 
   // The kit handed the link, the rule naming the real place: a holder of the vault covers it, a folder inside it is inside.
   const byLink = mirror([`Edit(/${root}/data/**)`, `Write(/${real}/notes/**)`, `Read(/${real}/notes/**)`, `Edit(/${root}/data/vault2/**)`], linkVault);
   assert.deepEqual(byLink, { deny: [`Edit(/${root}/data/vault2/**)`], widenedReads: [], blocking: [{ rule: `Edit(/${root}/data/**)`, file, reason: 'covers_vault' }], dropNodeForms: false });
-  // The kit handed the real path, the rule naming the link: the same answers.
+  // The kit handed the real path, the rule naming the link: a holder through a link still covers the vault, but a
+  // folder of the vault named through the link is not taken as inside it (review N1 of task 2): the CLI works in
+  // the vault's real path, and whether it matches a rule by its written path or by its link target is not
+  // measured, so the write rule is mirrored, in the form the person wrote it resolves to. The read rule reaches
+  // the vault through the link: it stays unmirrored, widening reads.
   const byReal = mirror([`Edit(/${linkHome}/**)`, `Write(/${linkVault}/notes/**)`, `Read(/${linkVault}/**)`], real);
-  assert.deepEqual(byReal, { deny: [], widenedReads: [], blocking: [{ rule: `Edit(/${linkHome}/**)`, file, reason: 'covers_vault' }], dropNodeForms: false });
-  // A home reached through a link holds the vault it leads to, also for a scope that stops inside a name.
-  assert.deepEqual(mirror(['Edit(~/**)', 'Edit(~/vault/notes/**)', 'Edit(~/va*)'], real, linkHome).blocking, [
+  assert.deepEqual(byReal, { deny: [`Write(/${linkVault}/notes/**)`], widenedReads: [`Read(/${linkVault}/**)`], blocking: [{ rule: `Edit(/${linkHome}/**)`, file, reason: 'covers_vault' }], dropNodeForms: false });
+  // A home reached through a link holds the vault it leads to, also for a scope that stops inside a name; the
+  // protected paths named through that home are mirrored, as the CLI expands ~ to the home as given (review N1).
+  const viaHome = mirror(['Edit(~/**)', 'Edit(~/vault/notes/**)', 'Edit(~/va*)', 'Edit(~/vault/.claude/**)', 'Write(~/vault/brain-kit.config.json)'], real, linkHome);
+  assert.deepEqual(viaHome.blocking, [
     { rule: 'Edit(~/**)', file, reason: 'covers_vault' }, { rule: 'Edit(~/va*)', file, reason: 'covers_vault' },
   ]);
+  assert.deepEqual(viaHome.deny, [`Edit(/${linkHome}/vault/notes/**)`, `Edit(/${linkHome}/vault/.claude/**)`, `Write(/${linkHome}/vault/brain-kit.config.json)`]);
+  // The same rules with the home as the real path are inside the vault, and skipped.
+  assert.deepEqual(mirror(['Edit(~/vault/.claude/**)', 'Write(~/vault/brain-kit.config.json)'], real, join(root, 'data')), NOTHING);
   // So does a settings folder reached through a link, for its /x rules.
   const linkConfig = join(root, 'link-config');
   symlinkSync(join(root, 'data'), linkConfig);
   writeFileSync(join(linkConfig, 'settings.json'), JSON.stringify({ permissions: { allow: ['Edit(/va*)', 'Edit(/vault/notes/**)'] } }));
   assert.deepEqual(mirrorUserRules({ files: [join(linkConfig, 'settings.json')], ownAllowed: OWN, vaultRoot: real, home: HOME, kit: KIT }), {
-    deny: [], widenedReads: [], blocking: [{ rule: 'Edit(/va*)', file: join(linkConfig, 'settings.json'), reason: 'covers_vault' }], dropNodeForms: false,
+    deny: [`Edit(/${linkConfig}/vault/notes/**)`], widenedReads: [], blocking: [{ rule: 'Edit(/va*)', file: join(linkConfig, 'settings.json'), reason: 'covers_vault' }], dropNodeForms: false,
   });
   // A scope that stops inside a name is judged as written: where one link of that name leads says nothing of
   // the other names that start the same way (link-notes-old, say).
   symlinkSync(join(real, 'notes'), join(root, 'link-notes'));
-  assert.deepEqual(mirror([`Read(/${root}/link-notes*)`, `Read(/${root}/link-notes/**)`], real).widenedReads, [`Read(/${root}/link-notes*)`]);
+  const notes = mirror([`Read(/${root}/link-notes*)`, `Read(/${root}/link-notes/**)`], real);
+  assert.deepEqual(notes.deny, [`Read(/${root}/link-notes*)`]);
+  assert.deepEqual(notes.widenedReads, [`Read(/${root}/link-notes/**)`], 'the link leads into the vault: a mirrored deny could take the round\'s own reads');
 });
 
 test('a rule both files hold is mirrored or recorded once, in the order the files list them', () => {
@@ -270,7 +358,7 @@ test('a rule both files hold is mirrored or recorded once, in the order the file
     'settings.local.json': { permissions: { allow: ['mcp__claude_ai_Gmail__send_email', 'WebFetch', 'Read(//etc/**)'] } },
   });
   assert.deepEqual(mirrorUserRules({ files: userSettingsFiles({ CLAUDE_CONFIG_DIR: dir }), ownAllowed: OWN, vaultRoot: VAULT, home: HOME, kit: KIT }), {
-    deny: ['WebFetch', 'Bash(node:*)', 'mcp__claude_ai_Gmail__send_email'], widenedReads: ['Read(//etc/**)'], blocking: [], dropNodeForms: true,
+    deny: ['WebFetch', 'Read(//etc/**)', 'Bash(node:*)', 'mcp__claude_ai_Gmail__send_email'], widenedReads: [], blocking: [], dropNodeForms: true,
   });
 });
 

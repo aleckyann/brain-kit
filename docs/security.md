@@ -186,9 +186,10 @@ What can still widen reads, each said by `doctor` or here:
 - a scoped rule of yours in `curate.allowed_tools_extra` that reaches outside the vault, or
   any command rule there (a command can read any file your user can): `doctor`, check
   `round-scope`;
-- in connector mode, a read rule of your Claude Code user settings, which the round records
-  instead of denying: `doctor`, check `round-scope`, and `userRules.widenedReads` in
-  `last-run.json`;
+- in connector mode, a read rule of your Claude Code user settings that is bare or
+  overlaps the vault or the round's own reads, which the round records instead of denying
+  (one disjoint from them is mirrored as a deny): `doctor`, check `round-scope`, and
+  `userRules.widenedReads` in `last-run.json`;
 - the kit's own `validate` and `lint`, which take a directory argument: the model can point
   them at a folder outside the vault and read their findings about the notes there, a
   narrow read path;
@@ -225,7 +226,10 @@ connected; `--disable-slash-commands` and `--tools` did what they do in the isol
 and a user allow rule stayed active (one allowing `Bash(rtk curl *)` let that command run)
 until the same rule was passed in `--disallowedTools`, which denied it. So every allow rule
 in your user settings is mirrored as a deny, except a rule the round's own allow list
-already holds, a read rule, and a write rule inside the vault. A rule that cannot be
+already holds, a read rule that is bare or overlaps the vault or the round's own reads, and
+a write rule inside the vault. A mirrored path rule is passed in its resolved absolute form
+(`Edit(//<path>)`), never as written, since a rule on the command line has no settings file
+to anchor `/x` at. A rule that cannot be
 mirrored without denying the round's own tools refuses connector mode for that round: a
 bare `Bash`, a Bash rule covering every command or one of the kit's own, an `Edit` or
 `Write` rule on the vault or a folder that holds it, or a settings file or rule the kit
@@ -242,8 +246,10 @@ What this mode leaves open, on purpose or because it is not measured:
 
 - your MCP servers start; under `dontAsk` their tools run only where a rule the round
   keeps allows them, and it keeps none for them;
-- a user rule that allows reads outside the vault widens what the model can read in that
-  round (recorded, and named by `doctor`);
+- a user rule that allows reads over the vault, or over the files the round itself reads,
+  widens what the model can read in that round (recorded, and named by `doctor`);
+- the user settings that are not permissions (your output style, the `env` block, the
+  model settings) reach the round as written, and are not checked;
 - `permissions.additionalDirectories`, managed or policy settings, and the older
   per-project `allowedTools` in `~/.claude.json` are not measured;
 - whether your `~/.claude/CLAUDE.md` reaches the round could not be asked on 25/09/2026,

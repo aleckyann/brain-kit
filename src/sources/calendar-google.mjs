@@ -67,6 +67,11 @@
 // when every planned calendar was read (a day read in part stays open,
 // ruling R13 of phase 2), and a plan with no calendar is never ok: a source
 // that is off reads nothing.
+// `listed` counts the events on the pages of the listings that read the
+// calendars (the stream parser's `items` for each page, the first listing
+// read to its last page for each calendar), metadata only: null when any
+// of those pages says no count. A connector source's `empty` counts only
+// when it is 0 (ruling R-F1, src/guards/watermark.mjs).
 //
 // The recurring shape this guards against (the plan's "How work is proven
 // here"): a command that succeeds answering about something other than
@@ -301,28 +306,50 @@ function nextWithToken(calendarId, calls, at) {
   return -1;
 }
 
-// Whether the listing whose first page is at `start` was read to its last
-// page: each next page the first later call with a token, and one that did
-// not come back whole taken over only by a retry of its very token.
+// The pages of the listing whose first page is at `start`, when it was
+// read to its last page, null otherwise: each next page the first later
+// call with a token, and one that did not come back whole taken over only
+// by a retry of its very token.
 function readToLastPage(calendarId, calls, start) {
   const first = calls[start].input;
+  const pages = [start];
   let at = start;
   while (calls[at].more) {
     let next = nextWithToken(calendarId, calls, at);
-    if (next === -1 || !continuesListing(calls[next].input, first)) return false;
+    if (next === -1 || !continuesListing(calls[next].input, first)) return null;
     while (!calls[next].ok) {
       const retry = nextWithToken(calendarId, calls, next);
-      if (retry === -1 || calls[retry].input.pageToken !== calls[next].input.pageToken || !continuesListing(calls[retry].input, first)) return false;
+      if (retry === -1 || calls[retry].input.pageToken !== calls[next].input.pageToken || !continuesListing(calls[retry].input, first)) return null;
       next = retry;
     }
+    pages.push(next);
     at = next;
   }
-  return true;
+  return pages;
 }
 
-// `calls` are every list_events call, in record order, each { input, ok, more }.
+// `calls` are every list_events call, in record order, each { input, ok,
+// more, items }. The pages of the first listing of the calendar read to its
+// last page, or null.
 function readCalendar(calendarId, calls, from, to) {
-  return calls.some((call, position) => call.ok && names(call.input, calendarId) && opensListing(call.input, from, to) && readToLastPage(calendarId, calls, position));
+  for (let position = 0; position < calls.length; position += 1) {
+    const call = calls[position];
+    if (!call.ok || !names(call.input, calendarId) || !opensListing(call.input, from, to)) continue;
+    const pages = readToLastPage(calendarId, calls, position);
+    if (pages !== null) return pages;
+  }
+  return null;
+}
+
+// The events those pages listed, or null when a page gave no count.
+function listedOn(calls, pages) {
+  let total = 0;
+  for (const position of pages) {
+    const { items } = calls[position];
+    if (!Number.isInteger(items) || items < 0) return null;
+    total += items;
+  }
+  return total;
 }
 
 // readEvidence(record, plan): record shape { toolUses: [{ id, name, input }],
@@ -331,22 +358,28 @@ function readEvidence(record, plan) {
   const tool = `${plan.toolPrefix}${LIST_EVENTS}`;
   const outcomes = new Map();
   for (const result of record?.toolResults ?? []) {
-    const outcome = outcomes.get(result.toolUseId) ?? { failed: false, more: false };
+    const seen = outcomes.get(result.toolUseId);
+    const outcome = seen ?? { failed: false, more: false, items: result.items };
     if (result.isError || result.complete === false) outcome.failed = true;
     if (result.hasNextPage) outcome.more = true;
+    // Two results for one call: which one the model saw is not known.
+    if (seen !== undefined) outcome.items = null;
     outcomes.set(result.toolUseId, outcome);
   }
   const calls = [];
   for (const use of record?.toolUses ?? []) {
     if (use?.name !== tool || !isObject(use.input)) continue;
     const outcome = outcomes.get(use.id);
-    calls.push({ input: use.input, ok: outcome !== undefined && !outcome.failed, more: outcome?.more === true });
+    calls.push({ input: use.input, ok: outcome !== undefined && !outcome.failed, more: outcome?.more === true, items: outcome?.items ?? null });
   }
   const from = instant(plan.window?.from);
   const to = instant(plan.window?.to);
   const calendars = [...(plan.calendars ?? []), ...(plan.otherCalendars ?? [])];
-  const read = from === null || to === null ? 0 : calendars.filter((id) => readCalendar(id, calls, from, to)).length;
-  return { read, expected: calendars.length, ok: calendars.length > 0 && read === calendars.length };
+  const readings = from === null || to === null ? [] : calendars.map((id) => readCalendar(id, calls, from, to)).filter((pages) => pages !== null);
+  const read = readings.length;
+  const counts = readings.map((pages) => listedOn(calls, pages));
+  const listed = read === 0 || counts.includes(null) ? null : counts.reduce((sum, n) => sum + n, 0);
+  return { read, expected: calendars.length, ok: calendars.length > 0 && read === calendars.length, listed };
 }
 
 export const calendarSource = Object.freeze({

@@ -369,13 +369,24 @@ test('--check warns, and still passes, when the vault\'s overlay lacks contract 
   assert.ok(!c.stderr.includes('"read-index-first"'));
 });
 
-test('--check says nothing about an overlay that carries every marker', async () => {
+test('--check says nothing about an overlay that carries every marker and the sources line', async () => {
   const { vault, state } = freshVault('en');
-  writeOverlay(vault, `{{signature}}\n${CURATE_RULES.map((r) => `<!-- rule:${r} -->\nx\n`).join('')}`);
+  writeOverlay(vault, `{{signature}}\n${CURATE_RULES.map((r) => `<!-- rule:${r} -->\nx\n`).join('')}BRAIN_KIT_SOURCES: {{sources_line}}\n`);
   const c = collector();
   const code = await runPrompt(['--check'], c.io, createTranslator('en'), { cwd: vault, env: testEnv(state) });
   assert.equal(code, EXIT.OK, c.stdout + c.stderr);
   assert.equal(c.stderr, '');
+});
+
+test('final review M4: --check warns, in both languages, and still passes, when the overlay does not use {{sources_line}}, as one written before phase 3', async () => {
+  for (const [lang, text] of [['en', /does not use \{\{sources_line\}\}: .*a calendar or meeting-notes mark never moves/], ['pt-BR', /não usa \{\{sources_line\}\}: .*a marca da agenda ou das notas de reunião nunca anda/]]) {
+    const { vault, state } = freshVault(lang);
+    writeOverlay(vault, `{{signature}}\n${CURATE_RULES.map((r) => `<!-- rule:${r} -->\nx\n`).join('')}BRAIN_KIT_SOURCES: transcripts=<ok|empty|failed>\n`);
+    const c = collector();
+    const code = await runPrompt(['--check', '--vault', vault], c.io, createTranslator(lang), { cwd: vault, env: testEnv(state) });
+    assert.equal(code, EXIT.OK, c.stdout + c.stderr);
+    assert.match(c.stderr, text, lang);
+  }
 });
 
 // --- --check on the packs' prompts ---------------------------------------

@@ -1170,8 +1170,8 @@ test('phase 3 criterion: with the three sources configured and every evidence in
   assert.equal(last.mode, 'connectors');
   assert.equal(last.relaunched, false);
   assert.deepEqual(last.sources.transcripts, { kept: 1, read: 1, advanced: true, noTimestamp: 0 });
-  assert.deepEqual(last.sources.calendar, { state: 'connected', observedPrefix: CALENDAR_PREFIX, read: 1, expected: 1, advanced: true, reported: 'empty' });
-  assert.deepEqual(last.sources.meeting_notes, { state: 'connected', observedPrefix: DRIVE_PREFIX, read: 1, expected: 1, advanced: true, reported: 'empty', documents: { read: 0, failed: 0 } });
+  assert.deepEqual(last.sources.calendar, { state: 'connected', observedPrefix: CALENDAR_PREFIX, read: 1, expected: 1, listed: 0, advanced: true, reported: 'empty' });
+  assert.deepEqual(last.sources.meeting_notes, { state: 'connected', observedPrefix: DRIVE_PREFIX, read: 1, expected: 1, listed: 0, advanced: true, reported: 'empty', documents: { read: 0, failed: 0 } });
   assert.deepEqual(last.userRules, { mirrored: [], widenedReads: [], blocking: [] });
   assert.deepEqual(last.notConfigured, []);
   assert.deepEqual(last.connectorStates, { calendar: { state: 'connected', at: last.at }, meeting_notes: { state: 'connected', at: last.at } });
@@ -1299,9 +1299,9 @@ test('a bare Bash in the person\'s allow rules refuses connector mode: the calen
   assert.equal(w.notifications().length, 1, 'a state change, announced once');
 });
 
-test('a user allow rule the round would inherit is mirrored into the deny list of the connector-mode argv; a read rule outside the vault is recorded as widening reads', () => {
+test('a user allow rule the round would inherit is mirrored into the deny list of the connector-mode argv; a read rule disjoint from the round\'s reads is mirrored too (ruling R-F2), one over the vault is recorded as widening reads', () => {
   const w = makeCurateWorld({ config: withConnectors({ meetingNotes: false }) });
-  w.userSettings({ permissions: { allow: ['Bash(rtk curl *)', 'Read(//etc/**)'] } });
+  w.userSettings({ permissions: { allow: ['Bash(rtk curl *)', 'Read(//etc/**)', 'Read(//**)'] } });
   const y = utcDay(-1);
   w.scenario({ rewrite: connectorRewrite(w, { uses: [listEvents(dayStart(y), dayStart(utcDay(0)))], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=empty' }) });
   const r = w.curate();
@@ -1310,46 +1310,51 @@ test('a user allow rule the round would inherit is mirrored into the deny list o
   assert.equal(settingSources(argv), 'user');
   const { allowed, denied } = argvLists(argv);
   assert.ok(denied.includes('Bash(rtk curl *)'));
+  assert.ok(denied.includes('Read(//etc/**)'));
+  assert.equal(denied.includes('Read(//**)'), false, 'mirrored, it would deny the round its own reads');
   assert.equal(allowed.includes('Bash(rtk curl *)'), false);
-  assert.deepEqual(w.lastRun().userRules, { mirrored: ['Bash(rtk curl *)'], widenedReads: ['Read(//etc/**)'], blocking: [] });
+  assert.deepEqual(w.lastRun().userRules, { mirrored: ['Bash(rtk curl *)', 'Read(//etc/**)'], widenedReads: ['Read(//**)'], blocking: [] });
   assert.deepEqual(w.watermark(), { transcripts: y, calendar: y });
 });
 
 for (const rule of [`${CALENDAR_PREFIX}*`, 'mcp__claude_ai_Google_Calendar']) {
-  test(`a user rule for the whole calendar server (${rule}), mirrored as a deny, would deny the calendar its own reads: it is blocked_by_user_rules naming the rule, and the meeting notes still run in connector mode`, () => {
+  test(`a user rule for the whole calendar server (${rule}), mirrored as a deny, would deny the calendar its own reads: it is blocked_by_user_rules naming the rule, and the meeting notes, which need it, wait for it with no model work (final review I2)`, () => {
     const w = makeCurateWorld({ config: withConnectors() });
     w.userSettings({ permissions: { allow: [rule] } });
     const y = utcDay(-1);
-    w.scenario({ rewrite: connectorRewrite(w, { uses: [searchNotes(y)], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable meeting_notes=empty' }) });
+    w.scenario({ actions: PROPOSE_NOTE(w), rewrite: { toolUses: [{ name: 'Read', input: { file_path: w.transcript, offset: 1 } }], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable meeting_notes=unavailable' } });
     const r = w.curate();
     assert.equal(r.status, EXIT.OK, r.stderr);
     const launches = w.launches();
     assert.equal(launches.length, 1);
-    assert.equal(settingSources(launches[0].argv), 'user');
-    const { allowed, denied } = argvLists(launches[0].argv);
-    assert.ok(denied.includes(rule), 'the rule stays mirrored');
-    assert.equal(allowed.some((item) => item.startsWith(CALENDAR_PREFIX)), false);
-    assert.ok(allowed.includes(`${DRIVE_PREFIX}search_files`));
+    assert.equal(settingSources(launches[0].argv), '', 'no connector source is left: the round runs isolated');
+    const { allowed } = argvLists(launches[0].argv);
+    assert.equal(allowed.some((item) => item.startsWith('mcp__')), false, 'neither source\'s tools');
     const last = w.lastRun();
-    assert.equal(last.mode, 'connectors');
+    assert.equal(last.mode, 'isolated');
     assert.equal(last.sources.calendar.state, 'blocked_by_user_rules');
     assert.deepEqual(last.sources.calendar.rules, [rule]);
-    assert.deepEqual(w.watermark(), { transcripts: y }, 'the meeting notes\' second door, the calendar, was not read (ruling I2)');
-    assert.equal(last.sources.meeting_notes.read, 1);
-    assert.match(w.logText(), /"source":"meeting_notes".*"reason":"second_door_unread"/);
+    assert.deepEqual(last.sources.meeting_notes.waitingFor, { source: 'calendar', state: 'blocked_by_user_rules' });
+    assert.equal(last.sources.meeting_notes.read, 0);
+    assert.deepEqual(w.watermark(), { transcripts: y });
+    assert.match(w.logText(), /"source":"meeting_notes".*"reason":"waiting_for_calendar"/);
+    assert.match(w.logText(), / source_waiting \{"source":"meeting_notes","through":"calendar","state":"blocked_by_user_rules"\}/);
     assert.match(r.stderr, /covers the tools of claude\.ai Google Calendar/);
+    assert.match(r.stderr, /the source meeting_notes is not read this round: it closes a day only with calendar read over it/);
     assert.match(launches[0].stdin, /Source calendar:\nUnavailable this round \(state blocked_by_user_rules\)/);
+    assert.match(launches[0].stdin, /Source meeting_notes:\nUnavailable this round \(state waiting_for_calendar\)/);
   });
 }
 
 test('a user rule allowing one of a source\'s own read tools is not mirrored while the source runs, and is mirrored once the source leaves the round, so it grants nothing then', () => {
   const w = makeCurateWorld({ config: withConnectors() });
-  const own = `${CALENDAR_PREFIX}list_events`;
+  const own = `${DRIVE_PREFIX}search_files`;
+  const y = utcDay(-1);
   w.userSettings({ permissions: { allow: [own] } });
   w.scenario({
     launches: [
-      { rewrite: { mcpServers: connectorServers({ calendar: 'needs-auth', drive: 'connected' }), tools: [...BUILTINS, ...DRIVE_TOOLS] }, delayMs: 60000 },
-      { rewrite: connectorRewrite(w, { servers: connectorServers({ calendar: 'needs-auth', drive: 'connected' }), tools: [...BUILTINS, ...DRIVE_TOOLS], uses: [searchNotes(utcDay(-1))], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable meeting_notes=empty' }) },
+      { rewrite: { mcpServers: connectorServers({ calendar: 'connected', drive: 'needs-auth' }), tools: [...BUILTINS, ...CALENDAR_TOOLS] }, delayMs: 60000 },
+      { rewrite: connectorRewrite(w, { servers: connectorServers({ calendar: 'connected', drive: 'needs-auth' }), tools: [...BUILTINS, ...CALENDAR_TOOLS], uses: [listEvents(dayStart(y), dayStart(utcDay(0)))], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=empty meeting_notes=unavailable' }) },
     ],
   });
   const r = w.curate();
@@ -1489,40 +1494,68 @@ test('a connector still connecting at init (pending, ruling R-B1) does not relau
   assert.deepEqual(w.notifications(), []);
 });
 
-test('one relaunch per round: the calendar needs authentication at the first init and the drive fails at the second; no third launch, the meeting notes stay unread, the transcripts are curated, exit 0', () => {
+test('one relaunch per round: the drive needs authentication at the first init and the calendar fails at the second; no third launch, the calendar stays unread, the transcripts are curated, exit 0', () => {
   const w = makeCurateWorld({ config: withConnectors() });
   const y = utcDay(-1);
   w.scenario({
     launches: [
-      { rewrite: { mcpServers: connectorServers({ calendar: 'needs-auth', drive: 'connected' }), tools: [...BUILTINS, ...DRIVE_TOOLS] }, delayMs: 60000 },
-      { actions: PROPOSE_NOTE(w), rewrite: connectorRewrite(w, { servers: connectorServers({ calendar: 'needs-auth', drive: 'failed' }), tools: BUILTINS, finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable meeting_notes=unavailable' }) },
+      { rewrite: { mcpServers: connectorServers({ calendar: 'connected', drive: 'needs-auth' }), tools: [...BUILTINS, ...CALENDAR_TOOLS] }, delayMs: 60000 },
+      { actions: PROPOSE_NOTE(w), rewrite: connectorRewrite(w, { servers: connectorServers({ calendar: 'failed', drive: 'needs-auth' }), tools: BUILTINS, finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable meeting_notes=unavailable' }) },
     ],
   });
   const r = w.curate();
   assert.equal(r.status, EXIT.OK, r.stderr);
   const launches = w.launches();
   assert.equal(launches.length, 2, 'never a third launch');
-  assert.equal(settingSources(launches[1].argv), 'user', 'the second launch is still in connector mode, for the meeting notes');
+  assert.equal(settingSources(launches[1].argv), 'user', 'the second launch is still in connector mode, for the calendar');
   const second = argvLists(launches[1].argv);
-  assert.equal(second.allowed.some((rule) => rule.startsWith(CALENDAR_PREFIX)), false);
-  assert.ok(second.allowed.includes(`${DRIVE_PREFIX}search_files`));
-  assert.ok(second.denied.includes(`${CALENDAR_PREFIX}create_event`), 'a source left out keeps its write tools denied');
-  assert.match(launches[1].stdin, /Source calendar:\nUnavailable this round \(state needs_auth\)/);
+  assert.equal(second.allowed.some((rule) => rule.startsWith(DRIVE_PREFIX)), false);
+  assert.ok(second.allowed.includes(`${CALENDAR_PREFIX}list_events`));
+  assert.ok(second.denied.includes(`${DRIVE_PREFIX}trash_file`), 'a source left out keeps its write tools denied');
+  assert.match(launches[1].stdin, /Source meeting_notes:\nUnavailable this round \(state needs_auth\)/);
   assert.deepEqual(w.watermark(), { transcripts: y });
   const last = w.lastRun();
-  assert.equal(last.sources.calendar.state, 'needs_auth');
-  assert.equal(last.sources.meeting_notes.state, 'failed');
-  assert.match(r.stderr, /the source meeting_notes is failed in the relaunch too/);
+  assert.equal(last.sources.calendar.state, 'failed');
+  assert.equal(last.sources.meeting_notes.state, 'needs_auth');
+  assert.match(r.stderr, /the source calendar is failed in the relaunch too/);
   assert.equal(w.notifications().length, 2, 'each changed state once');
+});
+
+test('final review I2: the calendar needs authentication at the first init: the relaunch goes without it and without the meeting notes, which wait for it, isolated when nothing else needs a connector; no search runs, the notes day stays open (waiting_for_calendar), exit 0', () => {
+  const w = makeCurateWorld({ config: withConnectors() });
+  const y = utcDay(-1);
+  w.scenario({
+    launches: [
+      { rewrite: { mcpServers: connectorServers({ calendar: 'needs-auth', drive: 'connected' }), tools: [...BUILTINS, ...DRIVE_TOOLS] }, delayMs: 60000 },
+      { actions: PROPOSE_NOTE(w), rewrite: { toolUses: [{ name: 'Read', input: { file_path: w.transcript, offset: 1 } }], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable meeting_notes=unavailable' } },
+    ],
+  });
+  const r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  const launches = w.launches();
+  assert.equal(launches.length, 2);
+  assert.equal(settingSources(launches[1].argv), '', 'the relaunch has no connector source left');
+  assert.equal(argvLists(launches[1].argv).allowed.some((rule) => rule.startsWith('mcp__')), false);
+  assert.match(launches[1].stdin, /Source meeting_notes:\nUnavailable this round \(state waiting_for_calendar\)/);
+  assert.deepEqual(w.watermark(), { transcripts: y });
+  const last = w.lastRun();
+  assert.equal(last.mode, 'isolated');
+  assert.equal(last.relaunched, true);
+  assert.equal(last.sources.meeting_notes.state, 'connected', 'its own connector was there');
+  assert.deepEqual(last.sources.meeting_notes.waitingFor, { source: 'calendar', state: 'needs_auth' });
+  assert.match(w.logText(), / relaunch \{"without":\["calendar","meeting_notes"\],"states":\{"calendar":"needs_auth","meeting_notes":"waiting_for_calendar"\}\}/);
+  assert.match(w.logText(), /"source":"meeting_notes","day":null,"reported":"unavailable","advanced":false,"reason":"waiting_for_calendar"/);
+  assert.match(r.stderr, /watermark of meeting_notes did not move \(waiting_for_calendar\)/);
+  assert.equal(w.notifications().length, 1, 'the calendar\'s state change, once');
 });
 
 test('--dry and --check print the launch mode, the mirror\'s counts and any rule that refuses connector mode, and write nothing', () => {
   const w = makeCurateWorld({ config: withConnectors({ meetingNotes: false }) });
-  w.userSettings({ permissions: { allow: ['Bash(rtk curl *)', 'Read(//etc/**)'] } });
+  w.userSettings({ permissions: { allow: ['Bash(rtk curl *)', 'Read(//etc/**)', 'Read(//**)'] } });
   for (const args of [['--dry'], ['--check']]) {
     const r = w.curate(args);
     assert.equal(r.status, EXIT.OK, r.stderr);
-    assert.match(r.stdout, /Mode: connectors \(.*\): 1 user allow rule\(s\) mirrored as denies, 1 widening reads/, args[0]);
+    assert.match(r.stdout, /Mode: connectors \(.*\): 2 user allow rule\(s\) mirrored as denies, 1 widening reads/, args[0]);
     assert.match(r.stdout, /Source calendar: read through claude\.ai Google Calendar, days /, args[0]);
     assert.ok(r.stdout.includes('"--setting-sources","user"'), args[0]);
   }
@@ -1589,7 +1622,7 @@ test('when what is left after the connectors is a transcripts plan with nothing 
   assert.equal(last.reasonCode, 'nothing_available');
   assert.match(last.reason, /unavailable: calendar \(needs_auth\)/);
   assert.equal(last.sources.transcripts.advanced, true);
-  assert.deepEqual(last.sources.calendar, { state: 'needs_auth', observedPrefix: null, read: 0, expected: 1, advanced: false, reported: null });
+  assert.deepEqual(last.sources.calendar, { state: 'needs_auth', observedPrefix: null, read: 0, expected: 1, listed: null, advanced: false, reported: null });
 
   // Mode-choice case: the calendar is blocked by a rule, and no model starts at all.
   const b = makeCurateWorld({ config: withConnectors({ meetingNotes: false }) });
@@ -1606,15 +1639,18 @@ test('when what is left after the connectors is a transcripts plan with nothing 
 
 test('a calendar blocked by a rule for its whole server takes its own tools out of the round, so the person\'s rule for one of them is mirrored too, in the same choice', () => {
   const w = makeCurateWorld({ config: withConnectors() });
-  const own = `${CALENDAR_PREFIX}list_events`;
-  w.userSettings({ permissions: { allow: [`${CALENDAR_PREFIX}*`, own] } });
-  w.scenario({ rewrite: connectorRewrite(w, { uses: [searchNotes(utcDay(-1))], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable meeting_notes=empty' }) });
+  const own = `${DRIVE_PREFIX}search_files`;
+  w.userSettings({ permissions: { allow: [`${DRIVE_PREFIX}*`, own] } });
+  const y = utcDay(-1);
+  w.scenario({ rewrite: connectorRewrite(w, { uses: [listEvents(dayStart(y), dayStart(utcDay(0)))], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=empty meeting_notes=unavailable' }) });
   const r = w.curate();
   assert.equal(r.status, EXIT.OK, r.stderr);
   const { allowed, denied } = argvLists(w.launches()[0].argv);
   assert.equal(allowed.includes(own), false);
-  assert.ok(denied.includes(own), 'no user rule for a calendar tool survives in a round without the calendar');
-  assert.deepEqual(w.lastRun().userRules.mirrored, [`${CALENDAR_PREFIX}*`, own]);
+  assert.ok(denied.includes(own), 'no user rule for a document-store tool survives in a round without the meeting notes');
+  assert.deepEqual(w.lastRun().userRules.mirrored, [`${DRIVE_PREFIX}*`, own]);
+  assert.deepEqual(w.watermark(), { transcripts: y, calendar: y }, 'the calendar does not wait for the meeting notes');
+  assert.match(r.stderr, /watermark of meeting_notes did not move \(no_evidence\)/, 'blocked on its own account, not a second door left unread');
 });
 
 test('a user Bash rule covering the kit\'s `node <kit>` forms is mirrored, and the round keeps only the direct kit forms in connector mode', () => {
@@ -1784,21 +1820,21 @@ test('review I1: a last line whose states are not states (an e-mail, a title) is
   assert.deepEqual(w.watermark(), { meeting_notes: y }, 'only a real state advances; nothing moves on exit 4 but the round\'s own rule');
 });
 
-test('review I2: with the calendar configured, the meeting notes close a day only when the calendar was read over it in the same round; the morning round without the calendar leaves it open, the retry closes both', () => {
+test('review I2: with the calendar configured, the meeting notes close a day only when the calendar was read over it in the same round; the morning round without the calendar leaves it open, with no model work on the notes (final review I2), the retry closes both', () => {
   const w = makeCurateWorld({ config: withConnectors() });
   const y = utcDay(-1);
-  // Morning: the calendar needs authentication; the title search runs.
+  // Morning: the calendar needs authentication; the meeting notes wait for it, and no search runs.
   w.scenario({
     launches: [
       { rewrite: { mcpServers: connectorServers({ calendar: 'needs-auth', drive: 'connected' }), tools: [...BUILTINS, ...DRIVE_TOOLS] }, delayMs: 60000 },
-      { actions: PROPOSE_NOTE(w), rewrite: connectorRewrite(w, { servers: connectorServers({ calendar: 'needs-auth', drive: 'connected' }), tools: [...BUILTINS, ...DRIVE_TOOLS], uses: [searchNotes(y)], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable meeting_notes=empty' }) },
+      { actions: PROPOSE_NOTE(w), rewrite: { toolUses: [{ name: 'Read', input: { file_path: w.transcript, offset: 1 } }], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable meeting_notes=unavailable' } },
     ],
   });
   let r = w.curate();
   assert.equal(r.status, EXIT.OK, r.stderr);
   assert.deepEqual(w.watermark(), { transcripts: y });
-  assert.equal(w.lastRun().sources.meeting_notes.read, 1, 'door one was read');
-  assert.match(r.stderr, /watermark of meeting_notes did not move \(second_door_unread\)/);
+  assert.equal(w.lastRun().sources.meeting_notes.read, 0, 'no search was offered');
+  assert.match(r.stderr, /watermark of meeting_notes did not move \(waiting_for_calendar\)/);
   // The retry, the calendar reconnected: both doors, both close.
   w.scenario({ rewrite: connectorRewrite(w, { read: false, uses: [listEvents(dayStart(y), dayStart(utcDay(0))), searchNotes(y)], finalText: 'Done.\nBRAIN_KIT_SOURCES: calendar=empty meeting_notes=empty' }) });
   r = w.curate();
@@ -1858,4 +1894,134 @@ test('review I2: the calendar in the round is not enough: without its listing ov
   assert.equal(r.status, EXIT.OK, r.stderr);
   assert.deepEqual(w.watermark(), { transcripts: y });
   assert.match(r.stderr, /watermark of meeting_notes did not move \(second_door_unread\)/);
+});
+
+// ---------------------------------------------------------------- final review fix (25/09/2026)
+
+test('final review I2: --dry says the meeting notes wait for a calendar blocked by the person\'s rules, and shows the round isolated', () => {
+  const w = makeCurateWorld({ config: withConnectors() });
+  w.userSettings({ permissions: { allow: [`${CALENDAR_PREFIX}*`] } });
+  const r = w.curate(['--dry']);
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.match(r.stdout, /the source meeting_notes is not read this round: it closes a day only with calendar read over it, and that source is not read this round \(blocked_by_user_rules\)/);
+  assert.match(r.stdout, /Source meeting_notes: not read this round \(waiting_for_calendar\)/);
+  assert.ok(r.stdout.includes('"--setting-sources",""'), 'no connector source is left to read');
+  assert.equal(w.lastRun(), null);
+});
+
+test('final review I2: with the calendar turned off, the meeting notes do not wait for it: the title search alone closes their day', () => {
+  const w = makeCurateWorld({ config: (c) => { withConnectors()(c); c.sources.calendar.enabled = false; } });
+  const y = utcDay(-1);
+  w.scenario({ rewrite: connectorRewrite(w, { uses: [searchNotes(y)], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok meeting_notes=empty' }) });
+  const r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.deepEqual(w.watermark(), { transcripts: y, meeting_notes: y });
+  assert.equal(Object.hasOwn(w.lastRun().sources.meeting_notes, 'waitingFor'), false);
+});
+
+test('ruling R-F1: a connector source reported empty whose reads listed something does not advance (inconsistent_empty), and last-run counts what was listed; the same listing reported ok advances', () => {
+  const w = makeCurateWorld({ config: withConnectors() });
+  const y = utcDay(-1);
+  const events = JSON.stringify({ events: [{ id: 'evt-0001', summary: 'Reading group' }, { id: 'evt-0002', summary: 'Reading group' }] });
+  const files = JSON.stringify({ files: [{ id: 'file-0001', title: 'Notes by Example - Reading group' }] });
+  const uses = [listEvents(dayStart(y), dayStart(utcDay(0)), { content: events }), searchNotes(y, { content: files })];
+  w.scenario({ rewrite: connectorRewrite(w, { uses, finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=empty meeting_notes=empty' }) });
+  let r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.deepEqual(w.watermark(), { transcripts: y });
+  assert.match(r.stderr, /watermark of calendar did not move \(inconsistent_empty\)/);
+  assert.match(r.stderr, /watermark of meeting_notes did not move \(inconsistent_empty\)/);
+  const last = w.lastRun();
+  assert.equal(last.sources.calendar.listed, 2);
+  assert.equal(last.sources.meeting_notes.listed, 1);
+  assert.match(w.logText(), /"source":"calendar","day":"[0-9-]+","reported":"empty","advanced":false,"reason":"inconsistent_empty"/);
+  for (const text of [JSON.stringify(last), w.logText()]) assert.equal(text.includes('Reading group'), false, 'counts only, never what was listed');
+  w.scenario({ rewrite: connectorRewrite(w, { read: false, uses, finalText: 'Done.\nBRAIN_KIT_SOURCES: calendar=ok meeting_notes=ok' }) });
+  r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.deepEqual(w.watermark(), { transcripts: y, calendar: y, meeting_notes: y });
+});
+
+test('final review M1: a source whose days end before the round\'s is told the window of its own days, never the round\'s end', () => {
+  const w = makeCurateWorld({ config: withConnectors({ meetingNotes: false }) });
+  const today = utcDay(0);
+  // The calendar eleven days behind reads its oldest seven, the transcripts read yesterday.
+  writeFileSync(join(w.state, 'watermark.json'), JSON.stringify({ sources: { transcripts: utcDay(-2), calendar: utcDay(-11) } }));
+  w.scenario({ rewrite: connectorRewrite(w, { uses: [listEvents(dayStart(utcDay(-10)), dayStart(utcDay(-3)))], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=empty' }) });
+  const r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  const prompt = readFileSync(w.files.stdinFile, 'utf8');
+  const own = [-10, -9, -8, -7, -6, -5, -4].map((n) => shownDay(utcDay(n))).join(', ');
+  assert.ok(prompt.includes(`Days for this source: ${own}; its window runs from ${dayStart(utcDay(-10))} (included) to ${dayStart(utcDay(-3))} (not included).`), prompt);
+  assert.ok(prompt.includes(`Days for this source: ${shownDay(utcDay(-1))}; its window runs from ${dayStart(utcDay(-1))} (included) to ${dayStart(today)} (not included).`), 'the transcripts\' own day');
+  assert.deepEqual(w.watermark(), { transcripts: utcDay(-1), calendar: utcDay(-4) });
+});
+
+test('final review M2: the calendar listed for the meeting notes keeps its own seven-day cap; the notes days past the listing wait, and each source says what remains', async () => {
+  const w = makeCurateWorld({ config: withConnectors() });
+  const now = new Date('2026-09-25T12:00:00.000Z');
+  // The calendar twelve days back (after `watermark reopen`), the notes two.
+  writeFileSync(join(w.state, 'watermark.json'), JSON.stringify({ sources: { transcripts: '2026-09-24', calendar: '2026-09-12', meeting_notes: '2026-09-22' } }));
+  let r = await curateInProcess(w, ['--check'], { now });
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.match(r.stdout, /Source calendar: read through claude\.ai Google Calendar, days 13\/09\/2026, 14\/09\/2026, 15\/09\/2026, 16\/09\/2026, 17\/09\/2026, 18\/09\/2026, 19\/09\/2026\n/);
+  assert.match(r.stdout, /Source meeting_notes: no open day of its own in this round/);
+  assert.match(r.stderr, /calendar reads through 19\/09\/2026 this round; 5 more day\(s\) remain for it/);
+  assert.match(r.stderr, /meeting_notes reads no day this round: its 2 open day\(s\) wait until calendar has listed the days before them/);
+  // Closer: the listing spans both, within seven days, and the notes keep their days.
+  writeFileSync(join(w.state, 'watermark.json'), JSON.stringify({ sources: { transcripts: '2026-09-24', calendar: '2026-09-18', meeting_notes: '2026-09-22' } }));
+  r = await curateInProcess(w, ['--check'], { now });
+  assert.match(r.stdout, /Source calendar: read through claude\.ai Google Calendar, days 19\/09\/2026, 20\/09\/2026, 21\/09\/2026, 22\/09\/2026, 23\/09\/2026, 24\/09\/2026\n/);
+  assert.match(r.stdout, /Source meeting_notes: read through claude\.ai Google Drive, days 23\/09\/2026, 24\/09\/2026\n/);
+  assert.equal(r.stderr.includes('more day(s) remain'), false);
+  // The notes behind the calendar by more than seven days: the listing covers the notes' oldest seven, the calendar's own days wait.
+  writeFileSync(join(w.state, 'watermark.json'), JSON.stringify({ sources: { transcripts: '2026-09-24', calendar: '2026-09-23', meeting_notes: '2026-09-12' } }));
+  r = await curateInProcess(w, ['--check'], { now });
+  assert.match(r.stdout, /Source calendar: read through claude\.ai Google Calendar, days 13\/09\/2026, .*19\/09\/2026\n/);
+  assert.match(r.stderr, /calendar reads through 19\/09\/2026 this round; 1 more day\(s\) remain for it/);
+  assert.match(r.stderr, /meeting_notes reads through 19\/09\/2026 this round; 5 more day\(s\) remain for it/);
+  // A calendar with no mark yet reads only yesterday on its own: the listing that stops before it leaves that day for later.
+  writeFileSync(join(w.state, 'watermark.json'), JSON.stringify({ sources: { transcripts: '2026-09-24', meeting_notes: '2026-09-12' } }));
+  r = await curateInProcess(w, ['--check'], { now });
+  assert.match(r.stderr, /calendar reads through 19\/09\/2026 this round; 1 more day\(s\) remain for it/);
+});
+
+test('final review I3: a user write rule anchored at the settings folder (`/x`) is mirrored in its resolved absolute form, never as written, so the deny names the same place the allow did', () => {
+  const w = makeCurateWorld({ config: withConnectors({ meetingNotes: false }) });
+  w.userSettings({ permissions: { allow: ['Edit(/notes/**)', 'Write(/**)', 'Edit(~/elsewhere/**)'] } });
+  const r = w.curate(['--dry']);
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  const argv = JSON.parse(/Command: \S+ (\[.*\])\n/.exec(r.stdout)?.[1] ?? r.stdout.slice(r.stdout.indexOf('['), r.stdout.lastIndexOf(']') + 1));
+  const { denied } = argvLists(argv);
+  assert.ok(denied.includes(`Edit(/${w.claudeConfig}/notes/**)`), denied.join(' '));
+  assert.ok(denied.includes(`Write(/${w.claudeConfig}/**)`));
+  assert.ok(denied.includes(`Edit(/${w.env.HOME}/elsewhere/**)`));
+  for (const rule of ['Edit(/notes/**)', 'Write(/**)', 'Edit(~/elsewhere/**)']) assert.equal(denied.includes(rule), false, rule);
+});
+
+test('final review I2: meeting notes unavailable on their own account keep their own reason: a bare Bash blocks both sources, and the notes are blocked, not waiting, their mark held by their own evidence', () => {
+  const w = makeCurateWorld({ config: withConnectors() });
+  w.userSettings({ permissions: { allow: ['Bash'] } });
+  w.scenario({ actions: PROPOSE_NOTE(w), rewrite: { toolUses: [{ name: 'Read', input: { file_path: w.transcript, offset: 1 } }], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable meeting_notes=unavailable' } });
+  const r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  const last = w.lastRun();
+  assert.equal(last.sources.meeting_notes.state, 'blocked_by_user_rules');
+  assert.equal(Object.hasOwn(last.sources.meeting_notes, 'waitingFor'), false);
+  assert.equal(r.stderr.includes('waiting_for_calendar'), false);
+  assert.match(r.stderr, /watermark of meeting_notes did not move \(no_evidence\)/);
+  assert.deepEqual(w.watermark(), { transcripts: utcDay(-1) });
+});
+
+test('final review I2: when nothing is left for a model once the calendar is gone, the waiting meeting notes are still logged with their reason', () => {
+  const w = makeCurateWorld({ config: withConnectors() });
+  rmSync(w.transcript);
+  w.scenario({ launches: [{ rewrite: { mcpServers: connectorServers({ calendar: 'needs-auth', drive: 'connected' }), tools: [...BUILTINS, ...DRIVE_TOOLS] }, delayMs: 60000 }] });
+  const r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.equal(w.launches().length, 1, 'no second launch for nothing');
+  assert.equal(w.lastRun().reasonCode, 'nothing_available');
+  assert.match(w.logText(), / watermark \{"source":"meeting_notes","day":null,"advanced":false,"reason":"waiting_for_calendar"\}/);
+  assert.match(r.stderr, /watermark of meeting_notes did not move \(waiting_for_calendar\)/);
+  assert.deepEqual(w.watermark(), { transcripts: utcDay(-1) });
 });

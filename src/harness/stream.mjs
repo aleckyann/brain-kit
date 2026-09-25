@@ -34,12 +34,23 @@
 //                notice) does not, and must read as a failed call: the
 //                capture's keys are sorted, so the token comes right after
 //                the list a size cap would cut first
+//                A document that is not an object (null, a list, a string,
+//                a number) is not complete either: every connector answer
+//                measured is an object, and a later CLI that encoded the
+//                page twice would otherwise read as a whole last page
+//                (review N2 of task 2)
 //   hasNextPage  that document's top-level `nextPageToken` is a non-empty
 //                string; false whenever `complete` is false, and for a token
 //                nested anywhere else (a third party's event cannot hold a
 //                page open)
-// so a source can tell a first page, or a part of one, from every page.
-// The text itself is never kept in the record.
+//   items        the length of that document's top-level `events` list (a
+//                calendar listing) or, failing that, its top-level `files`
+//                list (a document search); null when it has neither or is
+//                not complete (ruling R-F1: a connector source's `empty`
+//                counts only when its reads listed nothing)
+// so a source can tell a first page, or a part of one, from every page,
+// and a listing that found something from one that found nothing. The
+// text itself is never kept in the record, only those counts.
 
 const KNOWN_SYSTEM_SUBTYPES = new Set([
   'init',
@@ -75,17 +86,23 @@ function resultText(content) {
   return content.filter((block) => isObject(block) && block.type === 'text' && typeof block.text === 'string').map((block) => block.text).join('');
 }
 
-// `complete` and `hasNextPage` for one tool result's content (see the
-// header).
+// `complete`, `hasNextPage` and `items` for one tool result's content (see
+// the header).
+const NOT_A_PAGE = Object.freeze({ complete: false, hasNextPage: false, items: null });
+
 function pageOf(content) {
   let document;
   try {
     document = JSON.parse(resultText(content));
   } catch {
-    return { complete: false, hasNextPage: false };
+    return { ...NOT_A_PAGE };
   }
-  const token = isObject(document) ? document.nextPageToken : undefined;
-  return { complete: true, hasNextPage: typeof token === 'string' && token !== '' };
+  if (!isObject(document)) return { ...NOT_A_PAGE };
+  const token = document.nextPageToken;
+  let items = null;
+  if (Array.isArray(document.events)) items = document.events.length;
+  else if (Array.isArray(document.files)) items = document.files.length;
+  return { complete: true, hasNextPage: typeof token === 'string' && token !== '', items };
 }
 
 // An incremental reader: `push` one line at a time (runModel feeds it as the

@@ -72,7 +72,7 @@ function closeDay(record) {
 test('a listing of one afternoon hour, read as the whole day, does not read the calendar and leaves its day open', () => {
   const hour = round([{ input: input({ startTime: '2026-05-12T14:00:00-03:00', endTime: '2026-05-12T15:00:00-03:00' }) }]);
   const { evidence, outcome, mark } = closeDay(hour);
-  assert.deepEqual(evidence, { read: 0, expected: 1, ok: false });
+  assert.deepEqual(evidence, { read: 0, expected: 1, ok: false, listed: null });
   assert.deepEqual(outcome, { advanced: false, reason: 'no_evidence' });
   assert.equal(mark, null);
 });
@@ -80,20 +80,20 @@ test('a listing of one afternoon hour, read as the whole day, does not read the 
 test('a listing that stops an hour before the window ends, or starts an hour after it opens, does not read the calendar', () => {
   for (const partial of [input({ endTime: '2026-05-13T02:00:00.000Z' }), input({ startTime: '2026-05-12T04:00:00.000Z' })]) {
     const { evidence, mark } = closeDay(round([{ input: partial }]));
-    assert.deepEqual(evidence, { read: 0, expected: 1, ok: false }, JSON.stringify(partial));
+    assert.deepEqual(evidence, { read: 0, expected: 1, ok: false, listed: null }, JSON.stringify(partial));
     assert.equal(mark, null);
   }
 });
 
 test('a whole-day listing whose first page was read as every page does not read the calendar', () => {
   const { evidence, mark } = closeDay(round([{ input: input(), more: true }]));
-  assert.deepEqual(evidence, { read: 0, expected: 1, ok: false });
+  assert.deepEqual(evidence, { read: 0, expected: 1, ok: false, listed: null });
   assert.equal(mark, null);
 });
 
 test('the whole window with every page read is what closes the day', () => {
   const { evidence, outcome, mark } = closeDay(round([{ input: input(), more: true }, { input: input({ pageToken: 'bmV1dHJhbCBwYWdlIHRva2Vu0' }) }]));
-  assert.deepEqual(evidence, { read: 1, expected: 1, ok: true });
+  assert.deepEqual(evidence, { read: 1, expected: 1, ok: true, listed: 2 });
   assert.equal(outcome.advanced, true);
   assert.equal(mark, DAY);
 });

@@ -80,11 +80,16 @@ function frontmatterOf(text) {
   const match = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/.exec(text);
   assert.ok(match, 'file must open with a frontmatter block');
   const fields = {};
+  const quoted = new Set();
   for (const line of match[1].split('\n')) {
     const kv = /^([a-z_-]+):\s*(.*)$/.exec(line);
-    if (kv) fields[kv[1]] = kv[2];
+    if (!kv) continue;
+    // A double-quoted YAML scalar with no escape in it reads as its text.
+    const q = /^"([^"\\]*)"$/.exec(kv[2]);
+    fields[kv[1]] = q ? q[1] : kv[2];
+    if (q) quoted.add(kv[1]);
   }
-  return { fields, body: match[2] };
+  return { fields, body: match[2], quoted };
 }
 
 test('the set of skill directories equals SKILL_NAMES', () => {
@@ -96,8 +101,11 @@ test('every SKILL.md names its directory, describes itself in ASCII English and 
   for (const name of readdirSync(SKILLS_DIR)) {
     const file = join(SKILLS_DIR, name, 'SKILL.md');
     assert.ok(existsSync(file), `${name}/SKILL.md missing`);
-    const { fields, body } = frontmatterOf(readFileSync(file, 'utf8'));
+    const { fields, body, quoted } = frontmatterOf(readFileSync(file, 'utf8'));
     assert.equal(fields.name, name);
+    // A plain YAML scalar holding ": " is not a scalar at all to a strict
+    // YAML reader (review M8 of task 7): every description is double quoted.
+    assert.ok(quoted.has('description'), `${name}: description must be a double-quoted YAML scalar`);
     assert.match(fields.description, /^[\x20-\x7e]+$/, `${name}: description must be printable ASCII`);
     assert.match(fields.description, /^Use (when|at|after) /, `${name}: description must start with "Use when", "Use at" or "Use after"`);
     const lines = body.split('\n').filter((line) => line.trim() !== '');

@@ -593,4 +593,10 @@ function checkOverlay(t, io, startDir, problems) {
   for (const placeholder of placeholdersOf(text).filter((p) => !KNOWN_PROMPT_PLACEHOLDERS.includes(p))) {
     io.stderr.write(`${t('prompt.check_overlay_unknown_placeholder', { path, placeholder: `{{${placeholder}}}` })}\n`);
   }
+  // An overlay written before phase 3 names only the transcripts in its
+  // last line: the model is never told the connector sources' ids, so
+  // their marks never move (final review M4).
+  if (!placeholdersOf(text).includes('sources_line')) {
+    io.stderr.write(`${t('prompt.check_overlay_no_sources_line', { path, placeholder: '{{sources_line}}' })}\n`);
+  }
 }

@@ -24,7 +24,7 @@ import { meetingNotesSource } from '../../src/sources/meeting-notes-google-drive
 
 const SEARCH = 'mcp__claude_ai_Google_Drive__search_files';
 const WINDOW = Object.freeze({ from: new Date('2026-05-12T03:00:00Z'), to: new Date('2026-05-13T03:00:00Z') });
-const NOT_READ = Object.freeze({ read: 0, expected: 1, ok: false, documents: { read: 0, failed: 0 } });
+const NOT_READ = Object.freeze({ read: 0, expected: 1, ok: false, documents: { read: 0, failed: 0 }, listed: null });
 const READ_ONCE = Object.freeze({ read: 1, expected: 1, ok: true, documents: { read: 0, failed: 0 } });
 
 function ptPlan() {
@@ -55,7 +55,7 @@ test('pt-BR: a search without the accent, answered with no document and no error
   assert.deepEqual(quiet.toolResults.map((r) => [r.isError, r.hasNextPage]), [[false, false]], 'no error and no next page: nothing says anything went wrong');
   assert.deepEqual(meetingNotesSource.readEvidence(quiet, plan), NOT_READ);
 
-  assert.deepEqual(meetingNotesSource.readEvidence(searchStream(plan.query, [NOTE]), plan), READ_ONCE);
+  assert.deepEqual(meetingNotesSource.readEvidence(searchStream(plan.query, [NOTE]), plan), { ...READ_ONCE, listed: 1 }, 'the one document the search found is counted');
 });
 
 test('pt-BR: the same letters in another Unicode form are another query, and not a read', () => {
