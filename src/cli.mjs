@@ -18,6 +18,7 @@ import { runWatermark } from './commands/watermark.mjs';
 import { runSchedule } from './commands/schedule.mjs';
 import { runCurate } from './commands/curate.mjs';
 import { runPreflight } from './commands/preflight.mjs';
+import { runQuestions } from './commands/questions.mjs';
 import { walkVault } from './vault.mjs';
 import { ConfigError } from './config.mjs';
 
@@ -66,6 +67,7 @@ const BUILTIN_COMMANDS = new Map([
   ['schedule', (argv, io, t) => runSchedule(argv, io, t)],
   ['curate', (argv, io, t) => runCurate(argv, io, t)],
   ['preflight', (argv, io, t) => runPreflight(argv, io, t)],
+  ['questions', (argv, io, t) => runQuestions(argv, io, t)],
   ['scan-blobs', (argv, io) => runScanBlobs(argv, io)],
   ['push-gate', (argv, io) => runPushGate(argv, io, createTranslator(GATE_LANG, {
     warn: (message) => io.stderr.write(`${message}\n`),
