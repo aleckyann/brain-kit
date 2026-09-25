@@ -77,7 +77,7 @@ import { KIT_ROOT } from '../version.mjs';
 import { createTranslator, resolveLang, SUPPORTED_LANGS } from '../lang.mjs';
 import { findVaultRoot } from '../vault.mjs';
 import { CONFIG_FILENAME, loadConfig, loadMachine, ConfigError, MACHINE_FILENAME } from '../config.mjs';
-import { kitCommand } from '../curate/tools.mjs';
+import { kitCommand, kitCommandIn } from '../curate/tools.mjs';
 import { stateDirFor } from '../state.mjs';
 import { localDay } from '../guards/watermark.mjs';
 import { GuardError } from '../guards/location.mjs';
@@ -110,8 +110,10 @@ export const PROMPT_NAMES = Object.freeze(['curate', 'briefing']);
 const KNOWN_PROMPT_PLACEHOLDERS = Object.freeze(['parameters', 'kit', 'log', 'capture_marker', 'agent', 'today_iso', 'now_iso', 'signature', 'sources_line']);
 // The briefing's own placeholders. `today_iso` is the log heading the
 // captures go under (`## YYYY-MM-DD`), given so the model never derives it.
+// `kit` is the kit's command with `-C "<vault>"` and `vault` the vault's
+// absolute path: the session may run anywhere (final review, C2).
 export const BRIEFING_PLACEHOLDERS = Object.freeze([
-  'signature', 'today_human', 'today_iso', 'kit', 'blocks', 'read', 'never_read', 'limits', 'log', 'capture_marker', 'agent', 'now_iso',
+  'signature', 'today_human', 'today_iso', 'kit', 'vault', 'blocks', 'read', 'never_read', 'limits', 'log', 'capture_marker', 'agent', 'now_iso',
 ]);
 const PLACEHOLDERS_BY_PROMPT = Object.freeze({ curate: KNOWN_PROMPT_PLACEHOLDERS, briefing: BRIEFING_PLACEHOLDERS });
 function promptPlaceholders(name) {
@@ -398,7 +400,8 @@ export function briefingVars({ vaultRoot, config, lang, blocks, now = new Date()
     signature: signatureFor(config, defaults, 'briefing'),
     today_human: humanDay(clock.date),
     today_iso: clock.date,
-    kit: kitCommand(),
+    kit: vaultRoot ? kitCommandIn(vaultRoot) : kitCommand(),
+    vault: vaultRoot ?? '',
     blocks: String(blocks ?? ''),
     read: renderReadList(config, vaultRoot, t),
     never_read: renderNeverRead(config, t),
@@ -620,7 +623,7 @@ function runBriefing(io, { startDir, env, now, packsDir, deps }) {
     problems = resolved.problems;
     if (resolved.blocks.some((block) => block.id === 'questions')) selection = selectQuestions(facts.questions, briefingLimits(config).maxQuestions);
     const log = config.taxonomy?.log ?? defaultsFor(packsDir, lang).taxonomy.log;
-    const blocksText = renderBlocks({ ...resolved, facts, config, root, t, kit: kitCommand(), log, selection });
+    const blocksText = renderBlocks({ ...resolved, facts, config, root, t, kit: kitCommandIn(root), log, selection });
     text = render(template, briefingVars({ vaultRoot: root, config, lang, blocks: blocksText, now, t, packsDir }));
     selection = selection === null ? null : { ...selection, today: facts.today };
   } catch (error) {
@@ -854,6 +857,7 @@ function checkBriefingOverlay(t, io, root, config, problems) {
   for (const list of ['never_read', 'read']) {
     if (!used.includes(list)) io.stderr.write(`${t('prompt.check_briefing_overlay_no_list', { path, placeholder: `{{${list}}}` })}\n`);
   }
+  if (!used.includes('vault')) io.stderr.write(`${t('prompt.check_briefing_overlay_no_vault', { path, placeholder: '{{vault}}' })}\n`);
   for (const rule of missingBriefingRules(text)) {
     io.stderr.write(`${t('prompt.check_briefing_overlay_missing_rule', { path, rule })}\n`);
   }

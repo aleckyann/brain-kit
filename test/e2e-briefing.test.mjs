@@ -63,7 +63,7 @@ import { KIT_ROOT } from '../src/version.mjs';
 import { addDays, localDay } from '../src/guards/watermark.mjs';
 import { normalizeQuestion } from '../src/briefing/questions.mjs';
 import { inNeverRead } from '../src/briefing/pending.mjs';
-import { disallowedTools, kitCommand } from '../src/curate/tools.mjs';
+import { disallowedTools, kitCommand, kitCommandIn } from '../src/curate/tools.mjs';
 import { BIN, TZ, WORLD, buildBriefingWorld, run } from './helpers/briefing-world.mjs';
 
 const ENABLED = process.env.BRAIN_KIT_E2E_BRIEFING === '1';
@@ -166,6 +166,9 @@ test('the real briefing skill against a throwaway vault gives every block in ord
   const allowed = [
     'Read(./**)', 'Glob(./**)', 'Grep(./**)', 'Edit(./**)', 'Write(./**)', 'Skill',
     ...KIT_SUBCOMMANDS.flatMap((sub) => [`Bash(${kitPath} ${sub}:*)`, `Bash(node ${kitPath} ${sub}:*)`]),
+    // The briefing names every kit command with the vault (`-C "<vault>"`,
+    // final review of phase 4, C2), so the allowlist names that form too.
+    ...KIT_SUBCOMMANDS.flatMap((sub) => [`Bash(${kitCommandIn(vault)} ${sub}:*)`, `Bash(node ${kitCommandIn(vault)} ${sub}:*)`]),
   ];
   const argv = [
     '-p', '--verbose', '--output-format', 'stream-json',
@@ -255,11 +258,24 @@ test('the real briefing skill against a throwaway vault gives every block in ord
   const added = queueAfter.some((q) => q.id !== seededId && runDays.includes(q.createdOn))
     && commands.some((c) => /\bquestions\s+add\b/.test(c));
   assert.ok(answered || added, `neither questions add nor questions answer changed the queue: commands ${JSON.stringify(commands)}, queue ${JSON.stringify(queueAfter)}`);
+  // A question is marked answered only after the propose that records its
+  // answer (final review of phase 4, I1).
+  if (answered) {
+    const answerAt = commands.findIndex((c) => /\bquestions\s+answer\b/.test(c) && c.includes(seededId));
+    const proposeAt = commands.findIndex((c) => /\bpropose\b/.test(c) && /--only/.test(c));
+    assert.ok(proposeAt !== -1 && proposeAt < answerAt, `questions answer ran before any propose: ${JSON.stringify(commands)}`);
+  }
 
   // Exactly one pull request, against the default branch, from `propose
   // --only` naming every file it changed; or none, with nothing recorded.
   const isKit = (words) => words[0] === BIN || (words[0] === 'node' && words[1] === BIN);
-  const proposals = commands.flatMap(shellCommands).filter((words) => isKit(words) && words[words[0] === 'node' ? 2 : 1] === 'propose');
+  // The words after the kit's path, its global `-C <dir>` options skipped.
+  const kitArgs = (words) => {
+    let rest = words.slice(words[0] === 'node' ? 2 : 1);
+    while (rest[0] === '-C') rest = rest.slice(2);
+    return rest;
+  };
+  const proposals = commands.flatMap(shellCommands).filter((words) => isKit(words) && kitArgs(words)[0] === 'propose');
   for (const words of proposals) {
     assert.ok(words.includes('--only'), `a propose without --only: ${words.join(' ')}`);
     assert.ok(!words.includes('--all'), `a propose with --all: ${words.join(' ')}`);

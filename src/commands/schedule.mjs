@@ -72,7 +72,7 @@ import { STATE_FILES, stateDirFor } from '../state.mjs';
 import { KIT_ROOT } from '../version.mjs';
 import { run } from '../exec.mjs';
 import { expandHome, findExecutable, resolveClaude, shownInstant } from '../doctor/checks.mjs';
-import { kitCommand } from '../curate/tools.mjs';
+import { bashQuoted, kitCommand } from '../curate/tools.mjs';
 import { briefingSetting } from '../briefing/blocks.mjs';
 import { createTranslator, resolveLang, SUPPORTED_LANGS } from '../lang.mjs';
 import { signatureProblem, signatureProblems, startsWithSignature } from '../sources/transcripts-claude-code.mjs';
@@ -811,8 +811,6 @@ function status(context, rendered, windows, lastRun, now) {
 export const BRIEFING_TASK_PREFIX = 'brain-kit-briefing-';
 // Five cron fields, the only shape the application's cronExpression takes.
 const CRON_FIELDS = /^\S+(\s+\S+){4}$/;
-// Characters a double-quoted bash word keeps special.
-const BASH_SPECIAL = /[\\"$`]/g;
 // A kit path kitCommand() quotes as it is, so none of these may be in it.
 const KIT_UNSAFE = /["\\$`]/;
 // The command line of the task's second line, as the kit writes it.
@@ -829,12 +827,6 @@ export function briefingTaskFile(env, taskId) {
 
 function hasControl(value) {
   return [...value].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127);
-}
-
-// One bash word in double quotes: a vault named `Ana's "brain"` is still
-// the one argument it is.
-function bashQuoted(value) {
-  return `"${value.replace(BASH_SPECIAL, (c) => `\\${c}`)}"`;
 }
 
 function bashUnquoted(inner) {

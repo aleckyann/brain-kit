@@ -109,6 +109,25 @@ export function kitCommand() {
   return `"${join(KIT_ROOT, 'bin', 'brain-kit.mjs')}"`;
 }
 
+// Characters a double-quoted bash word keeps special.
+const BASH_SPECIAL = /[\\"$`]/g;
+
+// One bash word in double quotes: a vault named `Ana's "brain"` is still
+// the one argument it is.
+export function bashQuoted(value) {
+  return `"${value.replace(BASH_SPECIAL, (c) => `\\${c}`)}"`;
+}
+
+// The kit's command as run from anywhere for the vault at `dir`: the kit's
+// global `-C <dir>` (src/cli.mjs) in front of the subcommand, both paths one
+// bash word each. The morning briefing names every kit command this way,
+// because the session it runs in may have any working directory (final
+// review of phase 4, finding C2). For a kit path with none of bash's
+// special characters in it, the prefix is exactly kitCommand().
+export function kitCommandIn(dir) {
+  return `${bashQuoted(join(KIT_ROOT, 'bin', 'brain-kit.mjs'))} -C ${bashQuoted(dir)}`;
+}
+
 // `extra` is the vault's `curate.allowed_tools_extra`, appended as given.
 // `readFiles` are absolute paths the round may read, each one exactly (the
 // transcripts its plan lists, ruling R-A2), and `readDirs` absolute

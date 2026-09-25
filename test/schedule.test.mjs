@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 import { CRON_LINE_LIMIT, briefingTask, briefingTaskFile, nextFireTimes, readBriefingTask, sameClock } from '../src/commands/schedule.mjs';
 import { startsWithSignature } from '../src/sources/transcripts-claude-code.mjs';
-import { kitCommand } from '../src/curate/tools.mjs';
+import { bashQuoted, kitCommand, kitCommandIn } from '../src/curate/tools.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { INSIDE, PROJECT, assistant, makeWorld as makeTranscriptsWorld, paths, user } from './helpers/transcripts-world.mjs';
 import {
@@ -678,6 +678,20 @@ test('the command in the task\'s second line runs, through bash, the kit\'s prom
   const ran = spawnSync('bash', ['-c', command], { env: { PATH: `${bin}:/usr/bin:/bin` }, encoding: 'utf8' });
   assert.equal(ran.status, 0, ran.stderr);
   assert.deepEqual(ran.stdout.replace(/\n$/, '').split('\n'), [KIT_BIN, 'prompt', 'briefing', '--vault', world.vault]);
+});
+
+// Final review of phase 4, C2: the briefing names every kit command as
+// `"<kit>" -C "<vault>"`, one bash word each, whatever the vault's name holds.
+test('the briefing\'s kit command with -C keeps the kit and the vault one argument each through bash, whatever the vault\'s name holds', () => {
+  for (const vault of [`/home/ana/Ana's "brain" $HOME \`x\` \\ 100%`, `/home/ana/meu c${ACCENTED}rebro`, '/home/ana/plain']) {
+    const ran = spawnSync('bash', ['-c', `printf '%s\\n' ${kitCommandIn(vault)} questions add "A question"`], { env: { PATH: '/usr/bin:/bin' }, encoding: 'utf8' });
+    assert.equal(ran.status, 0, ran.stderr);
+    assert.deepEqual(ran.stdout.replace(/\n$/, '').split('\n'), [KIT_BIN, '-C', vault, 'questions', 'add', 'A question'], vault);
+  }
+  // For this kit's own path the prefix is exactly kitCommand(), so an allow
+  // rule written with kitCommand() still names it.
+  assert.ok(kitCommandIn('/home/ana/plain').startsWith(`${kitCommand()} -C `));
+  assert.equal(bashQuoted('a"b$c`d\\e'), '"a\\"b\\$c\\`d\\\\e"');
 });
 
 test('the task\'s prompt, as a session\'s first user message, is dropped by the transcripts source as the briefing\'s own run (decision B6)', async () => {

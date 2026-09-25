@@ -308,15 +308,25 @@ packs' prompt (`<!-- rule:<id> -->`), and `prompt --check` fails a pack without 
 The prompt is `lang/<code>/prompts/briefing.md` in the vault's language, or the vault's
 own overlay at `briefing.prompt` (`.brain-kit/prompts/briefing.md` by default) when that
 file exists. An overlay outside the vault is refused. Its placeholders are
-`{{signature}}`, `{{today_human}}`, `{{today_iso}}`, `{{kit}}`, `{{blocks}}`, `{{read}}`,
-`{{never_read}}`, `{{limits}}`, `{{log}}`, `{{capture_marker}}`, `{{agent}}` and
+`{{signature}}`, `{{today_human}}`, `{{today_iso}}`, `{{kit}}`, `{{vault}}`, `{{blocks}}`,
+`{{read}}`, `{{never_read}}`, `{{limits}}`, `{{log}}`, `{{capture_marker}}`, `{{agent}}` and
 `{{now_iso}}`.
+
+The desktop task's session does not start in the vault (see [The desktop task](#the-desktop-task)),
+and every kit command finds its vault from the working directory. So in the briefing
+`{{kit}}` is the kit's command with the vault already in it, `"<kit>/bin/brain-kit.mjs" -C
+"<vault>"`, in the prompt and in every block, and `{{vault}}` is the vault's absolute path:
+the prompt says that every path in the briefing is relative to it and that a file is
+opened and edited by its absolute path under it. `-C <dir>` is a global option of the kit,
+as git's: `brain-kit -C <dir> <command> ...` runs the command exactly as if it had been
+started in `<dir>`, so `propose --only` reads its paths from the vault too.
 
 `brain-kit prompt --check` inside the vault fails an overlay whose first line is not
 `{{signature}}` (the curator tells a briefing session apart by it; the render puts it in
 front anyway) or that does not use `{{blocks}}` (the model would see no block, and no
-question placed for it would reach you), and warns about one without `{{never_read}}` or
-`{{read}}`, without a contract marker, or with a placeholder the briefing does not fill.
+question placed for it would reach you), and warns about one without `{{never_read}}`,
+`{{read}}` or `{{vault}}`, without a contract marker, or with a placeholder the briefing does
+not fill.
 
 `brain-kit prompt briefing [--vault <dir>]` prints the rendered prompt. Every failure
 before the render (no vault, a configuration it cannot use, a prompt it cannot read)

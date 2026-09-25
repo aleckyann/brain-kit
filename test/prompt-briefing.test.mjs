@@ -14,7 +14,7 @@ import { EXIT } from '../src/exit-codes.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { loadConfig } from '../src/config.mjs';
 import { BRIEFING_PLACEHOLDERS, BRIEFING_RULES, PROMPT_NAMES, runPrompt } from '../src/commands/prompt.mjs';
-import { kitCommand } from '../src/curate/tools.mjs';
+import { kitCommand, kitCommandIn } from '../src/curate/tools.mjs';
 import { addQuestion, markAsked, readQueue } from '../src/briefing/questions.mjs';
 
 const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
@@ -123,8 +123,8 @@ for (const lang of LANGS) {
     assert.ok(out.includes('2026-09-25T09:00:00-03:00'));
     assert.ok(out.includes(`**${config.taxonomy.log_markers.capture}**`));
     assert.ok(out.includes(`${config.actors.agent_prefix}/<model>`));
-    assert.ok(out.includes(`${kitCommand()} questions add`));
-    assert.ok(out.includes(`${kitCommand()} propose "`));
+    assert.ok(out.includes(`${kitCommandIn(world.vault)} questions add`));
+    assert.ok(out.includes(`${kitCommandIn(world.vault)} propose "`));
     const ids = out.split('\n').filter((line) => line.startsWith('### ')).map((line) => /\(([a-z_]+)\)$/.exec(line)[1]);
     assert.deepEqual(ids, ['sources', 'due', 'upcoming', 'undated', 'open_prs', 'stale', 'blind_spots', 'strategy', 'questions']);
     for (const entry of config.briefing.never_read) assert.ok(out.includes(`- \`${entry}\``), entry);
@@ -252,7 +252,7 @@ test('--check warns about the briefing overlay and the blocks, fails for one wit
   for (const rule of BRIEFING_RULES.filter((x) => x !== 'never-read')) assert.ok(r.err.includes(`"${rule}"`), rule);
   assert.match(r.err, /"\{\{parameters\}\}", which the briefing does not fill/);
   assert.match(r.err, /warning: briefing\.blocks: entry 2, "agenda"/);
-  writeFileSync(overlay, `{{signature}}\n${BRIEFING_RULES.map((x) => `<!-- rule:${x} -->\n`).join('')}{{never_read}}\n{{read}}\n{{blocks}}\n`);
+  writeFileSync(overlay, `{{signature}}\n${BRIEFING_RULES.map((x) => `<!-- rule:${x} -->\n`).join('')}{{vault}}\n{{never_read}}\n{{read}}\n{{blocks}}\n`);
   const good = await briefing(world, { argv: ['--check', '--vault', world.vault] });
   assert.equal(good.code, EXIT.OK, good.out + good.err);
   assert.equal(good.err, 'warning: briefing.blocks: entry 2, "agenda": no block of the kit has this id (the kit\'s blocks: sources, due, upcoming, undated, open_prs, stale, questions, blind_spots, strategy, today_calendar); left out.\n');
@@ -491,3 +491,108 @@ test('the real binary with briefing.enabled false prints the one line and exits 
   assert.equal(r.stdout.trim().split('\n').length, 1);
   assert.match(r.stdout, /^The morning briefing is turned off in this vault: briefing\.enabled is false in brain-kit\.config\.json\./);
 });
+
+// ------------------------------------------------------------ the vault in every command (final review, C2)
+
+// The desktop application's task starts a session whose working directory
+// is not the vault, and every kit command finds its vault from there: the
+// render names the vault in every kit command (`-C "<vault>"`) and says
+// where every relative path lives.
+for (const lang of LANGS) {
+  test(`${lang}: every kit command the rendered briefing names carries -C and the vault, and the prompt says every path is relative to the vault`, async () => {
+    const world = freshVault(lang);
+    await addQuestion(world.state, 'Is the room booked?', { today: '2026-09-20' });
+    const { code, out } = await briefing(world);
+    assert.equal(code, EXIT.OK, out);
+    const kit = kitCommand();
+    const at = [...out.matchAll(new RegExp(kit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))].map((m) => m.index);
+    assert.ok(at.length >= 7, `${lang}: only ${at.length} kit command(s) in the render`);
+    for (const index of at) assert.ok(out.startsWith(`${kit} -C "${world.vault}" `, index), `${lang}: ${out.slice(index, index + kit.length + 60)}`);
+    assert.ok(out.includes(`\`${world.vault}\``), `${lang}: the vault's path`);
+    assert.ok(out.includes(`\`${world.vault}/<`), `${lang}: the absolute path under the vault`);
+  });
+
+  test(`${lang}: the commands the render names run from a directory outside the vault: questions add and answer, validate and lint act on this vault`, async () => {
+    const world = freshVault(lang);
+    const { out } = await briefing(world);
+    const outside = join(world.base, 'home');
+    const bin = join(world.base, 'onlygit');
+    mkdirSync(bin);
+    symlinkSync(REAL_GIT, join(bin, 'git'));
+    symlinkSync(process.execPath, join(bin, 'node'));
+    const bash = (command) => spawnSync('/bin/bash', ['-c', command], { cwd: outside, env: { ...world.env, PATH: bin }, encoding: 'utf8' });
+    const command = (suffix) => {
+      const found = out.match(new RegExp(`\`(${kitCommandIn(world.vault).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} ${suffix}[^\`]*)\``));
+      assert.ok(found, `${lang}: no ${suffix} command in the render`);
+      return found[1];
+    };
+    const added = bash(command('questions add').replace(/"<[^>]+>"/, '"Is the room booked for Thursday?"'));
+    assert.equal(added.status, 0, added.stdout + added.stderr);
+    const [question] = readQueue(world.state);
+    assert.equal(question.text, 'Is the room booked for Thursday?');
+    const answered = bash(`${command('questions answer').replace('<id>', question.id)}`);
+    assert.equal(answered.status, 0, answered.stdout + answered.stderr);
+    assert.equal(readQueue(world.state)[0].status, 'answered');
+    for (const suffix of ['validate', 'lint --base worktree']) {
+      const r = bash(command(suffix));
+      assert.equal(r.status, 0, `${lang} ${suffix}: ${r.stdout}${r.stderr}`);
+    }
+  });
+}
+
+test('a vault path with a space, an accent, quotes, a dollar sign and a backtick is still one argument after -C, in the render and through bash', async () => {
+  const world = freshVault('en');
+  const odd = join(world.base, `Ana's "brain" $HOME \`x\` caf${String.fromCodePoint(0xe9)}`);
+  cpSync(world.vault, odd, { recursive: true });
+  const { code, out } = await briefing(world, { argv: ['briefing', '--vault', odd] });
+  assert.equal(code, EXIT.OK, out);
+  const found = out.match(/`("[^"]+" -C "(?:[^"\\]|\\.)*") questions add/);
+  assert.ok(found, out);
+  const ran = spawnSync('bash', ['-c', `printf '%s\\n' ${found[1]} questions`], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } });
+  assert.equal(ran.status, 0, ran.stderr);
+  assert.deepEqual(ran.stdout.replace(/\n$/, '').split('\n'), [BIN, '-C', odd, 'questions']);
+});
+
+test('--check knows {{vault}} and warns about a briefing overlay without it', async () => {
+  const world = freshVault('en');
+  const overlay = join(world.vault, '.brain-kit', 'prompts', 'briefing.md');
+  mkdirSync(join(overlay, '..'), { recursive: true });
+  writeFileSync(overlay, '{{signature}}\n\nAt {{vault}}: {{blocks}} {{never_read}} {{read}}\n');
+  const c = collector();
+  const code = await runPrompt(['--check', '--vault', world.vault], c.io, createTranslator('en'), { cwd: world.base, env: world.env });
+  assert.equal(code, EXIT.OK, c.stdout);
+  assert.doesNotMatch(c.stderr, /\{\{vault\}\}/);
+  writeFileSync(overlay, '{{signature}}\n\n{{blocks}} {{never_read}} {{read}}\n');
+  const d = collector();
+  assert.equal(await runPrompt(['--check', '--vault', world.vault], d.io, createTranslator('en'), { cwd: world.base, env: world.env }), EXIT.OK);
+  assert.ok(d.stderr.includes(createTranslator('en')('prompt.check_briefing_overlay_no_vault', { path: overlay, placeholder: '{{vault}}' })), `${d.stderr}\n${d.stdout}`);
+});
+
+// ------------------------------------------------------------ answer after propose (final review, I1)
+
+// A briefing that overlaps a curator round is refused with 75 by the kit's
+// writing commands. The question must never be marked answered before its
+// answer is in a pushed commit, and a refusal must stop the writing and be
+// told to the owner with the command to run later.
+for (const lang of LANGS) {
+  test(`${lang}: questions answer is named once, as the step after a successful propose, and the Questions section only points there`, () => {
+    const text = packPrompt(lang);
+    const answer = '`{{kit}} questions answer <id>`';
+    assert.equal(text.split(answer).length - 1, 1, `${lang}: questions answer named more than once`);
+    const proposeAt = text.indexOf('`{{kit}} propose "');
+    const answerAt = text.indexOf(answer);
+    assert.ok(proposeAt !== -1 && proposeAt < answerAt, `${lang}: questions answer comes before propose`);
+    const questions = text.slice(text.indexOf('<!-- rule:questions-by-command -->'), text.indexOf('\n## ', text.indexOf('<!-- rule:questions-by-command -->')));
+    assert.ok(!questions.includes('questions answer'), `${lang}: the Questions section still runs answer itself`);
+    const recording = text.slice(text.indexOf('<!-- rule:propose-only -->'));
+    const step = recording.split('\n').find((line) => line.includes(answer));
+    assert.match(step, /^5\. /, `${lang}: ${step}`);
+    assert.match(step, / 0\b/);
+    assert.match(step, / 3\b/);
+    const refusal = recording.split('\n').find((line) => /\b75\b/.test(line));
+    assert.ok(refusal, `${lang}: nothing is said about exit 75`);
+    assert.ok(refusal.includes('`propose`') && refusal.includes('`questions answer`'), `${lang}: the 75 paragraph names the commands to run later: ${refusal}`);
+    const never = { en: 'Never end the briefing with a file written and not proposed without telling the owner', 'pt-BR': 'Nunca termine o briefing com um arquivo escrito e não proposto sem dizer ao dono' }[lang];
+    assert.ok(recording.includes(never), `${lang}: unproposed writes are never left untold`);
+  });
+}

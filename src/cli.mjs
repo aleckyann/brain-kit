@@ -1,3 +1,5 @@
+import { statSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { EXIT } from './exit-codes.mjs';
 import { kitVersion } from './version.mjs';
 import { createTranslator, resolveLangDetailed, SUPPORTED_LANGS } from './lang.mjs';
@@ -74,12 +76,62 @@ const BUILTIN_COMMANDS = new Map([
   }))],
 ]);
 
+// `-C <dir>` before the command, as git's: the command runs exactly as if
+// brain-kit had been started in <dir> (the working directory is changed for
+// the command and changed back after it), so a vault is found from there
+// and every relative path the command is given, `propose --only`'s
+// included, is read from there. Several are applied in order, each relative
+// to the one before. The morning briefing runs in a session whose working
+// directory is not the vault (the desktop application's task has none), so
+// every kit command its prompt names carries `-C "<vault>"` (final review
+// of phase 4, finding C2). A missing, empty or unusable directory is exit 2.
+function takeDirectories(argv, t, io) {
+  let rest = argv;
+  let dir = null;
+  while (rest[0] === '-C') {
+    const given = rest[1];
+    if (given === undefined || given === '') {
+      io.stderr.write(`${t('cli.dir_missing')}\n`);
+      io.stderr.write(`${t('cli.usage', { version: kitVersion() })}\n`);
+      return { code: EXIT.USAGE };
+    }
+    const target = resolve(dir ?? process.cwd(), given);
+    let isDir;
+    try {
+      isDir = statSync(target).isDirectory();
+    } catch {
+      io.stderr.write(`${t('cli.dir_not_found', { dir: target })}\n`);
+      return { code: EXIT.USAGE };
+    }
+    if (!isDir) {
+      io.stderr.write(`${t('cli.dir_not_a_directory', { dir: target })}\n`);
+      return { code: EXIT.USAGE };
+    }
+    dir = target;
+    rest = rest.slice(2);
+  }
+  return { rest, dir };
+}
+
 export async function main(argv, io, { commands = BUILTIN_COMMANDS } = {}) {
   const { lang, unsupported } = resolveLangDetailed(process.env);
   const t = createTranslator(lang, {
     warn: (message) => io.stderr.write(`${message}\n`),
   });
   if (unsupported !== null) io.stderr.write(`${t('lang.unsupported_setting', { value: unsupported, langs: SUPPORTED_LANGS, lang })}\n`);
+  const taken = takeDirectories(argv, t, io);
+  if (taken.code !== undefined) return taken.code;
+  if (taken.dir === null) return dispatch(taken.rest, io, t, commands);
+  const back = process.cwd();
+  process.chdir(taken.dir);
+  try {
+    return await dispatch(taken.rest, io, t, commands);
+  } finally {
+    process.chdir(back);
+  }
+}
+
+async function dispatch(argv, io, t, commands) {
   const [command, ...rest] = argv;
 
   if (command === undefined || command === '--help' || command === '-h' || command === 'help') {

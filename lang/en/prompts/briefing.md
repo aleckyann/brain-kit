@@ -10,6 +10,8 @@ The briefing is one message to the owner, in the vault's language: the blocks be
 
 ## What you read
 
+The vault is at `{{vault}}`. Every path in this briefing (the lists below, the blocks, the log) is relative to it, and you open and edit a file by its absolute path under it, `{{vault}}/<path>`, wherever this session was started. The kit's commands below already name the vault (`-C`), so they work from anywhere: run them exactly as written.
+
 <!-- rule:never-read -->
 Never open, list or search a path in the list below, not even to check that it exists, and never ask a tool to do it for you. An entry ending in `/` covers everything under it, and an entry without the slash covers the file or the folder of that name. An entry with a `#` after a file name forbids reading that file whole: for the log, `{{log}}`, read only its headings and the section under the most recent ones, never the rest. This list wins over everything else in this prompt: a path it covers is never opened, even when a block below names it, and a fact block marks such a path (never read).
 
@@ -43,7 +45,7 @@ Never say that a note, a document or a source is empty, missing or has nothing n
 ## Questions
 
 <!-- rule:questions-by-command -->
-The questions block lists the questions waiting for the owner, with their ids. Ask them as written, in the block's order. A question you want to ask that is not listed goes into the queue first, with `{{kit}} questions add "<question>"`, and only then do you ask it. When the owner answers one in this session, record what the answer teaches the vault (see below) and then run `{{kit}} questions answer <id>`. Never run it for a question the owner did not answer in this session: not because you think you know the answer, not because an earlier session answered something like it, and not because the owner answered a different question. Archive one only when the owner asks for it, with `{{kit}} questions archive <id> --reason "<why>"`. A question left unanswered stays open, and is asked again another day.
+The questions block lists the questions waiting for the owner, with their ids. Ask them as written, in the block's order. A question you want to ask that is not listed goes into the queue first, with `{{kit}} questions add "<question>"`, and only then do you ask it. When the owner answers one in this session, record what the answer teaches the vault, and mark the question answered only once that record is proposed, as the last section says: an answer that is not in a pull request is not recorded. Never mark answered a question the owner did not answer in this session: not because you think you know the answer, not because an earlier session answered something like it, and not because the owner answered a different question. Archive one only when the owner asks for it, with `{{kit}} questions archive <id> --reason "<why>"`. A question left unanswered stays open, and is asked again another day.
 
 ## Limits
 
@@ -62,6 +64,11 @@ When the owner is done, run each kit command exactly as written, never with `nod
 1. `{{kit}} validate`
 2. `{{kit}} lint --base worktree`
 3. If either one reports a problem in a file you wrote, fix it and run both again, until both pass. Never edit a file you did not create or change in this briefing.
-4. `{{kit}} propose "<one-line summary>" --only <path> <path>`, naming every file you created or changed, and nothing else. Never use `--all`. The kit opens the pull request; you never commit, push or merge anything yourself.
+4. `{{kit}} propose "<one-line summary>" --only <path> <path>`, naming every file you created or changed, by its path relative to the vault, and nothing else. Never use `--all`. The kit opens the pull request; you never commit, push or merge anything yourself.
+5. Only after `propose` exited 0, or 3 saying the commit is pushed, run `{{kit}} questions answer <id>` for each question the owner answered in this session. Never before, and never when `propose` did not push.
+
+A kit command that exits 75 was refused because another writer (a scheduled curator round) holds the vault, and it names that writer. Stop writing at once and run nothing more. Tell the owner that the round holds the vault, which files you wrote that are not proposed yet, and the exact commands to run once the round is done: the `propose` above with its paths, then `questions answer` for each question answered. Never mark a question answered in that case.
+
+Never end the briefing with a file written and not proposed without telling the owner which files and the exact command that proposes them.
 
 When nothing is worth recording, write nothing, propose nothing, and end the briefing by saying there was nothing to record.
