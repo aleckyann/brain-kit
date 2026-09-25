@@ -203,20 +203,22 @@ test('no questions block in the list, --check, and a refused render record nothi
   const refused = freshVault('en', { prompt: '../outside.md' });
   const other = addQuestion(refused.state, 'Anything?', { today: '2026-09-20' }).id;
   const r = await briefing(refused);
-  assert.equal(r.code, EXIT.USAGE);
+  assert.equal(r.code, EXIT.OK, 'the line is for the model: exit 0 (final review, I2)');
   assert.match(r.out, /briefing\.prompt in brain-kit\.config\.json points at .*outside\.md, outside the vault/);
+  assert.equal(r.err, `${createTranslator('en')('prompt.briefing_not_rendered', { reason: 'prompt_outside' })}\n`);
   assert.deepEqual(readQueue(world.state).map((q) => [q.id, q.askedOn]), [[id, []]]);
   assert.deepEqual(readQueue(refused.state).map((q) => [q.id, q.askedOn]), [[other, []]]);
 });
 
-test('a briefing prompt that cannot be read is one line, exit 1, and records nothing', async () => {
+test('a briefing prompt that cannot be read is one line, exit 0 with the reason on stderr, and records nothing', async () => {
   const world = freshVault('en');
   const id = addQuestion(world.state, 'Anything?', { today: '2026-09-20' }).id;
   const packs = makeTempDir('brain-kit-briefing-packs-');
   cpSync(join(KIT_ROOT, 'lang'), packs, { recursive: true });
   unlinkSync(join(packs, 'en', 'prompts', 'briefing.md'));
-  const { code, out } = await briefing(world, { packsDir: packs });
-  assert.equal(code, EXIT.FAILURE);
+  const { code, out, err } = await briefing(world, { packsDir: packs });
+  assert.equal(code, EXIT.OK);
+  assert.equal(err, `${createTranslator('en')('prompt.briefing_not_rendered', { reason: 'prompt_unreadable' })}\n`);
   assert.equal(out.trim().split('\n').length, 1);
   assert.match(out, /The briefing prompt could not be loaded \(.*briefing\.md: ENOENT\)/);
   assert.deepEqual(readQueue(world.state).map((q) => q.askedOn), [[]]);
@@ -301,17 +303,19 @@ test('--check covers the briefing prompt: a lost marker, an unknown placeholder,
 
 // ------------------------------------------------------------ refusals
 
-test('outside a vault, and with a configuration that cannot be used, one line on stdout and exit 2', async () => {
+test('outside a vault, and with a configuration that cannot be used, one line on stdout, the reason on stderr, and exit 0 (the line is for the model)', async () => {
   const base = makeTempDir('brain-kit-briefing-none-');
   const c = collector();
   const code = await runPrompt(['briefing'], c.io, createTranslator('en'), { cwd: base, env: testEnv(base, { BRAIN_KIT_LANG: 'en' }), now: NOW });
-  assert.equal(code, EXIT.USAGE);
+  assert.equal(code, EXIT.OK);
   assert.match(c.stdout, /^No brain-kit vault was found from .*: write no file/);
   assert.equal(c.stdout.trim().split('\n').length, 1);
+  assert.equal(c.stderr, `${createTranslator('en')('prompt.briefing_not_rendered', { reason: 'no_vault' })}\n`);
   const world = freshVault('pt-BR');
   writeFileSync(join(world.vault, 'brain-kit.config.json'), '{ "lang": "pt-BR" }\n');
   const r = await briefing(world, { env: { BRAIN_KIT_LANG: 'pt-BR' } });
-  assert.equal(r.code, EXIT.USAGE);
+  assert.equal(r.code, EXIT.OK);
+  assert.equal(r.err, `${createTranslator('pt-BR')('prompt.briefing_not_rendered', { reason: 'config_invalid' })}\n`);
   assert.match(r.out, /^O briefing não pode ser preparado: o brain-kit\.config\.json do vault não pode ser usado/);
   assert.equal(r.out.trim().split('\n').length, 1);
 });
@@ -365,23 +369,24 @@ test('a note the stale walk cannot read is a named problem of the stale block, n
   }
 });
 
-test('whatever fails while rendering is one line on stdout, exit 1, and no question is recorded', async () => {
+test('whatever fails while rendering is one line on stdout, exit 0 with the reason on stderr, and no question is recorded', async () => {
   const world = freshVault('en');
   const id = addQuestion(world.state, 'Anything?', { today: '2026-09-20' }).id;
   const c = collector();
   const boom = () => { throw Object.assign(new Error('the disk went away'), { code: 'EIO' }); };
   const code = await runPrompt(['briefing', '--vault', world.vault], c.io, createTranslator('en'), { cwd: world.base, env: world.env, now: NOW, facts: { ...NO_GH, walkVault: boom } });
-  assert.equal(code, EXIT.FAILURE);
+  assert.equal(code, EXIT.OK);
+  assert.equal(c.stderr, `${createTranslator('en')('prompt.briefing_not_rendered', { reason: 'render_failed' })}\n`);
   assert.equal(c.stdout, 'The briefing could not be prepared (EIO). Write no file; tell the person, and suggest running brain-kit doctor.\n');
   assert.deepEqual(asked(world.state), [[id, []]]);
 });
 
-test('a record of the asked questions that fails is said on stderr, the text is still printed, and the exit is 3', async () => {
+test('a record of the asked questions that fails is said on stderr, the text is still printed with its correction line, and the exit is 0', async () => {
   const world = freshVault('en');
   const id = addQuestion(world.state, 'Anything?', { today: '2026-09-20' }).id;
   writeFileSync(join(world.state, 'questions.log.lock'), 'not a lock\n');
   const { code, out, err } = await briefing(world);
-  assert.equal(code, EXIT.DEGRADED);
+  assert.equal(code, EXIT.OK);
   assert.equal(out.split('\n')[0], loadConfig(world.vault).briefing.signature);
   assert.ok(out.includes(`[${id}]`));
   assert.match(err, /brain-kit prompt briefing: the questions of this briefing could not be recorded as asked today \(.+\); the queue did not count this briefing\./);
@@ -596,3 +601,23 @@ for (const lang of LANGS) {
     assert.ok(recording.includes(never), `${lang}: unproposed writes are never left untold`);
   });
 }
+
+// Final review of phase 4, I2: the skill's `!` line runs `prompt briefing`,
+// and how Claude Code treats a failing `!` command is unmeasured. The real
+// binary exits 0 on every path that wrote the model's text or line.
+test('the real binary exits 0 with its one line outside a vault and with a bad time zone, the reason on stderr', () => {
+  const base = makeTempDir('brain-kit-briefing-exit-');
+  const none = spawnSync(process.execPath, [BIN, 'prompt', 'briefing'], { encoding: 'utf8', env: testEnv(base, { BRAIN_KIT_LANG: 'en' }), cwd: base });
+  assert.equal(none.status, 0, none.stderr);
+  assert.equal(none.stdout.trim().split('\n').length, 1);
+  assert.equal(none.stderr, `${createTranslator('en')('prompt.briefing_not_rendered', { reason: 'no_vault' })}\n`);
+  const world = freshVault('en');
+  const file = join(world.vault, 'brain-kit.config.json');
+  const config = JSON.parse(readFileSync(file, 'utf8'));
+  config.vault.timezone = 'Not/AZone';
+  writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
+  const bad = spawnSync(process.execPath, [BIN, 'prompt', 'briefing', '--vault', world.vault], { encoding: 'utf8', env: world.env, cwd: world.base });
+  assert.equal(bad.status, 0, bad.stderr);
+  assert.equal(bad.stdout.trim().split('\n').length, 1, bad.stdout);
+  assert.match(bad.stderr, /\(bad_timezone\)/);
+});

@@ -235,8 +235,8 @@ brain-kit questions sweep [dir]
   ids that appear in that final text, once per day however many times the briefing is
   rendered. `prompt --check`, `doctor`, `preflight` and `questions list` never count one.
   When the kit cannot record them, the briefing is still printed, ending with a correction
-  line that says the questions were not recorded, the reason goes to stderr, and the
-  command exits 3.
+  line that says the questions were not recorded, and the reason goes to stderr; the
+  command still exits 0, since the text is for the model (see below).
 - **Escalated.** An open question asked on at least `briefing.question_escalate_after`
   days (3 by default) is escalated: the briefing places it first and says so when it asks
   it.
@@ -331,6 +331,9 @@ not fill.
 `brain-kit prompt briefing [--vault <dir>]` prints the rendered prompt. Every failure
 before the render (no vault, a configuration it cannot use, a prompt it cannot read)
 writes one line saying what to tell you, never an empty prompt, and records no question.
+It exits 0 whenever it wrote the text or that one line, with the reason on stderr: the
+`briefing` skill runs it through a `!` line, and how Claude Code treats a `!` command that
+fails has not been measured, so a failing exit could keep the line from the model.
 
 ## The desktop task
 

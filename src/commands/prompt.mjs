@@ -35,10 +35,12 @@
 // block, the overlay, every placeholder); only then are the questions
 // recorded, and only those whose id appears in that final text, so an
 // overlay without `{{blocks}}` records none; then the text is written. A
-// record that fails is said on stderr, the text is still written, and the
-// exit is 3. Every failure before that writes one line to stdout, in the
-// vault's language when there is one, saying what to tell the person, and
-// records nothing: the briefing never hands the model an empty prompt.
+// record that fails is said on stderr, the text is still written with a
+// line saying so, and the exit is still 0. Every failure before that
+// writes one line to stdout, in the vault's language when there is one,
+// saying what to tell the person, and
+// records nothing: the briefing never hands the model an empty prompt. Every
+// one of these exits 0, the reason on stderr (final review of phase 4, I2).
 // A vault whose `briefing.enabled` is not true gets one line saying the
 // briefing is turned off there, exit 0, nothing recorded (ruling R-T16).
 //
@@ -549,15 +551,23 @@ function runCurate(io, { startDir, env, now, packsDir }) {
 }
 
 // The real briefing render. Every refusal writes one line to stdout, in the
-// vault's language when its configuration loads, and exits 2 (1 for a
-// prompt file that cannot be read); none records a question as asked.
+// vault's language when its configuration loads, and none records a question
+// as asked. It exits 0 whenever it wrote to stdout the text or the one line
+// meant for the model, as `skill` does (final review of phase 4, I2): the
+// skill's `!` line runs it, and how Claude Code treats a `!` command that
+// fails was never measured, so a failing exit could keep the line from the
+// model. The reason is one line on stderr instead.
 function runBriefing(io, { startDir, env, now, packsDir, deps }) {
   const warn = (message) => io.stderr.write(`${message}\n`);
+  const notice = (tr, text, reason) => {
+    io.stdout.write(`${text}\n`);
+    io.stderr.write(`${tr('prompt.briefing_not_rendered', { reason })}\n`);
+    return EXIT.OK;
+  };
   const root = findVaultRoot(startDir);
   if (!root) {
     const callerT = createTranslator(resolveLang(env), { warn });
-    io.stdout.write(`${callerT('prompt.briefing_no_vault', { dir: startDir })}\n`);
-    return EXIT.USAGE;
+    return notice(callerT, callerT('prompt.briefing_no_vault', { dir: startDir }), 'no_vault');
   }
   let config;
   try {
@@ -565,8 +575,7 @@ function runBriefing(io, { startDir, env, now, packsDir, deps }) {
   } catch (error) {
     if (!(error instanceof ConfigError)) throw error;
     const callerT = createTranslator(resolveLang(env), { warn });
-    io.stdout.write(`${callerT('prompt.briefing_config_invalid', { file: CONFIG_FILENAME, detail: firstLineOf(error.message) })}\n`);
-    return EXIT.USAGE;
+    return notice(callerT, callerT('prompt.briefing_config_invalid', { file: CONFIG_FILENAME, detail: firstLineOf(error.message) }), 'config_invalid');
   }
   const lang = langFor(config, env);
   const t = createTranslator(lang, { warn });
@@ -581,15 +590,13 @@ function runBriefing(io, { startDir, env, now, packsDir, deps }) {
   }
   const outside = promptOutsideVault(root, config, 'briefing');
   if (outside !== null) {
-    io.stdout.write(`${t('prompt.briefing_prompt_outside', { file: CONFIG_FILENAME, path: outside })}\n`);
-    return EXIT.USAGE;
+    return notice(t, t('prompt.briefing_prompt_outside', { file: CONFIG_FILENAME, path: outside }), 'prompt_outside');
   }
   try {
     localDay(now, config.vault.timezone);
   } catch (error) {
     if (!(error instanceof RangeError)) throw error;
-    io.stdout.write(`${t('prompt.briefing_bad_timezone', { timezone: config.vault.timezone, file: CONFIG_FILENAME })}\n`);
-    return EXIT.USAGE;
+    return notice(t, t('prompt.briefing_bad_timezone', { timezone: config.vault.timezone, file: CONFIG_FILENAME }), 'bad_timezone');
   }
   // The prompt file first: a briefing whose prompt cannot be read records
   // no question as asked.
@@ -598,8 +605,7 @@ function runBriefing(io, { startDir, env, now, packsDir, deps }) {
     template = briefingTemplate({ vaultRoot: root, config, lang, packsDir });
   } catch (error) {
     const { path } = briefingPromptSource({ vaultRoot: root, config, lang, packsDir });
-    io.stdout.write(`${t('prompt.briefing_unreadable', { path, detail: error.code ?? error.message })}\n`);
-    return EXIT.FAILURE;
+    return notice(t, t('prompt.briefing_unreadable', { path, detail: error.code ?? error.message }), 'prompt_unreadable');
   }
   const stateDir = stateDirFor(root, env);
   let machine = null;
@@ -627,14 +633,12 @@ function runBriefing(io, { startDir, env, now, packsDir, deps }) {
     text = render(template, briefingVars({ vaultRoot: root, config, lang, blocks: blocksText, now, t, packsDir }));
     selection = selection === null ? null : { ...selection, today: facts.today };
   } catch (error) {
-    io.stdout.write(`${t('prompt.briefing_failed', { detail: error.code ?? firstLineOf(error.message) })}\n`);
-    return EXIT.FAILURE;
+    return notice(t, t('prompt.briefing_failed', { detail: error.code ?? firstLineOf(error.message) }), 'render_failed');
   }
   for (const problem of problems) io.stderr.write(`${t('prompt.briefing_block_problem', { problem: blockProblemLine(t, problem) })}\n`);
 
   // 2. Record as asked exactly the placed questions the final text shows
   // (ruling R-T9): each is written "[<id>]" in the questions block.
-  let exit = EXIT.OK;
   const ids = selection === null ? [] : selection.placed.map((question) => question.id).filter((id) => text.includes(`[${id}]`));
   if (ids.length > 0) {
     try {
@@ -647,13 +651,12 @@ function runBriefing(io, { startDir, env, now, packsDir, deps }) {
         : `${typeof error.code === 'string' ? error.code : error.name}: ${firstLineOf(error.message)}`;
       io.stderr.write(`${t('prompt.briefing_mark_failed', { detail })}\n`);
       text = `${text.replace(/\n*$/, '')}\n\n${t('briefing.questions_not_recorded')}\n`;
-      exit = EXIT.DEGRADED;
     }
   }
 
-  // 3. The text.
+  // 3. The text, exit 0 even when the record failed (said on stderr above).
   io.stdout.write(text);
-  return exit;
+  return EXIT.OK;
 }
 
 function listSkillFiles(dir) {

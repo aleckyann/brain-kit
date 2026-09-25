@@ -385,7 +385,9 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   render is one line saying the briefing is turned off in the vault, nothing is recorded,
   and the exit is 0. The real render, and only it, records the questions it shows as
   asked today, after the whole text is rendered; when that fails, the text is printed
-  with a correction line and the exit is 3. A generic, domain-neutral prompt in both
+  with a correction line. Every path that wrote the text or its one line exits 0, the
+  reason on stderr, because the skill's `!` line runs it and a failing `!` command is
+  unmeasured. A generic, domain-neutral prompt in both
   packs, with the contract markers `never-read`, `facts-from-kit`, `closed-uncertainty`,
   `never-empty-unopened`, `questions-by-command`, `propose-only` and `honour-limits`; an
   overlay at `briefing.prompt` replaces it, and `prompt --check` fails one without
@@ -412,6 +414,19 @@ Nothing below is on npm yet. It runs from a clone of the repository.
 - `brain-kit doctor` gains `briefing`: signatures it cannot use, `briefing.blocks`
   problems, a question queue that cannot be read or holds unreadable lines, and the
   desktop task as `schedule status --job briefing` reads it.
+- A global `-C <dir>` runs any command exactly as if brain-kit had been started in
+  `<dir>`, as git's. The briefing names every kit command with it (`{{kit}}` renders as
+  `"<kit>" -C "<vault>"`) and gives the vault's path as `{{vault}}`, since the desktop
+  task's session does not start in the vault.
+- `propose` records what it pushed, outside a round, in the proposed-paths ledger
+  (`<git dir>/brain-kit-proposed.json`, the round record's format). A file whose bytes are
+  exactly what was pushed is proposed already: the Stop hook leaves it out, a second
+  `propose` of it opens no second pull request, and `sync` (so the next round) brings it
+  back to HEAD instead of postponing on it. One byte edited after the push makes it
+  unproposed work again. The comparison is the round cleanup's, extracted.
+- The briefing marks a question answered only after the `propose` that records its answer
+  pushed, and a kit command refused with 75 (a round holds the vault) stops the writing
+  and is told to the owner with the commands to run later.
 - `docs/briefing.md` (what the briefing is and is not, the facts and where each comes
   from, the blocks, custom blocks, the limits, the question queue, the overlay, the
   desktop task, which sessions the curator skips, and what never changes).

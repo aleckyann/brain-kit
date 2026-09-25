@@ -1246,6 +1246,7 @@
   "briefing.strategy_index_unreadable": "Skipped, not verified: could not read {index} ({detail}). Say so in one line, and do not look for the document another way.",
   "preflight.stale_unreadable": "  {path}: not verified, it could not be read ({detail}); whether it is past its stale_after is not known",
   "prompt.briefing_failed": "The briefing could not be prepared ({detail}). Write no file; tell the person, and suggest running brain-kit doctor.",
+  "prompt.briefing_not_rendered": "brain-kit prompt briefing: no briefing was rendered ({reason}); the one line on standard output says what to tell the person, and nothing was recorded.",
   "prompt.briefing_mark_failed": "brain-kit prompt briefing: the questions of this briefing could not be recorded as asked today ({detail}); the queue did not count this briefing.",
   "prompt.check_briefing_overlay_no_blocks": "the vault's briefing prompt {path} does not use {placeholder}: the model would see none of the blocks, and no question placed for it would reach the owner. Put it where the blocks belong.",
   "prompt.check_briefing_overlay_no_signature": "the vault's briefing prompt {path} does not start with {placeholder}: the curator tells a briefing session apart by that first line. Make it the first line.",

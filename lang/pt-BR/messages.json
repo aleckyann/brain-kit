@@ -1246,6 +1246,7 @@
   "briefing.strategy_index_unreadable": "Pulado, não verificado: não foi possível ler {index} ({detail}). Diga isso em uma linha, e não procure o documento por outro caminho.",
   "preflight.stale_unreadable": "  {path}: não verificado, não pôde ser lido ({detail}); não se sabe se passou do stale_after",
   "prompt.briefing_failed": "O briefing não pôde ser preparado ({detail}). Não escreva arquivo nenhum; conte à pessoa e sugira rodar brain-kit doctor.",
+  "prompt.briefing_not_rendered": "brain-kit prompt briefing: nenhum briefing foi renderizado ({reason}); a linha única na saída padrão diz o que falar para a pessoa, e nada foi registrado.",
   "prompt.briefing_mark_failed": "brain-kit prompt briefing: as perguntas deste briefing não puderam ser registradas como feitas hoje ({detail}); a fila não contou este briefing.",
   "prompt.check_briefing_overlay_no_blocks": "o prompt de briefing do vault {path} não usa {placeholder}: o modelo não veria nenhum bloco, e nenhuma pergunta colocada para ele chegaria ao dono. Coloque-o onde os blocos devem ficar.",
   "prompt.check_briefing_overlay_no_signature": "o prompt de briefing do vault {path} não começa com {placeholder}: é por essa primeira linha que o curador reconhece uma sessão de briefing. Faça dela a primeira linha.",
