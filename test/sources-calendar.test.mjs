@@ -742,7 +742,15 @@ test('readEvidence: listed sums the events on the pages of the listing that read
   assert.equal(listed([{ input: listing(), more: true, items: 2 }, { input: listing({ pageToken: 'page-2' }), items: 1 }]), 3, 'every page of the listing');
   assert.equal(listed([{ input: listing(), more: true, items: 0 }, { input: listing({ pageToken: 'page-2' }), error: true, items: 5 }, { input: listing({ pageToken: 'page-2' }), items: 0 }]), 0, 'a failed page taken over by its retry');
   assert.equal(listed([{ input: listing({ startTime: undefined }), items: 4 }, { input: listing(), items: 0 }]), 0, 'a listing that did not read the calendar does not count');
-  assert.equal(listed([{ input: listing(), items: 0 }, { input: listing(), items: 6 }]), 0, 'the first listing read to its last page, not a later one');
+  // Every listing of the window counts, not only the one that proves the read (scoped re-review).
+  assert.equal(listed([{ input: listing(), items: 0 }, { input: listing(), items: 6 }]), 6, 'a later listing that found events');
+  assert.equal(listed([{ input: listing(), items: 2 }, { input: listing(), more: true, items: 0 }, { input: listing({ pageToken: 'page-2' }), items: 0 }]), 2, 'an earlier one too');
+  assert.equal(listed([{ input: listing(), items: 0 }, { input: listing(), more: true, items: 0 }, { input: listing({ pageToken: 'page-2' }), items: 3 }]), 3, 'the next page of a second listing');
+  assert.equal(listed([{ input: listing(), items: 0 }, { input: listing({ calendarId: 'someone@example.com' }), items: 5 }]), 0, 'a calendar the plan does not list');
+  assert.equal(listed([{ input: listing(), items: 0 }, { input: listing(), error: true, items: 4 }]), 0, 'a failed call listed nothing the model can count');
+  assert.equal(listed([{ input: listing(), items: 0 }, { input: listing() }]), null, 'a second listing with no count');
+  const wider = { startTime: new Date(FROM.getTime() - 3600000).toISOString() };
+  assert.equal(listed([{ input: listing(), items: 0 }, { input: listing(wider), error: true, more: true }, { input: listing({ ...wider, pageToken: 'page-2' }), items: 2 }]), 2, 'the next page of a listing whose first page failed');
   assert.equal(listed([{ input: listing(), items: 1 }, { input: listing({ calendarId: 'primary' }), items: 2 }], { calendar: { calendars: [OWNER, 'primary'] } }), 3, 'every calendar');
   assert.equal(listed([{ input: listing() }]), null, 'a page with no count');
   assert.equal(listed([{ input: listing(), more: true, items: 0 }, { input: listing({ pageToken: 'page-2' }), items: null }]), null, 'one page with no count');

@@ -57,7 +57,7 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { rulesIn } from '../harness/claude-code.mjs';
 import { unsafeRuleCharacters } from './rule-path.mjs';
-import { KIT_SUBCOMMANDS, kitCommand } from './tools.mjs';
+import { KIT_SUBCOMMANDS, kitCommand, PROTECTED_PATHS } from './tools.mjs';
 
 const SETTINGS_FILES = Object.freeze(['settings.json', 'settings.local.json']);
 const READ_TOOLS = Object.freeze(['Read', 'Glob', 'Grep', 'LS']);
@@ -297,6 +297,16 @@ export function mirrorUserRules({ files = [], ownAllowed = [], vaultRoot, home =
   // Inside only as the CLI resolves it, against the child's working
   // directory, the vault's real path (review N1 of task 2).
   const inside = (scope) => !scope.climbs && insideVault(scope.cliPath, scope.partial, vaultCwd);
+  // A scope that names a folder of the vault only through a link (a linked
+  // home or settings folder): the round's own Edit(./**) governs it like any
+  // vault path, so it is mirrored only when it reaches one of the kit's
+  // protected paths, whose deny the round's own rules name in the real
+  // spelling only (scoped re-review, residual of N1). Its ordinary vault
+  // folders (memory/, notes/) are never denied to the round that way.
+  // (A climbing scope never gets here: it is unreadable above.)
+  const throughLink = (scope) => scope.paths.some((path) => vaults.some((vault) => insideVault(path, scope.partial, vault)));
+  const protectedRegions = vaults.flatMap((vault) => PROTECTED_PATHS.map((name) => region(join(vault, name), false)));
+  const reachesProtected = (scope) => scope.paths.some((path) => protectedRegions.some((r) => overlapsRegion(region(path, scope.partial), r)));
   const own = new Set(ownAllowed.filter((rule) => typeof rule === 'string').flatMap((rule) => rulesIn(rule)));
   const readRegions = ownReadRegions(own, { vaults, vaultCwd, homes, home: resolve(home) });
   const vaultRegions = vaults.map((vault) => region(vault, false));
@@ -344,7 +354,7 @@ export function mirrorUserRules({ files = [], ownAllowed = [], vaultRoot, home =
         const scope = spec === null ? null : scopeOf(spec, where);
         if (scope !== null && scope.climbs) blocking.push({ rule, file, reason: 'unreadable' });
         else if (scope === null || covers(scope)) blocking.push({ rule, file, reason: 'covers_vault' });
-        else if (!inside(scope)) mirror(rule, tool, scope);
+        else if (!inside(scope) && (!throughLink(scope) || reachesProtected(scope))) mirror(rule, tool, scope);
         continue;
       }
       if (tool === 'Bash') {

@@ -522,6 +522,12 @@ test('readEvidence: listed sums the files on the pages of the search chain that 
   assert.equal(listed([search(q, { hasNextPage: true, items: 0 }), search(q, { pageToken: 'page-2', complete: false, items: 9 }), search(q, { pageToken: 'page-2', items: 0 })]), 0, 'a cut page taken over by its retry');
   assert.equal(listed([search('title contains \'x\'', { items: 5 }), search(q, { items: 0 })]), 0, 'another search does not count');
   assert.equal(listed([search(q, { items: 0 }), readDoc('file-0001', { items: 3 })]), 0, 'a document read is no listing');
+  // Every search holding both clauses counts, not only the chain that proves the read (scoped re-review).
+  assert.equal(listed([search(q, { items: 0 }), search(q, { items: 2 })]), 2, 'the same search again, which found two');
+  assert.equal(listed([search(`${q} and mimeType = 'application/vnd.google-apps.document'`, { items: 0 }), search(q, { items: 2 })]), 2, 'a narrowed search first, then the plain one');
+  assert.equal(listed([search(q, { items: 0 }), search(q, { hasNextPage: true, items: 0 }), search(q, { pageToken: 'page-2', items: 1 })]), 1, 'the next page of a second search');
+  assert.equal(listed([search(q, { items: 0 }), search(q, { isError: true, items: 4 })]), 0, 'a failed search listed nothing the model can count');
+  assert.equal(listed([search(q, { items: 0 }), search(q)]), null, 'a second search with no count');
   assert.equal(listed([search(q)]), null, 'a page with no count');
   assert.equal(listed([search(q, { hasNextPage: true, items: 0 }), search(q, { pageToken: 'page-2', items: null })]), null, 'one page with no count');
   assert.equal(listed([search('title contains \'x\'', { items: 0 })]), null, 'nothing read');

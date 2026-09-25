@@ -208,7 +208,9 @@ each part measured on its own:
   never as written: in a settings file `/x` is anchored at that file's folder, but a rule
   on the command line has no settings file, and where the CLI would anchor it there is not
   measured. `~/x` is resolved with the round's home, `/x` with the settings folder, and
-  `./x` or `x` with the vault;
+  `./x` or `x` with the vault. A write rule that reaches the vault only through a link (a
+  home or settings folder that is a link) is mirrored only when it reaches one of the kit's
+  protected paths; on the vault's ordinary folders it is left to the round's own rules;
 - **memory:** measured on 25/09/2026, the CLI's first event lists the auto-memory folder in
   both launch modes unless `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` and
   `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` are in its environment. Every round sets both.
@@ -376,7 +378,9 @@ The evidence is the record of the calls the model made, and some things are not 
   inside a result that is not marked as one, a connector that caps a listing without saying
   so, and a next-page key renamed by a later release (which reads as a last page) cannot be
   seen.
-- A source reported `empty` whose reads listed something does not move its mark: the
+- A source reported `empty` whose reads listed something (any listing of a planned calendar
+  over the window, any search with both clauses, not only the one that proves the read)
+  does not move its mark: the
   watermark line says `inconsistent_empty`, and `listed` in `last-run.json` holds the count
   (so "the search found two, opened none, reported empty" keeps the day open). A source
   reported `ok` closes its day however many of the documents found were opened: how many a

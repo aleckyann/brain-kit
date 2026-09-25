@@ -67,10 +67,13 @@
 // when every planned calendar was read (a day read in part stays open,
 // ruling R13 of phase 2), and a plan with no calendar is never ok: a source
 // that is off reads nothing.
-// `listed` counts the events on the pages of the listings that read the
-// calendars (the stream parser's `items` for each page, the first listing
-// read to its last page for each calendar), metadata only: null when any
-// of those pages says no count. A connector source's `empty` counts only
+// `listed` counts the events on every page of every listing of a planned
+// calendar over the window in the round (the stream parser's `items`):
+// each successful first page that opens the window and each successful
+// next page of one, whether or not that listing is the one that proves the
+// read (scoped re-review: a second listing that found events after a
+// first that found none is still something listed). Metadata only; null
+// when nothing was read or any of those pages says no count. A connector source's `empty` counts only
 // when it is 0 (ruling R-F1, src/guards/watermark.mjs).
 //
 // The recurring shape this guards against (the plan's "How work is proven
@@ -341,6 +344,21 @@ function readCalendar(calendarId, calls, from, to) {
   return null;
 }
 
+// The positions of every successful page of a listing of `calendarId` over
+// the window: a first page that opens it, or a next page of one.
+function listingPages(calendarId, calls, from, to) {
+  // A next page counts even when its first page came back failed: the
+  // model still saw what the next page listed.
+  const opens = calls.filter((call) => names(call.input, calendarId) && opensListing(call.input, from, to));
+  const out = [];
+  calls.forEach((call, position) => {
+    if (!call.ok || !names(call.input, calendarId)) return;
+    const token = call.input.pageToken;
+    if (opensListing(call.input, from, to) || (typeof token === 'string' && token !== '' && opens.some((open) => continuesListing(call.input, open.input)))) out.push(position);
+  });
+  return out;
+}
+
 // The events those pages listed, or null when a page gave no count.
 function listedOn(calls, pages) {
   let total = 0;
@@ -377,8 +395,8 @@ function readEvidence(record, plan) {
   const calendars = [...(plan.calendars ?? []), ...(plan.otherCalendars ?? [])];
   const readings = from === null || to === null ? [] : calendars.map((id) => readCalendar(id, calls, from, to)).filter((pages) => pages !== null);
   const read = readings.length;
-  const counts = readings.map((pages) => listedOn(calls, pages));
-  const listed = read === 0 || counts.includes(null) ? null : counts.reduce((sum, n) => sum + n, 0);
+  const every = from === null || to === null ? [] : [...new Set(calendars.flatMap((id) => listingPages(id, calls, from, to)))];
+  const listed = read === 0 ? null : listedOn(calls, every);
   return { read, expected: calendars.length, ok: calendars.length > 0 && read === calendars.length, listed };
 }
 

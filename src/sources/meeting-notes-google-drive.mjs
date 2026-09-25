@@ -261,10 +261,12 @@ function reachedLastPage(uses, succeeded, results, start) {
 // not a read. A plan that is not configured is never read. `expected` is
 // always 1: the kit cannot know how many documents exist, so `documents`
 // only counts the read_file_content results, succeeded and failed, for the
-// round's report. `listed` counts the files the pages of the chain that
-// read the source listed (the stream parser's `items`), null when there is
-// no such chain or a page gave no count: `empty` counts only when it is 0
-// (ruling R-F1, src/guards/watermark.mjs).
+// round's report. `listed` counts the files every successful search of the
+// round holding both clauses (first pages and next pages, the chain that
+// proves the read or any other: scoped re-review) listed, the stream
+// parser's `items`; null when the source was not read or any of those
+// results gave no count: `empty` counts only when it is 0 (ruling R-F1,
+// src/guards/watermark.mjs).
 // A result succeeded only when it says so (`isError: false`) and its text
 // was whole (`complete` is not false: a truncated answer is a failed call,
 // ruling I2 of task 2's review, which extends R-B3; a record without the
@@ -288,20 +290,23 @@ function readEvidence(record, plan) {
   }
 
   let pages = null;
+  let searches = [];
   if (plan?.configured === true) {
     const title = titleClause(plan.literal);
     const bound = modifiedClause(plan.since);
+    const asks = (use) => use.name === prefix + SEARCH_SUFFIX && succeeded(use)
+      && typeof use.input?.query === 'string' && use.input.query.includes(title) && use.input.query.includes(bound)
+      && !negated(use.input.query, title) && !negated(use.input.query, bound);
+    searches = uses.filter(asks);
     for (let index = 0; index < uses.length && pages === null; index += 1) {
       const use = uses[index];
-      if (use.name === prefix + SEARCH_SUFFIX && noPageToken(use) && succeeded(use)
-        && typeof use.input?.query === 'string' && use.input.query.includes(title) && use.input.query.includes(bound)
-        && !negated(use.input.query, title) && !negated(use.input.query, bound)) pages = reachedLastPage(uses, succeeded, results, index);
+      if (noPageToken(use) && asks(use)) pages = reachedLastPage(uses, succeeded, results, index);
     }
   }
   const read = pages === null ? 0 : 1;
   let listed = null;
   if (pages !== null) {
-    const counts = pages.map((index) => results.get(uses[index].id)?.items);
+    const counts = searches.map((use) => results.get(use.id)?.items);
     listed = counts.every((n) => Number.isInteger(n) && n >= 0) ? counts.reduce((sum, n) => sum + n, 0) : null;
   }
   return { read, expected: 1, ok: read === 1, documents, listed };

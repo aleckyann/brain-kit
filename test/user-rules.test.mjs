@@ -324,17 +324,20 @@ test('a vault, a home or a folder reached through a link is judged by where the 
   // The kit handed the real path, the rule naming the link: a holder through a link still covers the vault, but a
   // folder of the vault named through the link is not taken as inside it (review N1 of task 2): the CLI works in
   // the vault's real path, and whether it matches a rule by its written path or by its link target is not
-  // measured, so the write rule is mirrored, in the form the person wrote it resolves to. The read rule reaches
-  // the vault through the link: it stays unmirrored, widening reads.
-  const byReal = mirror([`Edit(/${linkHome}/**)`, `Write(/${linkVault}/notes/**)`, `Read(/${linkVault}/**)`], real);
-  assert.deepEqual(byReal, { deny: [`Write(/${linkVault}/notes/**)`], widenedReads: [`Read(/${linkVault}/**)`], blocking: [{ rule: `Edit(/${linkHome}/**)`, file, reason: 'covers_vault' }], dropNodeForms: false });
+  // measured. So a write rule reaching a protected path through the link is mirrored, in the form the person
+  // wrote it resolves to; one reaching only ordinary vault folders is skipped, since the round's own rules
+  // govern them and a deny there could only take the round's own writes (scoped re-review). The read rule
+  // reaches the vault through the link: it stays unmirrored, widening reads.
+  const byReal = mirror([`Edit(/${linkHome}/**)`, `Write(/${linkVault}/notes/**)`, `Write(/${linkVault}/.git/**)`, `Read(/${linkVault}/**)`], real);
+  assert.deepEqual(byReal, { deny: [`Write(/${linkVault}/.git/**)`], widenedReads: [`Read(/${linkVault}/**)`], blocking: [{ rule: `Edit(/${linkHome}/**)`, file, reason: 'covers_vault' }], dropNodeForms: false });
   // A home reached through a link holds the vault it leads to, also for a scope that stops inside a name; the
-  // protected paths named through that home are mirrored, as the CLI expands ~ to the home as given (review N1).
-  const viaHome = mirror(['Edit(~/**)', 'Edit(~/vault/notes/**)', 'Edit(~/va*)', 'Edit(~/vault/.claude/**)', 'Write(~/vault/brain-kit.config.json)'], real, linkHome);
+  // protected paths named through that home are mirrored, as the CLI expands ~ to the home as given (review N1),
+  // and its ordinary folders are not.
+  const viaHome = mirror(['Edit(~/**)', 'Edit(~/vault/notes/**)', 'Edit(~/va*)', 'Edit(~/vault/.claude/**)', 'Write(~/vault/brain-kit.config.json)', 'Write(~/vault/memory/log.md)', 'Edit(~/vault/.git*)', 'Edit(~/vault/.githooks/pre-push)', 'Edit(~/vault/.g*)', 'Edit(~/vault/notes/.git/x)'], real, linkHome);
   assert.deepEqual(viaHome.blocking, [
     { rule: 'Edit(~/**)', file, reason: 'covers_vault' }, { rule: 'Edit(~/va*)', file, reason: 'covers_vault' },
   ]);
-  assert.deepEqual(viaHome.deny, [`Edit(/${linkHome}/vault/notes/**)`, `Edit(/${linkHome}/vault/.claude/**)`, `Write(/${linkHome}/vault/brain-kit.config.json)`]);
+  assert.deepEqual(viaHome.deny, [`Edit(/${linkHome}/vault/.claude/**)`, `Write(/${linkHome}/vault/brain-kit.config.json)`, `Edit(/${linkHome}/vault/.git*)`, `Edit(/${linkHome}/vault/.githooks/pre-push)`, `Edit(/${linkHome}/vault/.g*)`]);
   // The same rules with the home as the real path are inside the vault, and skipped.
   assert.deepEqual(mirror(['Edit(~/vault/.claude/**)', 'Write(~/vault/brain-kit.config.json)'], real, join(root, 'data')), NOTHING);
   // So does a settings folder reached through a link, for its /x rules.
@@ -342,7 +345,7 @@ test('a vault, a home or a folder reached through a link is judged by where the 
   symlinkSync(join(root, 'data'), linkConfig);
   writeFileSync(join(linkConfig, 'settings.json'), JSON.stringify({ permissions: { allow: ['Edit(/va*)', 'Edit(/vault/notes/**)'] } }));
   assert.deepEqual(mirrorUserRules({ files: [join(linkConfig, 'settings.json')], ownAllowed: OWN, vaultRoot: real, home: HOME, kit: KIT }), {
-    deny: [`Edit(/${linkConfig}/vault/notes/**)`], widenedReads: [], blocking: [{ rule: 'Edit(/va*)', file: join(linkConfig, 'settings.json'), reason: 'covers_vault' }], dropNodeForms: false,
+    deny: [], widenedReads: [], blocking: [{ rule: 'Edit(/va*)', file: join(linkConfig, 'settings.json'), reason: 'covers_vault' }], dropNodeForms: false,
   });
   // A scope that stops inside a name is judged as written: where one link of that name leads says nothing of
   // the other names that start the same way (link-notes-old, say).
