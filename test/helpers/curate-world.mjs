@@ -7,7 +7,7 @@
 // for the fake claude. Nothing here reaches a network or a real claude.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { KIT_ROOT } from '../../src/version.mjs';
@@ -22,6 +22,62 @@ export const PROJECT = '-home-ana-brain';
 export { note };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Phase 3: the connector sources as a round in connector mode sees them.
+export const CALENDAR_PREFIX = 'mcp__claude_ai_Google_Calendar__';
+export const DRIVE_PREFIX = 'mcp__claude_ai_Google_Drive__';
+export const PINNED_TOOLS = Object.freeze(['Bash', 'Read', 'Glob', 'Grep', 'Edit', 'Write', 'ToolSearch']);
+export const CALENDAR_TOOLS = Object.freeze(['list_events', 'get_event', 'list_calendars'].map((s) => CALENDAR_PREFIX + s));
+export const DRIVE_TOOLS = Object.freeze(['search_files', 'read_file_content', 'get_file_metadata'].map((s) => DRIVE_PREFIX + s));
+export const CONNECTOR_TOOLS = Object.freeze([...PINNED_TOOLS, ...CALENDAR_TOOLS, ...DRIVE_TOOLS]);
+// A title with an accent, as a person copies it from one of their own documents.
+export const NOTES_TITLE = 'Notas de reunião';
+
+// The init event's server list: each connector's status, null leaving it
+// out (a connector disabled for Claude Code, or never connected).
+export function connectorServers({ calendar = 'connected', drive = 'connected' } = {}) {
+  const list = [{ name: 'plugin:example:tasks', status: 'connected', source: 'plugin' }];
+  if (calendar !== null) list.push({ name: 'claude.ai Google Calendar', status: calendar, source: 'claudeai' });
+  if (drive !== null) list.push({ name: 'claude.ai Google Drive', status: drive, source: 'claudeai' });
+  return list;
+}
+
+// The configuration edit that turns the connector sources on, as a person
+// does: the calendar with the owner's main calendar, the meeting notes with
+// the title they confirmed.
+export function withConnectors({ calendar = true, meetingNotes = true } = {}) {
+  return (c) => {
+    if (calendar) {
+      c.sources.calendar.enabled = true;
+      c.sources.calendar.calendars = ['primary'];
+      c.sources.calendar.tool_suffixes = ['list_events', 'get_event', 'list_calendars'];
+    }
+    if (meetingNotes) {
+      c.sources.meeting_notes.enabled = true;
+      c.sources.meeting_notes.tool_suffixes = ['search_files', 'read_file_content', 'get_file_metadata'];
+      c.sources.meeting_notes.search_title_contains = NOTES_TITLE;
+    }
+  };
+}
+
+// The first instant of a UTC day (the fixture configuration's zone).
+export function dayStart(day) {
+  return `${day}T00:00:00.000Z`;
+}
+
+// A listing of the owner's main calendar over [from, to), exactly as the
+// calendar block asks for it, answered with `content` (JSON text).
+export function listEvents(from, to, { calendarId = 'primary', content = '{"events":[]}', input = {}, ...rest } = {}) {
+  return { name: `${CALENDAR_PREFIX}list_events`, input: { calendarId, startTime: from, endTime: to, eventType: ['DEFAULT'], pageSize: 250, timeZone: 'UTC', ...input }, content, ...rest };
+}
+
+// The meeting-notes search of a source whose first day is `firstDay`: the
+// literal title and the bound 12 hours before that day (the fixture's
+// window_hours_before_day).
+export function searchNotes(firstDay, { content = '{"files":[]}', ...rest } = {}) {
+  const since = new Date(Date.parse(dayStart(firstDay)) - 12 * 60 * 60 * 1000).toISOString().replace('.000Z', 'Z');
+  return { name: `${DRIVE_PREFIX}search_files`, input: { query: `title contains '${NOTES_TITLE}' and modifiedTime > '${since}'` }, content, ...rest };
+}
 
 // Yesterday and today, as UTC calendar days, from the real clock (a CLI run
 // cannot be handed a clock).
@@ -60,6 +116,8 @@ export function makeCurateWorld({ machine: machineExtra = {}, config: editConfig
     argvFile: join(markers, 'claude-argv.json'),
     stdinFile: join(markers, 'claude-stdin.txt'),
     recordFile: join(markers, 'claude-runs.jsonl'),
+    launchLog: join(markers, 'claude-launches.jsonl'),
+    launchCountFile: join(markers, 'claude-launch-count'),
   };
   const machine = {
     vault_id: 'vault-00000000',
@@ -77,16 +135,25 @@ export function makeCurateWorld({ machine: machineExtra = {}, config: editConfig
 
   const patterns = join(world.base, 'leak-patterns.txt');
   writeFileSync(patterns, 'zz-no-such-leak-zz\n');
+  // The Claude Code user settings a round in connector mode reads: a
+  // scratch directory of this world's own, never the person's ~/.claude.
+  const claudeConfig = join(world.base, 'claude-config');
+  mkdirSync(claudeConfig);
+  writeFileSync(join(claudeConfig, 'settings.json'), '{}\n');
   const env = {
     ...world.env,
     FAKE_CLAUDE_SCENARIO: scenarioFile,
     BRAIN_KIT_LANG: 'en',
     BRAIN_KIT_LEAK_PATTERNS: patterns,
+    CLAUDE_CONFIG_DIR: claudeConfig,
   };
 
-  // The scenario of a round that reads the transcript and reports it.
+  // The scenario of a round that reads the transcript and reports it. A
+  // new scenario starts the launch count again.
   function scenario(fields = {}) {
     const { rewrite = {}, ...rest } = fields;
+    rmSync(files.launchCountFile, { force: true });
+    rmSync(files.launchLog, { force: true });
     const value = {
       ...files,
       stream: join(STREAMS, 'isolated-run.jsonl'),
@@ -122,6 +189,15 @@ export function makeCurateWorld({ machine: machineExtra = {}, config: editConfig
     setMachine(fields) {
       Object.assign(machine, fields);
       writeFileSync(machineFile, `${JSON.stringify(machine, null, 2)}\n`, { mode: 0o600 });
+    },
+    claudeConfig,
+    // The fake user settings.json a connector-mode round reads.
+    userSettings(value) {
+      writeFileSync(join(claudeConfig, 'settings.json'), `${JSON.stringify(value)}\n`);
+    },
+    // One entry per model launch of the last scenario: { launch, argv, stdin }.
+    launches() {
+      return existsSync(files.launchLog) ? readFileSync(files.launchLog, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
     },
     // `brain-kit curate` as a scheduler runs it, a process of its own.
     curate(args = [], extraEnv = {}) {

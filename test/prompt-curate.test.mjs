@@ -174,12 +174,52 @@ test('disallowedTools() is exactly the list task 6 names, then the extras, and n
 
 // --- the contract ------------------------------------------------------
 
-test('CURATE_RULES lists the nine contract rules', () => {
+test('CURATE_RULES lists the thirteen contract rules, phase 3\'s four last', () => {
   assert.deepEqual([...CURATE_RULES], [
     'read-index-first', 'sample-from-end', 'log-before-note', 'never-verified', 'never-empty-unopened',
     'closed-uncertainty', 'only-kit-commands', 'propose-only', 'sources-line',
+    'no-workaround', 'notes-first-class', 'no-access-label', 'third-party-privacy',
   ]);
 });
+
+// Phase 3, task 5: the four rules the connector sources paid for, each
+// pinned by what it must say in both languages.
+const NEW_RULES = {
+  en: {
+    'no-workaround': [/marks unavailable, or whose tools are not in your session, is written `unavailable`/, /not through the shell, not through another tool/],
+    'notes-first-class': [/same weight as a transcript/, /A title and a link alone are never a capture/],
+    'no-access-label': [/\*\*not verified\*\*, with this exact reason: `no access \(document store permission\)`/, /never empty, never missing/],
+    'third-party-privacy': [/private life of someone other than the owner/, /someone else's schedule, read with their consent: only the events they share with other people count/],
+  },
+  'pt-BR': {
+    'no-workaround': [/marca como indisponível, ou cujas ferramentas não estão na sua sessão, é escrita `unavailable`/, /nem pelo shell, nem por outra ferramenta/],
+    'notes-first-class': [/mesmo peso de uma transcrição/, /Título e link sozinhos nunca são captura/],
+    'no-access-label': [/\*\*não verificado\*\*, com este motivo exato: `sem acesso \(permissão do repositório de documentos\)`/, /nunca está vazio, nunca está ausente/],
+    'third-party-privacy': [/vida particular de alguém que não seja o dono/, /compromissos de outra pessoa, lidos com o consentimento dela: só contam os eventos que ela compartilha com outras pessoas/],
+  },
+};
+
+for (const lang of LANGS) {
+  test(`${lang}: each of phase 3's rules says what it must, in the paragraph its marker opens`, () => {
+    const text = rendered(lang);
+    for (const [rule, patterns] of Object.entries(NEW_RULES[lang])) {
+      const at = text.indexOf(`<!-- rule:${rule} -->`);
+      assert.notEqual(at, -1, `${lang}: ${rule}`);
+      const paragraph = text.slice(at, text.indexOf('\n\n', at) === -1 ? undefined : text.indexOf('\n\n', at));
+      for (const pattern of patterns) assert.match(paragraph, pattern, `${lang}: ${rule}`);
+    }
+  });
+
+  test(`${lang}: the last line is the one the round gives, naming every state a source can be written with`, () => {
+    const { vault, config } = vaultFor(lang);
+    const line = 'BRAIN_KIT_SOURCES: transcripts=<ok|empty|failed> calendar=<ok|empty|failed|unavailable>';
+    const text = renderCuratePrompt({ vaultRoot: vault, config, lang, parameters: PARAMS, now: NOW, sourcesLine: line });
+    assert.ok(text.includes(`\`${line}\``), lang);
+    assert.equal(text.includes('`BRAIN_KIT_SOURCES: transcripts=<ok|empty|failed>`'), false, `${lang}: the default line is not there when a line is given`);
+    const rule = text.slice(text.indexOf('<!-- rule:sources-line -->'));
+    for (const state of ['ok', 'empty', 'partial', 'failed', 'unavailable']) assert.ok(rule.includes(`- \`${state}\`: `), `${lang}: ${state}`);
+  });
+}
 
 for (const lang of LANGS) {
   test(`${lang}: the rendered prompt carries every contract marker, once each`, () => {

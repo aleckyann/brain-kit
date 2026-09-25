@@ -6,13 +6,16 @@
 // through its own `readEvidence(record, plan)`. This module only asks every
 // source and refuses to let a malformed or failing answer count as read.
 //
-//   evidenceFor(sources, plans, record) -> { [id]: { read, expected, ok } }
+//   evidenceFor(sources, plans, record) -> { [id]: { read, expected, ok, ... } }
 //
 // `plans` is `{ [id]: plan }` from each source's `collect`. A source with no
 // plan, whose readEvidence throws, or whose answer is not two non-negative
 // integers and a boolean, is `{ read: 0, expected: null, ok: false }`:
 // `expected: null` is never 0, so a broken answer can never pass for an
 // empty window either (src/guards/watermark.mjs, the vacuous advance).
+// Any other field of a well-formed answer is carried through as given, for
+// the round's report (the meeting notes' `documents`, ruling R-D2 of
+// 25/09/2026); it never replaces `read`, `expected` or `ok`.
 // `record` may be null (no model ran: the empty window path); the sources
 // then see a record with no tool use at all.
 
@@ -34,7 +37,8 @@ function evidenceOf(source, plan, record) {
   if (answer === null || typeof answer !== 'object' || !isCount(answer.read) || !isCount(answer.expected) || typeof answer.ok !== 'boolean') {
     return { ...UNREAD };
   }
-  return { read: answer.read, expected: answer.expected, ok: answer.ok };
+  const { read, expected, ok, ...extra } = answer;
+  return { ...extra, read, expected, ok };
 }
 
 export function evidenceFor(sources, plans, record) {

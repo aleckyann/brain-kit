@@ -72,7 +72,18 @@
  * @property {(config: object) => { allow: string[], deny: string[] }} [toolRules] connector sources
  */
 
+import { transcriptsSource } from './transcripts-claude-code.mjs';
+import { calendarSource } from './calendar-google.mjs';
+import { meetingNotesSource } from './meeting-notes-google-drive.mjs';
+
 export const SOURCE_KINDS = Object.freeze(['local', 'connector']);
+
+// The sources this version can read, by the id the configuration names
+// them with (`curate.sources.required` and `best_effort`). `curate` runs
+// them and the SessionStart hook reads their last state; a configured id
+// missing here is refused when required and skipped, loudly, when best
+// effort.
+export const SOURCES = Object.freeze({ transcripts: transcriptsSource, calendar: calendarSource, meeting_notes: meetingNotesSource });
 
 const OPTIONAL_FUNCTIONS = Object.freeze(['isConfigured', 'serverSpec', 'toolRules']);
 const CONNECTOR_FUNCTIONS = Object.freeze(['serverSpec', 'toolRules']);

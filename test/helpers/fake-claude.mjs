@@ -22,7 +22,10 @@
 //       "hookEvent": true,                  a hook_started event before init
 //       "hookAfterInit": true,              a PreToolUse hook_started event right after init
 //       "dropInit": true,
-//       "toolUses": [{ "name", "input", "isError" }],  added before the result
+//       "toolUses": [{ "name", "input", "isError", "content" }],  added before
+//                                           the result; `content` is the tool
+//                                           result's text (a connector answers
+//                                           JSON text), "ok" or "error" by default
 //       "finalText": "...",                 an assistant text and result.result
 //       "dropResult": true,
 //       "appendLines": ["raw line", ...]
@@ -30,7 +33,14 @@
 //     "stderr": "...",
 //     "exitCode": 0,
 //     "delayMs": 0,                         after the stream, before exiting
-//     "killSelf": "SIGKILL"                 after the stream is written, die by this signal
+//     "killSelf": "SIGKILL",                after the stream is written, die by this signal
+//     "launches": [{ ... }, { ... }],       per model launch (every run but
+//                                           --version), fields laid over the
+//                                           scenario's own, the last entry
+//                                           repeating for later launches
+//     "launchCountFile": "<path>",          how many model launches ran so far
+//     "launchLog": "<path>"                 one JSON line per model launch:
+//                                           { launch, argv, stdin }
 //   }
 //
 // It validates its argument vector the way Claude Code 2.1.281 did when
@@ -53,14 +63,30 @@ if (!scenarioPath) {
   process.stderr.write('fake-claude: FAKE_CLAUDE_SCENARIO is not set\n');
   process.exit(70);
 }
-const scenario = JSON.parse(readFileSync(scenarioPath, 'utf8'));
+const base = JSON.parse(readFileSync(scenarioPath, 'utf8'));
 
-if (scenario.argvFile) writeFileSync(scenario.argvFile, JSON.stringify(argv));
+if (base.argvFile) writeFileSync(base.argvFile, JSON.stringify(argv));
 
 if (argv.includes('--version')) {
-  process.stdout.write(`${scenario.version ?? '2.1.281 (Claude Code)'}\n`);
-  process.exit(scenario.versionExit ?? 0);
+  process.stdout.write(`${base.version ?? '2.1.281 (Claude Code)'}\n`);
+  process.exit(base.versionExit ?? 0);
 }
+
+// Which model launch this is (a round that relaunches runs the CLI twice),
+// and the scenario for it.
+let launch = 1;
+if (base.launchCountFile) {
+  let count = 0;
+  try {
+    count = Number.parseInt(readFileSync(base.launchCountFile, 'utf8'), 10) || 0;
+  } catch {
+    count = 0;
+  }
+  launch = count + 1;
+  writeFileSync(base.launchCountFile, String(launch));
+}
+const launches = Array.isArray(base.launches) ? base.launches : [];
+const scenario = launches.length > 0 ? { ...base, ...launches[Math.min(launch, launches.length) - 1] } : base;
 
 const formatAt = argv.indexOf('--output-format');
 const streamJson = formatAt !== -1 && argv[formatAt + 1] === 'stream-json';
@@ -76,6 +102,7 @@ if (dashes !== -1 && dashes !== argv.length - 1) {
 
 const stdin = readFileSync(0, 'utf8');
 if (scenario.stdinFile) writeFileSync(scenario.stdinFile, stdin);
+if (scenario.launchLog) appendFileSync(scenario.launchLog, `${JSON.stringify({ launch, argv, stdin })}\n`);
 
 for (const action of scenario.actions ?? []) {
   if (action.write) {
@@ -123,7 +150,8 @@ function buildStream() {
   (rw.toolUses ?? []).forEach((use, i) => {
     const id = `toolu_fake_added_${i + 1}`;
     const assistant = { type: 'assistant', message: { id: `msg_fake_added_${i + 1}`, type: 'message', role: 'assistant', content: [{ type: 'tool_use', id, name: use.name, input: use.input }] }, parent_tool_use_id: null, session_id: session };
-    const user = { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: use.isError === true, content: use.isError ? 'error' : 'ok' }] }, parent_tool_use_id: null, session_id: session };
+    const content = typeof use.content === 'string' ? use.content : (use.isError ? 'error' : 'ok');
+    const user = { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: use.isError === true, content }] }, parent_tool_use_id: null, session_id: session };
     events.splice(resultAt(), 0, assistant, user);
   });
   if (rw.finalText !== undefined) {

@@ -253,21 +253,30 @@ export function setWatermark(stateDir, sourceId, day) {
 //     AND the model's sources line reports the source `ok`, or `empty`
 //     with evidence.expected === 0 (it said it found nothing, and the plan
 //     indeed offered nothing).
+// `emptyMeansNothingListed` is the source's own member of that name
+// (src/sources/index.mjs), true when absent. A source that sets it false
+// (the connector sources: phase 3, task 5) has a plan that never offers
+// nothing while it is on, so nothing to read is itself a reading to prove:
+// for it `empty` counts when its evidence is ok, which is the listing or
+// search made (an empty day is a listing with no events), and only with
+// something expected; and it never advances vacuously, since no model ran
+// to make that listing.
 // Never moves the mark backwards or onto the day it already holds, and
 // never onto a day later than yesterday in `timezone` (the vault's zone,
 // required) as of `now`: no round can have swept a day that has not ended.
 // Returns { advanced: true, previous } or { advanced: false, reason }, and
 // writes nothing in the second case.
 export function advanceWatermark(stateDir, sourceId, day, {
-  modelExit, evidence, sourcesLine, vacuous = false, timezone, now = new Date(),
+  modelExit, evidence, sourcesLine, vacuous = false, timezone, now = new Date(), emptyMeansNothingListed = true,
 } = {}) {
   if (typeof sourceId !== 'string' || sourceId === '') throw new TypeError('sourceId must be a non-empty string');
   if (typeof day !== 'string' || !isValidIsoDate(day)) throw new TypeError(`day must be a YYYY-MM-DD date, got ${JSON.stringify(day)}`);
   if (typeof timezone !== 'string' || timezone === '') throw new TypeError('advanceWatermark needs the vault time zone');
   if (day > addDays(todayIn(now, timezone), -1)) return { advanced: false, reason: 'future_day' };
   const hasEvidence = evidence !== null && typeof evidence === 'object';
+  const listsNothing = emptyMeansNothingListed !== false;
   if (vacuous === true) {
-    if (!hasEvidence || evidence.expected !== 0) return { advanced: false, reason: 'not_vacuous' };
+    if (!listsNothing || !hasEvidence || evidence.expected !== 0) return { advanced: false, reason: 'not_vacuous' };
   } else {
     if (modelExit !== 0) return { advanced: false, reason: 'model_exit' };
     if (!hasEvidence || evidence.ok !== true) return { advanced: false, reason: 'no_evidence' };
@@ -275,7 +284,8 @@ export function advanceWatermark(stateDir, sourceId, day, {
     const state = Object.hasOwn(sourcesLine, sourceId) ? sourcesLine[sourceId] : undefined;
     if (state === undefined) return { advanced: false, reason: 'not_reported' };
     if (state === 'empty') {
-      if (evidence.expected !== 0) return { advanced: false, reason: 'empty_with_files' };
+      if (listsNothing && evidence.expected !== 0) return { advanced: false, reason: 'empty_with_files' };
+      if (!listsNothing && !(Number.isInteger(evidence.expected) && evidence.expected > 0)) return { advanced: false, reason: 'empty_nothing_listed' };
     } else if (state !== 'ok') {
       return { advanced: false, reason: 'reported_failed' };
     }
@@ -292,8 +302,9 @@ export function advanceWatermark(stateDir, sourceId, day, {
 // The LAST line of the model's final text that starts with
 // `BRAIN_KIT_SOURCES:`, read as space-separated `id=state` pairs, e.g.
 // `BRAIN_KIT_SOURCES: transcripts=ok calendar=empty`. States are kept as
-// written (`ok`, `empty`, `failed`, or anything else, which never counts as
-// ok). A token without `=` is ignored. An id named twice keeps the first
+// written (`ok`, `empty`, `failed`, `partial`, `unavailable`, or anything
+// else; only `ok` and `empty` can move a mark). A token without `=` is
+// ignored. An id named twice keeps the first
 // state that is not `ok`: a model contradicting itself in one line has not
 // reported the source ok. One layer of markdown a model may wrap the line in
 // (a `> ` quote, backticks, bold asterisks) is removed first; those

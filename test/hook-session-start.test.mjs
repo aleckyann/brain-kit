@@ -239,3 +239,47 @@ test('the hook writes nothing into the working tree', () => {
   start(fx, { session_id: 's1', source: 'compact' });
   assert.equal(git(fx.root, ['status', '--porcelain=v1', '--untracked-files=all', '--ignored']), before);
 });
+
+// Phase 3, task 5: the last round's connectors on the status line.
+
+function turnOnCalendar(fx, extra = () => {}) {
+  const file = join(fx.root, 'brain-kit.config.json');
+  const config = JSON.parse(readFileSync(file, 'utf8'));
+  config.sources.calendar.enabled = true;
+  config.sources.calendar.calendars = ['primary'];
+  config.vault.timezone = 'America/Argentina/Buenos_Aires';
+  extra(config);
+  writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
+}
+
+function lastRun(fx, connectorStates) {
+  mkdirSync(fx.stateDir, { recursive: true });
+  writeFileSync(join(fx.stateDir, 'last-run.json'), `${JSON.stringify({ at: '2026-09-25T01:00:00.000Z', exit: 0, connectorStates })}\n`);
+}
+
+test('the status line names each configured connector source whose state in the last round was not connected, with that state and the round\'s date in the vault\'s zone', () => {
+  const fx = makeHookVault();
+  turnOnCalendar(fx);
+  // 01:00 UTC on 25/09 is still 24/09 in UTC-3; meeting notes are listed but off.
+  lastRun(fx, { calendar: { state: 'needs_auth', at: '2026-09-25T01:00:00.000Z' }, meeting_notes: { state: 'absent', at: '2026-09-25T01:00:00.000Z' } });
+  const line = contextOf(start(fx, { session_id: 's1', source: 'startup' }));
+  assert.match(line, /Connector sources not connected in the last round: calendar needs_auth \(24\/09\/2026\); see brain-kit doctor\./);
+  assert.doesNotMatch(line, /meeting_notes/, 'a source that is not configured is not named');
+});
+
+test('nothing about connectors when the last state is connected, when the source is off, or when last-run cannot be read; the line is in the vault\'s language', () => {
+  const fx = makeHookVault();
+  turnOnCalendar(fx);
+  lastRun(fx, { calendar: { state: 'connected', at: '2026-09-25T01:00:00.000Z' } });
+  assert.doesNotMatch(contextOf(start(fx, { session_id: 's1', source: 'startup' })), /Connector sources/);
+  writeFileSync(join(fx.stateDir, 'last-run.json'), '{ not json');
+  assert.doesNotMatch(contextOf(start(fx, { session_id: 's2', source: 'startup' })), /Connector sources/);
+  turnOnCalendar(fx, (config) => { config.sources.calendar.enabled = false; });
+  lastRun(fx, { calendar: { state: 'needs_auth', at: '2026-09-25T01:00:00.000Z' } });
+  assert.doesNotMatch(contextOf(start(fx, { session_id: 's3', source: 'startup' })), /Connector sources/);
+
+  const pt = makeHookVault({ lang: 'pt-BR' });
+  turnOnCalendar(pt);
+  lastRun(pt, { calendar: { state: 'blocked_by_user_rules', at: '2026-09-24T12:00:00.000Z' } });
+  assert.match(contextOf(start(pt, { session_id: 's1', source: 'startup' })), /Fontes por conector não conectadas na última rodada: calendar blocked_by_user_rules \(24\/09\/2026\)/);
+});

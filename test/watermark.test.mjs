@@ -228,6 +228,36 @@ test('advance, vacuous (no model ran): only when the evidence expected nothing',
   assert.equal(markOf(dir).sources.transcripts, '2026-09-23');
 });
 
+// Phase 3, task 5: the advance rule per source. A source whose plan never
+// offers nothing while it is on (emptyMeansNothingListed false: the
+// connector sources) proves its empty day by its listing.
+test('advance, a source that lists something whenever it is on: "empty" counts with its evidence ok and something expected, never with nothing expected', () => {
+  const dir = stateDir();
+  const connector = { emptyMeansNothingListed: false };
+  const listed = { read: 1, expected: 1, ok: true };
+  assert.deepEqual(advance(dir, 'calendar', '2026-09-23', { modelExit: 0, evidence: { ...listed, ok: false }, sourcesLine: { calendar: 'empty' }, ...connector }), { advanced: false, reason: 'no_evidence' });
+  assert.deepEqual(advance(dir, 'calendar', '2026-09-23', { modelExit: 0, evidence: { read: 0, expected: 0, ok: true }, sourcesLine: { calendar: 'empty' }, ...connector }), { advanced: false, reason: 'empty_nothing_listed' });
+  assert.equal(existsSync(join(dir, 'watermark.json')), false);
+  assert.deepEqual(advance(dir, 'calendar', '2026-09-23', { modelExit: 0, evidence: listed, sourcesLine: { calendar: 'empty' }, ...connector }), { advanced: true, previous: null });
+  assert.deepEqual(advance(dir, 'meeting_notes', '2026-09-23', { modelExit: 0, evidence: listed, sourcesLine: { meeting_notes: 'ok' }, ...connector }), { advanced: true, previous: null });
+  for (const state of ['partial', 'unavailable', 'failed']) {
+    assert.deepEqual(advance(dir, 'meeting_notes', '2026-09-24', { modelExit: 0, evidence: listed, sourcesLine: { meeting_notes: state }, ...connector }), { advanced: false, reason: 'reported_failed' }, state);
+  }
+  // The default (the member absent, or true) is phase 2's rule, unchanged.
+  for (const member of [{}, { emptyMeansNothingListed: true }]) {
+    assert.deepEqual(advance(dir, 'transcripts', '2026-09-23', { modelExit: 0, evidence: listed, sourcesLine: { transcripts: 'empty' }, ...member }), { advanced: false, reason: 'empty_with_files' });
+  }
+  assert.deepEqual(markOf(dir).sources, { calendar: '2026-09-23', meeting_notes: '2026-09-23' });
+});
+
+test('advance, vacuous: never for a source that lists something whenever it is on, even with nothing expected', () => {
+  const dir = stateDir();
+  const nothing = { read: 0, expected: 0, ok: true };
+  assert.deepEqual(advance(dir, 'calendar', '2026-09-23', { vacuous: true, evidence: nothing, emptyMeansNothingListed: false }), { advanced: false, reason: 'not_vacuous' });
+  assert.equal(existsSync(join(dir, 'watermark.json')), false);
+  assert.deepEqual(advance(dir, 'transcripts', '2026-09-23', { vacuous: true, evidence: nothing, emptyMeansNothingListed: true }), { advanced: true, previous: null });
+});
+
 test('advance: vacuous must be exactly true; anything else takes the model path', () => {
   const dir = stateDir();
   const result = advance(dir, 'transcripts', '2026-09-23', { vacuous: 'yes', evidence: { read: 0, expected: 0, ok: true } });

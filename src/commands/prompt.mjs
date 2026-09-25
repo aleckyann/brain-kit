@@ -74,17 +74,31 @@ const PLACEHOLDER_RE = /\{\{(\w+)\}\}/g;
 // the first line of every prompt, by which the curator's own sessions are
 // told apart from the person's.
 export const PROMPT_NAMES = Object.freeze(['curate']);
-const KNOWN_PROMPT_PLACEHOLDERS = Object.freeze(['parameters', 'kit', 'log', 'capture_marker', 'agent', 'today_iso', 'now_iso', 'signature']);
+const KNOWN_PROMPT_PLACEHOLDERS = Object.freeze(['parameters', 'kit', 'log', 'capture_marker', 'agent', 'today_iso', 'now_iso', 'signature', 'sources_line']);
 const SIGNATURE_LINE = '{{signature}}';
+
+// The last line a round's model writes, when the caller does not give the
+// one for the sources it offers (`brain-kit prompt curate` standalone, and
+// every caller of phase 2): the transcripts alone.
+export const DEFAULT_SOURCES_LINE = 'BRAIN_KIT_SOURCES: transcripts=<ok|empty|failed>';
 
 // The rules the curate prompt paid for in incidents (docs/incidents.md,
 // "Prompts, policy and evidence", "Connectors" and "Privacy"), each
 // introduced in the prompt by `<!-- rule:<id> -->` in both packs. A pack
 // prompt without one fails `--check`; a vault's overlay without one only
-// warns, because the overlay is the owner's to write.
+// warns, because the overlay is the owner's to write. Phase 3 (task 5)
+// added the last four: a source that is unavailable, or a tool that is not
+// there, is reported and never reached another way (the undated "a wrong
+// allowlist burned every turn on workarounds"); a document is distilled,
+// never logged as a link (11/08/2026); a document that does not open for a
+// permission reason is said to be exactly that (10/08 and 21/08/2026); and
+// nothing of anyone's private life is content, other people's schedules
+// included (the undated "a colleague's medical appointment was in the
+// calendar window").
 export const CURATE_RULES = Object.freeze([
   'read-index-first', 'sample-from-end', 'log-before-note', 'never-verified', 'never-empty-unopened',
   'closed-uncertainty', 'only-kit-commands', 'propose-only', 'sources-line',
+  'no-workaround', 'notes-first-class', 'no-access-label', 'third-party-privacy',
 ]);
 const RULES_BY_PROMPT = Object.freeze({ curate: CURATE_RULES });
 
@@ -272,11 +286,12 @@ function signatureFor(config, defaults) {
 
 // The curate prompt, rendered. `parameters` is the block the round
 // computes, inserted verbatim; `now` is the round's own time, rendered as
-// `{{now_iso}}` and `{{today_iso}}` on the vault's clock. An overlay whose
-// first line is not the signature gets the signature line put in front of
-// it. Throws when the prompt file cannot be read; the caller decides what
-// that means.
-export function renderCuratePrompt({ vaultRoot, config, lang, parameters, now = new Date(), packsDir = join(KIT_ROOT, 'lang') }) {
+// `{{now_iso}}` and `{{today_iso}}` on the vault's clock; `sourcesLine` is
+// the last line the model must write, naming every source the round offers
+// (DEFAULT_SOURCES_LINE when not given). An overlay whose first line is not
+// the signature gets the signature line put in front of it. Throws when the
+// prompt file cannot be read; the caller decides what that means.
+export function renderCuratePrompt({ vaultRoot, config, lang, parameters, now = new Date(), sourcesLine = DEFAULT_SOURCES_LINE, packsDir = join(KIT_ROOT, 'lang') }) {
   const defaults = defaultsFor(packsDir, lang);
   const { path } = curatePromptSource({ vaultRoot, config, lang, packsDir });
   const signature = signatureFor(config, defaults);
@@ -292,6 +307,7 @@ export function renderCuratePrompt({ vaultRoot, config, lang, parameters, now = 
     today_iso: clock.date,
     now_iso: clock.iso,
     signature,
+    sources_line: String(sourcesLine),
   };
   return render(text, vars);
 }

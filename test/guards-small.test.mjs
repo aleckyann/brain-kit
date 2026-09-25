@@ -52,6 +52,15 @@ test('evidenceFor with no record (no model ran) hands the sources an empty recor
   assert.deepEqual([given.toolUses, given.toolResults], [[], []]);
 });
 
+test('evidenceFor carries any other field of a well-formed answer through, and none of them replaces read, expected or ok (ruling R-D2)', () => {
+  const documents = { read: 2, failed: 1 };
+  const s = stub('meeting_notes', () => ({ read: 1, expected: 1, ok: true, documents }));
+  assert.deepEqual(evidenceFor([s], { meeting_notes: {} }, null), { meeting_notes: { documents, read: 1, expected: 1, ok: true } });
+  // A malformed answer is still unread, its extra fields dropped.
+  const broken = stub('meeting_notes', () => ({ read: 1, ok: true, documents }));
+  assert.deepEqual(evidenceFor([broken], { meeting_notes: {} }, null), { meeting_notes: { read: 0, expected: null, ok: false } });
+});
+
 test('unreadRequired names each required source whose evidence is missing or not ok', () => {
   const evidence = { transcripts: { read: 0, expected: 2, ok: false }, calendar: { read: 1, expected: 1, ok: true } };
   assert.deepEqual(unreadRequired(evidence, ['transcripts', 'calendar', 'meeting_notes']), ['transcripts', 'meeting_notes']);

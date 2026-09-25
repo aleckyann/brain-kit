@@ -22,24 +22,37 @@
 //    8. a dirty tree: exit 75 naming every file
 //    9. the round's own snapshot
 //   10. the CLI is a real program; not: exit 1
-//   11. collect the sources; a required source misconfigured: exit 1 and no
+//   11. collect the sources, each over its own days (the round's days after
+//       its own mark, phase 3 decision D5); a listed source that is off is
+//       recorded (said when it is half configured, ruling R-E1; exit 1 when
+//       it is required); a required source misconfigured: exit 1 and no
 //       mark moves; a required source listing a file it cannot read, or a
 //       first open day with more transcripts than the cap: exit 4 before
 //       the model, no mark moves; days past the cap are deferred and the
 //       window ends at the last covered day; nothing in the window:
 //       advance vacuously and exit 0
-//   12. --check: print the plan and the prompt's size, exit 0
-//   13. run the model, isolated; an init event that fails the isolation
-//       check kills it at once: exit 1
+//   12. the launch mode (decisions D1 and D3): with a connector source to
+//       read, the person's user settings are read and mirrored; connector
+//       mode unless a rule refuses it (every connector source is then
+//       blocked_by_user_rules, and the round runs isolated); --check: print
+//       the plan, the mode and the prompt's size, exit 0
+//   13. run the model; an init event that fails the isolation check of its
+//       mode kills it at once: exit 1; in connector mode, an init event
+//       where a connector source is not there (decision D4, ruling R-B1)
+//       kills it before its first turn, and the round launches once more
+//       without those sources, never twice
 //   14. read evidence, the sources line and the round record
 //   15. bring what the round proposed back to HEAD's content, byte-proved
 //   16. the exit code, first match wins: isolation 1; model failure 69 or
 //       1; a required source unread 4; a round record that cannot be read
-//       1; anything still dirty 1; a proposal not opened 3; otherwise 0
-//   17. advance each source's watermark, only on 0 or 3
+//       1; anything still dirty 1; a proposal not opened 3; otherwise 0.
+//       A best-effort source never changes it.
+//   17. advance each source's watermark through its own last day, only on
+//       0 or 3
 //   18. always: remove the round record, write last-run.json, append the
 //       log, release the lock (the model's process group already dead) and
-//       run machine.notify_command on any non-zero exit
+//       run machine.notify_command on any non-zero exit, and once when a
+//       best-effort connector source's state changed since the last round
 //
 // The log (logs/curate-<date>.log in the state directory) holds one line
 // per event, never a tool result, the model's final text or anything read
@@ -53,7 +66,7 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { constants as osConstants } from 'node:os';
+import { homedir, constants as osConstants } from 'node:os';
 import { delimiter, join, resolve, sep } from 'node:path';
 import { EXIT } from '../exit-codes.mjs';
 import { CONFIG_FILENAME, ConfigError, loadConfig, loadMachine } from '../config.mjs';
@@ -70,14 +83,16 @@ import { checkDirtyTree } from '../guards/dirty-tree.mjs';
 import { takeSnapshot } from '../guards/snapshot.mjs';
 import { checkCli } from '../guards/cli.mjs';
 import { checkIsolation } from '../guards/isolation.mjs';
+import { connectorStateMessage, connectorStates } from '../guards/connectors.mjs';
 import { evidenceFor, unreadRequired } from '../guards/read-evidence.mjs';
 import { emptyWindow } from '../guards/empty-window.mjs';
 import {
-  addDays, advanceWatermark, localDay, parseSourcesLine, readWatermark, startOfDay, windowFor, WatermarkError,
+  addDays, advanceWatermark, localDay, parseSourcesLine, readWatermark, SOURCES_LINE_PREFIX, startOfDay, windowFor, WatermarkError,
 } from '../guards/watermark.mjs';
 import { buildArgv, runModel, unscopedRules } from '../harness/claude-code.mjs';
-import { allowedTools, disallowedTools, kitCommand } from '../curate/tools.mjs';
-import { transcriptsSource } from '../sources/transcripts-claude-code.mjs';
+import { allowedTools, disallowedTools, KIT_SUBCOMMANDS, kitCommand } from '../curate/tools.mjs';
+import { blockingMessage, mirrorUserRules, userSettingsFiles } from '../curate/user-rules.mjs';
+import { SOURCES } from '../sources/index.mjs';
 import { syncUnderLock } from './sync.mjs';
 import { parseRoundRecord, roundRecordPath } from './propose.mjs';
 import { promptOutsideVault, renderCuratePrompt } from './prompt.mjs';
@@ -116,10 +131,52 @@ const FORWARDED_SIGNALS = Object.freeze([
   'SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT', 'SIGUSR2', 'SIGALRM', 'SIGXCPU', 'SIGXFSZ', 'SIGVTALRM', 'SIGPROF', 'SIGPWR',
 ].filter((signal) => Object.hasOwn(osConstants.signals, signal)));
 
-// The sources this version can read, by the id the configuration names
-// them with. A configured id missing here is refused when required and
-// skipped, loudly, when best effort.
-export const SOURCES = Object.freeze({ transcripts: transcriptsSource });
+// The sources this version can read (src/sources/index.mjs), by the id the
+// configuration names them with. A configured id missing here is refused
+// when required and skipped, loudly, when best effort.
+export { SOURCES };
+
+// The connector states that stop a source for the round (decision D4): on
+// the init event of the first launch, any of them kills the model before
+// its first turn, and the round launches once more without that source.
+// `pending` is not one (ruling R-B1): a connector still connecting when the
+// session started stays in the round, and its evidence decides.
+export const RELAUNCH_STATES = Object.freeze(['needs_auth', 'failed', 'absent', 'tools_missing', 'unknown']);
+
+// The state of a connector source whose tools a user rule of the person's
+// would widen or deny (decision D3).
+export const BLOCKED_BY_USER_RULES = 'blocked_by_user_rules';
+
+// The guide a changed connector state points the person to.
+const CONNECTORS_DOC = 'docs/connectors.md';
+
+// The limits a source may reach inside one round, by the source they bound
+// (ruling R-D1): the model distils up to them, lists the rest by literal
+// title in the log as not distilled this round, and reports the source
+// `partial`, which never moves a mark, so the day stays open and the next
+// round goes on. Each names the keys under curate.caps and the line the
+// parameters give the model about them.
+const SOURCE_CAPS = Object.freeze({
+  meeting_notes: Object.freeze({ keys: Object.freeze(['search_docs_opened', 'attached_notes_opened']), message: 'curate.params.meeting_notes_caps' }),
+});
+
+// The states the model may write for a source in its last line: what every
+// source can be, `partial` for a source with a limit of its own, and
+// `unavailable` for a source reached through a connector, which may be
+// missing from the session.
+export function lineStates(source) {
+  return [
+    'ok', 'empty',
+    ...(Object.hasOwn(SOURCE_CAPS, source.id) ? ['partial'] : []),
+    'failed',
+    ...(source.kind === 'connector' ? ['unavailable'] : []),
+  ];
+}
+
+// The last line for a round that offers `sources`, in their order.
+export function sourcesLineFor(sources) {
+  return `${SOURCES_LINE_PREFIX} ${sources.map((source) => `${source.id}=<${lineStates(source).join('|')}>`).join(' ')}`;
+}
 
 function parseArgs(argv) {
   const result = { dir: undefined, dry: false, check: false, keepStream: false, help: false };
@@ -166,23 +223,60 @@ function writePrivate(file, text) {
   }
 }
 
-// The sources this round runs, and the configured ids it cannot.
+// The sources this round runs, the listed ones that are off, and the
+// configured ids it cannot read. A listed source runs only when it is
+// configured (a source with no isConfigured always is): a connector source
+// is off until the person names what it reads (decision D6).
 function sourcesOf(config) {
   const required = [...new Set(config.curate?.sources?.required ?? [])];
   const bestEffort = [...new Set(config.curate?.sources?.best_effort ?? [])].filter((id) => !required.includes(id));
-  const active = [...required, ...bestEffort].filter((id) => Object.hasOwn(SOURCES, id)).map((id) => SOURCES[id]);
+  const known = [...required, ...bestEffort].filter((id) => Object.hasOwn(SOURCES, id)).map((id) => SOURCES[id]);
+  const configured = (source) => {
+    if (typeof source.isConfigured !== 'function') return true;
+    try {
+      return source.isConfigured(config) === true;
+    } catch {
+      return false;
+    }
+  };
   return {
     required,
-    active,
+    active: known.filter(configured),
+    off: known.filter((source) => !configured(source)),
     unknownRequired: required.filter((id) => !Object.hasOwn(SOURCES, id)),
     unknownBestEffort: bestEffort.filter((id) => !Object.hasOwn(SOURCES, id)),
   };
 }
 
+// Why a listed source is off: the problems its own plan names, from a plan
+// collected over an empty window (a connector source's collect reads
+// nothing, it only says what stands in the way).
+function offProblems(source, config, now, tz) {
+  try {
+    const plan = source.collect({ window: { from: now, to: now, days: [], timezone: tz }, config, now });
+    return Array.isArray(plan?.problems) ? plan.problems.filter((p) => p !== null && typeof p === 'object' && typeof p.code === 'string') : [];
+  } catch (error) {
+    return [{ code: 'collect_failed', detail: error instanceof Error ? error.message : String(error) }];
+  }
+}
+
+// A listed source that is off on purpose (its settings say enabled: false,
+// or its own problems say it is disabled) is only recorded in last-run;
+// one that is off for any other reason is half configured, and the round
+// says so (ruling R-E1): a best-effort source is never dropped in silence.
+function offOnPurpose(source, config, problems) {
+  return config?.sources?.[source.id]?.enabled === false || problems.some((p) => p.code === 'disabled');
+}
+
 // The window: from the earliest mark among the sources the round runs (an
-// unset mark reads only yesterday), so no source loses a day; each source
-// then advances on its own. A mark later than yesterday on any source is
-// the error state windowFor reports as `future`.
+// unset mark reads only yesterday), so no source loses a day. `days` holds
+// each source's own days (decision D5): the round's days after that
+// source's own mark, an unset mark taking yesterday only, so a source that
+// is ahead never reads a day it already covered, and each one advances
+// only through the days it read. A source's days are always the newest of
+// the round's (every day after its mark), so its own window runs from the
+// start of its first day to the round's end. A mark later than yesterday on
+// any source is the error state windowFor reports as `future`.
 function computeWindow(stateDir, sources, now, tz) {
   const mark = readWatermark(stateDir);
   const yesterday = addDays(localDay(now, tz), -1);
@@ -197,16 +291,44 @@ function computeWindow(stateDir, sources, now, tz) {
     const effective = mark.sources[source.id] ?? addDays(yesterday, -1);
     if (earliest === null || effective < earliest) earliest = effective;
   }
-  return { window: windowFor(earliest ?? addDays(yesterday, -1), now, tz), marks: mark.sources };
+  const window = windowFor(earliest ?? addDays(yesterday, -1), now, tz);
+  const days = {};
+  for (const source of sources) {
+    const after = mark.sources[source.id] ?? addDays(yesterday, -1);
+    days[source.id] = window.days.filter((day) => day > after);
+  }
+  return { window, days, marks: mark.sources };
 }
 
-function collectPlans(sources, window, config, machine, env, now, tz) {
+// Each source collected over its own window: from the start of its first
+// day to the round's end, with its own days. A source with no day in the
+// round is never collected.
+function collectPlans(sources, window, days, config, machine, env, now, tz) {
   const plans = {};
   const home = env.HOME || undefined;
   for (const source of sources) {
-    plans[source.id] = source.collect({ window: { from: window.from, to: window.to, days: window.days, timezone: tz }, config, machine, now, ...(home ? { home } : {}) });
+    const own = days[source.id];
+    plans[source.id] = source.collect({ window: { from: startOfDay(own[0], tz), to: window.to, days: own, timezone: tz }, config, machine, now, ...(home ? { home } : {}) });
   }
   return plans;
+}
+
+// How many files a local source's plan offers, for the report; null for a
+// plan that lists none (a connector source's).
+function keptOf(plan) {
+  return Array.isArray(plan?.files) ? plan.files.length : null;
+}
+
+// What the round records about a source before the model runs.
+function sourceEntry(source, plan) {
+  if (source.kind === 'local') return { kept: keptOf(plan) ?? 0, read: 0, advanced: false, noTimestamp: plan.dropped?.noTimestamp ?? 0 };
+  return { state: null, observedPrefix: null, read: 0, expected: null, advanced: false, reported: null, ...(source.id === 'meeting_notes' ? { documents: null } : {}) };
+}
+
+// What the plan log line says about a source.
+function planLogOf(source, plan, days) {
+  if (source.kind === 'local') return { kept: keptOf(plan), dropped: plan.dropped };
+  return { days, problems: (plan.problems ?? []).map((p) => p.code) };
 }
 
 // The whole days every source could take within its cap (plan.daysCovered,
@@ -258,7 +380,14 @@ function problemText(problems) {
   return problems.map((p) => (p.detail ? `${p.code} (${p.detail})` : p.code)).join(', ');
 }
 
-function renderParameters(t, { window, tz, plans, sources, config, deferred }) {
+// The parameters block. Each source the round offers gets its own section:
+// its days when they are not the round's, a line about the connector it is
+// read through, its plan's prompt block, and the limits it may reach. A
+// source unavailable this round (`unavailable`, id -> state) gets one line
+// instead, saying so with its state and forbidding any other way to it; a
+// source whose connector was still connecting at the round's first launch
+// (`pending`, a set of ids) is told so on a relaunch (ruling R-B1).
+function renderParameters(t, { window, tz, plans, sources, days, config, deferred, unavailable = new Map(), pending = new Set() }) {
   const lines = [];
   lines.push(t('curate.params.days', { days: window.days.map(shown).join(', '), timezone: tz }));
   lines.push(t('curate.params.window', { from: window.from.toISOString(), to: window.to.toISOString() }));
@@ -267,7 +396,24 @@ function renderParameters(t, { window, tz, plans, sources, config, deferred }) {
   for (const source of sources) {
     lines.push('');
     lines.push(t('curate.params.source', { source: source.id }));
+    if (unavailable.has(source.id)) {
+      lines.push(t('curate.params.unavailable', { source: source.id, state: unavailable.get(source.id) }));
+      continue;
+    }
+    const own = days[source.id];
+    if (own.length !== window.days.length) {
+      lines.push(t('curate.params.source_days', { days: own.map(shown).join(', '), from: startOfDay(own[0], tz).toISOString(), to: window.to.toISOString() }));
+    }
+    if (source.kind === 'connector') {
+      lines.push(t('curate.params.connector', { source: source.id, connector: source.serverSpec(config).serverDisplayName }));
+      if (pending.has(source.id)) lines.push(t('curate.params.pending', { source: source.id }));
+    }
     lines.push(plans[source.id].promptBlock);
+    const caps = SOURCE_CAPS[source.id];
+    if (caps !== undefined) {
+      const values = caps.keys.map((key) => config.curate?.caps?.[key]);
+      if (values.every((value) => Number.isInteger(value) && value >= 0)) lines.push(t(caps.message, { source: source.id, search: values[0], attached: values[1] }));
+    }
   }
   lines.push('');
   const caps = Object.entries(config.curate?.caps ?? {}).map(([key, value]) => `${key}=${value}`).join(', ');
@@ -284,8 +430,9 @@ function readFilesOf(sources, plans) {
   return sources.filter((source) => source.kind === 'local').flatMap((source) => (plans[source.id]?.files ?? []).map((file) => file.path));
 }
 
-// The round's allow and deny lists. The deny list also tells the isolation
-// check which built-in tools the round removed by name (ruling R-B4).
+// The round's allow and deny lists in isolated mode. The deny list also
+// tells the isolation check which built-in tools the round removed by name
+// (ruling R-B4).
 function roundTools(config, readFiles) {
   return {
     allowed: allowedTools(config.curate?.allowed_tools_extra ?? [], { readFiles }),
@@ -293,14 +440,159 @@ function roundTools(config, readFiles) {
   };
 }
 
-function modelArgv(config, machine, tools) {
+// The tool name a permission rule names: the text before its scope.
+function ruleTool(rule) {
+  return /^[^(]*/.exec(rule)[0];
+}
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Whether a deny rule would deny `tool`: the same name; a name the tool's
+// own starts with at a server boundary (`mcp__<server>` stands for every
+// tool of that server); or a name with a wildcard that matches it. How the
+// CLI reads a wildcard in the middle of an MCP name is not measured; read
+// as matching, it fails closed (the source is not read).
+function deniesTool(rule, tool) {
+  const name = ruleTool(rule);
+  if (name === tool || tool.startsWith(`${name}__`)) return true;
+  return name.includes('*') && new RegExp(`^${name.split('*').map(escapeRegExp).join('.*')}$`).test(tool);
+}
+
+// The launch mode and its tools for a round whose connector sources, in
+// `candidates`, have a day to read (decisions D1 and D3). No candidate:
+// isolated, and the person's settings are not read at all. Otherwise the
+// user settings files the round would load are read and every allow rule
+// in them mirrored (src/curate/user-rules.mjs): a rule that refuses
+// connector mode (a `blocking` entry) blocks every candidate; a mirrored
+// deny that would deny a candidate's own read tools (a rule for a whole
+// server, say) blocks that candidate, naming the rule, since dropping the
+// rule would leave its other tools to the person's allow and keeping it
+// denies the source its reads. What the round's own allow list holds
+// decides which user rules are mirrored, so the mirror is taken again
+// without the tools of each candidate blocked, until none is. Connector
+// mode allows the round's own rules (without the `node <kit>` forms when a
+// mirrored rule covers them) plus each available source's read tools, and
+// denies the round's own denies, every mirrored rule and every configured
+// connector source's write tools; with no candidate left, the round runs
+// isolated. `blocked` maps an id to what blocked it.
+function chooseMode({ config, root, env, readFiles, candidates, connectorDenies }) {
+  const base = roundTools(config, readFiles);
+  if (candidates.length === 0) return { mode: 'isolated', tools: base, available: [], blocked: new Map(), userRules: null };
+  const files = userSettingsFiles(env);
+  const home = env.HOME || homedir();
+  const kit = kitCommand();
+  const nodeForms = KIT_SUBCOMMANDS.map((sub) => `Bash(node ${kit} ${sub}:*)`);
+  const blocked = new Map();
+  let available = [...candidates];
+  for (;;) {
+    const allowed = [...base.allowed, ...available.flatMap((source) => source.toolRules(config).allow)];
+    const mirror = mirrorUserRules({ files, ownAllowed: allowed, vaultRoot: root, home, kit });
+    const userRules = { mirrored: mirror.deny, widenedReads: mirror.widenedReads, blocking: mirror.blocking };
+    if (mirror.blocking.length > 0) {
+      for (const source of available) blocked.set(source.id, { blocking: mirror.blocking });
+      return { mode: 'isolated', tools: base, available: [], blocked, userRules };
+    }
+    const hit = available.map((source) => ({ source, rules: mirror.deny.filter((rule) => source.toolRules(config).allow.some((tool) => deniesTool(rule, tool))) })).filter((entry) => entry.rules.length > 0);
+    if (hit.length === 0) {
+      if (available.length === 0) return { mode: 'isolated', tools: base, available, blocked, userRules };
+      return {
+        mode: 'connectors',
+        tools: {
+          allowed: mirror.dropNodeForms ? allowed.filter((rule) => !nodeForms.includes(rule)) : allowed,
+          disallowed: [...new Set([...base.disallowed, ...mirror.deny, ...connectorDenies])],
+        },
+        available,
+        blocked,
+        userRules,
+      };
+    }
+    for (const { source, rules } of hit) blocked.set(source.id, { rules });
+    available = available.filter((source) => !blocked.has(source.id));
+  }
+}
+
+// What --check and --dry say about the launch mode: the mode, the mirror's
+// counts, and every rule that refused connector mode.
+function modeLines(t, choice) {
+  const rules = choice.userRules;
+  const counts = rules === null ? {} : { mirrored: rules.mirrored.length, widened: rules.widenedReads.length };
+  const lines = [];
+  if (choice.mode === 'connectors') lines.push(t('curate.check_mode_connectors', counts));
+  else if (rules === null) lines.push(t('curate.check_mode_isolated', {}));
+  else lines.push(t('curate.check_mode_refused', counts));
+  for (const item of rules?.blocking ?? []) {
+    const message = blockingMessage(item);
+    lines.push(t(message.messageKey, message.params));
+  }
+  return lines;
+}
+
+// What --check (with each plan's prompt block) and --dry (with each plan's
+// problems) say about each source the round runs.
+function sourceLines(t, { active, plans, days, unavailable, config, blocks }) {
+  const lines = [];
+  for (const source of active) {
+    const own = days[source.id];
+    if (own.length === 0) {
+      lines.push(t('curate.check_source_no_day', { source: source.id }));
+      continue;
+    }
+    if (unavailable.has(source.id)) {
+      lines.push(t('curate.check_source_unavailable', { source: source.id, state: unavailable.get(source.id) }));
+      continue;
+    }
+    const plan = plans[source.id];
+    if (source.kind === 'local') lines.push(t('curate.check_source', { source: source.id, kept: keptOf(plan) ?? 0 }));
+    else lines.push(t('curate.check_connector_source', { source: source.id, connector: source.serverSpec(config).serverDisplayName, days: own.map(shown).join(', ') }));
+    if (blocks) lines.push(plan.promptBlock);
+    else if ((plan.problems ?? []).length > 0) lines.push(t('curate.source_warning', { source: source.id, problems: problemText(plan.problems) }));
+  }
+  return lines;
+}
+
+// The message saying why a source is blocked by the person's rules.
+function blockedMessage(t, source, config, entry) {
+  if (entry.blocking) return entry.blocking.map((item) => { const m = blockingMessage(item); return t(m.messageKey, m.params); }).join(' ');
+  return t('curate.user_rules.denies_source', { rules: entry.rules.join(', '), connector: source.serverSpec(config).serverDisplayName, tools: source.toolRules(config).allow.join(', ') });
+}
+
+function modelArgv(config, machine, tools, mode = 'isolated') {
   return buildArgv({
+    mode,
     model: machine.model ?? undefined,
     maxTurns: config.curate?.max_turns ?? FALLBACK_MAX_TURNS,
     budgetUsd: config.curate?.budget_usd ?? FALLBACK_BUDGET_USD,
     allowed: tools.allowed,
     disallowed: tools.disallowed,
   });
+}
+
+// The previous round's last-run.json, or null: where a connector state
+// change is measured from.
+function readLastRun(stateDir) {
+  try {
+    const value = JSON.parse(readFileSync(join(stateDir, STATE_FILES.LAST_RUN), 'utf8'));
+    return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+// The last known state of each connector source, carried from round to
+// round: `{ [id]: { state, at } }`, `at` the time of the round that saw it.
+// A round that does not see a source's connector (no day for it, a round
+// that stopped before the model) keeps what the last one saw, so a state
+// that stays the same is never announced twice (ruling of task 5).
+function knownStates(previous) {
+  const out = {};
+  const carried = previous?.connectorStates;
+  if (carried === null || typeof carried !== 'object' || Array.isArray(carried)) return out;
+  for (const [id, entry] of Object.entries(carried)) {
+    if (entry !== null && typeof entry === 'object' && typeof entry.state === 'string' && typeof entry.at === 'string') out[id] = { state: entry.state, at: entry.at };
+  }
+  return out;
 }
 
 // The environment the model runs with: the caller's, the round's token
@@ -479,10 +771,18 @@ export async function runCurate(argv, io, t, deps = {}) {
   if (parsed.dry) return dryRun({ root, stateDir, machine, claudeBin, io, env, now });
 
   // The round's own state, filled as it goes and written at the end.
+  // The last round's record, read before this one can write its own: the
+  // connector states it knew are carried forward and compared with this
+  // round's (step 18).
+  const previousRun = readLastRun(stateDir);
   const run = {
     at: now.toISOString(), durationMs: null, exit: null, reasonCode: null, reason: null, window: null, network: null,
     sources: {}, warnings: [], remainingDays: 0, deferredDays: [], costUsd: null, numTurns: null, denials: [], isolation: null, proposed: null, leftovers: [],
+    mode: null, relaunched: false, notConfigured: [], userRules: null, connectorStates: knownStates(previousRun),
   };
+  // The notifications this round owes besides the one for a non-zero exit:
+  // one per best-effort connector source whose state changed.
+  const notices = [];
   let lock = null;
   let recordFile = null;
   let keepRecord = false;
@@ -510,7 +810,7 @@ export async function runCurate(argv, io, t, deps = {}) {
     run.exit = error.exitCode;
     run.reasonCode = 'lock_held';
     run.reason = reason;
-    return finishRound({ run, io, log, stateDir, machine, env, started, lock: null, writeLastRun: true, check: false });
+    return finishRound({ run, io, log, stateDir, machine, env, started, lock: null, writeLastRun: true, check: false, notices });
   }
   recordFile = roundRecordPath(root, lock.token, env);
   log('start', { root, check: parsed.check });
@@ -527,7 +827,7 @@ export async function runCurate(argv, io, t, deps = {}) {
       rmSync(`${recordFile}.lock`, { force: true });
     }
   }
-  return finishRound({ run, io, log, stateDir, machine, env, started, lock, writeLastRun: !parsed.check, check: parsed.check });
+  return finishRound({ run, io, log, stateDir, machine, env, started, lock, writeLastRun: !parsed.check, check: parsed.check, notices });
 
   async function roundUnderLock() {
     // 4. The network.
@@ -603,9 +903,9 @@ export async function runCurate(argv, io, t, deps = {}) {
     const unscoped = unscopedRules(config.curate?.allowed_tools_extra ?? []);
     if (unscoped.length > 0) return fail(EXIT.USAGE, 'config_invalid', t('curate.allowed_unscoped', { rules: unscoped.join(', '), setting: ALLOWED_EXTRA_SETTING }));
     const tz = config.vault?.timezone;
-    const { active, required, unknownRequired, unknownBestEffort } = sourcesOf(config);
+    const { active, off, required, unknownRequired, unknownBestEffort } = sourcesOf(config);
 
-    // 7. The window.
+    // 7. The window, and each source's own days in it.
     onStep('window');
     let computed;
     try {
@@ -621,7 +921,14 @@ export async function runCurate(argv, io, t, deps = {}) {
       return fail(EXIT.FAILURE, 'watermark_future', t('curate.watermark_future', { source, day: shown(day), yesterday: shown(yesterday), command }));
     }
     let { window } = computed;
-    run.window = { days: window.days, from: window.from.toISOString(), to: window.to.toISOString(), remaining: window.remaining };
+    const days = { ...computed.days };
+    const recordWindow = () => {
+      run.window = {
+        days: window.days, from: window.from.toISOString(), to: window.to.toISOString(), remaining: window.remaining,
+        sources: Object.fromEntries(active.map((source) => [source.id, days[source.id]])),
+      };
+    };
+    recordWindow();
     if (window.days.length === 0) {
       run.exit = EXIT.OK;
       run.reasonCode = 'up_to_date';
@@ -669,10 +976,30 @@ export async function runCurate(argv, io, t, deps = {}) {
       io.stderr.write(`${text}\n`);
       log('source_skipped', { source: id });
     }
-    let plans = collectPlans(active, window, config, machine, env, now, tz);
+    // A listed source that is off: recorded; said when it is half
+    // configured (ruling R-E1); a required one stops the round, since no
+    // round could ever read it.
+    for (const source of off) {
+      const problems = offProblems(source, config, now, tz);
+      const setting = `${CONFIG_FILENAME} sources.${source.id}`;
+      run.notConfigured.push({ source: source.id, problems: problems.map((p) => (p.detail ? `${p.code} (${p.detail})` : p.code)) });
+      if (required.includes(source.id)) return fail(EXIT.FAILURE, 'source_misconfigured', t('curate.source_misconfigured', { source: source.id, setting, problems: problemText(problems) || '-' }));
+      if (offOnPurpose(source, config, problems)) continue;
+      const text = t('curate.source_off', { source: source.id, problems: problemText(problems) || '-', setting });
+      run.warnings.push(text);
+      io.stderr.write(`${text}\n`);
+      log('source_off', { source: source.id, problems: problems.map((p) => p.code) });
+    }
+    // Only a source with a day of its own in the round is collected,
+    // offered and advanced (decision D5).
+    let offered = active.filter((source) => days[source.id].length > 0);
     for (const source of active) {
+      if (days[source.id].length === 0) log('source_no_day', { source: source.id, mark: computed.marks[source.id] ?? null });
+    }
+    let plans = collectPlans(offered, window, days, config, machine, env, now, tz);
+    for (const source of offered) {
       const plan = plans[source.id];
-      run.sources[source.id] = { kept: plan.files.length, read: 0, advanced: false, noTimestamp: plan.dropped?.noTimestamp ?? 0 };
+      run.sources[source.id] = sourceEntry(source, plan);
       if (plan.misconfigured && required.includes(source.id)) {
         const codes = plan.problems.filter((p) => ['no_projects', 'root_missing', 'root_unreadable', 'project_missing'].includes(p.code));
         const setting = settingFor(codes[0]?.code ?? 'no_projects');
@@ -693,7 +1020,7 @@ export async function runCurate(argv, io, t, deps = {}) {
       const unreadable = plans[id]?.unreadable ?? [];
       if (unreadable.length === 0) continue;
       const setting = `${CONFIG_FILENAME} sources.${id}.exclude_path_patterns`;
-      log('plan', { [id]: { kept: plans[id].files.length, dropped: plans[id].dropped } });
+      log('plan', { [id]: { kept: keptOf(plans[id]), dropped: plans[id].dropped } });
       let reason = t('curate.source_unreadable', { source: id, files: unreadable.map((f) => f.path).join(', '), setting, command: `brain-kit watermark assume-covered ${id}` });
       // A file whose path no read permission can name exactly: renaming
       // it, not its permissions, is the fix, and the reason says so.
@@ -707,7 +1034,7 @@ export async function runCurate(argv, io, t, deps = {}) {
     }
     // The first open day alone over a source's cap: no whole day fits, and
     // a round never reads part of a day (final review C1).
-    for (const source of active) {
+    for (const source of offered) {
       const over = plans[source.id].overCap;
       if (!over) continue;
       const setting = `${CONFIG_FILENAME} curate.caps.${source.id}`;
@@ -715,16 +1042,24 @@ export async function runCurate(argv, io, t, deps = {}) {
       return fail(EXIT.SOURCE_UNREAD, 'cap_exceeded', t('curate.cap_exceeded', { day: shown(over.day), count: over.files, cap: plans[source.id].cap, setting }));
     }
     // Days past the cap wait for the next round; this one curates, and
-    // advances through, only the whole days it could take.
-    const narrowed = narrowWindow(window, plans, active, tz);
+    // advances through, only the whole days it could take. Every source's
+    // own days end there too, and a source left with none is not offered.
+    const narrowed = narrowWindow(window, plans, offered, tz);
     let deferred = [];
     if (narrowed !== null) {
       ({ window, deferred } = narrowed);
       lastDay = window.days.at(-1);
-      const again = active.filter((source) => !Array.isArray(plans[source.id].daysCovered));
-      if (again.length > 0) plans = { ...plans, ...collectPlans(again, window, config, machine, env, now, tz) };
-      for (const source of active) run.sources[source.id].kept = plans[source.id].files.length;
-      run.window = { ...run.window, days: window.days, to: window.to.toISOString() };
+      for (const source of active) days[source.id] = days[source.id].filter((day) => day <= lastDay);
+      for (const source of offered.filter((s) => days[s.id].length === 0)) {
+        delete plans[source.id];
+        delete run.sources[source.id];
+        log('source_no_day', { source: source.id, mark: computed.marks[source.id] ?? null });
+      }
+      offered = offered.filter((source) => days[source.id].length > 0);
+      const again = offered.filter((source) => !Array.isArray(plans[source.id].daysCovered));
+      if (again.length > 0) plans = { ...plans, ...collectPlans(again, window, days, config, machine, env, now, tz) };
+      for (const source of offered) if (source.kind === 'local') run.sources[source.id].kept = keptOf(plans[source.id]) ?? 0;
+      recordWindow();
       run.deferredDays = deferred;
       const setting = `${CONFIG_FILENAME} curate.caps.${narrowed.source.id}`;
       const text = t('curate.days_deferred', { last: shown(lastDay), count: deferred.length, days: deferred.map(shown).join(', '), setting, cap: narrowed.cap });
@@ -732,19 +1067,24 @@ export async function runCurate(argv, io, t, deps = {}) {
       io.stderr.write(`${text}\n`);
       log('days_deferred', { through: lastDay, days: deferred, source: narrowed.source.id });
     }
-    log('plan', Object.fromEntries(active.map((s) => [s.id, { kept: plans[s.id].files.length, dropped: plans[s.id].dropped }])));
-    if (emptyWindow(plans)) {
+    log('plan', Object.fromEntries(offered.map((s) => [s.id, planLogOf(s, plans[s.id], days[s.id])])));
+    // Nothing to curate: only a round whose offered sources all list files
+    // and list none (a connector source's plan lists no file, so it is
+    // never empty: its empty day is a listing to prove, and it never
+    // advances vacuously).
+    if (emptyWindow(Object.fromEntries(offered.map((s) => [s.id, plans[s.id]])))) {
       if (parsed.check) {
         run.exit = EXIT.OK;
         run.reasonCode = 'nothing_to_curate';
         run.reason = t('curate.nothing_to_curate', { days: window.days.map(shown).join(', ') });
         return EXIT.OK;
       }
-      const evidence = evidenceFor(active, plans, null);
-      for (const source of active) {
-        const moved = advanceWatermark(stateDir, source.id, lastDay, { vacuous: true, evidence: evidence[source.id], timezone: tz, now });
+      const evidence = evidenceFor(offered, plans, null);
+      for (const source of offered) {
+        const through = days[source.id].at(-1);
+        const moved = advanceWatermark(stateDir, source.id, through, { vacuous: true, evidence: evidence[source.id], timezone: tz, now, emptyMeansNothingListed: source.emptyMeansNothingListed !== false });
         run.sources[source.id].advanced = moved.advanced;
-        log('watermark', { source: source.id, day: lastDay, vacuous: true, ...moved });
+        log('watermark', { source: source.id, day: through, vacuous: true, ...moved });
       }
       run.exit = EXIT.OK;
       run.reasonCode = 'nothing_to_curate';
@@ -752,15 +1092,50 @@ export async function runCurate(argv, io, t, deps = {}) {
       return EXIT.OK;
     }
 
-    const parameters = renderParameters(tv, { window, tz, plans, sources: active, config, deferred });
-    const prompt = renderCuratePrompt({ vaultRoot: root, config, lang: vaultLang, parameters, now });
-    const tools = roundTools(config, readFilesOf(active, plans));
-    const argvList = modelArgv(config, machine, tools);
+    // 12. The launch mode: connector mode for the connector sources the
+    // person's rules allow, isolated otherwise (decisions D1 and D3).
+    const connectorDenies = [...new Set(active.filter((s) => s.kind === 'connector').flatMap((s) => s.toolRules(config).deny))];
+    const readFiles = readFilesOf(offered, plans);
+    // Sources the round offers but cannot read this time (id -> state), and
+    // the connector state each launch saw (id -> { state, observedPrefix }).
+    const unavailable = new Map();
+    const pending = new Set();
+    const states = {};
+    const block = (entries) => {
+      for (const [id, entry] of entries) {
+        const source = SOURCES[id];
+        const rules = entry.rules ?? entry.blocking.map((item) => item.rule ?? item.file);
+        unavailable.set(id, BLOCKED_BY_USER_RULES);
+        states[id] = { state: BLOCKED_BY_USER_RULES, observedPrefix: null, detail: blockedMessage(t, source, config, entry) };
+        run.sources[id].rules = rules;
+        const text = t('curate.source_blocked', { source: id, reason: states[id].detail });
+        run.warnings.push(text);
+        io.stderr.write(`${text}\n`);
+        log('source_blocked', { source: id, rules });
+      }
+    };
+    let choice = chooseMode({ config, root, env, readFiles, candidates: offered.filter((s) => s.kind === 'connector'), connectorDenies });
+    run.mode = choice.mode;
+    run.userRules = choice.userRules;
+    block(choice.blocked);
+    const offeredLine = sourcesLineFor(offered);
+    const promptNow = () => renderCuratePrompt({
+      vaultRoot: root, config, lang: vaultLang, now, sourcesLine: offeredLine,
+      parameters: renderParameters(tv, { window, tz, plans, sources: offered, days, config, deferred, unavailable, pending }),
+    });
+    let prompt = promptNow();
+    let argvList = modelArgv(config, machine, choice.tools, choice.mode);
+    let readable = offered.filter((source) => !unavailable.has(source.id));
+    // Nothing left for a model: every source it could read is a local one
+    // that lists nothing (the others unavailable), or there is none.
+    const nothingLeft = () => readable.every((source) => source.kind === 'local')
+      && emptyWindow(Object.fromEntries(readable.map((source) => [source.id, plans[source.id]])));
 
-    // 12. --check stops before the model.
+    // --check stops before the model.
     if (parsed.check) {
       io.stdout.write(`${t('curate.check_window', { days: window.days.map(shown).join(', '), from: run.window.from, to: run.window.to })}\n`);
-      for (const source of active) io.stdout.write(`${t('curate.check_source', { source: source.id, kept: plans[source.id].files.length })}\n${plans[source.id].promptBlock}\n`);
+      for (const line of modeLines(t, choice)) io.stdout.write(`${line}\n`);
+      for (const line of sourceLines(t, { active, plans, days, unavailable, config, blocks: true })) io.stdout.write(`${line}\n`);
       io.stdout.write(`${t('curate.check_argv', { bin: claudeBin, argv: JSON.stringify(argvList) })}\n`);
       io.stdout.write(`${t('curate.check_prompt', { chars: prompt.length, bytes: Buffer.byteLength(prompt) })}\n`);
       run.exit = EXIT.OK;
@@ -770,54 +1145,198 @@ export async function runCurate(argv, io, t, deps = {}) {
     }
     if (interrupted) return fail(EXIT.FAILURE, 'interrupted', t('curate.interrupted', { signal: interrupted }));
 
-    // 13. The model, isolated.
+    // 13. The model: one launch, and once more without what the first
+    // one's init event showed unavailable (decision D4). Never a third.
     onStep('model');
-    io.stdout.write(`${t('curate.model_start', { days: window.days.map(shown).join(', ') })}\n`);
-    log('model_start', { argv: argvList });
     const keepStream = parsed.keepStream || machine.keep_stream === true;
     const streamFile = keepStream ? join(stateDir, STATE_FILES.LOG_DIR, `curate-${now.toISOString().replace(/[:.]/g, '-')}.stream.jsonl`) : null;
-    let init = null;
-    let hooks = 0;
-    let lateHooks = 0;
+    let out = null;
     let isolationAbort = null;
-    const onLine = (line) => {
-      if (streamFile !== null) appendFileSync(streamFile, `${line}\n`, { mode: 0o600 });
-      let event;
-      try {
-        event = JSON.parse(line);
-      } catch {
-        return;
+    let launchMode = choice.mode;
+    let launchTools = choice.tools;
+    if (!nothingLeft()) io.stdout.write(`${t('curate.model_start', { days: window.days.map(shown).join(', ') })}\n`);
+    for (let launch = 1; !nothingLeft(); launch += 1) {
+      const launchSources = choice.available;
+      const specs = launchSources.map((source) => source.serverSpec(config));
+      run.mode = launchMode;
+      run.relaunched = launch > 1;
+      log('model_start', { launch, mode: launchMode, argv: argvList });
+      let init = null;
+      let hooks = 0;
+      let lateHooks = 0;
+      let seen = null;
+      let relaunch = false;
+      const launchControl = new AbortController();
+      const onLine = (line) => {
+        if (streamFile !== null) appendFileSync(streamFile, `${line}\n`, { mode: 0o600 });
+        let event;
+        try {
+          event = JSON.parse(line);
+        } catch {
+          return;
+        }
+        if (event === null || typeof event !== 'object' || event.type !== 'system' || typeof event.subtype !== 'string') return;
+        const isHook = event.subtype.startsWith('hook_');
+        if (isHook) hooks += 1;
+        // A hook after the init event arrives while the model may already be
+        // working (a PreToolUse hook rewrote a command in the measurement of
+        // 24/09/2026): it kills the model at once, like one before init.
+        if (isHook && init !== null) lateHooks += 1;
+        const first = event.subtype === 'init' && init === null;
+        if (first) init = event;
+        if (!isHook && event.subtype !== 'init') return;
+        let checked = checkIsolation({ init, hookEvents: hooks, hookEventsAfterInit: lateHooks }, { mode: launchMode, disallowed: launchTools.disallowed });
+        // A hook before the init event is a hook, not a missing init.
+        if (isHook && init === null) {
+          const details = checked.details.filter((d) => d.code !== 'no_init');
+          checked = { ok: false, problems: details.map((d) => d.code), details };
+        }
+        if (!checked.ok) {
+          isolationAbort = checked;
+          launchControl.abort('isolation');
+          return;
+        }
+        // Each connector source's state, from this very launch's init event
+        // (decision D2). On the first launch, one that is not there stops
+        // the model before its first turn: the round goes on without it.
+        if (first && launchMode === 'connectors') {
+          seen = connectorStates(init, specs);
+          if (launch === 1 && launchSources.some((source) => RELAUNCH_STATES.includes(seen[source.id].state))) {
+            relaunch = true;
+            launchControl.abort('relaunch');
+          }
+        }
+      };
+      out = await runModel({
+        claudeBin, argv: argvList, prompt, cwd: root, env: childEnv, timeoutMs: deps.roundTimeoutMs ?? ROUND_TIMEOUT_MS, onLine,
+        abortSignal: AbortSignal.any([controller.signal, launchControl.signal]),
+        ...(deps.killGraceMs !== undefined ? { killGraceMs: deps.killGraceMs } : {}),
+      });
+      if (seen !== null) {
+        for (const source of launchSources) {
+          const entry = seen[source.id];
+          const spec = source.serverSpec(config);
+          const message = connectorStateMessage(spec, entry);
+          states[source.id] = { state: entry.state, observedPrefix: entry.observedPrefix, detail: t(message.messageKey, message.params) };
+        }
+        log('connectors', { launch, states: Object.fromEntries(launchSources.map((s) => [s.id, seen[s.id].state])) });
       }
-      if (event === null || typeof event !== 'object' || event.type !== 'system' || typeof event.subtype !== 'string') return;
-      const isHook = event.subtype.startsWith('hook_');
-      if (isHook) hooks += 1;
-      // A hook after the init event arrives while the model may already be
-      // working (a PreToolUse hook rewrote a command in the measurement of
-      // 24/09/2026): it kills the model at once, like one before init.
-      if (isHook && init !== null) lateHooks += 1;
-      if (event.subtype === 'init' && init === null) init = event;
-      if (!isHook && event.subtype !== 'init') return;
-      let checked = checkIsolation({ init, hookEvents: hooks, hookEventsAfterInit: lateHooks }, { disallowed: tools.disallowed });
-      // A hook before the init event is a hook, not a missing init.
-      if (isHook && init === null) {
-        const details = checked.details.filter((d) => d.code !== 'no_init');
-        checked = { ok: false, problems: details.map((d) => d.code), details };
+      log('model_end', {
+        launch, exitCode: out.exitCode, signal: out.signal, timedOut: out.timedOut, aborted: out.aborted === null ? null : String(out.aborted),
+        subtype: out.record.result?.subtype ?? null, isError: out.record.result?.isError ?? null, costUsd: out.record.result?.costUsd ?? null,
+        numTurns: out.record.result?.numTurns ?? null, durationMs: out.durationMs,
+      });
+      // The whole stream of a launch stopped for a relaunch is still read
+      // for a hook the kill came too late to stop, before any relaunch.
+      if (relaunch && isolationAbort === null) {
+        const whole = checkIsolation(out.record, { mode: launchMode, disallowed: launchTools.disallowed });
+        if (!whole.ok) isolationAbort = whole;
       }
-      if (!checked.ok) {
-        isolationAbort = checked;
-        controller.abort('isolation');
+      if (!relaunch || isolationAbort !== null || interrupted) {
+        if (launch > 1 && seen !== null) {
+          // No second relaunch: a source still missing stays in the round,
+          // and its evidence leaves its day open.
+          for (const source of launchSources) {
+            const entry = seen[source.id];
+            if (entry.state === 'connected' || entry.state === 'pending') continue;
+            const text = t('curate.connector_not_relaunched', { source: source.id, state: entry.state, detail: states[source.id].detail });
+            run.warnings.push(text);
+            io.stderr.write(`${text}\n`);
+          }
+        }
+        break;
       }
-    };
-    const out = await runModel({
-      claudeBin, argv: argvList, prompt, cwd: root, env: childEnv, timeoutMs: deps.roundTimeoutMs ?? ROUND_TIMEOUT_MS, onLine, abortSignal: controller.signal,
-      ...(deps.killGraceMs !== undefined ? { killGraceMs: deps.killGraceMs } : {}),
-    });
+      // The relaunch: the sources the init event showed missing leave the
+      // round, each named with its state; one still connecting stays, and
+      // the next launch's parameters say so (ruling R-B1).
+      const gone = [];
+      for (const source of launchSources) {
+        const { state } = seen[source.id];
+        if (RELAUNCH_STATES.includes(state)) {
+          unavailable.set(source.id, state);
+          gone.push(source.id);
+          const text = t('curate.connector_unavailable', { source: source.id, state, detail: states[source.id].detail });
+          run.warnings.push(text);
+          io.stderr.write(`${text}\n`);
+        } else if (state === 'pending') {
+          pending.add(source.id);
+        }
+      }
+      log('relaunch', { without: gone, states: Object.fromEntries(gone.map((id) => [id, unavailable.get(id)])) });
+      readable = offered.filter((source) => !unavailable.has(source.id));
+      if (readable.length > 0) {
+        choice = chooseMode({ config, root, env, readFiles, candidates: readable.filter((s) => s.kind === 'connector'), connectorDenies });
+        run.userRules = choice.userRules ?? run.userRules;
+        block(choice.blocked);
+        readable = offered.filter((source) => !unavailable.has(source.id));
+      }
+      if (nothingLeft()) {
+        out = null;
+        break;
+      }
+      launchMode = choice.mode;
+      launchTools = choice.tools;
+      prompt = promptNow();
+      argvList = modelArgv(config, machine, choice.tools, choice.mode);
+      io.stdout.write(`${t('curate.relaunch', { sources: gone.join(', ') })}\n`);
+    }
+
+    // Each connector source's state goes in the report and in the states
+    // carried to the next round; a best-effort one whose state changed is
+    // announced once (step 18). `pending` says nothing yet about the
+    // connector (ruling R-B1): it is reported, never carried.
+    for (const source of offered.filter((s) => s.kind === 'connector')) {
+      const entry = states[source.id];
+      if (entry === undefined) continue;
+      run.sources[source.id].state = entry.state;
+      run.sources[source.id].observedPrefix = entry.observedPrefix;
+      if (entry.state === 'pending') continue;
+      const before = run.connectorStates[source.id]?.state ?? 'connected';
+      run.connectorStates[source.id] = { state: entry.state, at: run.at };
+      if (entry.state === before || required.includes(source.id)) continue;
+      log('connector_state_changed', { source: source.id, from: before, to: entry.state });
+      notices.push(entry.state === 'connected'
+        ? t('curate.connector_restored', { source: source.id, previous: before, doc: CONNECTORS_DOC })
+        : t('curate.connector_changed', { source: source.id, state: entry.state, previous: before, detail: entry.detail, doc: CONNECTORS_DOC }));
+    }
+    const offeredIds = offered.map((source) => source.id);
+
+    // Nothing was left for a model to read: no model ran a turn. A required
+    // source left unread makes that exit 4, and no mark moves; otherwise
+    // each readable source (local, listing nothing) advances vacuously, as
+    // an empty window does, and an unavailable one keeps its day open.
+    if (out === null && isolationAbort === null) {
+      onStep('evidence');
+      const evidence = evidenceFor(offered, plans, null);
+      for (const source of offered) {
+        run.sources[source.id].read = evidence[source.id].read;
+        if (source.kind === 'connector') run.sources[source.id].expected = evidence[source.id].expected;
+      }
+      const unread = unreadRequired(evidence, required.filter((id) => offeredIds.includes(id)));
+      if (unread.length > 0) {
+        const sources = unread.map((id) => `${id} (${evidence[id].read}/${evidence[id].expected ?? '-'})`).join(', ');
+        return fail(EXIT.SOURCE_UNREAD, 'source_unread', t('curate.source_unread', { sources }));
+      }
+      onStep('watermark');
+      for (const source of readable) {
+        const through = days[source.id].at(-1);
+        const moved = advanceWatermark(stateDir, source.id, through, { vacuous: true, evidence: evidence[source.id], timezone: tz, now, emptyMeansNothingListed: source.emptyMeansNothingListed !== false });
+        run.sources[source.id].advanced = moved.advanced;
+        log('watermark', { source: source.id, day: through, vacuous: true, ...moved });
+      }
+      const listed = offered.filter((source) => unavailable.has(source.id)).map((source) => `${source.id} (${unavailable.get(source.id)})`).join(', ');
+      run.exit = EXIT.OK;
+      run.reasonCode = 'nothing_available';
+      run.reason = t('curate.nothing_available', { sources: listed || '-' });
+      return EXIT.OK;
+    }
+
     const record = out.record;
     const result = record.result;
     run.costUsd = result?.costUsd ?? null;
     run.numTurns = result?.numTurns ?? null;
     run.denials = record.denials.map((d) => ({ toolName: d.toolName ?? null }));
-    const isolation = isolationAbort ?? checkIsolation(record, { disallowed: tools.disallowed });
+    const isolation = isolationAbort ?? checkIsolation(record, { mode: launchMode, disallowed: launchTools.disallowed });
     // A CLI that printed nothing at all (it died before its first event,
     // as on an expired login) never started a model that could do work
     // unisolated: that is a model failure, mapped below (69 or 1), not an
@@ -825,17 +1344,20 @@ export async function runCurate(argv, io, t, deps = {}) {
     const neverStarted = record.events.length === 0 && isolation.problems.length === 1 && isolation.problems[0] === 'no_init';
     const isolationFailed = !isolation.ok && !neverStarted;
     run.isolation = { ok: isolation.ok, problems: isolation.problems };
-    log('model_end', {
-      exitCode: out.exitCode, signal: out.signal, timedOut: out.timedOut, aborted: out.aborted === null ? null : String(out.aborted),
-      subtype: result?.subtype ?? null, isError: result?.isError ?? null, costUsd: run.costUsd, numTurns: run.numTurns,
-      denials: run.denials.map((d) => d.toolName), isolation: run.isolation, durationMs: out.durationMs,
-    });
+    log('model_result', { denials: run.denials.map((d) => d.toolName), isolation: run.isolation });
 
     // 14. Evidence, the sources line and the round record.
     onStep('evidence');
-    const evidence = evidenceFor(active, plans, record);
-    for (const source of active) run.sources[source.id].read = evidence[source.id].read;
+    const evidence = evidenceFor(offered, plans, record);
     const sourcesLine = parseSourcesLine(result?.text ?? null);
+    for (const source of offered) {
+      const entry = run.sources[source.id];
+      entry.read = evidence[source.id].read;
+      if (source.kind !== 'connector') continue;
+      entry.expected = evidence[source.id].expected;
+      entry.reported = sourcesLine !== null && Object.hasOwn(sourcesLine, source.id) ? sourcesLine[source.id] : null;
+      if (Object.hasOwn(entry, 'documents')) entry.documents = evidence[source.id].documents ?? null;
+    }
     let proposals = [];
     let recordBroken = false;
     if (existsSync(recordFile) || isSymlink(recordFile)) {
@@ -879,7 +1401,9 @@ export async function runCurate(argv, io, t, deps = {}) {
     // and a result that is a success, not an error in disguise.
     const modelOk = out.exitCode === 0 && out.signal === null && !out.timedOut && out.aborted === null && out.spawnError === null
       && result !== null && !result.isError && result.subtype === 'success';
-    const unread = unreadRequired(evidence, required.filter((id) => Object.hasOwn(SOURCES, id)));
+    // Only a required source the round offered can leave it unread: one
+    // with no day of its own had nothing to read.
+    const unread = unreadRequired(evidence, required.filter((id) => offeredIds.includes(id)));
     let exit;
     if (isolationFailed) {
       exit = fail(EXIT.FAILURE, 'isolation', t('curate.isolation_failed', { problems: isolation.details.map((d) => t(d.messageKey, d.params)).join('; ') }));
@@ -920,14 +1444,19 @@ export async function runCurate(argv, io, t, deps = {}) {
         : t('curate.done_nothing', {});
     }
 
-    // 17. The watermark, only on 0 or 3.
+    // 17. The watermark, only on 0 or 3: each source through its own last
+    // day, by its own advance rule (src/guards/watermark.mjs).
     onStep('watermark');
     const stuck = [];
     if (exit === EXIT.OK || exit === EXIT.DEGRADED) {
-      for (const source of active) {
-        const moved = advanceWatermark(stateDir, source.id, lastDay, { modelExit: modelOk ? 0 : 1, evidence: evidence[source.id], sourcesLine, timezone: tz, now });
+      for (const source of offered) {
+        const through = days[source.id].at(-1);
+        const reported = sourcesLine !== null && Object.hasOwn(sourcesLine, source.id) ? sourcesLine[source.id] : null;
+        const moved = advanceWatermark(stateDir, source.id, through, {
+          modelExit: modelOk ? 0 : 1, evidence: evidence[source.id], sourcesLine, timezone: tz, now, emptyMeansNothingListed: source.emptyMeansNothingListed !== false,
+        });
         run.sources[source.id].advanced = moved.advanced;
-        log('watermark', { source: source.id, day: lastDay, ...moved });
+        log('watermark', { source: source.id, day: through, reported, ...moved });
         if (!moved.advanced) io.stderr.write(`${t('curate.not_advanced', { source: source.id, reason: moved.reason })}\n`);
         if (!moved.advanced && moved.reason !== 'not_later' && required.includes(source.id)) stuck.push(`${source.id} (${moved.reason})`);
       }
@@ -987,7 +1516,16 @@ function pruneLogs(stateDir, machine, now = Date.now()) {
   }
 }
 
-function finishRound({ run, io, log, stateDir, machine, env, started, lock, writeLastRun, check }) {
+function notify(machine, env, log, text) {
+  if (!Array.isArray(machine?.notify_command) || machine.notify_command.length === 0) return;
+  const [program, ...args] = machine.notify_command;
+  const notified = spawnSync(expandHome(program, env), [...args, text], { env, stdio: 'ignore', timeout: NOTIFY_TIMEOUT_MS });
+  if (notified.error || notified.status !== 0) log('notify_failed', { status: notified.status, error: notified.error ? notified.error.code : null });
+}
+
+// `notices` are the round's other notifications (a best-effort connector
+// source whose state changed), sent whatever the exit, one each.
+function finishRound({ run, io, log, stateDir, machine, env, started, lock, writeLastRun, check, notices = [] }) {
   run.durationMs = Date.now() - started;
   pruneLogs(stateDir, machine);
   const exit = run.exit ?? EXIT.FAILURE;
@@ -1002,10 +1540,10 @@ function finishRound({ run, io, log, stateDir, machine, env, started, lock, writ
   }
   log('exit', { exit, reasonCode: run.reasonCode, reason: run.reason, check });
   if (lock !== null) lock.release();
-  if (exit !== EXIT.OK && Array.isArray(machine?.notify_command) && machine.notify_command.length > 0) {
-    const [program, ...args] = machine.notify_command;
-    const notified = spawnSync(expandHome(program, env), [...args, run.reason ?? String(exit)], { env, stdio: 'ignore', timeout: NOTIFY_TIMEOUT_MS });
-    if (notified.error || notified.status !== 0) log('notify_failed', { status: notified.status, error: notified.error ? notified.error.code : null });
+  if (exit !== EXIT.OK) notify(machine, env, log, run.reason ?? String(exit));
+  for (const text of notices) {
+    log('notify_state', { text });
+    notify(machine, env, log, text);
   }
   return exit;
 }
@@ -1026,7 +1564,7 @@ function dryRun({ root, stateDir, machine, claudeBin, io, env, now }) {
     return EXIT.USAGE;
   }
   const tz = config.vault?.timezone;
-  const { active, unknownRequired, unknownBestEffort } = sourcesOf(config);
+  const { active, off, unknownRequired, unknownBestEffort } = sourcesOf(config);
   let computed;
   try {
     computed = computeWindow(stateDir, active, now, tz);
@@ -1047,28 +1585,38 @@ function dryRun({ root, stateDir, machine, claudeBin, io, env, now }) {
     io.stderr.write(`${t('curate.watermark_future', { source, day: shown(day), yesterday: shown(yesterday), command })}\n`);
     return EXIT.FAILURE;
   }
-  const { window } = computed;
+  let { window } = computed;
+  const days = { ...computed.days };
   if (window.days.length === 0) {
     io.stdout.write(`${t('curate.up_to_date', {})}\n`);
     return EXIT.OK;
   }
   io.stdout.write(`${t('curate.check_window', { days: window.days.map(shown).join(', '), from: window.from.toISOString(), to: window.to.toISOString() })}\n`);
   for (const id of [...unknownRequired, ...unknownBestEffort]) io.stdout.write(`${t('curate.source_skipped', { source: id })}\n`);
-  const plans = collectPlans(active, window, config, machine, env, now, tz);
-  for (const source of active) {
+  for (const source of off) io.stdout.write(`${t('curate.check_source_off', { source: source.id, problems: problemText(offProblems(source, config, now, tz)) || '-' })}\n`);
+  let offered = active.filter((source) => days[source.id].length > 0);
+  let plans = collectPlans(offered, window, days, config, machine, env, now, tz);
+  for (const source of offered) {
     const over = plans[source.id].overCap;
     if (over) io.stdout.write(`${t('curate.dry_cap_exceeded', { day: shown(over.day), count: over.files, cap: plans[source.id].cap, setting: `${CONFIG_FILENAME} curate.caps.${source.id}` })}\n`);
   }
-  const narrowed = narrowWindow(window, plans, active, tz);
+  const narrowed = narrowWindow(window, plans, offered, tz);
   if (narrowed !== null) {
     const setting = `${CONFIG_FILENAME} curate.caps.${narrowed.source.id}`;
     io.stdout.write(`${t('curate.dry_days_deferred', { last: shown(narrowed.window.days.at(-1)), count: narrowed.deferred.length, days: narrowed.deferred.map(shown).join(', '), setting, cap: narrowed.cap })}\n`);
+    ({ window } = narrowed);
+    for (const source of active) days[source.id] = days[source.id].filter((day) => day <= window.days.at(-1));
+    offered = offered.filter((source) => days[source.id].length > 0);
+    const again = offered.filter((source) => !Array.isArray(plans[source.id].daysCovered));
+    if (again.length > 0) plans = { ...plans, ...collectPlans(again, window, days, config, machine, env, now, tz) };
   }
-  for (const source of active) {
-    io.stdout.write(`${t('curate.check_source', { source: source.id, kept: plans[source.id].files.length })}\n`);
-    if (plans[source.id].problems.length > 0) io.stdout.write(`${t('curate.source_warning', { source: source.id, problems: problemText(plans[source.id].problems) })}\n`);
-  }
-  const argv = modelArgv(config, machine, roundTools(config, readFilesOf(active, plans)));
+  const connectorDenies = [...new Set(active.filter((s) => s.kind === 'connector').flatMap((s) => s.toolRules(config).deny))];
+  const choice = chooseMode({ config, root, env, readFiles: readFilesOf(offered, plans), candidates: offered.filter((s) => s.kind === 'connector'), connectorDenies });
+  const unavailable = new Map([...choice.blocked.keys()].map((id) => [id, BLOCKED_BY_USER_RULES]));
+  for (const line of modeLines(t, choice)) io.stdout.write(`${line}\n`);
+  for (const [id, entry] of choice.blocked) io.stdout.write(`${t('curate.source_blocked', { source: id, reason: blockedMessage(t, SOURCES[id], config, entry) })}\n`);
+  for (const line of sourceLines(t, { active, plans, days, unavailable, config, blocks: false })) io.stdout.write(`${line}\n`);
+  const argv = modelArgv(config, machine, choice.tools, choice.mode);
   io.stdout.write(`${t('curate.check_argv', { bin: claudeBin, argv: JSON.stringify(argv) })}\n`);
   return EXIT.OK;
 }

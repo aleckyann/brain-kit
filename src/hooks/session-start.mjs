@@ -23,13 +23,77 @@
 // A hook always exits 0. What it has to say travels on stdout as the
 // `additionalContext` line Claude Code hands the model, and a warning for
 // the person goes to stderr.
+//
+// THE LAST ROUND'S CONNECTORS. The line also names each configured
+// connector source (calendar, meeting notes) whose state in the last
+// scheduled round was not `connected`, with that state and the date of
+// the round that saw it, from the vault's last-run.json (phase 3, task 5):
+// a connector that needs authentication or is disabled is otherwise found
+// only by reading the round's log (docs/incidents.md, 14/09/2026, "disabled
+// is a state, and nobody reports it"). A last-run that cannot be read adds
+// nothing.
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describeLock, isLockHolderStale } from '../guards/lock.mjs';
 import { locateRepository } from '../guards/location.mjs';
 import { readSnapshot, takeSnapshot } from '../guards/snapshot.mjs';
+import { localDay } from '../guards/watermark.mjs';
+import { SOURCES } from '../sources/index.mjs';
+import { stateDirFor, STATE_FILES } from '../state.mjs';
 import { createTranslator, resolveLang } from '../lang.mjs';
 import { parseHookPayload, resolveHookVault, vaultTitle } from './payload.mjs';
 
 const CONTINUING = new Set(['compact', 'resume']);
+
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+// A round's instant as the day a person reads, DD/MM/YYYY, in the vault's
+// zone (the instant's own UTC day when the zone cannot be used).
+function roundDate(at, timezone) {
+  let day;
+  try {
+    day = localDay(new Date(at), timezone);
+  } catch {
+    day = String(at).slice(0, 10);
+  }
+  const [y, m, d] = day.split('-');
+  return `${d}/${m}/${y}`;
+}
+
+function listedSources(config) {
+  const sources = isPlainObject(config.curate) && isPlainObject(config.curate.sources) ? config.curate.sources : {};
+  const ids = [...(Array.isArray(sources.required) ? sources.required : []), ...(Array.isArray(sources.best_effort) ? sources.best_effort : [])];
+  return [...new Set(ids.filter((id) => typeof id === 'string'))];
+}
+
+function connectorSentence(root, config, env, t) {
+  let last;
+  try {
+    last = JSON.parse(readFileSync(join(stateDirFor(root, env), STATE_FILES.LAST_RUN), 'utf8'));
+  } catch {
+    return '';
+  }
+  const states = isPlainObject(last) && isPlainObject(last.connectorStates) ? last.connectorStates : null;
+  if (states === null) return '';
+  const timezone = isPlainObject(config.vault) ? config.vault.timezone : undefined;
+  const items = [];
+  for (const id of listedSources(config)) {
+    const source = Object.hasOwn(SOURCES, id) ? SOURCES[id] : null;
+    if (source === null || source.kind !== 'connector') continue;
+    let configured;
+    try {
+      configured = source.isConfigured(config) === true;
+    } catch {
+      configured = false;
+    }
+    const entry = Object.hasOwn(states, id) ? states[id] : null;
+    if (!configured || !isPlainObject(entry) || typeof entry.state !== 'string' || entry.state === 'connected') continue;
+    items.push(`${id} ${entry.state} (${roundDate(entry.at, timezone)})`);
+  }
+  return items.length === 0 ? '' : ` ${t('hook.session_start.connectors', { sources: items.join(', ') })}`;
+}
 
 function output(line) {
   return `${JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: line } })}\n`;
@@ -98,7 +162,7 @@ export function runSessionStart(stdinText, env = process.env, now = new Date()) 
       const count = takeSnapshot(root, { env, now, ...(session === null ? {} : { session }) }).paths.length;
       status = replaced ? t('hook.session_start.replaced', { title, count }) : t('hook.session_start.taken', { title, count });
     }
-    const line = `${status}${lockSentence(root, env, t)}`;
+    const line = `${status}${lockSentence(root, env, t)}${connectorSentence(root, config, env, t)}`;
     return { stdout: output(line), stderr: '' };
   } catch (error) {
     const detail = error.messageKey === undefined ? String(error.message) : t(error.messageKey, error.params);
