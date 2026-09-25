@@ -35,7 +35,7 @@
 // test is src/briefing/pending.mjs's inNeverRead: an entry without a
 // trailing slash covers the folder of that name as the one with it does,
 // and an entry with a fragment ("memory/log.md#full") covers its file.
-import { readFileSync, realpathSync, statSync } from 'node:fs';
+import { accessSync, constants, readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, posix, relative, sep } from 'node:path';
 import { KIT_ROOT } from '../version.mjs';
 import { REFERENCE_LANG, SUPPORTED_LANGS } from '../lang.mjs';
@@ -74,13 +74,16 @@ function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-const packDefaults = new Map();
-function packBriefing(lang) {
+// The language pack's config.defaults.json, read once per language.
+const packCache = new Map();
+function packDefaults(lang) {
   const chosen = SUPPORTED_LANGS.includes(lang) ? lang : REFERENCE_LANG;
-  if (!packDefaults.has(chosen)) {
-    packDefaults.set(chosen, JSON.parse(readFileSync(join(KIT_ROOT, 'lang', chosen, 'config.defaults.json'), 'utf8')).briefing ?? {});
-  }
-  return packDefaults.get(chosen);
+  if (!packCache.has(chosen)) packCache.set(chosen, JSON.parse(readFileSync(join(KIT_ROOT, 'lang', chosen, 'config.defaults.json'), 'utf8')));
+  return packCache.get(chosen);
+}
+
+function packBriefing(lang) {
+  return packDefaults(lang).briefing ?? {};
 }
 
 // One briefing setting: the configuration's own value when it has the key
@@ -118,11 +121,17 @@ function insideDir(base, path) {
   return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
-// A vault-relative path, normalised, or a problem: { path } |
+// A vault-relative path, normalised, or a problem: { path, unreadable? } |
 // { problem: 'read_empty' | 'read_outside' | 'read_never_read' |
-// 'read_missing' | 'read_not_file', entry? }. `mustExist` false only
-// normalises and checks the vault's edge and never_read: it never touches
-// the file system.
+// 'read_missing' | 'read_not_file', entry? }. `unreadable` is the error
+// code of a path that is there but cannot be read (fix round 1, ruling
+// R-T8): not a configuration problem, it is rendered in its block as not
+// verified. With `mustExist` false a path that does not exist is
+// accepted as it is (the model reports it not found), and one that exists
+// still has its real path checked. The real path comes from
+// realpathSync.native, which gives the case the file system stores, so a
+// "People/ana.md" on a file system that ignores case still meets the
+// "people/" entry.
 export function checkReadPath(root, raw, neverRead, { mustExist = true } = {}) {
   if (typeof raw !== 'string' || raw.trim() === '') return { problem: 'read_empty' };
   const text = raw.trim();
@@ -131,19 +140,25 @@ export function checkReadPath(root, raw, neverRead, { mustExist = true } = {}) {
   if (path === '.' || path === '' || path === '..' || path.startsWith('../')) return { problem: 'read_outside' };
   const entry = coveringEntry(path, neverRead);
   if (entry !== null) return { problem: 'read_never_read', entry };
-  if (!mustExist) return { path };
   let real;
   let realRoot;
   try {
-    realRoot = realpathSync(root);
-    real = realpathSync(join(root, path));
-  } catch {
-    return { problem: 'read_missing' };
+    realRoot = realpathSync.native(root);
+    real = realpathSync.native(join(root, path));
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return mustExist ? { problem: 'read_missing' } : { path };
+    return { path, unreadable: error.code ?? 'EIO' };
   }
   if (!insideDir(realRoot, real)) return { problem: 'read_outside' };
   const realEntry = coveringEntry(relative(realRoot, real).split(sep).join('/'), neverRead);
   if (realEntry !== null) return { problem: 'read_never_read', entry: realEntry };
+  if (!mustExist) return { path };
   if (!statSync(real).isFile()) return { problem: 'read_not_file' };
+  try {
+    accessSync(real, constants.R_OK);
+  } catch (error) {
+    return { path, unreadable: error.code ?? 'EIO' };
+  }
   return { path };
 }
 
@@ -204,16 +219,19 @@ export function briefingBlocks(config, root) {
       if (typeof entry[field] !== 'string' || entry[field].trim() === '') own.push({ code: 'missing_field', position, id, field });
     }
     const read = [];
+    const unreadable = [];
     for (const raw of Array.isArray(entry.read) ? entry.read : []) {
       const checked = checkReadPath(root, raw, neverRead);
       if (checked.problem !== undefined) own.push({ code: checked.problem, position, id, path: String(raw), entry: checked.entry ?? null });
-      else if (!read.includes(checked.path)) read.push(checked.path);
+      else if (checked.unreadable !== undefined) {
+        if (!unreadable.some((u) => u.path === checked.path)) unreadable.push({ path: checked.path, detail: checked.unreadable });
+      } else if (!read.includes(checked.path)) read.push(checked.path);
     }
     if (own.length > 0) {
       problems.push(...own);
       return;
     }
-    blocks.push({ id, kind: 'custom', title: entry.title.trim(), instruction: entry.instruction.trim(), read });
+    blocks.push({ id, kind: 'custom', title: entry.title.trim(), instruction: entry.instruction.trim(), read, unreadable });
   });
   return { blocks, problems };
 }
@@ -286,7 +304,7 @@ function questionLine(t, q, limits) {
   return lines;
 }
 
-function questionsBlock(facts, { t, kit, selection, mark, maxQuestions }) {
+function questionsBlock(facts, { t, kit, selection, maxQuestions }) {
   const q = facts.questions;
   if (q === null || q === undefined || q.ok !== true) {
     return [t('briefing.questions_unknown', { file: q?.file ?? '-', detail: q?.reason ?? '-', kit })];
@@ -295,7 +313,7 @@ function questionsBlock(facts, { t, kit, selection, mark, maxQuestions }) {
   const escalated = selection.placed.filter((item) => item.escalated);
   const open = selection.placed.filter((item) => !item.escalated);
   if (escalated.length > 0) {
-    lines.push(t('briefing.questions_escalated_header', { count: escalated.length }));
+    lines.push(t('briefing.questions_escalated_header', { count: escalated.length, kit }));
     for (const item of escalated) lines.push(...questionLine(t, item, q));
   }
   if (open.length > 0) {
@@ -309,10 +327,9 @@ function questionsBlock(facts, { t, kit, selection, mark, maxQuestions }) {
   if (selection.room === null) lines.push(t('briefing.questions_room_unlimited', { kit }));
   else if (selection.room > 0) lines.push(t('briefing.questions_room', { count: selection.room, limit: maxQuestions, kit }));
   else lines.push(t('briefing.questions_room_none', { limit: maxQuestions, kit }));
-  if (mark !== null && mark !== undefined) {
-    if (mark.ok) lines.push(t('briefing.questions_marked', { day: facts.todayHuman }));
-    else lines.push(t('briefing.questions_mark_failed', { detail: mark.detail }));
-  }
+  // The render records the placed questions only after the whole prompt is
+  // rendered (ruling R-T8), so the line says what is about to happen.
+  if (selection.placed.length > 0) lines.push(t('briefing.questions_marked', { day: facts.todayHuman }));
   return lines;
 }
 
@@ -363,17 +380,17 @@ function splitPendingProblems(facts, pendingIds) {
   return { byItem, loose };
 }
 
-function pendingItems(t, items, byItem) {
+function pendingItems(t, items, byItem, mark) {
   if (items.length === 0) return itemLines(t, []);
   const lines = [];
   for (const item of items) {
-    lines.push(...itemLines(t, [item]));
+    lines.push(...itemLines(t, [item]).map((line) => `${line}${mark(item.file)}`));
     for (const problem of byItem.get(itemKey(item.file, item.line)) ?? []) lines.push(`  ${problemLine(t, problem)}`);
   }
   return lines;
 }
 
-function pendingBlock(id, facts, { t, split, firstPending, firstTitle }) {
+function pendingBlock(id, facts, { t, split, firstPending, firstTitle, mark }) {
   const pending = facts.pending;
   const lines = [];
   if (split.loose.length > 0) {
@@ -383,13 +400,13 @@ function pendingBlock(id, facts, { t, split, firstPending, firstTitle }) {
     } else lines.push(t('briefing.pending_problems_above', { count: split.loose.length, title: firstTitle }));
   }
   if (id === 'due') {
-    lines.push(t('preflight.pending_overdue', { count: pending.overdue.length }), ...pendingItems(t, pending.overdue, split.byItem));
-    lines.push(t('preflight.pending_today', { count: pending.today.length }), ...pendingItems(t, pending.today, split.byItem));
+    lines.push(t('preflight.pending_overdue', { count: pending.overdue.length }), ...pendingItems(t, pending.overdue, split.byItem, mark));
+    lines.push(t('preflight.pending_today', { count: pending.today.length }), ...pendingItems(t, pending.today, split.byItem, mark));
   } else if (id === 'upcoming') {
-    lines.push(t('preflight.pending_upcoming', { days: pending.upcomingDays, count: pending.upcoming.length }), ...pendingItems(t, pending.upcoming, split.byItem));
+    lines.push(t('preflight.pending_upcoming', { days: pending.upcomingDays, count: pending.upcoming.length }), ...pendingItems(t, pending.upcoming, split.byItem, mark));
     lines.push(t('preflight.pending_later', { days: pending.upcomingDays, count: pending.later }));
   } else {
-    lines.push(t('preflight.pending_undated', { count: pending.undated.length }), ...pendingItems(t, pending.undated, split.byItem));
+    lines.push(t('preflight.pending_undated', { count: pending.undated.length }), ...pendingItems(t, pending.undated, split.byItem, mark));
   }
   return lines;
 }
@@ -402,8 +419,11 @@ const LINK = /\[([^\]\n]+)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g;
 // The strategy document the configuration names: the notes linked from
 // `briefing.strategy_doc.index` whose link text contains
 // `strategy_doc.title_contains` (case not minded). { found: true, index,
-// paths } or { found: false, reason, index?, contains?, detail? }. The index
-// and every target are held to the same rules as a custom block's `read`.
+// paths, unreadable } or { found: false, reason, index?, contains?, detail? }.
+// The index and every target are held to the same rules as a custom block's
+// `read`; one that is there but cannot be read is never an exception
+// (ruling R-T8): the index is `index_unreadable`, a target is listed in
+// `unreadable` with its error code.
 export function strategyDoc(config, root) {
   const doc = briefingSetting(config, 'strategy_doc');
   const index = isPlainObject(doc) && typeof doc.index === 'string' ? doc.index.trim() : '';
@@ -412,9 +432,17 @@ export function strategyDoc(config, root) {
   const neverRead = neverReadOf(config);
   const checked = checkReadPath(root, index, neverRead);
   if (checked.problem !== undefined) return { found: false, reason: 'index_unusable', index, contains, detail: checked.problem };
-  const text = readFileSync(join(root, checked.path), 'utf8');
+  // An index that is there but cannot be read (checkReadPath's `unreadable`,
+  // or a read that fails after it) is index_unreadable, never a throw.
+  let text;
+  try {
+    text = readFileSync(join(root, checked.path), 'utf8');
+  } catch (error) {
+    return { found: false, reason: 'index_unreadable', index: checked.path, contains, detail: error.code ?? 'EIO' };
+  }
   const needle = contains.toLowerCase();
   const paths = [];
+  const unreadable = [];
   const refused = [];
   for (const match of text.matchAll(LINK)) {
     if (!match[1].toLowerCase().includes(needle)) continue;
@@ -428,9 +456,11 @@ export function strategyDoc(config, root) {
     const relativeTarget = target.startsWith('/') ? target.slice(1) : posix.join(posix.dirname(checked.path), target);
     const found = checkReadPath(root, relativeTarget, neverRead);
     if (found.problem !== undefined) refused.push({ path: relativeTarget, problem: found.problem });
-    else if (!paths.includes(found.path)) paths.push(found.path);
+    else if (found.unreadable !== undefined) {
+      if (!unreadable.some((u) => u.path === found.path)) unreadable.push({ path: found.path, detail: found.unreadable });
+    } else if (!paths.includes(found.path)) paths.push(found.path);
   }
-  if (paths.length > 0) return { found: true, index: checked.path, paths };
+  if (paths.length > 0 || unreadable.length > 0) return { found: true, index: checked.path, paths, unreadable };
   if (refused.length > 0) return { found: false, reason: 'targets_unusable', index: checked.path, contains, detail: refused.map((r) => `${r.path} (${r.problem})`).join(', ') };
   return { found: false, reason: 'no_match', index: checked.path, contains };
 }
@@ -454,10 +484,18 @@ function readProblemWord(t, problem) {
   }
 }
 
+function unreadableLines(t, unreadable) {
+  return unreadable.map((item) => t('briefing.read_unreadable', { path: item.path, detail: item.detail }));
+}
+
 function strategyBlock(config, root, { t }) {
   const doc = strategyDoc(config, root);
-  if (doc.found) return [t('briefing.strategy_instruction', { paths: codeList(doc.paths), index: doc.index })];
+  if (doc.found) {
+    const lines = doc.paths.length > 0 ? [t('briefing.strategy_instruction', { paths: codeList(doc.paths), index: doc.index })] : [t('briefing.strategy_none_readable', { index: doc.index })];
+    return [...lines, ...unreadableLines(t, doc.unreadable)];
+  }
   if (doc.reason === 'not_configured') return [t('briefing.strategy_not_configured')];
+  if (doc.reason === 'index_unreadable') return [t('briefing.strategy_index_unreadable', { index: doc.index, detail: doc.detail })];
   if (doc.reason === 'index_unusable') return [t('briefing.strategy_index_unusable', { index: doc.index, why: readProblemWord(t, doc.detail) })];
   if (doc.reason === 'targets_unusable') return [t('briefing.strategy_targets_unusable', { index: doc.index, contains: doc.contains, detail: doc.detail })];
   return [t('briefing.strategy_not_found', { index: doc.index, contains: doc.contains })];
@@ -500,16 +538,16 @@ function kindLine(t, block) {
 }
 
 function packCalendarOf(lang) {
-  const chosen = SUPPORTED_LANGS.includes(lang) ? lang : REFERENCE_LANG;
-  return JSON.parse(readFileSync(join(KIT_ROOT, 'lang', chosen, 'config.defaults.json'), 'utf8')).sources.calendar;
+  return packDefaults(lang).sources.calendar;
 }
 
 // The text of `{{blocks}}`: first the blocks left out and why (the
 // configuration's problems), then every block of `blocks` in its order,
 // each under its number, title and id. `selection` is selectQuestions'
-// result (null when the questions block is not in the list) and `mark` what
-// recording them as asked gave: { ok: true } or { ok: false, detail }.
-export function renderBlocks({ blocks, problems, facts, config, root, t, kit, log, selection = null, mark = null }) {
+// result (null when the questions block is not in the list). Ruling R-T10:
+// a path a fact block lists that never_read covers is marked "(never
+// read)", so no block reads as leave to open it.
+export function renderBlocks({ blocks, problems, facts, config, root, t, kit, log, selection = null }) {
   const out = [];
   if (problems.length > 0) {
     out.push(t('briefing.left_out_header', { count: problems.length }));
@@ -527,6 +565,9 @@ export function renderBlocks({ blocks, problems, facts, config, root, t, kit, lo
   const firstTitle = firstPendingBlock === undefined ? '' : titleOf(t, firstPendingBlock);
   const { maxQuestions } = briefingLimits(config);
   const readList = briefingReadList(config, root).paths;
+  const neverRead = neverReadOf(config);
+  const neverReadMark = t('briefing.never_read_mark');
+  const mark = (path) => (typeof path === 'string' && coveringEntry(path, neverRead) !== null ? neverReadMark : '');
   blocks.forEach((block, index) => {
     out.push(`### ${index + 1}. ${titleOf(t, block)} (${block.id})`, '', kindLine(t, block), '');
     let lines;
@@ -534,10 +575,10 @@ export function renderBlocks({ blocks, problems, facts, config, root, t, kit, lo
       case 'sources': lines = sourcesBlock(facts, { t }); break;
       case 'due':
       case 'upcoming':
-      case 'undated': lines = pendingBlock(block.id, facts, { t, split, firstPending, firstTitle }); break;
+      case 'undated': lines = pendingBlock(block.id, facts, { t, split, firstPending, firstTitle, mark }); break;
       case 'open_prs': lines = renderPullRequests(facts, t); break;
-      case 'stale': lines = renderStale(facts, t); break;
-      case 'questions': lines = questionsBlock(facts, { t, kit, selection: selection ?? selectQuestions(facts.questions, maxQuestions), mark, maxQuestions }); break;
+      case 'stale': lines = renderStale(facts, t, { mark }); break;
+      case 'questions': lines = questionsBlock(facts, { t, kit, selection: selection ?? selectQuestions(facts.questions, maxQuestions), maxQuestions }); break;
       case 'blind_spots': lines = blindSpotsBlock(readList, log, { t }); break;
       case 'strategy': lines = strategyBlock(config, root, { t }); break;
       case 'today_calendar': lines = calendarBlock(facts, config, { t, packCalendar: packCalendarOf(config?.lang) }); break;
@@ -545,6 +586,7 @@ export function renderBlocks({ blocks, problems, facts, config, root, t, kit, lo
         lines = [
           t('briefing.custom_instruction', { instruction: block.instruction }),
           block.read.length > 0 ? t('briefing.custom_read', { paths: codeList(block.read) }) : t('briefing.custom_read_none'),
+          ...unreadableLines(t, block.unreadable ?? []),
         ];
     }
     out.push(...lines, '');

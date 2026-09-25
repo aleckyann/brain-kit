@@ -107,12 +107,14 @@ export function renderPullRequests(facts, t) {
   return lines;
 }
 
-export function renderStale(facts, t) {
+// `mark(path)` is a suffix for a note's line (the briefing marks the notes
+// it must never open); none by default.
+export function renderStale(facts, t, { mark = () => '' } = {}) {
   const stale = facts.stale;
   if (!stale.ok) return [t('preflight.stale_unknown')];
-  if (stale.count === 0) return [t('preflight.stale_none')];
-  const lines = [t('preflight.stale_header', { count: stale.count })];
-  for (const note of stale.notes) lines.push(t('preflight.stale_note', { path: note.path, date: note.staleAfterHuman ?? '-' }));
+  const lines = stale.count === 0 ? [t('preflight.stale_none')] : [t('preflight.stale_header', { count: stale.count })];
+  for (const note of stale.notes) lines.push(`${t('preflight.stale_note', { path: note.path, date: note.staleAfterHuman ?? '-' })}${mark(note.path)}`);
+  for (const note of stale.unreadable ?? []) lines.push(`${t('preflight.stale_unreadable', { path: note.path, detail: note.detail })}${mark(note.path)}`);
   return lines;
 }
 

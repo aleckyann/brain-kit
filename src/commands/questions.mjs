@@ -25,6 +25,10 @@
 // null means never (no dedup against an answered question, no escalation,
 // no archiving by age).
 //
+// Once the vault is found, everything is printed in the vault's own
+// language (config.lang), as preflight does; the usage errors before it are
+// in the caller's.
+//
 // "Today" is the calendar day in the vault's time zone (vault.timezone).
 // Days a person reads are DD/MM/YYYY.
 //
@@ -45,6 +49,7 @@ import { existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { EXIT } from '../exit-codes.mjs';
 import { CONFIG_FILENAME, loadConfig } from '../config.mjs';
+import { createTranslator, REFERENCE_LANG, SUPPORTED_LANGS } from '../lang.mjs';
 import { findVaultRoot } from '../vault.mjs';
 import { stateDirFor } from '../state.mjs';
 import { joinOrAcquire } from '../guards/lock.mjs';
@@ -218,7 +223,8 @@ function write(io, t, parsed, { stateDir, env, file, today, limits }) {
   return reportCorrupt(io.stdout, t, result.corrupt, file) ? EXIT.FAILURE : EXIT.OK;
 }
 
-export async function runQuestions(argv, io, t, deps = {}) {
+export async function runQuestions(argv, io, callerT, deps = {}) {
+  let t = callerT;
   const env = deps.env ?? process.env;
   const cwd = deps.cwd ?? process.cwd();
   const now = deps.now ?? new Date();
@@ -255,6 +261,9 @@ export async function runQuestions(argv, io, t, deps = {}) {
     return EXIT.USAGE;
   }
   const config = loadConfig(root);
+  // From here on the vault's own language, as preflight and validate speak
+  // it (task 3 review): the briefing relays what this command prints.
+  t = createTranslator(SUPPORTED_LANGS.includes(config.lang) ? config.lang : REFERENCE_LANG, { warn: (message) => io.stderr.write(`${message}\n`) });
   const tz = config.vault.timezone;
   let today;
   try {

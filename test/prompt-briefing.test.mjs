@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, cpSync, mkdirSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { makeTempDir } from './helpers/tmp.mjs';
 import { KIT_ROOT } from '../src/version.mjs';
@@ -69,7 +69,7 @@ function collector() {
 
 async function briefing(world, { argv = ['briefing', '--vault', world.vault], now = NOW, env = {}, lang = 'en', packsDir } = {}) {
   const c = collector();
-  const code = await runPrompt(argv, c.io, createTranslator(lang), { cwd: world.base, env: { ...world.env, ...env }, now, deps: { facts: NO_GH }, ...(packsDir ? { packsDir } : {}) });
+  const code = await runPrompt(argv, c.io, createTranslator(lang), { cwd: world.base, env: { ...world.env, ...env }, now, facts: NO_GH, ...(packsDir ? { packsDir } : {}) });
   return { code, out: c.stdout, err: c.stderr };
 }
 
@@ -128,6 +128,8 @@ for (const lang of LANGS) {
     const ids = out.split('\n').filter((line) => line.startsWith('### ')).map((line) => /\(([a-z_]+)\)$/.exec(line)[1]);
     assert.deepEqual(ids, ['sources', 'due', 'upcoming', 'undated', 'open_prs', 'stale', 'blind_spots', 'strategy', 'questions']);
     for (const entry of config.briefing.never_read) assert.ok(out.includes(`- \`${entry}\``), entry);
+    // The facts seam reached briefingFacts: gh was never looked for.
+    assert.match(out, lang === 'en' ? /Open pull requests: not known, gh is not installed or not on PATH\./ : /Pull requests abertos: não se sabe, o gh não está instalado ou não está no PATH\./);
     assert.equal(err, '');
   });
 
@@ -175,7 +177,7 @@ test('the real render records exactly the questions it places as asked today, es
   assert.equal(code, EXIT.OK);
   const block = out.slice(out.indexOf('### 9. Questions'));
   assert.ok(block.indexOf(b) < block.indexOf(a), 'the escalated question first');
-  assert.match(block, /The kit recorded the questions above as asked on 25\/09\/2026\./);
+  assert.match(block, /the kit records the questions above as asked on 25\/09\/2026\./);
   const asked = () => Object.fromEntries(readQueue(world.state).map((q) => [q.id, q.askedOn]));
   assert.deepEqual(asked(), { [a]: [TODAY], [b]: ['2026-09-21', '2026-09-22', '2026-09-23', TODAY] });
   await briefing(world);
@@ -236,16 +238,24 @@ test('the overlay replaces the pack\'s prompt, frontmatter stripped, with the si
   assert.doesNotMatch(out, /\{\{\w+\}\}/);
 });
 
-test('--check warns, without failing, about the briefing overlay and the blocks; it fails for a briefing.prompt outside the vault', async () => {
+test('--check warns about the briefing overlay and the blocks, fails for one without the signature or {{blocks}}, and for a briefing.prompt outside the vault', async () => {
   const world = freshVault('en', { blocks: ['stale', 'agenda'] });
   mkdirSync(join(world.vault, '.brain-kit', 'prompts'), { recursive: true });
-  writeFileSync(join(world.vault, '.brain-kit', 'prompts', 'briefing.md'), '# Mine\n<!-- rule:never-read -->\n{{parameters}}\n');
+  const overlay = join(world.vault, '.brain-kit', 'prompts', 'briefing.md');
+  writeFileSync(overlay, '# Mine\n<!-- rule:never-read -->\n{{parameters}}\n');
   const r = await briefing(world, { argv: ['--check', '--vault', world.vault] });
-  assert.equal(r.code, EXIT.OK, r.out + r.err);
-  assert.match(r.err, /briefing prompt .* does not start with \{\{signature\}\}/);
+  assert.equal(r.code, EXIT.FAILURE, r.out + r.err);
+  assert.ok(r.out.includes(`the vault's briefing prompt ${overlay} does not start with {{signature}}`), r.out);
+  assert.ok(r.out.includes(`the vault's briefing prompt ${overlay} does not use {{blocks}}`), r.out);
+  assert.match(r.err, /does not use \{\{never_read\}\}; the model is not given that list/);
+  assert.match(r.err, /does not use \{\{read\}\}; the model is not given that list/);
   for (const rule of BRIEFING_RULES.filter((x) => x !== 'never-read')) assert.ok(r.err.includes(`"${rule}"`), rule);
   assert.match(r.err, /"\{\{parameters\}\}", which the briefing does not fill/);
   assert.match(r.err, /warning: briefing\.blocks: entry 2, "agenda"/);
+  writeFileSync(overlay, `{{signature}}\n${BRIEFING_RULES.map((x) => `<!-- rule:${x} -->\n`).join('')}{{never_read}}\n{{read}}\n{{blocks}}\n`);
+  const good = await briefing(world, { argv: ['--check', '--vault', world.vault] });
+  assert.equal(good.code, EXIT.OK, good.out + good.err);
+  assert.equal(good.err, 'warning: briefing.blocks: entry 2, "agenda": no block of the kit has this id (the kit\'s blocks: sources, due, upcoming, undated, open_prs, stale, questions, blind_spots, strategy, today_calendar); left out.\n');
   const outside = freshVault('en', { prompt: '/tmp/elsewhere.md' });
   const bad = await briefing(outside, { argv: ['--check', '--vault', outside.vault] });
   assert.equal(bad.code, EXIT.FAILURE);
@@ -316,3 +326,102 @@ test('the real binary renders the briefing in a scratch vault, with only git on 
   assert.equal(r.stdout.split('\n')[0], loadConfig(world.vault).briefing.signature);
   assert.match(r.stdout, /Open pull requests: not known, gh is not installed or not on PATH\./);
 });
+
+// ------------------------------------------------------------ fix round 1
+
+const asked = (state) => readQueue(state).map((q) => [q.id, q.askedOn]);
+
+// Review, Important 1 (ruling R-T8): a strategy index that could not be
+// read threw after the questions were recorded: exit 1, an empty stdout,
+// and a question counted as asked that no one saw.
+test('an unreadable strategy index renders as not verified in its block, and the render goes on and records the questions', async () => {
+  const world = freshVault('en');
+  appendFileSync(join(world.vault, '.gitignore'), 'decisions/index.md\n');
+  const id = addQuestion(world.state, 'Anything?', { today: '2026-09-20' }).id;
+  const index = join(world.vault, 'decisions', 'index.md');
+  chmodSync(index, 0o000);
+  try {
+    const { code, out } = await briefing(world);
+    assert.equal(code, EXIT.OK, out);
+    assert.match(out, /Skipped, not verified: could not read decisions\/index\.md \(EACCES\)/);
+    assert.ok(out.includes(`[${id}]`));
+    assert.deepEqual(asked(world.state), [[id, [TODAY]]]);
+  } finally {
+    chmodSync(index, 0o644);
+  }
+});
+
+test('a note the stale walk cannot read is a named problem of the stale block, never an empty prompt', async () => {
+  const world = freshVault('en');
+  const note = join(world.vault, 'projects', 'locked.md');
+  writeFileSync(note, '---\ntype: note\n---\n');
+  chmodSync(note, 0o000);
+  try {
+    const { code, out } = await briefing(world);
+    assert.equal(code, EXIT.OK, out);
+    assert.match(out, /projects\/locked\.md: not verified, it could not be read \(EACCES\)/);
+  } finally {
+    chmodSync(note, 0o644);
+  }
+});
+
+test('whatever fails while rendering is one line on stdout, exit 1, and no question is recorded', async () => {
+  const world = freshVault('en');
+  const id = addQuestion(world.state, 'Anything?', { today: '2026-09-20' }).id;
+  const c = collector();
+  const boom = () => { throw Object.assign(new Error('the disk went away'), { code: 'EIO' }); };
+  const code = await runPrompt(['briefing', '--vault', world.vault], c.io, createTranslator('en'), { cwd: world.base, env: world.env, now: NOW, facts: { ...NO_GH, walkVault: boom } });
+  assert.equal(code, EXIT.FAILURE);
+  assert.equal(c.stdout, 'The briefing could not be prepared (EIO). Write no file; tell the person, and suggest running brain-kit doctor.\n');
+  assert.deepEqual(asked(world.state), [[id, []]]);
+});
+
+test('a record of the asked questions that fails is said on stderr, the text is still printed, and the exit is 3', async () => {
+  const world = freshVault('en');
+  const id = addQuestion(world.state, 'Anything?', { today: '2026-09-20' }).id;
+  writeFileSync(join(world.state, 'questions.log.lock'), 'not a lock\n');
+  const { code, out, err } = await briefing(world);
+  assert.equal(code, EXIT.DEGRADED);
+  assert.equal(out.split('\n')[0], loadConfig(world.vault).briefing.signature);
+  assert.ok(out.includes(`[${id}]`));
+  assert.match(err, /brain-kit prompt briefing: the questions of this briefing could not be recorded as asked today \(.+\); the queue did not count this briefing\./);
+  assert.deepEqual(asked(world.state), [[id, []]]);
+});
+
+// Review, Important 2 (ruling R-T9): an overlay without {{blocks}} showed
+// no question and still recorded every placed one as asked.
+test('only the question ids the final text shows are recorded: an overlay without {{blocks}} records none', async () => {
+  const world = freshVault('en');
+  const id = addQuestion(world.state, 'Anything?', { today: '2026-09-20' }).id;
+  mkdirSync(join(world.vault, '.brain-kit', 'prompts'), { recursive: true });
+  writeFileSync(join(world.vault, '.brain-kit', 'prompts', 'briefing.md'), '{{signature}}\n\nGive a short briefing from index.md. Today is {{today_human}}.\n');
+  const { code, out } = await briefing(world);
+  assert.equal(code, EXIT.OK);
+  assert.equal(out.includes(id), false);
+  assert.deepEqual(asked(world.state), [[id, []]]);
+});
+
+// Review, Important 3 (ruling R-T10): the stale block listed a people note
+// right under a line that read as leave to open any path a block names.
+for (const lang of LANGS) {
+  test(`${lang}: a stale note under never_read is marked, and the prompt says the never-read list wins over every block`, async () => {
+    const world = freshVault(lang);
+    const config = loadConfig(world.vault);
+    const people = config.briefing.never_read.find((entry) => entry.endsWith('/') && entry !== '.brain-kit/' && entry !== 'attachments/' && entry !== 'anexos/');
+    mkdirSync(join(world.vault, people), { recursive: true });
+    writeFileSync(join(world.vault, people, 'ana.md'), '---\ntype: person\ntitle: Ana\ndescription: Ana.\nstale_after: 2026-01-01\n---\n\n# Ana\n');
+    const { code, out } = await briefing(world);
+    assert.equal(code, EXIT.OK);
+    const line = out.split('\n').find((l) => l.includes(`${people}ana.md`) && l.includes('01/01/2026'));
+    assert.ok(line !== undefined, out);
+    assert.ok(line.endsWith(lang === 'en' ? ' (never read)' : ' (nunca lido)'), line);
+    const rule = out.slice(out.indexOf('<!-- rule:never-read -->'), out.indexOf('<!-- rule:facts-from-kit -->'));
+    assert.match(rule, lang === 'en'
+      ? /This list wins over everything else in this prompt: a path it covers is never opened, even when a block below names it/
+      : /Esta lista vale acima de tudo neste prompt: um caminho que ela cobre nunca é aberto, mesmo quando um bloco abaixo o cita/);
+    assert.match(rule, lang === 'en'
+      ? /a path the never-read list covers stays closed even then:/
+      : /um caminho que a lista do que nunca se lê cobre continua fechado mesmo assim:/);
+    assert.doesNotMatch(out, /Besides the paths a block below names|Além dos caminhos que um bloco abaixo citar/);
+  });
+}

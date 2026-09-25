@@ -29,11 +29,16 @@
 // the model presents the facts and never computes one. The blocks a
 // configuration problem leaves out are named at the top of `{{blocks}}` and
 // on stderr. This real render, and only it (never `--check`, never doctor),
-// records the questions it places in the questions block as asked today
-// (ruling R-T6), through markAsked, which takes the queue lock itself.
-// Every failure still writes one line to stdout, in the vault's language
-// when there is one, saying what to tell the person: the briefing never
-// hands the model an empty prompt.
+// records the questions it placed as asked today (ruling R-T6), through
+// markAsked, which takes the queue lock itself. The order is fixed (fix
+// round 1, rulings R-T8 and R-T9): the whole text is rendered first (every
+// block, the overlay, every placeholder); only then are the questions
+// recorded, and only those whose id appears in that final text, so an
+// overlay without `{{blocks}}` records none; then the text is written. A
+// record that fails is said on stderr, the text is still written, and the
+// exit is 3. Every failure before that writes one line to stdout, in the
+// vault's language when there is one, saying what to tell the person, and
+// records nothing: the briefing never hands the model an empty prompt.
 //
 // `skill` always exits 0: the body is what a model reads in place of a
 // SKILL.md's own prose, and a failure that left stdout empty would hand
@@ -590,32 +595,45 @@ function runBriefing(io, { startDir, env, now, packsDir, deps }) {
       io.stderr.write(`${t('prompt.briefing_machine_unreadable', { detail: error.message })}\n`);
     }
   }
-  const facts = briefingFacts({ root, config, machine, stateDir, now, env, deps: deps.facts ?? {} });
-  const { blocks, problems } = briefingBlocks(config, root);
+
+  // 1. Render everything. Anything that fails here is one line on stdout,
+  // and nothing is recorded.
+  let text;
+  let problems;
+  let selection = null;
+  try {
+    const facts = briefingFacts({ root, config, machine, stateDir, now, env, deps: deps.facts ?? {} });
+    const resolved = briefingBlocks(config, root);
+    problems = resolved.problems;
+    if (resolved.blocks.some((block) => block.id === 'questions')) selection = selectQuestions(facts.questions, briefingLimits(config).maxQuestions);
+    const log = config.taxonomy?.log ?? defaultsFor(packsDir, lang).taxonomy.log;
+    const blocksText = renderBlocks({ ...resolved, facts, config, root, t, kit: kitCommand(), log, selection });
+    text = render(template, briefingVars({ vaultRoot: root, config, lang, blocks: blocksText, now, t, packsDir }));
+    selection = selection === null ? null : { ...selection, today: facts.today };
+  } catch (error) {
+    io.stdout.write(`${t('prompt.briefing_failed', { detail: error.code ?? firstLineOf(error.message) })}\n`);
+    return EXIT.FAILURE;
+  }
   for (const problem of problems) io.stderr.write(`${t('prompt.briefing_block_problem', { problem: blockProblemLine(t, problem) })}\n`);
 
-  // Ruling R-T6: exactly the questions placed in the questions block are
-  // recorded as asked today, and only when that block is in the list.
-  let selection = null;
-  let mark = null;
-  if (blocks.some((block) => block.id === 'questions')) {
-    selection = selectQuestions(facts.questions, briefingLimits(config).maxQuestions);
-    const ids = selection.placed.map((question) => question.id);
-    if (ids.length > 0) {
-      try {
-        markAsked(stateDir, ids, facts.today, { env });
-        mark = { ok: true };
-      } catch (error) {
-        if (error instanceof GuardError) mark = { ok: false, detail: t(error.messageKey, error.params) };
-        else if (typeof error.code === 'string') mark = { ok: false, detail: `${error.code}: ${firstLineOf(error.message)}` };
-        else throw error;
-      }
+  // 2. Record as asked exactly the placed questions the final text shows
+  // (ruling R-T9): each is written "[<id>]" in the questions block.
+  let exit = EXIT.OK;
+  const ids = selection === null ? [] : selection.placed.map((question) => question.id).filter((id) => text.includes(`[${id}]`));
+  if (ids.length > 0) {
+    try {
+      markAsked(stateDir, ids, selection.today, { env });
+    } catch (error) {
+      if (!(error instanceof GuardError) && typeof error.code !== 'string') throw error;
+      const detail = error instanceof GuardError ? t(error.messageKey, error.params) : `${error.code}: ${firstLineOf(error.message)}`;
+      io.stderr.write(`${t('prompt.briefing_mark_failed', { detail })}\n`);
+      exit = EXIT.DEGRADED;
     }
   }
-  const log = config.taxonomy?.log ?? defaultsFor(packsDir, lang).taxonomy.log;
-  const blocksText = renderBlocks({ blocks, problems, facts, config, root, t, kit: kitCommand(), log, selection, mark });
-  io.stdout.write(render(template, briefingVars({ vaultRoot: root, config, lang, blocks: blocksText, now, t, packsDir })));
-  return EXIT.OK;
+
+  // 3. The text.
+  io.stdout.write(text);
+  return exit;
 }
 
 function listSkillFiles(dir) {
@@ -808,8 +826,16 @@ function checkBriefingOverlay(t, io, root, config, problems) {
     io.stderr.write(`${t('prompt.check_briefing_overlay_unreadable', { path, detail: error.code ?? error.message })}\n`);
     return;
   }
+  // Ruling R-T9: an overlay without the signature as its first line, or
+  // without `{{blocks}}`, fails the check, naming the file and what it
+  // lacks; one without a list the model needs is warned about.
   if (lacksSignatureLine(text, signatureFor(config, null, 'briefing'))) {
-    io.stderr.write(`${t('prompt.check_briefing_overlay_signature_prepended', { path, line: SIGNATURE_LINE })}\n`);
+    problems.push(t('prompt.check_briefing_overlay_no_signature', { path, placeholder: SIGNATURE_LINE }));
+  }
+  const used = placeholdersOf(text);
+  if (!used.includes('blocks')) problems.push(t('prompt.check_briefing_overlay_no_blocks', { path, placeholder: '{{blocks}}' }));
+  for (const list of ['never_read', 'read']) {
+    if (!used.includes(list)) io.stderr.write(`${t('prompt.check_briefing_overlay_no_list', { path, placeholder: `{{${list}}}` })}\n`);
   }
   for (const rule of missingBriefingRules(text)) {
     io.stderr.write(`${t('prompt.check_briefing_overlay_missing_rule', { path, rule })}\n`);

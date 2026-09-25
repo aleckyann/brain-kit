@@ -7,7 +7,7 @@
 // renders them from real facts of real vaults.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 import { createTranslator } from '../src/lang.mjs';
@@ -170,7 +170,7 @@ test('a custom block: bad id, an id of the catalog, a repeated id, a missing tit
       { title: 'no id', instruction: 'x' },
     ],
   }), root);
-  assert.deepEqual(blocks, [{ id: 'weekly-focus', kind: 'custom', title: 'Focus', instruction: 'Say what to focus on.', read: ['projects/a.md'] }]);
+  assert.deepEqual(blocks, [{ id: 'weekly-focus', kind: 'custom', title: 'Focus', instruction: 'Say what to focus on.', read: ['projects/a.md'], unreadable: [] }]);
   assert.deepEqual(problems, [
     { code: 'bad_id', position: 2, id: 'Weekly Focus' },
     { code: 'custom_id_taken', position: 3, id: 'stale' },
@@ -355,9 +355,12 @@ test('en: a queue that cannot be read says so and places nothing', () => {
   assert.doesNotMatch(text, /q-0000000/);
 });
 
-test('en: a failed record of the asked questions is said in the block', () => {
-  const text = renderAll('en', packConfig('en'), vault(), { list: ['questions'], mark: { ok: false, detail: 'the queue lock cannot be read' } });
-  assert.match(text, /could not record the questions above as asked today \(the queue lock cannot be read\)/);
+test('en: the block says the placed questions are recorded as asked when the briefing is handed over, and names the archive command', () => {
+  const text = renderAll('en', packConfig('en'), vault(), { list: ['questions'] });
+  assert.match(text, /When you are handed this briefing, the kit records the questions above as asked on 25\/09\/2026\./);
+  assert.ok(text.includes(`archive it with \`${KIT} questions archive <id> --reason "<why>"\``), text);
+  const none = renderAll('en', packConfig('en'), vault(), { list: ['questions'], f: facts({ questions: { ...facts().questions, open: [], escalated: [], toArchive: [] } }) });
+  assert.doesNotMatch(none, /records the questions above/);
 });
 
 // ------------------------------------------------------------ the judgement and custom blocks
@@ -367,7 +370,7 @@ test('strategy: the document linked from the index by its title is named; not co
     'decisions/index.md': '# Decisions\n\n- [Charter of the lab](charter.md): what the lab is for\n- [Budget](budget.md)\n',
     'decisions/charter.md': '# Charter\n',
   });
-  assert.deepEqual(strategyDoc(packConfig('en'), root), { found: true, index: 'decisions/index.md', paths: ['decisions/charter.md'] });
+  assert.deepEqual(strategyDoc(packConfig('en'), root), { found: true, index: 'decisions/index.md', paths: ['decisions/charter.md'], unreadable: [] });
   const text = renderAll('en', packConfig('en'), root, { list: ['strategy'] });
   assert.match(text, /Read `decisions\/charter\.md` \(linked from decisions\/index\.md\)/);
   assert.deepEqual(strategyDoc(configWith('en', { strategy_doc: { index: 'decisions/index.md', title_contains: 'roadmap' } }), root).reason, 'no_match');
@@ -432,4 +435,80 @@ test('the read list leaves out, and says so, every entry in never_read or outsid
   ].join('\n'));
   assert.equal(renderNeverRead(config, t), '- `people`\n- `memory/log.md#full`');
   assert.equal(renderNeverRead(configWith('en', { never_read: [] }), t), '(the list is empty)');
+});
+
+// ------------------------------------------------------------ fix round 1
+
+// Ruling R-T8: no read in a block is unguarded. A note that is there but
+// cannot be read renders inside its block as not verified; it never throws.
+test('an unreadable custom-block note, strategy index or strategy document renders as not verified inside its block', () => {
+  const root = vault({
+    'projects/a.md': '# A\n', 'projects/locked.md': '# L\n',
+    'decisions/index.md': '- [Charter](charter.md)\n', 'decisions/charter.md': '# C\n',
+  });
+  const locked = join(root, 'projects', 'locked.md');
+  chmodSync(locked, 0o000);
+  try {
+    const list = [{ id: 'mine', title: 'Mine', instruction: 'Read them.', read: ['projects/a.md', 'projects/locked.md'] }];
+    const { blocks, problems } = briefingBlocks(configWith('en', { blocks: list }), root);
+    assert.deepEqual(problems, []);
+    assert.deepEqual(blocks[0].read, ['projects/a.md']);
+    assert.deepEqual(blocks[0].unreadable, [{ path: 'projects/locked.md', detail: 'EACCES' }]);
+    for (const lang of LANGS) {
+      const text = renderAll(lang, configWith(lang, { blocks: list }), root);
+      assert.match(text, lang === 'en' ? /Not verified: could not read `projects\/locked\.md` \(EACCES\)/ : /Não verificado: não foi possível ler `projects\/locked\.md` \(EACCES\)/);
+    }
+  } finally {
+    chmodSync(locked, 0o644);
+  }
+  const doc = join(root, 'decisions', 'charter.md');
+  chmodSync(doc, 0o000);
+  try {
+    assert.deepEqual(strategyDoc(packConfig('en'), root), { found: true, index: 'decisions/index.md', paths: [], unreadable: [{ path: 'decisions/charter.md', detail: 'EACCES' }] });
+    const text = renderAll('en', packConfig('en'), root, { list: ['strategy'] });
+    assert.match(text, /Skipped: the note decisions\/index\.md links to as the strategy cannot be read\.\nNot verified: could not read `decisions\/charter\.md` \(EACCES\)/);
+  } finally {
+    chmodSync(doc, 0o644);
+  }
+  const index = join(root, 'decisions', 'index.md');
+  chmodSync(index, 0o000);
+  try {
+    const found = strategyDoc(packConfig('en'), root);
+    assert.deepEqual([found.found, found.reason, found.detail], [false, 'index_unreadable', 'EACCES']);
+    assert.match(renderAll('en', packConfig('en'), root, { list: ['strategy'] }), /Skipped, not verified: could not read decisions\/index\.md \(EACCES\)/);
+  } finally {
+    chmodSync(index, 0o644);
+  }
+});
+
+// Ruling R-T10: never_read wins over every block. A fact block that names a
+// path never_read covers marks it, in both languages.
+test('a stale note, an unreadable note or a pending item under never_read is marked (never read) in its fact block', () => {
+  for (const lang of LANGS) {
+    const config = configWith(lang, { never_read: ['people/', 'memory/log.md#full'] });
+    const f = facts({
+      stale: {
+        ok: true, reason: null, count: 2,
+        notes: [{ path: 'people/ana.md', staleAfter: '2026-01-01', staleAfterHuman: '01/01/2026' }, { path: 'projects/old.md', staleAfter: '2026-09-01', staleAfterHuman: '01/09/2026' }],
+        unreadable: [{ path: 'people/locked.md', detail: 'EACCES' }],
+      },
+      pending: { ...facts().pending, overdue: [{ file: 'people/ana.md', line: 9, what: 'Call back', deadline: '2026-09-24', raw: '24/09/2026' }] },
+    });
+    const text = renderAll(lang, config, vault(), { list: ['stale', 'due'], f });
+    const mark = createTranslator(lang)('briefing.never_read_mark');
+    const lineOf = (needle) => text.split('\n').find((line) => line.includes(needle));
+    assert.ok(lineOf('people/ana.md, ').endsWith(mark), lang);
+    assert.ok(lineOf('people/locked.md').endsWith(mark), lang);
+    assert.ok(lineOf('(people/ana.md:9)').endsWith(mark), lang);
+    assert.equal(lineOf('projects/old.md').endsWith(mark), false, lang);
+    assert.equal(lineOf('Send the report') === undefined || !lineOf('Send the report').endsWith(mark), true, lang);
+  }
+  assert.equal(createTranslator('en')('briefing.never_read_mark'), ' (never read)');
+});
+
+test('the read list resolves an existing entry by its real path: a link into never_read is left out', () => {
+  const root = vault({ 'people/ana.md': '# Ana\n', 'notes/x.md': '# X\n' });
+  symlinkSync(join(root, 'people', 'ana.md'), join(root, 'notes', 'ana-link.md'));
+  const config = configWith('en', { read: ['notes/x.md', 'notes/ana-link.md', 'notes/missing.md'], never_read: ['people/'] });
+  assert.deepEqual(briefingReadList(config, root), { paths: ['notes/x.md', 'notes/missing.md'], leftOut: [{ path: 'notes/ana-link.md', problem: 'read_never_read', entry: 'people/' }] });
 });

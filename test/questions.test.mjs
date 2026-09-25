@@ -340,9 +340,10 @@ test('the queue is machine.json paths.questions_log when set, relative to the st
 
 // ------------------------------------------------------------ the command
 
-function vaultRepo({ timezone = 'UTC', briefing } = {}) {
+function vaultRepo({ timezone = 'UTC', briefing, lang = 'en' } = {}) {
   const config = JSON.parse(readFileSync(join(KIT_ROOT, 'test', 'fixtures', 'config', 'valid.json'), 'utf8'));
   config.vault.timezone = timezone;
+  config.lang = lang;
   if (briefing !== undefined) config.briefing = briefing(config.briefing);
   return makeRepo({ 'brain-kit.config.json': `${JSON.stringify(config, null, 2)}\n`, 'index.md': '# Index\n' }, 'brain-kit-questions-');
 }
@@ -359,7 +360,7 @@ const said = (lang, key, params) => `${createTranslator(lang)(key, params)}\n`;
 
 test('questions add, then again in other words, in both languages', async () => {
   for (const lang of LANGS) {
-    const root = vaultRepo();
+    const root = vaultRepo({ lang });
     const state = stateDir();
     const text = 'Did Ana send the report?';
     const id = questionId(normalizeQuestion(text));
@@ -376,7 +377,7 @@ test('questions add, then again in other words, in both languages', async () => 
 
 test('questions answer and archive, in both languages, and their refusals', async () => {
   for (const lang of LANGS) {
-    const root = vaultRepo();
+    const root = vaultRepo({ lang });
     const state = stateDir();
     const a = record('First?');
     const b = record('Second?');
@@ -401,7 +402,7 @@ test('questions answer and archive, in both languages, and their refusals', asyn
 
 test('questions list shows every state, escalation and due archiving, in both languages', async () => {
   for (const lang of LANGS) {
-    const root = vaultRepo();
+    const root = vaultRepo({ lang });
     const state = stateDir();
     const never = record('Never asked?');
     const escalated = record('Asked thrice?', { createdOn: '2026-08-10', askedOn: ['2026-09-22', '2026-09-23', '2026-09-24'] });
@@ -430,7 +431,7 @@ test('questions list shows every state, escalation and due archiving, in both la
 
 test('questions sweep prints every question it archives, in both languages; with the limit set to null it archives nothing and says so', async () => {
   for (const lang of LANGS) {
-    const root = vaultRepo();
+    const root = vaultRepo({ lang });
     const state = stateDir();
     const old = record('Old?', { createdOn: '2026-08-01', askedOn: ['2026-08-02', '2026-08-03'] });
     const exact = record('Exact?', { createdOn: '2026-08-11' });
@@ -447,7 +448,7 @@ test('questions sweep prints every question it archives, in both languages; with
     r = await run(root, ['sweep'], { state, lang });
     assert.equal(r.stdout, said(lang, 'questions.sweep_none', { limit: 45 }), lang);
 
-    const unlimited = vaultRepo({ briefing: (b) => ({ ...b, question_max_age_days: null, question_escalate_after: null, questions_dedup_days: null }) });
+    const unlimited = vaultRepo({ lang, briefing: (b) => ({ ...b, question_max_age_days: null, question_escalate_after: null, questions_dedup_days: null }) });
     const state2 = stateDir();
     seed(state2, [old]);
     const before = readFileSync(logOf(state2));
@@ -461,7 +462,7 @@ test('questions sweep prints every question it archives, in both languages; with
 
 test('questions list and sweep report an unreadable line with its number and exit 1; writes keep it and warn', async () => {
   for (const lang of LANGS) {
-    const root = vaultRepo();
+    const root = vaultRepo({ lang });
     const state = stateDir();
     const q = record('Fine?', { createdOn: '2026-08-01' });
     seed(state, [q, 'garbage']);
@@ -483,7 +484,7 @@ test('questions list and sweep report an unreadable line with its number and exi
 
 test('questions refuses bad arguments with 2 and writes nothing, in both languages', async () => {
   for (const lang of LANGS) {
-    const root = vaultRepo();
+    const root = vaultRepo({ lang });
     const state = stateDir();
     const cases = [
       [[], null],
@@ -576,7 +577,7 @@ test('concurrent writers are serialised by the lock: every add that succeeded is
 });
 
 test('the command is routed by the CLI', async () => {
-  const root = vaultRepo();
+  const root = vaultRepo({ lang: 'pt-BR' });
   const state = stateDir();
   const home = makeTempDir('brain-kit-questions-home-');
   const r = await cli(['questions', 'list', root], { cwd: home, env: { ...CLEAN_ENV, BRAIN_KIT_STATE_DIR: state, HOME: home, BRAIN_KIT_LANG: 'pt-BR' } });
@@ -689,7 +690,7 @@ test('the queue lock: a dead holder\'s lock is replaced; an unreadable lock or a
   assert.throws(() => markAsked(died, ['q-00000000'], TODAY, { env: CLEAN_ENV }), (error) => error instanceof GuardError && error.code === 'QUEUE_LOCK_RECLAIM_DIED');
 
   for (const lang of LANGS) {
-    const root = vaultRepo();
+    const root = vaultRepo({ lang });
     const r = await run(root, ['add', 'Blocked?'], { state: unreadable, lang });
     assert.deepEqual([r.code, r.stderr], [EXIT.FAILURE, said(lang, 'questions.queue_lock_unreadable', { lock: join(unreadable, 'questions.log.lock') })], lang);
     assert.equal(r.stdout, '', lang);
@@ -746,4 +747,17 @@ test('limits: a key the configuration leaves out takes the pack default; an expl
   assert.equal(r.code, EXIT.OK, r.stderr);
   assert.ok(r.stdout.startsWith(said('en', 'questions.sweep_archived', { id: old.id, created: '01/08/2026', days: 55, count: 3, limit: 45, text: 'Old?' })));
   assert.deepEqual(questionsOnly(state).map((q) => q.status), ['archived', 'open'], 'archived past the default 45, not at 45');
+});
+
+// Task 3 review: the briefing relays what this command prints, so it speaks
+// the vault's language, whatever the caller's.
+test('questions prints in the vault\'s language, not the caller\'s', async () => {
+  for (const [vaultLang, callerLang] of [['pt-BR', 'en'], ['en', 'pt-BR']]) {
+    const root = vaultRepo({ lang: vaultLang });
+    const state = stateDir();
+    const r = await run(root, ['add', 'Did Ana send the report?'], { state, lang: callerLang });
+    assert.equal(r.stdout, said(vaultLang, 'questions.added', { id: r.stdout.match(/q-[0-9a-f]{8}/)[0], text: 'Did Ana send the report?' }), vaultLang);
+    const list = await run(root, ['list'], { state, lang: callerLang });
+    assert.ok(list.stdout.startsWith(said(vaultLang, 'questions.list_header', { file: logOf(state), today: '25/09/2026', timezone: 'UTC', open: 1, answered: 0, archived: 0 }).trimEnd()), list.stdout);
+  }
 });

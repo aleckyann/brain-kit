@@ -376,6 +376,7 @@ test('briefingFacts: the notes past their stale_after, with the day in the vault
       { path: 'notes/exact.md', staleAfter: '2026-09-25T12:00:00+00:00', staleAfterHuman: '25/09/2026' },
       { path: 'notes/old.md', staleAfter: '2026-09-01T02:00:00+00:00', staleAfterHuman: '31/08/2026' },
     ],
+    unreadable: [],
   }, '02:00 UTC of 01/09 is 23:00 of 31/08 at UTC-3');
 });
 
@@ -385,7 +386,7 @@ test('briefingFacts: a plain-date stale_after is a civil date of the vault\'s zo
     'notes/offset.md': staleNote('2026-09-20T00:00:00-03:00'),
   } });
   // 23:59 of 19/09 at UTC-3, already 20/09 in UTC: neither has come.
-  assert.deepEqual(world.facts({ now: new Date('2026-09-20T02:59:00Z') }).stale, { ok: true, reason: null, count: 0, notes: [] });
+  assert.deepEqual(world.facts({ now: new Date('2026-09-20T02:59:00Z') }).stale, { ok: true, reason: null, count: 0, notes: [], unreadable: [] });
   // 00:01 of 20/09 at UTC-3: both have.
   const after = world.facts({ now: new Date('2026-09-20T03:01:00Z') }).stale;
   assert.deepEqual(after.notes, [
@@ -423,7 +424,27 @@ test('preflight: a machine.json that cannot be read is said on stderr, and the f
 test('briefingFacts: when git cannot list the vault the stale count is not known', () => {
   const world = makeFactsWorld();
   const facts = briefingFacts({ root: world.root, config: world.config(), stateDir: world.stateDir, now: NOW, env: world.env, deps: { listPublishable: () => ({ failure: { status: 128 } }) } });
-  assert.deepEqual(facts.stale, { ok: false, reason: 'listing_failed', count: null, notes: null });
+  assert.deepEqual(facts.stale, { ok: false, reason: 'listing_failed', count: null, notes: null, unreadable: null });
+});
+
+// Task 3, fix round 1 (ruling R-T8): a note that cannot be read stopped
+// the whole preflight, and the briefing with it, with an empty stdout.
+test('briefingFacts: a note that cannot be read is named as not verified, and the others are still judged', async () => {
+  const world = makeFactsWorld({ files: { 'notes/old.md': staleNote('2026-09-01'), 'notes/locked.md': staleNote('2026-09-01') } });
+  chmodSync(join(world.root, 'notes', 'locked.md'), 0o000);
+  try {
+    const facts = world.facts();
+    assert.deepEqual(facts.stale, {
+      ok: true, reason: null, count: 1,
+      notes: [{ path: 'notes/old.md', staleAfter: '2026-09-01', staleAfterHuman: '01/09/2026' }],
+      unreadable: [{ path: 'notes/locked.md', detail: 'EACCES' }],
+    });
+    const { code, out } = await preflight(world, []);
+    assert.equal(code, EXIT.OK);
+    assert.ok(out.includes('Notes past their stale_after (1):\n  notes/old.md, stale since 01/09/2026\n  notes/locked.md: not verified, it could not be read (EACCES); whether it is past its stale_after is not known'), out);
+  } finally {
+    chmodSync(join(world.root, 'notes', 'locked.md'), 0o644);
+  }
 });
 
 // ------------------------------------------------------------ git and lock
@@ -552,7 +573,7 @@ test('preflight --json: version, then exactly the facts\' keys in their order, a
   assert.deepEqual(Object.keys(parsed.pending), ['overdue', 'today', 'upcoming', 'undated', 'later', 'upcomingDays', 'problems']);
   assert.deepEqual(Object.keys(parsed.pending.overdue[0]), ['file', 'line', 'what', 'deadline', 'raw']);
   assert.deepEqual(Object.keys(parsed.openPullRequests), ['ok', 'reason', 'detail', 'items']);
-  assert.deepEqual(Object.keys(parsed.stale), ['ok', 'reason', 'count', 'notes']);
+  assert.deepEqual(Object.keys(parsed.stale), ['ok', 'reason', 'count', 'notes', 'unreadable']);
   assert.deepEqual(Object.keys(parsed.git), ['branch', 'defaultBranch', 'upstream', 'ahead', 'behind', 'dirty', 'reason']);
   assert.deepEqual(Object.keys(parsed.lock), ['held', 'command', 'reason']);
   world.lastRun({ at: '2026-09-25T12:30:00.000Z', exit: 0, reasonCode: null, sources: { calendar: { state: 'connected', advanced: true } } });
@@ -615,7 +636,7 @@ test('renderPreflight: an item with no what reads as a dash, a detached HEAD is 
   const facts = {
     today: '2026-09-25', todayHuman: '25/09/2026', weekday: 'friday', tz: 'UTC', lastRun: null, connectorStates: {},
     openPullRequests: { ok: true, reason: null, detail: null, items: [] },
-    stale: { ok: false, reason: 'listing_failed', count: null, notes: null },
+    stale: { ok: false, reason: 'listing_failed', count: null, notes: null, unreadable: null },
     pending: { overdue: [], today: [], upcoming: [], undated: [{ file: 'a.md', line: 3, what: '', deadline: null, raw: '' }], later: 2, upcomingDays: 3, problems: [] },
     git: { branch: null, defaultBranch: 'main', upstream: 'origin/main', ahead: 0, behind: 4, dirty: 2, reason: null },
     lock: { held: null, command: null, reason: 'boom' },

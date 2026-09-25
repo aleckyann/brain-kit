@@ -176,19 +176,30 @@ export function staleVerdict(staleAfter, { today, now, tz }) {
   return { stale: at.getTime() <= now.getTime(), human: humanDay(localDay(at, tz)) };
 }
 
-// The notes past their stale_after, over the same set `validate` judges.
+// The notes past their stale_after, over the same set `validate` judges. A
+// note that cannot be read is named in `unreadable` with its error code
+// (fix round 1 of task 3, ruling R-T8): whether it is past its stale_after
+// is not known, and one such note never stops the rest from being judged.
 function staleFacts(root, config, now, today, tz, { walkVault, listPublishable }) {
   const walked = walkVault(root, config, { all: true });
   const fileSet = noteFileSet(walked, listPublishable(root));
-  if (fileSet.failure) return { ok: false, reason: 'listing_failed', count: null, notes: null };
+  if (fileSet.failure) return { ok: false, reason: 'listing_failed', count: null, notes: null, unreadable: null };
   const readFile = makeReadFile(root);
   const notes = [];
+  const unreadable = [];
   for (const path of fileSet.files.filter(isMarkdown).sort()) {
-    const staleAfter = readScalar(splitFrontmatter(readFile(path)).frontmatter, 'stale_after');
+    let text;
+    try {
+      text = readFile(path);
+    } catch (error) {
+      unreadable.push({ path, detail: error.code ?? firstLine(error.message) });
+      continue;
+    }
+    const staleAfter = readScalar(splitFrontmatter(text).frontmatter, 'stale_after');
     const verdict = staleVerdict(staleAfter, { today, now, tz });
     if (verdict !== null && verdict.stale) notes.push({ path, staleAfter, staleAfterHuman: verdict.human });
   }
-  return { ok: true, reason: null, count: notes.length, notes };
+  return { ok: true, reason: null, count: notes.length, notes, unreadable };
 }
 
 // The branch, how the default branch stands against its remote-tracking
