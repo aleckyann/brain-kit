@@ -169,14 +169,19 @@ test('network: machine.network_check is an argument vector; exit 0 is success', 
   await assert.rejects(waitForNetwork('nm-online -q', {}), TypeError);
 });
 
+// The real check runs as a real process; the loop's clock is the test's
+// (re-review N6), so how many attempts fit in the timeout never depends on
+// how fast this machine starts a process. Each attempt is still bounded by
+// the product's own per-attempt cap (10 s), the only real time left here.
 test('network: a real argument vector runs without a shell, and its exit status decides', async () => {
-  const ok = await waitForNetwork([process.execPath, '-e', 'process.exit(0)'], { timeoutMs: 5000 });
+  const ok = await waitForNetwork([process.execPath, '-e', 'process.exit(0)'], { timeoutMs: 60000 }, fakeClock());
   assert.equal(ok.ok, true);
-  const fail = await waitForNetwork([process.execPath, '-e', 'process.exit(3)'], { timeoutMs: 300, intervalMs: 50 });
+  const fail = await waitForNetwork([process.execPath, '-e', 'process.exit(3)'], { timeoutMs: 300, intervalMs: 50 }, fakeClock());
   assert.equal(fail.ok, false);
-  assert.ok(fail.attempts >= 2);
-  const missing = await waitForNetwork(['/nonexistent/brain-kit-check'], { timeoutMs: 200, intervalMs: 50 });
+  assert.equal(fail.attempts, 7, 'at 0, 50, ... 300 on the test clock');
+  const missing = await waitForNetwork(['/nonexistent/brain-kit-check'], { timeoutMs: 200, intervalMs: 50 }, fakeClock());
   assert.equal(missing.ok, false);
+  assert.equal(missing.attempts, 5);
 });
 
 test('network: an argument vector still running at the timeout is killed, not left behind', async () => {

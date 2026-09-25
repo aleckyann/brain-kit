@@ -53,7 +53,20 @@ function tokenAction(file) {
   return { run: [process.execPath, '-e', `require('node:fs').writeFileSync(${JSON.stringify(file)}, process.env.BRAIN_KIT_ROUND_TOKEN || '')`] };
 }
 
-test('a full round: the fake writes a note and runs the real propose with the round\'s environment; the pull request targets the default branch, the record is read and removed, the tree is clean, the mark advances, last-run names the branch and paths', () => {
+// The network check's timing, injected (re-review N6): the real check runs
+// to its end, and the fake clock never moves, so the wait always ends under
+// the minimum wait and `did_not_wait` is noted however slow the machine is.
+function instantNetwork() {
+  return {
+    networkDeps: {
+      now: () => 0,
+      sleep: async () => { throw new Error('a second attempt was never meant to run'); },
+      runArgv: (argv) => spawnSync(argv[0], argv.slice(1), { stdio: 'ignore' }).status === 0,
+    },
+  };
+}
+
+test('a full round: the fake writes a note and runs the real propose with the round\'s environment; the pull request targets the default branch, the record is read and removed, the tree is clean, the mark advances, last-run names the branch and paths', async () => {
   const w = makeCurateWorld();
   const tokenFile = join(w.base, 'token-seen');
   w.scenario({
@@ -64,7 +77,7 @@ test('a full round: the fake writes a note and runs the real propose with the ro
     ],
   });
   assert.equal(existsSync(join(w.vault, '.git', 'FETCH_HEAD')), false, 'the world starts with no fetch');
-  const r = w.curate();
+  const r = await curateInProcess(w, [], instantNetwork());
   assert.equal(r.status, EXIT.OK, r.stderr);
 
   const creates = w.ghCalls().filter((call) => call.args[1] === 'create');

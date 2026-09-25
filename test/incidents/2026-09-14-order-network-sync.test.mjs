@@ -6,6 +6,7 @@
 // read, and a test asserts the order by what each step leaves behind.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runCurate } from '../../src/commands/curate.mjs';
@@ -42,7 +43,15 @@ test('no network: nothing is fetched and the base is not touched, exit 69, loudl
   assert.equal(w.machine.claude_bin, FAKE);
   const out = [];
   const io = { stdout: { write: (s) => out.push(s) }, stderr: { write: (s) => out.push(s) } };
-  const status = await runCurate([], io, createTranslator('en'), { env: w.env, cwd: w.vault, networkTimeoutMs: 100, networkIntervalMs: 10 });
+  // The check runs for real, on a test clock (re-review N6): one attempt
+  // spends the whole wait, and no wall-clock limit decides the outcome.
+  const clock = { at: 0 };
+  const networkDeps = {
+    now: () => clock.at,
+    sleep: async () => { throw new Error('a second attempt was never meant to run'); },
+    runArgv: (argv) => { const done = spawnSync(argv[0], argv.slice(1), { stdio: 'ignore' }); clock.at += 1000; return done.status === 0; },
+  };
+  const status = await runCurate([], io, createTranslator('en'), { env: w.env, cwd: w.vault, networkTimeoutMs: 1000, networkDeps });
   assert.equal(status, EXIT.UNAVAILABLE);
   assert.equal(existsSync(join(w.vault, '.git', 'FETCH_HEAD')), false);
   assert.equal(w.sha('main'), before);
