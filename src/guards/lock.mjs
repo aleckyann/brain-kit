@@ -341,11 +341,15 @@ function removeQuietly(path) {
   }
 }
 
-function sweepLeftovers(dir, me) {
+// `lockPrivate` matches the private files of the lock and of its reclaim
+// marker (judged by the holder they name), `others` the private files that
+// name no holder (judged by age). The vault lock's are the defaults; a file
+// lock (acquireFileLock) passes its own and no others.
+function sweepLeftovers(dir, me, { lockPrivate = LOCK_PRIVATE, others = [SNAPSHOT_PRIVATE, ROUND_PRIVATE] } = {}) {
   const now = Date.now();
   for (const name of readdirSync(dir)) {
-    const isLock = LOCK_PRIVATE.test(name);
-    if (!isLock && !SNAPSHOT_PRIVATE.test(name) && !ROUND_PRIVATE.test(name)) continue;
+    const isLock = lockPrivate.test(name);
+    if (!isLock && !others.some((pattern) => pattern.test(name))) continue;
     const path = join(dir, name);
     const seen = readLockFile(path);
     if (seen === null) continue;
@@ -390,8 +394,8 @@ function isUnchanged(current, seen) {
 // would name a process that never holds the lock. So a changed lock sends
 // this process round again, to name whoever really holds it.
 function reclaim(ctx, seen) {
-  const { dir, lockPath, markerPath, text, onStage, me, link } = ctx;
-  if (createExclusively(dir, markerPath, GUARD_FILES.LOCK_RECLAIM, text, link) === null) {
+  const { dir, lockPath, markerPath, lockName, markerName, text, onStage, me, link } = ctx;
+  if (createExclusively(dir, markerPath, markerName, text, link) === null) {
     onStage('contended');
     const marker = readLockFile(markerPath);
     if (marker === null) return RETRY;
@@ -402,7 +406,7 @@ function reclaim(ctx, seen) {
   try {
     if (!isUnchanged(readLockFile(lockPath), seen)) return RETRY;
     onStage('claimed');
-    const tmp = writePrivateFile(dir, GUARD_FILES.LOCK, text);
+    const tmp = writePrivateFile(dir, lockName, text);
     const ino = lstatSync(tmp).ino;
     renameSync(tmp, lockPath);
     return ino;
@@ -433,7 +437,15 @@ export function acquireLock(root, { command, now = new Date(), env = process.env
     throw new TypeError('acquireLock needs the name of the command taking the lock');
   }
   const { commonDir, gitDir } = locateRepository(root, env);
-  const lockPath = join(commonDir, GUARD_FILES.LOCK);
+  for (const dir of new Set([commonDir, gitDir])) sweepLeftovers(dir, identity);
+  return acquireIn(commonDir, GUARD_FILES.LOCK, GUARD_FILES.LOCK_RECLAIM, { command, now }, { onStage, identity, link });
+}
+
+// The acquisition itself, for a lock named `lockName` in `dir` with its
+// reclaim marker `markerName`: everything the header describes from the
+// holder on. acquireLock and acquireFileLock are its two callers.
+function acquireIn(dir, lockName, markerName, { command, now }, { onStage, identity, link }) {
+  const lockPath = join(dir, lockName);
   const holder = {
     pid: process.pid,
     host: identity.host,
@@ -445,11 +457,10 @@ export function acquireLock(root, { command, now = new Date(), env = process.env
     token: randomBytes(16).toString('hex'),
   };
   const text = `${JSON.stringify(holder)}\n`;
-  const ctx = { dir: commonDir, lockPath, markerPath: join(commonDir, GUARD_FILES.LOCK_RECLAIM), text, onStage, me: identity, link };
-  for (const dir of new Set([commonDir, gitDir])) sweepLeftovers(dir, identity);
+  const ctx = { dir, lockPath, markerPath: join(dir, markerName), lockName, markerName, text, onStage, me: identity, link };
   let lastSeen = UNREADABLE;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
-    let ino = createExclusively(commonDir, lockPath, GUARD_FILES.LOCK, text, link);
+    let ino = createExclusively(dir, lockPath, lockName, text, link);
     if (ino === null) {
       onStage('occupied');
       const seen = readLockFile(lockPath);
@@ -463,6 +474,36 @@ export function acquireLock(root, { command, now = new Date(), env = process.env
     return { holder: publicHolder(holder), lockPath, release: releaser(lockPath, text, ino), token: holder.token };
   }
   throw new LockHeld(lastSeen, lockPath);
+}
+
+// FILE LOCKS. The same lock, taken on one file of its own instead of on the
+// repository: `<dir>/<name>`, with its reclaim marker `<name>.reclaim` and
+// its private files `<name>(.reclaim).<pid>.<12 hex>.tmp` in `dir`, swept by
+// the same rule before every acquire. Everything above holds for it: the
+// holder written in full and linked into place, stale only when provably
+// dead, a stale lock replaced by rename under the marker, release only of
+// the lock this acquire placed. A second acquire fails at once with
+// LockHeld, as for the vault lock; waiting, when a caller wants it, is the
+// caller's loop. It exists for a lock that belongs to one file shared by
+// processes the vault lock does not keep apart (the question queue, whose
+// writers inside a round all join the round's vault lock). No token is
+// ever handed out or joined: `token` is returned only because the holder
+// carries one. `deps` is acquireLock's test seam.
+// One path segment: no separator, no NUL, not `.` or `..`.
+const FILE_LOCK_NAME = /^(?!\.\.?$)[^/\\\0]+$/;
+
+export function acquireFileLock(dir, name, { command, now = new Date() } = {}, deps = {}) {
+  const { onStage = () => {}, identity = currentIdentity(), link = linkSync } = deps;
+  if (typeof command !== 'string' || command === '') {
+    throw new TypeError('acquireFileLock needs the name of the command taking the lock');
+  }
+  if (typeof name !== 'string' || !FILE_LOCK_NAME.test(name)) {
+    throw new TypeError(`acquireFileLock needs a plain file name, got ${JSON.stringify(name)}`);
+  }
+  const escaped = name.replace(/[.*+?^$()|[\]\\{}]/g, '\\$&');
+  const lockPrivate = new RegExp(`^${escaped}(?:\\.reclaim)?\\.\\d+\\.[0-9a-f]{12}\\.tmp$`);
+  sweepLeftovers(dir, identity, { lockPrivate, others: [] });
+  return acquireIn(dir, name, `${name}.reclaim`, { command, now }, { onStage, identity, link });
 }
 
 // The lock for a command a round may run inside itself (`propose`): joined

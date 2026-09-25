@@ -43,18 +43,25 @@
 // cannot widen it), flushed, then renamed over the queue. A reader sees the
 // old queue or the new one, never half of one. Two writers doing this at
 // once would each rename its own version and one would lose the other's
-// question, so every WRITING CALLER HOLDS THE VAULT LOCK
-// (src/guards/lock.mjs) around the call: `brain-kit questions` does. This
-// module does not take it, because the lock belongs to the vault and this
-// module only knows the state directory.
+// question, so every write holds the QUEUE LOCK (see "the queue lock"
+// below) from before its read to after its rename. The vault lock the
+// command also takes is not enough: every process a scheduled round starts
+// joins the round's vault lock, and parallel `questions add` calls inside
+// one round then ran the cycle at once and lost questions while each said
+// it had added its own (task 2 review, 25/09/2026). A temporary file a
+// killed write left is removed by the next write, under the queue lock.
 import {
-  closeSync, existsSync, fchmodSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync,
+  closeSync, existsSync, fchmodSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, unlinkSync, writeSync,
 } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { basename, dirname, join, resolve } from 'node:path';
 import { loadMachine, MACHINE_FILENAME } from '../config.mjs';
 import { isValidIsoDate } from '../dates.mjs';
 import { expandHome } from '../doctor/checks.mjs';
+import { KIT_ROOT } from '../version.mjs';
+import { EXIT } from '../exit-codes.mjs';
+import { acquireFileLock, LockHeld } from '../guards/lock.mjs';
+import { GuardError } from '../guards/location.mjs';
 import { daysBetween } from '../guards/watermark.mjs';
 import { ensureStateDir, STATE_FILES } from '../state.mjs';
 
@@ -163,10 +170,15 @@ function entryBytes(entry) {
   return entry.raw;
 }
 
-function writeEntries(stateDir, file, entries) {
+// The queue's own temporary files: `.<queue name>.<pid>.<12 hex>.tmp`.
+function tempPattern(file) {
+  const name = basename(file).replace(/[.*+?^$()|[\]\\{}]/g, '\\$&');
+  return new RegExp(`^\\.${name}\\.\\d+\\.[0-9a-f]{12}\\.tmp$`);
+}
+
+// Only ever called holding the queue lock (withQueueLock).
+function writeEntries(file, entries) {
   const dir = dirname(file);
-  if (resolve(dir) === resolve(stateDir)) ensureStateDir(stateDir);
-  else mkdirSync(dir, { recursive: true, mode: 0o700 });
   const parts = [];
   for (const entry of entries) parts.push(entryBytes(entry), Buffer.from([NEWLINE]));
   const buffer = Buffer.concat(parts);
@@ -202,6 +214,39 @@ export function readQueue(stateDir, { env = process.env } = {}) {
     if (entry.kind === 'corrupt') return [{ corrupt: true, line: entry.line, reason: entry.reason, field: entry.field, text: entry.text }];
     return [];
   });
+}
+
+// ------------------------------------------------------------ the limits
+
+const LIMIT_KEYS = Object.freeze({
+  dedupDays: 'questions_dedup_days',
+  escalateAfter: 'question_escalate_after',
+  maxAgeDays: 'question_max_age_days',
+});
+
+// The queue's three limits for a loaded configuration, the one reading of
+// them (the command and the briefing's facts both call it). loadConfig
+// does not merge the pack's defaults, and a command reads a key the
+// configuration leaves out as the kit's default, so a key absent from
+// `briefing` takes lang/<config.lang>/config.defaults.json's value (15, 3
+// and 45 in both packs); a key present is taken as it is, and `null` there
+// means never. A default the pack does not carry is null.
+export function questionLimits(config) {
+  const briefing = config?.briefing !== null && typeof config?.briefing === 'object' ? config.briefing : {};
+  let defaults = null;
+  const limits = {};
+  for (const [name, key] of Object.entries(LIMIT_KEYS)) {
+    if (Object.hasOwn(briefing, key)) {
+      limits[name] = briefing[key];
+      continue;
+    }
+    if (defaults === null) {
+      const lang = typeof config?.lang === 'string' && /^[A-Za-z-]+$/.test(config.lang) ? config.lang : 'en';
+      defaults = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', lang, 'config.defaults.json'), 'utf8')).briefing ?? {};
+    }
+    limits[name] = Object.hasOwn(defaults, key) ? defaults[key] : null;
+  }
+  return limits;
 }
 
 // ------------------------------------------------------------ arguments
@@ -261,6 +306,84 @@ export function queueSummary(questions, { today, escalateAfter = null, maxAgeDay
   return summary;
 }
 
+// ------------------------------------------------------------ the queue lock
+
+// The queue lock is `<queue>.lock` beside the queue, taken with
+// acquireFileLock (src/guards/lock.mjs): the vault lock's own mechanism,
+// on a file of the queue's own. Every write holds it from before the read
+// to after the rename, so two writers never interleave, whether or not
+// they hold the vault lock (every process of a round joins the round's
+// vault lock, so the vault lock alone keeps none of them apart). A live
+// holder is waited for, a few milliseconds at a time, with no limit: it
+// holds the lock only for one read, change and rename, and a dead one is
+// replaced by acquireFileLock's own rule. A lock that cannot be read, a
+// reclaim that died, or a file system without hard links is refused with
+// a GuardError naming the file, never waited on.
+const pauseCell = new Int32Array(new SharedArrayBuffer(4));
+const QUEUE_LOCK_PAUSE_MS = 5;
+
+function lockQueue(file) {
+  const dir = dirname(file);
+  const name = `${basename(file)}.lock`;
+  for (;;) {
+    try {
+      return acquireFileLock(dir, name, { command: 'questions' });
+    } catch (error) {
+      if (error instanceof LockHeld) {
+        if (error.blockedBy !== null) {
+          throw new GuardError({
+            code: 'QUEUE_LOCK_RECLAIM_DIED', exitCode: EXIT.FAILURE,
+            messageKey: 'questions.queue_lock_reclaim_died', params: { marker: error.blockedBy },
+            message: `a run replacing the dead queue lock died midway and left ${error.blockedBy}`,
+          });
+        }
+        if (error.holder === null || error.holder.pid === null) {
+          throw new GuardError({
+            code: 'QUEUE_LOCK_UNREADABLE', exitCode: EXIT.FAILURE,
+            messageKey: 'questions.queue_lock_unreadable', params: { lock: error.lockPath },
+            message: `the queue lock ${error.lockPath} cannot be read`,
+          });
+        }
+        Atomics.wait(pauseCell, 0, 0, QUEUE_LOCK_PAUSE_MS);
+        continue;
+      }
+      if (error instanceof GuardError && error.code === 'LOCK_NO_HARD_LINKS') {
+        throw new GuardError({
+          code: 'QUEUE_LOCK_NO_HARD_LINKS', exitCode: EXIT.FAILURE,
+          messageKey: 'questions.queue_lock_no_hard_links', params: { dir },
+          message: `the file system holding ${dir} does not support hard links`,
+        });
+      }
+      throw error;
+    }
+  }
+}
+
+// Runs `work(file)` holding the queue lock, after removing the temporary
+// files a killed write of this queue left: under the lock no write of this
+// queue is running, so every such file is a leftover.
+function withQueueLock(stateDir, env, work) {
+  const file = queueFile(stateDir, { env });
+  const dir = dirname(file);
+  if (resolve(dir) === resolve(stateDir)) ensureStateDir(stateDir);
+  else mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const lock = lockQueue(file);
+  try {
+    const leftover = tempPattern(file);
+    for (const name of readdirSync(dir)) {
+      if (!leftover.test(name)) continue;
+      try {
+        unlinkSync(join(dir, name));
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+    }
+    return work(file);
+  } finally {
+    lock.release();
+  }
+}
+
 // ------------------------------------------------------------ writes
 
 function questionsIn(entries) {
@@ -297,34 +420,35 @@ export function addQuestion(stateDir, text, { today, dedupDays = null, env = pro
   const normalized = normalizeQuestion(text);
   if (normalized === '') throw new TypeError('a question needs at least one letter or digit');
   const id = questionId(normalized);
-  const file = queueFile(stateDir, { env });
-  const entries = loadEntries(file);
-  const corrupt = corruptIn(entries);
-  const questions = questionsIn(entries).map((entry) => entry.question);
-  const open = questions.find((q) => q.status === QUESTION_STATUS.OPEN && q.normalized === normalized);
-  if (open !== undefined) return { added: false, id, duplicateOf: open.id, reason: 'open', question: open, corrupt };
-  if (dedupDays !== null) {
-    const recent = questions
-      .filter((q) => q.status === QUESTION_STATUS.ANSWERED && q.normalized === normalized && daysBetween(q.answeredOn, today) <= dedupDays)
-      .sort((a, b) => (a.answeredOn < b.answeredOn ? 1 : -1))[0];
-    if (recent !== undefined) return { added: false, id, duplicateOf: recent.id, reason: 'answered', question: recent, corrupt };
-  }
-  const clash = questions.find((q) => q.status === QUESTION_STATUS.OPEN && q.id === id);
-  if (clash !== undefined) return { added: false, id, reason: 'collision', question: clash, corrupt };
-  const question = {
-    id,
-    text: text.trim(),
-    normalized,
-    createdOn: today,
-    askedOn: [],
-    status: QUESTION_STATUS.OPEN,
-    answeredOn: null,
-    archivedOn: null,
-    archivedReason: null,
-  };
-  entries.push({ kind: 'question', question, changed: true, raw: null });
-  writeEntries(stateDir, file, entries);
-  return { added: true, id, question, corrupt };
+  return withQueueLock(stateDir, env, (file) => {
+    const entries = loadEntries(file);
+    const corrupt = corruptIn(entries);
+    const questions = questionsIn(entries).map((entry) => entry.question);
+    const open = questions.find((q) => q.status === QUESTION_STATUS.OPEN && q.normalized === normalized);
+    if (open !== undefined) return { added: false, id, duplicateOf: open.id, reason: 'open', question: open, corrupt };
+    if (dedupDays !== null) {
+      const recent = questions
+        .filter((q) => q.status === QUESTION_STATUS.ANSWERED && q.normalized === normalized && daysBetween(q.answeredOn, today) <= dedupDays)
+        .sort((a, b) => (a.answeredOn < b.answeredOn ? 1 : -1))[0];
+      if (recent !== undefined) return { added: false, id, duplicateOf: recent.id, reason: 'answered', question: recent, corrupt };
+    }
+    const clash = questions.find((q) => q.status === QUESTION_STATUS.OPEN && q.id === id);
+    if (clash !== undefined) return { added: false, id, reason: 'collision', question: clash, corrupt };
+    const question = {
+      id,
+      text: text.trim(),
+      normalized,
+      createdOn: today,
+      askedOn: [],
+      status: QUESTION_STATUS.OPEN,
+      answeredOn: null,
+      archivedOn: null,
+      archivedReason: null,
+    };
+    entries.push({ kind: 'question', question, changed: true, raw: null });
+    writeEntries(file, entries);
+    return { added: true, id, question, corrupt };
+  });
 }
 
 // Records that the open questions `ids` were asked `today`. A day is
@@ -334,40 +458,42 @@ export function addQuestion(stateDir, text, { today, dedupDays = null, env = pro
 export function markAsked(stateDir, ids, today, { env = process.env } = {}) {
   requireDay(today, 'today');
   if (!Array.isArray(ids)) throw new TypeError('ids must be a list of question ids');
-  const file = queueFile(stateDir, { env });
-  const entries = loadEntries(file);
-  const result = { marked: [], already: [], unknown: [], notOpen: [], ambiguous: [] };
-  for (const id of new Set(ids)) {
-    const found = openEntry(entries, id);
-    if (found.entry === undefined) {
-      result[found.reason === 'unknown' ? 'unknown' : found.reason === 'ambiguous' ? 'ambiguous' : 'notOpen'].push(id);
-      continue;
+  return withQueueLock(stateDir, env, (file) => {
+    const entries = loadEntries(file);
+    const result = { marked: [], already: [], unknown: [], notOpen: [], ambiguous: [] };
+    for (const id of new Set(ids)) {
+      const found = openEntry(entries, id);
+      if (found.entry === undefined) {
+        result[found.reason === 'unknown' ? 'unknown' : found.reason === 'ambiguous' ? 'ambiguous' : 'notOpen'].push(id);
+        continue;
+      }
+      const { question } = found.entry;
+      if (question.askedOn.includes(today)) {
+        result.already.push(id);
+        continue;
+      }
+      question.askedOn = [...question.askedOn, today];
+      found.entry.changed = true;
+      result.marked.push(id);
     }
-    const { question } = found.entry;
-    if (question.askedOn.includes(today)) {
-      result.already.push(id);
-      continue;
-    }
-    question.askedOn = [...question.askedOn, today];
-    found.entry.changed = true;
-    result.marked.push(id);
-  }
-  if (result.marked.length > 0) writeEntries(stateDir, file, entries);
-  return result;
+    if (result.marked.length > 0) writeEntries(file, entries);
+    return result;
+  });
 }
 
 function close(stateDir, id, apply, env) {
-  const file = queueFile(stateDir, { env });
-  const entries = loadEntries(file);
-  const corrupt = corruptIn(entries);
-  const found = openEntry(entries, id);
-  if (found.entry === undefined) {
-    return { ok: false, reason: found.reason, statuses: found.statuses, count: found.count ?? 0, question: found.last ?? null, corrupt };
-  }
-  apply(found.entry.question);
-  found.entry.changed = true;
-  writeEntries(stateDir, file, entries);
-  return { ok: true, question: found.entry.question, corrupt };
+  return withQueueLock(stateDir, env, (file) => {
+    const entries = loadEntries(file);
+    const corrupt = corruptIn(entries);
+    const found = openEntry(entries, id);
+    if (found.entry === undefined) {
+      return { ok: false, reason: found.reason, statuses: found.statuses, count: found.count ?? 0, question: found.last ?? null, corrupt };
+    }
+    apply(found.entry.question);
+    found.entry.changed = true;
+    writeEntries(file, entries);
+    return { ok: true, question: found.entry.question, corrupt };
+  });
 }
 
 // Marks the open question `id` answered `today`. Returns { ok: true,
@@ -400,19 +526,20 @@ export function archive(stateDir, id, today, reason = null, { env = process.env 
 export function sweepQueue(stateDir, { today, maxAgeDays = null, reasonFor = () => null, env = process.env } = {}) {
   requireDay(today, 'today');
   requireLimit(maxAgeDays, 'maxAgeDays', 0);
-  const file = queueFile(stateDir, { env });
-  const entries = loadEntries(file);
-  const archived = [];
-  for (const entry of questionsIn(entries)) {
-    const { question } = entry;
-    if (!isDueForArchive(question, { today, maxAgeDays })) continue;
-    const shown = view(question, today);
-    question.status = QUESTION_STATUS.ARCHIVED;
-    question.archivedOn = today;
-    question.archivedReason = reasonFor(shown);
-    entry.changed = true;
-    archived.push(shown);
-  }
-  if (archived.length > 0) writeEntries(stateDir, file, entries);
-  return { archived, corrupt: corruptIn(entries) };
+  return withQueueLock(stateDir, env, (file) => {
+    const entries = loadEntries(file);
+    const archived = [];
+    for (const entry of questionsIn(entries)) {
+      const { question } = entry;
+      if (!isDueForArchive(question, { today, maxAgeDays })) continue;
+      const shown = view(question, today);
+      question.status = QUESTION_STATUS.ARCHIVED;
+      question.archivedOn = today;
+      question.archivedReason = reasonFor(shown);
+      entry.changed = true;
+      archived.push(shown);
+    }
+    if (archived.length > 0) writeEntries(file, entries);
+    return { archived, corrupt: corruptIn(entries) };
+  });
 }

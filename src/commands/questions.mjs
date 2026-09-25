@@ -16,11 +16,14 @@
 // briefing.question_max_age_days and prints each one it archived: nothing
 // is archived in silence.
 //
-// The limits come from the vault's configuration: questions_dedup_days,
+// The limits come from the vault's configuration, read by questionLimits
+// (src/briefing/questions.mjs): questions_dedup_days,
 // question_escalate_after and question_max_age_days under `briefing`. A key
-// the configuration does not set means no limit (null): nothing is
-// deduplicated against an answered question, escalated or archived by a
-// number the person never chose.
+// the configuration does not set takes the kit's default for the vault's
+// language (lang/<code>/config.defaults.json, 15, 3 and 45), as every
+// command falls back for a key a configuration leaves out; a key set to
+// null means never (no dedup against an answered question, no escalation,
+// no archiving by age).
 //
 // "Today" is the calendar day in the vault's time zone (vault.timezone).
 // Days a person reads are DD/MM/YYYY.
@@ -48,8 +51,8 @@ import { joinOrAcquire } from '../guards/lock.mjs';
 import { GuardError } from '../guards/location.mjs';
 import { daysBetween, localDay } from '../guards/watermark.mjs';
 import {
-  addQuestion, answer, archive, isDueForArchive, isEscalated, normalizeQuestion, QUESTION_ID, QUESTION_STATUS, queueFile, queueSummary,
-  readQueue, sweepQueue,
+  addQuestion, answer, archive, isDueForArchive, isEscalated, normalizeQuestion, QUESTION_ID, QUESTION_STATUS, queueFile, questionLimits,
+  queueSummary, readQueue, sweepQueue,
 } from '../briefing/questions.mjs';
 
 const ROOT_INDEX = 'index.md';
@@ -99,13 +102,6 @@ function usageError(io, t, parsed) {
   else if (parsed.error === 'empty_reason') io.stderr.write(`${t('questions.empty_reason')}\n`);
   io.stderr.write(`${t('questions.usage')}\n`);
   return EXIT.USAGE;
-}
-
-// A briefing limit as the queue reads it: the configured integer, or null
-// (no limit) when the configuration does not set one.
-function limitOf(briefing, key) {
-  const value = briefing?.[key];
-  return Number.isInteger(value) ? value : null;
 }
 
 function corruptDetail(t, item) {
@@ -270,13 +266,7 @@ export async function runQuestions(argv, io, t, deps = {}) {
   }
   const stateDir = stateDirFor(root, env);
   const file = queueFile(stateDir, { env });
-  const limits = {
-    stateDir,
-    env,
-    dedupDays: limitOf(config.briefing, 'questions_dedup_days'),
-    escalateAfter: limitOf(config.briefing, 'question_escalate_after'),
-    maxAgeDays: limitOf(config.briefing, 'question_max_age_days'),
-  };
+  const limits = { stateDir, env, ...questionLimits(config) };
 
   if (!WRITING.has(parsed.sub)) return list(io, t, { file, today, tz, limits });
 
@@ -292,6 +282,14 @@ export async function runQuestions(argv, io, t, deps = {}) {
   }
   try {
     return write(io, t, parsed, { stateDir, env, file, today, limits });
+  } catch (error) {
+    // The queue lock refused (src/briefing/questions.mjs): unreadable, a
+    // reclaim that died, or no hard links. Nothing was written.
+    if (error instanceof GuardError) {
+      io.stderr.write(`${t(error.messageKey, error.params)}\n`);
+      return error.exitCode;
+    }
+    throw error;
   } finally {
     lock.release();
   }

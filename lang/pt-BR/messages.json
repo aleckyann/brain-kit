@@ -1085,5 +1085,8 @@
   "questions.sweep_archived": "Arquivada {id}: aberta desde {created}, {days} dias, além do limite de {limit} dias, feita {count} vez(es), nunca respondida: {text}",
   "questions.sweep_none": "Nenhuma pergunta aberta tem mais de {limit} dias. Nada foi arquivado.",
   "questions.sweep_done": "{count} pergunta(s) arquivada(s) em {day}.",
-  "questions.sweep_reason": "sem resposta há {days} dias, além do limite de {limit} dias"
+  "questions.sweep_reason": "sem resposta há {days} dias, além do limite de {limit} dias",
+  "questions.queue_lock_unreadable": "brain-kit questions: a trava da fila {lock} não pode ser lida, então não há como provar que quem a detém se foi. Nada foi alterado. Se nenhum comando do brain-kit está escrevendo a fila de perguntas, remova esse arquivo.",
+  "questions.queue_lock_reclaim_died": "brain-kit questions: um comando que substituía a trava da fila de um detentor morto morreu no meio e deixou {marker} para trás. Nenhuma escrita da fila consegue tomar a trava até esse arquivo ser removido; remova-o e rode de novo. Nada foi alterado.",
+  "questions.queue_lock_no_hard_links": "brain-kit questions: o sistema de arquivos que guarda {dir} não suporta hard links, que a trava da fila de perguntas precisa para ser tomada com segurança. Mantenha o diretório de estado num sistema de arquivos que os tenha. Nada foi alterado."
 }

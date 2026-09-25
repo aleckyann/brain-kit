@@ -5,17 +5,22 @@
 // and later archived, out loud.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import {
+  chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { KIT_ROOT } from '../src/version.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
 import { createTranslator } from '../src/lang.mjs';
-import { acquireLock } from '../src/guards/lock.mjs';
+import { validateConfig } from '../src/config.mjs';
+import { GuardError } from '../src/guards/location.mjs';
+import { acquireFileLock, acquireLock, currentIdentity } from '../src/guards/lock.mjs';
 import { runQuestions } from '../src/commands/questions.mjs';
 import {
-  addQuestion, answer, archive, isDueForArchive, isEscalated, markAsked, normalizeQuestion, questionId, queueFile, queueSummary, readQueue,
-  sweepQueue,
+  addQuestion, answer, archive, isDueForArchive, isEscalated, markAsked, normalizeQuestion, questionId, queueFile, questionLimits, queueSummary,
+  readQueue, sweepQueue,
 } from '../src/briefing/questions.mjs';
 import { CLEAN_ENV, makeRepo } from './helpers/git-repo.mjs';
 import { makeTempDir } from './helpers/tmp.mjs';
@@ -423,7 +428,7 @@ test('questions list shows every state, escalation and due archiving, in both la
   }
 });
 
-test('questions sweep prints every question it archives, in both languages; with no limit set it archives nothing and says so', async () => {
+test('questions sweep prints every question it archives, in both languages; with the limit set to null it archives nothing and says so', async () => {
   for (const lang of LANGS) {
     const root = vaultRepo();
     const state = stateDir();
@@ -442,7 +447,7 @@ test('questions sweep prints every question it archives, in both languages; with
     r = await run(root, ['sweep'], { state, lang });
     assert.equal(r.stdout, said(lang, 'questions.sweep_none', { limit: 45 }), lang);
 
-    const unlimited = vaultRepo({ briefing: (b) => { const { question_max_age_days: _a, question_escalate_after: _e, questions_dedup_days: _d, ...rest } = b; return rest; } });
+    const unlimited = vaultRepo({ briefing: (b) => ({ ...b, question_max_age_days: null, question_escalate_after: null, questions_dedup_days: null }) });
     const state2 = stateDir();
     seed(state2, [old]);
     const before = readFileSync(logOf(state2));
@@ -555,24 +560,19 @@ test('concurrent writers are serialised by the lock: every add that succeeded is
   const env = { ...CLEAN_ENV, BRAIN_KIT_STATE_DIR: state, HOME: home, BRAIN_KIT_LANG: 'en' };
   const texts = Array.from({ length: 8 }, (_, i) => `Concurrent question number ${i}?`);
   let pending = [...texts];
-  let rounds = 0;
-  let postponed = 0;
   while (pending.length > 0) {
-    rounds += 1;
     const results = await Promise.all(pending.map((text) => cli(['questions', 'add', text], { cwd: root, env })));
     for (const r of results) assert.ok(r.code === EXIT.OK || r.code === EXIT.TEMPFAIL, `${r.code}: ${r.stderr}`);
     const stored = new Set(questionsOnly(state).map((q) => q.text));
     results.forEach((r, i) => {
       if (r.code === EXIT.OK) assert.ok(stored.has(pending[i]), `an add that said OK is in the queue: ${pending[i]}`);
     });
-    postponed += results.filter((r) => r.code === EXIT.TEMPFAIL).length;
     pending = pending.filter((_, i) => results[i].code !== EXIT.OK);
   }
   const final = questionsOnly(state);
   assert.deepEqual(final.map((q) => q.text).sort(), [...texts].sort());
   assert.equal(new Set(final.map((q) => q.id)).size, texts.length);
   assert.deepEqual(readdirSync(state), ['questions.log'], 'no temporary file left behind');
-  assert.ok(rounds >= 1 && postponed >= 0);
 });
 
 test('the command is routed by the CLI', async () => {
@@ -581,4 +581,169 @@ test('the command is routed by the CLI', async () => {
   const home = makeTempDir('brain-kit-questions-home-');
   const r = await cli(['questions', 'list', root], { cwd: home, env: { ...CLEAN_ENV, BRAIN_KIT_STATE_DIR: state, HOME: home, BRAIN_KIT_LANG: 'pt-BR' } });
   assert.deepEqual([r.code, r.stdout], [EXIT.OK, said('pt-BR', 'questions.list_empty', { file: logOf(state) })]);
+});
+
+// ------------------------------------------------------------ fix round 1
+
+const LIB_URL = pathToFileURL(join(KIT_ROOT, 'src', 'briefing', 'questions.mjs')).href;
+
+// A child process running one library call on its own: `code` is the body
+// of an async module with `lib`, `state` and `arg` in scope.
+function libChild(code, state, arg) {
+  const program = `const lib = await import(${JSON.stringify(LIB_URL)}); const [state, arg] = process.argv.slice(1); ${code}`;
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', program, state, arg], { env: CLEAN_ENV, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.on('close', (status) => resolve({ status, stderr }));
+  });
+}
+
+test('writers that joined a round\'s vault lock are serialised by the queue lock: every add is stored', async () => {
+  const root = vaultRepo();
+  const state = stateDir();
+  const home = makeTempDir('brain-kit-questions-home-');
+  const texts = Array.from({ length: 12 }, (_, i) => `Joined question ${i}?`);
+  const lock = acquireLock(root, { command: 'curate', env: CLEAN_ENV });
+  let results;
+  try {
+    const env = { ...CLEAN_ENV, BRAIN_KIT_STATE_DIR: state, HOME: home, BRAIN_KIT_LANG: 'en', BRAIN_KIT_ROUND_TOKEN: lock.token };
+    results = await Promise.all(texts.map((text) => cli(['questions', 'add', text], { cwd: root, env })));
+  } finally {
+    lock.release();
+  }
+  results.forEach((r, i) => assert.equal(r.code, EXIT.OK, `${texts[i]}: ${r.stderr}`));
+  assert.deepEqual(questionsOnly(state).map((q) => q.text).sort(), [...texts].sort(), 'all twelve stored');
+  assert.deepEqual(readdirSync(state), ['questions.log'], 'no lock or temporary file left behind');
+});
+
+test('the library serialises its own writes with no vault lock at all: concurrent adds, marks, answers, archives and sweeps all land', async () => {
+  const state = stateDir();
+  const asked = record('Asked on many days?');
+  const toAnswer = Array.from({ length: 4 }, (_, i) => record(`To answer ${i}?`));
+  const toArchive = Array.from({ length: 3 }, (_, i) => record(`To archive ${i}?`));
+  const old = record('Old enough to sweep?', { createdOn: '2026-08-01' });
+  seed(state, [asked, ...toAnswer, ...toArchive, old]);
+  const days = Array.from({ length: 6 }, (_, i) => `2026-09-${String(10 + i).padStart(2, '0')}`);
+  const texts = Array.from({ length: 10 }, (_, i) => `Library question ${i}?`);
+  const runs = [
+    ...texts.map((text) => libChild("lib.addQuestion(state, arg, { today: '2026-09-25', env: {} });", state, text)),
+    ...days.map((day) => libChild(`lib.markAsked(state, [${JSON.stringify(asked.id)}], arg, { env: {} });`, state, day)),
+    ...toAnswer.map((q) => libChild("lib.answer(state, arg, '2026-09-25', { env: {} });", state, q.id)),
+    ...toArchive.map((q) => libChild("lib.archive(state, arg, '2026-09-25', 'moot', { env: {} });", state, q.id)),
+    ...[1, 2].map(() => libChild("lib.sweepQueue(state, { today: '2026-09-25', maxAgeDays: 45, env: {}, reasonFor: () => arg });", state, 'aged')),
+  ];
+  const results = await Promise.all(runs);
+  results.forEach((r) => assert.equal(r.status, 0, r.stderr));
+  const stored = questionsOnly(state);
+  const byText = new Map(stored.map((q) => [q.text, q]));
+  assert.equal(stored.length, 9 + texts.length, 'nothing lost, nothing added twice');
+  for (const text of texts) assert.equal(byText.get(text)?.status, 'open', text);
+  assert.deepEqual([...byText.get(asked.text).askedOn].sort(), days, 'every day recorded once');
+  for (const q of toAnswer) assert.deepEqual([byText.get(q.text).status, byText.get(q.text).answeredOn], ['answered', TODAY], q.text);
+  for (const q of toArchive) assert.deepEqual([byText.get(q.text).status, byText.get(q.text).archivedReason], ['archived', 'moot'], q.text);
+  assert.deepEqual([byText.get(old.text).status, byText.get(old.text).archivedReason], ['archived', 'aged']);
+  assert.deepEqual(readdirSync(state), ['questions.log']);
+});
+
+test('a write waits for a live holder of the queue lock, then lands', async () => {
+  const state = stateDir();
+  mkdirSync(state, { recursive: true });
+  const held = acquireFileLock(state, 'questions.log.lock', { command: 'test' });
+  let done = false;
+  const child = libChild("lib.addQuestion(state, arg, { today: '2026-09-25', env: {} });", state, 'Waited for?').then((r) => { done = true; return r; });
+  try {
+    await new Promise((resolve) => { setTimeout(resolve, 400); });
+    assert.equal(done, false, 'the write is still waiting');
+    assert.equal(existsSync(logOf(state)), false, 'nothing written while the lock is held');
+  } finally {
+    held.release();
+  }
+  const r = await child;
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(questionsOnly(state).map((q) => q.text), ['Waited for?']);
+});
+
+function deadHolder() {
+  const gone = spawnSync(process.execPath, ['-e', '']);
+  const me = currentIdentity();
+  return `${JSON.stringify({
+    pid: gone.pid, host: me.host, command: 'questions', startedAt: '2026-09-25T00:00:00.000Z', machineId: me.machineId, bootId: me.bootId, pidNamespace: me.pidNamespace,
+  })}\n`;
+}
+
+test('the queue lock: a dead holder\'s lock is replaced; an unreadable lock or a dead reclaim is refused and nothing is written', async () => {
+  const stale = stateDir();
+  writeFileSync(join(stale, 'questions.log.lock'), deadHolder());
+  assert.equal(addQuestion(stale, 'After a dead holder?', { today: TODAY, env: CLEAN_ENV }).added, true);
+  assert.deepEqual(readdirSync(stale), ['questions.log']);
+
+  const unreadable = stateDir();
+  writeFileSync(join(unreadable, 'questions.log.lock'), 'not a holder');
+  assert.throws(() => addQuestion(unreadable, 'Blocked?', { today: TODAY, env: CLEAN_ENV }), (error) => error instanceof GuardError && error.code === 'QUEUE_LOCK_UNREADABLE');
+  assert.equal(existsSync(logOf(unreadable)), false);
+
+  const died = stateDir();
+  writeFileSync(join(died, 'questions.log.lock'), deadHolder());
+  writeFileSync(join(died, 'questions.log.lock.reclaim'), deadHolder());
+  assert.throws(() => markAsked(died, ['q-00000000'], TODAY, { env: CLEAN_ENV }), (error) => error instanceof GuardError && error.code === 'QUEUE_LOCK_RECLAIM_DIED');
+
+  for (const lang of LANGS) {
+    const root = vaultRepo();
+    const r = await run(root, ['add', 'Blocked?'], { state: unreadable, lang });
+    assert.deepEqual([r.code, r.stderr], [EXIT.FAILURE, said(lang, 'questions.queue_lock_unreadable', { lock: join(unreadable, 'questions.log.lock') })], lang);
+    assert.equal(r.stdout, '', lang);
+  }
+});
+
+test('a write replaces the queue by rename: a new inode, and a reader holding the old file still reads its old bytes', () => {
+  const state = stateDir();
+  seed(state, [record('Before?')]);
+  const before = readFileSync(logOf(state));
+  const inode = statSync(logOf(state)).ino;
+  const fd = openSync(logOf(state), 'r');
+  try {
+    addQuestion(state, 'After?', { today: TODAY, env: CLEAN_ENV });
+    assert.notEqual(statSync(logOf(state)).ino, inode, 'the queue is a new file');
+    const buffer = Buffer.alloc(before.length * 4);
+    const read = readSync(fd, buffer, 0, buffer.length, 0);
+    assert.deepEqual(buffer.subarray(0, read), before, 'the old file was never written');
+  } finally {
+    closeSync(fd);
+  }
+  assert.equal(questionsOnly(state).length, 2);
+});
+
+test('a temporary file a killed write left is removed by the next write; other files stay', () => {
+  const state = stateDir();
+  seed(state, [record('Kept?')]);
+  const leftover = '.questions.log.4242.abcdef012345.tmp';
+  writeFileSync(join(state, leftover), 'half a queue');
+  for (const other of ['.watermark.json.4242.abcdef012345.tmp', 'questions.log.bak', '.questions.log.note']) writeFileSync(join(state, other), 'x');
+  answer(state, record('Kept?').id, TODAY, { env: CLEAN_ENV });
+  assert.deepEqual(readdirSync(state).sort(), ['.questions.log.note', '.watermark.json.4242.abcdef012345.tmp', 'questions.log', 'questions.log.bak']);
+});
+
+test('limits: a key the configuration leaves out takes the pack default; an explicit null means never', async () => {
+  const base = JSON.parse(readFileSync(join(KIT_ROOT, 'test', 'fixtures', 'config', 'valid.json'), 'utf8'));
+  const { questions_dedup_days: _d, question_escalate_after: _e, question_max_age_days: _m, ...rest } = base.briefing;
+  for (const lang of LANGS) {
+    assert.deepEqual(questionLimits({ lang, briefing: rest }), { dedupDays: 15, escalateAfter: 3, maxAgeDays: 45 }, lang);
+  }
+  const nulls = { ...rest, questions_dedup_days: null, question_escalate_after: null, question_max_age_days: null };
+  assert.deepEqual(questionLimits({ lang: 'en', briefing: nulls }), { dedupDays: null, escalateAfter: null, maxAgeDays: null });
+  assert.deepEqual(questionLimits({ lang: 'en', briefing: { ...rest, question_max_age_days: 10 } }), { dedupDays: 15, escalateAfter: 3, maxAgeDays: 10 });
+  assert.deepEqual(validateConfig({ ...base, briefing: nulls }), [], 'the schema accepts null');
+  assert.notDeepEqual(validateConfig({ ...base, briefing: { ...rest, question_max_age_days: 0 } }), []);
+
+  const absent = vaultRepo({ briefing: () => rest });
+  const state = stateDir();
+  const old = record('Old?', { createdOn: '2026-08-01', askedOn: ['2026-09-20', '2026-09-21', '2026-09-22'] });
+  seed(state, [old, record('Exact?', { createdOn: '2026-08-11' })]);
+  const list = await run(absent, ['list'], { state });
+  assert.ok(list.stdout.includes(said('en', 'questions.list_escalated', { count: 3, limit: 3 })), 'escalated at the default 3');
+  const r = await run(absent, ['sweep'], { state });
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  assert.ok(r.stdout.startsWith(said('en', 'questions.sweep_archived', { id: old.id, created: '01/08/2026', days: 55, count: 3, limit: 45, text: 'Old?' })));
+  assert.deepEqual(questionsOnly(state).map((q) => q.status), ['archived', 'open'], 'archived past the default 45, not at 45');
 });

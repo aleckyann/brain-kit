@@ -1085,5 +1085,8 @@
   "questions.sweep_archived": "Archived {id}: open since {created}, {days} days, past the {limit}-day limit, asked {count} time(s), never answered: {text}",
   "questions.sweep_none": "No open question is older than {limit} days. Nothing was archived.",
   "questions.sweep_done": "{count} question(s) archived on {day}.",
-  "questions.sweep_reason": "unanswered for {days} days, past the {limit}-day limit"
+  "questions.sweep_reason": "unanswered for {days} days, past the {limit}-day limit",
+  "questions.queue_lock_unreadable": "brain-kit questions: the queue lock {lock} cannot be read, so whoever holds it cannot be proved gone. Nothing was changed. If no brain-kit command is writing the question queue, remove that file.",
+  "questions.queue_lock_reclaim_died": "brain-kit questions: a command that was replacing a dead holder's queue lock died midway and left {marker} behind. No write of the queue can take the lock until that file is removed; remove it and run again. Nothing was changed.",
+  "questions.queue_lock_no_hard_links": "brain-kit questions: the file system holding {dir} does not support hard links, which the question queue's lock needs to be taken safely. Keep the state directory on a file system that has them. Nothing was changed."
 }

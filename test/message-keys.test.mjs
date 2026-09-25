@@ -175,6 +175,8 @@ function allSites() {
     // round (and doctor) to render.
     ...extractRuleMessageSites(readSrc('src/guards/cli.mjs'), 'src/guards/cli.mjs'),
     ...extractRuleMessageSites(readSrc('src/guards/isolation.mjs'), 'src/guards/isolation.mjs'),
+    // The question queue's own lock refusals (task 2, fix round 1).
+    ...extractRuleMessageSites(readSrc('src/briefing/questions.mjs'), 'src/briefing/questions.mjs'),
   ];
   const direct = [
     ...extractTranslatorCallSites(readSrc('src/cli.mjs'), 'src/cli.mjs'),
