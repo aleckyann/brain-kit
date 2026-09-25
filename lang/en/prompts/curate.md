@@ -20,7 +20,7 @@ The kit computed the block below for this round. Take it as given: do not recomp
 Open the vault's `index.md` first. It lists every note with a one-line description. From it, open only the notes the captures of this round will change, plus the template and the vault's conventions when you need them. Never load the whole vault.
 
 <!-- rule:sample-from-end -->
-Read the transcripts the block lists, and only those. A transcript is long: read each one with Read, starting at the line the block gives as its `sampleLine` (pass it as the offset), which is near the end, and read from there to the end. If that is not enough to understand what happened, read earlier slices, one at a time, moving backwards. Never read a transcript whole. Besides the vault's own notes, open no file and no folder the block does not list.
+Read the transcripts the block lists, and only those. A transcript is long: read each one with Read, starting at the line the block gives as its `sampleLine` (pass it as the offset), which is near the end, and read from there to the end. If that is not enough to understand what happened, read earlier slices, one at a time, moving backwards. Never read a transcript whole. Every message line carries a `timestamp`: capture only what was said inside the window the parameters block gives; a message before or after it belongs to another round, even when it sits in a file this round lists. Besides the vault's own notes, open no file and no folder the block does not list.
 
 ## Capture
 

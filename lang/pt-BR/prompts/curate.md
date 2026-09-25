@@ -20,7 +20,7 @@ O kit calculou o bloco abaixo para esta rodada. Aceite-o como está: não recalc
 Abra primeiro o `index.md` do vault. Ele lista cada nota com uma descrição de uma linha. A partir dele, abra só as notas que as capturas desta rodada vão alterar, e mais o modelo e as convenções do vault quando precisar deles. Nunca carregue o vault inteiro.
 
 <!-- rule:sample-from-end -->
-Leia as transcrições que o bloco lista, e só elas. Uma transcrição é longa: leia cada uma com o Read, começando na linha que o bloco indica como `sampleLine` (passe esse número como offset), que fica perto do fim, e leia dali até o final. Se isso não bastar para entender o que aconteceu, leia trechos anteriores, um de cada vez, voltando para trás. Nunca leia uma transcrição inteira. Fora as notas do próprio vault, não abra arquivo nem pasta que o bloco não liste.
+Leia as transcrições que o bloco lista, e só elas. Uma transcrição é longa: leia cada uma com o Read, começando na linha que o bloco indica como `sampleLine` (passe esse número como offset), que fica perto do fim, e leia dali até o final. Se isso não bastar para entender o que aconteceu, leia trechos anteriores, um de cada vez, voltando para trás. Nunca leia uma transcrição inteira. Toda linha de mensagem traz um `timestamp`: capture só o que foi dito dentro da janela que o bloco de parâmetros indica; uma mensagem antes ou depois dela pertence a outra rodada, mesmo quando está num arquivo que esta rodada lista. Fora as notas do próprio vault, não abra arquivo nem pasta que o bloco não liste.
 
 ## Capturar
 
