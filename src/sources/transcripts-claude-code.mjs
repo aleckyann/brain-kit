@@ -43,7 +43,12 @@
 // a timestamp that parses: a field Claude Code renamed or reformatted must
 // stop the round loudly, never close its days as empty (re-review N1,
 // 24/09/2026). Such a file blocks its day, and curate refuses to start the
-// model on it. A file with no user or assistant line at all (a title or
+// model on it. So does a file the round would offer whose path holds a
+// character no read permission can name exactly (src/curate/rule-path.mjs;
+// fix round 1 of phase 3 task 1, 25/09/2026): the round could not be
+// allowed to read it without being allowed more, so it is listed with
+// those characters (`unsafe`) instead of offered. Only a file that would
+// have been offered: one outside the window blocks nothing. A file with no user or assistant line at all (a title or
 // summary line only, or nothing) is counted as `noTimestamp`: there is no
 // conversation in it to date, so it belongs to no day and blocks none
 // (final review I2, 24/09/2026: as unreadable it kept its day open forever
@@ -63,6 +68,7 @@ import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { createTranslator } from '../lang.mjs';
 import { addDays, localDay, startOfDay } from '../guards/watermark.mjs';
+import { unsafeRuleCharacters } from '../curate/rule-path.mjs';
 
 export const SAMPLE_BYTES = 64 * 1024;
 export const MTIME_SLACK_MS = 15 * 60 * 1000;
@@ -242,7 +248,8 @@ function renderPromptBlock(t, plan) {
     lines.push(t('sources.transcripts.none_in_window', { from: plan.window.from, to: plan.window.to }));
   }
   for (const file of plan.unreadable) {
-    lines.push(t('sources.transcripts.unreadable_line', { path: file.path, project: file.project, bytes: file.bytes }));
+    if (Array.isArray(file.unsafe)) lines.push(t('sources.transcripts.unsafe_line', { path: file.path, project: file.project, bytes: file.bytes, characters: file.unsafe.join(' ') }));
+    else lines.push(t('sources.transcripts.unreadable_line', { path: file.path, project: file.project, bytes: file.bytes }));
   }
   const d = plan.dropped;
   if (plan.overCap) lines.push(t('sources.transcripts.over_cap', { day: shownDay(plan.overCap.day), count: plan.overCap.files, cap: plan.cap }));
@@ -375,6 +382,12 @@ function collect({ window, config, machine, home = homedir(), io = fs, limits = 
       }
       if (found.selfTrace) {
         dropped.selfTrace += 1;
+        continue;
+      }
+      const unsafe = unsafeRuleCharacters(path);
+      if (unsafe.length > 0) {
+        dropped.unreadable += 1;
+        unreadable.push({ path, project, bytes, unsafe });
         continue;
       }
       candidates.push({ path, project, session: sessionId(entry.name), bytes, sampleFrom, sampleLine: found.sampleLine, perDay: found.perDay });

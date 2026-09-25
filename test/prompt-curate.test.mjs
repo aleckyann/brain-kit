@@ -19,6 +19,7 @@ import { createTranslator } from '../src/lang.mjs';
 import { loadConfig } from '../src/config.mjs';
 import { CURATE_RULES, renderCuratePrompt, runPrompt, vaultClock } from '../src/commands/prompt.mjs';
 import { KIT_SUBCOMMANDS, PROTECTED_PATHS, allowedTools, disallowedTools, kitCommand } from '../src/curate/tools.mjs';
+import { RULE_UNSAFE_CHARACTERS, unsafeRuleCharacters } from '../src/curate/rule-path.mjs';
 
 const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
 const LANGS = ['pt-BR', 'en'];
@@ -124,11 +125,29 @@ test('allowedTools() grants reading each listed file exactly, and each listed di
   assert.equal(allowedTools([], { readFiles: [other, other] }).filter((r) => r === 'Read(//srv/transcripts/b.jsonl)').length, 1);
 });
 
-test('allowedTools() escapes what a permission pattern would read as a wildcard, so a listed path names only itself', () => {
-  assert.deepEqual(allowedTools([], { readFiles: ['/home/ana/a*b/[x]?.jsonl', '/home/ana/back\\slash.jsonl'] }).slice(6, 8), [
-    'Read(//home/ana/a\\*b/\\[x\\]\\?.jsonl)', 'Read(//home/ana/back\\\\slash.jsonl)',
-  ]);
-  assert.deepEqual(allowedTools([], { readDirs: ['/home/ana/*'] }).slice(6, 7), ['Read(//home/ana/\\*/**)']);
+// Every character whose meaning inside a rule is not measured, one per
+// class of src/curate/rule-path.mjs, and a control character of each kind.
+const UNSAFE = ['*', '?', '[', ']', '{', '}', '(', ')', '\\', ',', '\n', '\r', '\t', String.fromCharCode(1), String.fromCharCode(31), String.fromCharCode(127)];
+
+test('unsafeRuleCharacters names each character a rule cannot carry, a control character as U+XXXX, once each in order; spaces and accents pass', () => {
+  assert.deepEqual([...RULE_UNSAFE_CHARACTERS], ['*', '?', '[', ']', '{', '}', '(', ')', '\\', ',']);
+  for (const ch of RULE_UNSAFE_CHARACTERS) assert.deepEqual(unsafeRuleCharacters(`/home/ana/a${ch}b.jsonl`), [ch], ch);
+  assert.deepEqual(unsafeRuleCharacters('/home/ana/a\nb'), ['U+000A']);
+  assert.deepEqual(unsafeRuleCharacters('/home/ana/a\rb\tc'), ['U+000D', 'U+0009']);
+  assert.deepEqual(unsafeRuleCharacters(`/a${String.fromCharCode(1)}b${String.fromCharCode(31)}c${String.fromCharCode(127)}`), ['U+0001', 'U+001F', 'U+007F']);
+  assert.deepEqual(unsafeRuleCharacters('/home/ana/(x) Read (y)/z*.jsonl'), ['(', ')', '*']);
+  assert.deepEqual(unsafeRuleCharacters('/home/ana/Notas de reunião/Sessões antigas/sessão 1.jsonl'), []);
+  assert.deepEqual(unsafeRuleCharacters('/home/ana/a-b_c.d/e f/-home-ana-vault/0000.jsonl'), []);
+});
+
+test('allowedTools() refuses to turn a path holding any of those characters into a rule, file or directory; spaces and accents pass', () => {
+  for (const ch of UNSAFE) {
+    const path = `/home/ana/Sessões ${ch} x/-home-ana-vault/a.jsonl`;
+    assert.throws(() => allowedTools([], { readFiles: [path] }), TypeError, `readFiles ${JSON.stringify(ch)}`);
+    assert.throws(() => allowedTools([], { readDirs: [`/home/ana/Sessões ${ch} x`] }), TypeError, `readDirs ${JSON.stringify(ch)}`);
+  }
+  assert.throws(() => allowedTools([], { readFiles: ['/home/ana/-home-ana-vault/(a) Read (b).jsonl'] }), /holds \( \)/);
+  assert.deepEqual(allowedTools([], { readFiles: ['/home/ana/Sessões de estudo/sessão 1.jsonl'] }).slice(6, 7), ['Read(//home/ana/Sessões de estudo/sessão 1.jsonl)']);
 });
 
 test('allowedTools() refuses a read root that is not an absolute path, and a directory that is the whole disk', () => {

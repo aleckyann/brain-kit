@@ -740,6 +740,23 @@ test('config-valid: passes on a valid configuration', async () => {
   assertCheck(report, 'config-valid', 'ok', 'doctor.config_valid.ok');
 });
 
+test('config-valid: fails on an allow rule that grants a scoped tool with no scope, naming the setting and each rule; an explicit scope passes', async () => {
+  for (const [extra, rules] of [[['Read'], 'Read'], [['Bash(*)', 'Edit()'], 'Bash(*), Edit()'], [['Write(./**),Grep'], 'Grep']]) {
+    const config = baseConfig();
+    config.curate.allowed_tools_extra = extra;
+    const fx = setup({ config });
+    const { report, code } = await doctor(fx, ['--only', 'config-valid']);
+    const c = assertCheck(report, 'config-valid', 'fail', 'doctor.config_valid.unscoped_tool');
+    assert.deepEqual([c.params.setting, c.params.rules], ['curate.allowed_tools_extra', rules]);
+    assert.match(c.message, /curate refuses to start/);
+    assert.equal(code, EXIT.FAILURE);
+  }
+  const config = baseConfig();
+  config.curate.allowed_tools_extra = ['Read(//**)', 'mcp__x__y'];
+  const { report } = await doctor(setup({ config }), ['--only', 'config-valid']);
+  assertCheck(report, 'config-valid', 'ok', 'doctor.config_valid.ok');
+});
+
 // --- machine-valid -----------------------------------------------------------
 
 test('machine-valid: fails when machine.json is missing', async () => {
@@ -754,6 +771,13 @@ test('machine-valid: fails when machine.json is invalid against its schema', asy
   const fx = setup({ machine: { vault_id: 'Not Valid' } });
   const { report } = await doctor(fx, ['--only', 'machine-valid']);
   assertCheck(report, 'machine-valid', 'fail', 'doctor.machine_valid.invalid');
+});
+
+test('machine-valid: fails on a transcripts_dir holding a character no read rule can carry, naming it', async () => {
+  const fx = setup({ machine: { transcripts_dir: '~/Sessões (cópia)' } });
+  const { report } = await doctor(fx, ['--only', 'machine-valid']);
+  const c = assertCheck(report, 'machine-valid', 'fail', 'doctor.machine_valid.invalid');
+  assert.match(JSON.stringify(c.params), /transcripts_dir: must not hold \( \)/);
 });
 
 test('machine-valid: fails when machine.json is not JSON', async () => {

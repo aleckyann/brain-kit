@@ -3,6 +3,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { validateSchema } from './schema.mjs';
 import { KIT_ROOT } from './version.mjs';
 import { decodeBytes } from './io.mjs';
+import { unsafeRuleCharacters } from './curate/rule-path.mjs';
 
 export const CONFIG_FILENAME = 'brain-kit.config.json';
 export const MACHINE_FILENAME = 'machine.json';
@@ -119,7 +120,11 @@ export function machineSchema() {
 //   - a transcripts_dir that is neither absolute nor under `~/`, for the
 //     same reason, and because the round's read evidence compares the
 //     absolute path the model reads with the path the plan listed: a
-//     relative root makes every transcript unreadable as evidence.
+//     relative root makes every transcript unreadable as evidence;
+//   - a transcripts_dir holding a character no read permission can name
+//     exactly (src/curate/rule-path.mjs): every transcript under it would
+//     be listed unreadable and stop every round, so it is said once here.
+//     Spaces and accents are fine (measured).
 const MACHINE_PATH_KEYS = Object.freeze(['canonical_path', 'claude_bin', 'state_dir', 'transcripts_dir']);
 const MACHINE_ARGV_KEYS = Object.freeze(['network_check', 'notify_command']);
 
@@ -136,6 +141,10 @@ export function machineValueErrors(machine) {
   const transcripts = machine.transcripts_dir;
   if (typeof transcripts === 'string' && !isBlank(transcripts) && !isAbsolute(transcripts) && transcripts !== '~' && !transcripts.startsWith('~/')) {
     errors.push('$.transcripts_dir: must be an absolute directory or start with ~/');
+  }
+  const unsafe = typeof transcripts === 'string' ? unsafeRuleCharacters(transcripts) : [];
+  if (unsafe.length > 0) {
+    errors.push(`$.transcripts_dir: must not hold ${unsafe.join(' ')}: a read permission cannot name such a path exactly (spaces and accents are fine)`);
   }
   if (isBlank(machine.model)) errors.push('$.model: must not be empty (null asks for the default model)');
   const paths = machine.paths;

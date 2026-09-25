@@ -18,6 +18,7 @@
 // every `node` command no rule allows.
 import { join } from 'node:path';
 import { KIT_ROOT } from '../version.mjs';
+import { unsafeRuleCharacters } from './rule-path.mjs';
 
 export const KIT_SUBCOMMANDS = Object.freeze(['validate', 'lint', 'propose']);
 
@@ -43,17 +44,17 @@ const BASE_ALLOWED = Object.freeze(['Read(./**)', 'Glob(./**)', 'Grep(./**)', 'E
 
 // An absolute path as a permission rule names it: `//` and the path without
 // its leading slash, the form Claude Code reads from the root of the file
-// system. The rule is a gitignore-style pattern, so a character it would
-// read as a wildcard or a class is escaped with a backslash, and the rule
-// names that path and no other. Not measured, and rare: Claude Code names
-// a project's folder with every character but letters and digits turned
-// into a dash, and a session file by its id, so only a configured
-// transcripts_dir could hold one; a CLI that read the backslash literally
-// would deny the listed file instead. A path that is not absolute is
-// refused: relative to where the round runs, it would name another file.
+// system. A path that is not absolute is refused: relative to where the
+// round runs, it would name another file. So is a path holding a character
+// whose meaning inside a rule is not measured (src/curate/rule-path.mjs):
+// the callers never pass one (the transcripts source lists such a file as
+// unreadable, and machine.json refuses such a transcripts_dir), and this
+// is the last line, for any caller that would.
 function rulePath(path, label) {
   if (typeof path !== 'string' || !path.startsWith('/')) throw new TypeError(`${label}: not an absolute path: ${JSON.stringify(path)}`);
-  return `//${path.slice(1).replace(/[\\*?[\]]/g, '\\$&')}`;
+  const unsafe = unsafeRuleCharacters(path);
+  if (unsafe.length > 0) throw new TypeError(`${label}: ${JSON.stringify(path)} holds ${unsafe.join(' ')}, which a read rule cannot carry with a known meaning`);
+  return `//${path.slice(1)}`;
 }
 
 function readFileRule(file) {

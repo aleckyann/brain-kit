@@ -61,10 +61,11 @@ export const ISOLATION_ARGS = Object.freeze([
 // (measurement 4 of the phase 3 plan). No round is launched with one.
 const SCOPED_TOOLS = Object.freeze(['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash']);
 
-// The rules one argument holds, split where the CLI splits a tool list: at
-// a comma or a space outside parentheses (a space inside a rule's
-// parentheses is part of its scope, as in a path with a space).
-function rulesIn(arg) {
+// The rules one argument holds, split where the CLI splits a tool list
+// (its help: "comma or space-separated"): at a comma or a space outside
+// parentheses (a space inside a rule's parentheses is part of its scope,
+// as in a path with a space).
+export function rulesIn(arg) {
   const out = [];
   let depth = 0;
   let current = '';
@@ -93,14 +94,35 @@ function checkRules(label, rules) {
   }
 }
 
-function checkScoped(allowed) {
+// The rules among `allowed` that grant a scoped tool with no real scope:
+// its bare name, an empty scope `Tool()`, or the all-matching `Tool(*)`
+// (the scope read trimmed). Whether the CLI reads the last two as the
+// whole tool is not measured; refusing them fails closed either way. An
+// explicit scope, however wide (`Read(//**)`), is a deliberate grant and
+// passes. The vault's configuration is checked with this before a round
+// (curate, --dry and doctor's config-valid name the setting); buildArgv
+// throws on it as the last line.
+export function unscopedRules(allowed) {
+  if (!Array.isArray(allowed)) return [];
+  const found = [];
   for (const arg of allowed) {
-    const bare = rulesIn(arg).find((rule) => SCOPED_TOOLS.includes(rule));
-    if (bare !== undefined) {
-      const example = bare === 'Bash' ? 'Bash(<command>:*)' : `${bare}(./**)`;
-      throw new TypeError(`allowed: ${JSON.stringify(bare)} would grant the tool on every file or command; a round allows it only with a scope, such as ${example}`);
+    if (typeof arg !== 'string') continue;
+    for (const rule of rulesIn(arg)) {
+      const m = /^([A-Za-z]+)(?:\((.*)\))?$/s.exec(rule);
+      if (m === null || !SCOPED_TOOLS.includes(m[1])) continue;
+      const scope = m[2] === undefined ? null : m[2].trim();
+      if (scope === null || scope === '' || scope === '*') found.push(rule);
     }
   }
+  return found;
+}
+
+function checkScoped(allowed) {
+  const [rule] = unscopedRules(allowed);
+  if (rule === undefined) return;
+  const tool = /^[A-Za-z]+/.exec(rule)[0];
+  const example = tool === 'Bash' ? 'Bash(<command>:*)' : `${tool}(./**)`;
+  throw new TypeError(`allowed: ${JSON.stringify(rule)} would grant the tool on every file or command; a round allows it only with a scope, such as ${example}`);
 }
 
 export function buildArgv({ model, maxTurns, budgetUsd, allowed = [], disallowed = [] } = {}) {

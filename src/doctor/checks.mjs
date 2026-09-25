@@ -43,7 +43,7 @@ import { MANIFEST_PATH, readManifest } from '../manifest.mjs';
 import { compareVersions } from '../commands/update.mjs';
 import { defaultBranch, defaultBranchUpstream, remoteBranches, trackedRemote } from '../git.mjs';
 import { checkCli } from '../guards/cli.mjs';
-import { buildArgv } from '../harness/claude-code.mjs';
+import { buildArgv, unscopedRules } from '../harness/claude-code.mjs';
 import { addDays, daysBetween, localDay, readWatermark, WatermarkError } from '../guards/watermark.mjs';
 // A cycle on purpose: schedule.mjs imports resolveClaude and expandHome
 // from this file, and this file asks schedule's own `status`. Neither
@@ -474,6 +474,13 @@ function configValid(ctx) {
   });
   if (patterns.length > 0) {
     return { id, status: 'fail', messageKey: 'doctor.config_valid.pattern', params: { file, patterns } };
+  }
+  // An allow rule that grants a scoped tool with no scope: every round
+  // would stop on it (src/harness/claude-code.mjs, unscopedRules), so it
+  // is said here, before one does.
+  const unscoped = unscopedRules(read.value.curate?.allowed_tools_extra ?? []);
+  if (unscoped.length > 0) {
+    return { id, status: 'fail', messageKey: 'doctor.config_valid.unscoped_tool', params: { file, setting: 'curate.allowed_tools_extra', rules: unscoped.join(', ') } };
   }
   return { id, status: 'ok', messageKey: 'doctor.config_valid.ok', params: { file } };
 }

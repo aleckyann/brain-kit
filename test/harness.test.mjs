@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildArgv, ISOLATION_ARGS, ROUND_TOOLS, runModel } from '../src/harness/claude-code.mjs';
+import { buildArgv, ISOLATION_ARGS, ROUND_TOOLS, runModel, unscopedRules } from '../src/harness/claude-code.mjs';
 import { parseStream } from '../src/harness/stream.mjs';
 import { checkIsolation } from '../src/guards/isolation.mjs';
 import { checkCli } from '../src/guards/cli.mjs';
@@ -99,6 +99,24 @@ test('buildArgv refuses to allow a path or command tool with no scope, alone or 
   assert.doesNotThrow(() => buildArgv({ allowed: ['Read(//home/ana/notes Read,Bash/c.jsonl)', 'ToolSearch', 'mcp__x__y'] }));
   // Denying a tool everywhere is the round's own business.
   assert.doesNotThrow(() => buildArgv({ disallowed: ['Bash', 'Read'] }));
+});
+
+test('buildArgv refuses an empty or all-matching scope too, Tool() and Tool(*), trimmed; an explicit scope, however wide, is a deliberate grant', () => {
+  for (const tool of ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash']) {
+    for (const rule of [`${tool}()`, `${tool}(*)`, `${tool}( )`, `${tool}( * )`]) {
+      assert.throws(() => buildArgv({ allowed: [rule] }), (error) => error instanceof TypeError && error.message.includes(JSON.stringify(rule)), rule);
+    }
+  }
+  assert.throws(() => buildArgv({ allowed: ['Bash(*)'] }), /such as Bash\(<command>:\*\)/);
+  assert.throws(() => buildArgv({ allowed: ['Grep()'] }), /such as Grep\(\.\/\*\*\)/);
+  assert.doesNotThrow(() => buildArgv({ allowed: ['Read(//**)', 'Bash(git status:*)', 'Read(**)', 'ToolSearch()'] }));
+});
+
+test('unscopedRules returns every rule with no real scope, across elements and inside a list the CLI splits, in order', () => {
+  assert.deepEqual(unscopedRules(['Read(./**)', 'Edit(),Grep', 'mcp__x__y', 'Write(./notes/**) Bash(*)', 'ToolSearch', 'Task']), ['Edit()', 'Grep', 'Bash(*)']);
+  assert.deepEqual(unscopedRules(['Read(//**)', 'Glob(./**)', 'Bash(node x:*)']), []);
+  assert.deepEqual(unscopedRules(null), []);
+  assert.deepEqual(unscopedRules([7, null, 'Read']), ['Read']);
 });
 
 // --- parseStream -----------------------------------------------------------
@@ -362,6 +380,16 @@ test('checkIsolation expects absent a built-in the round denies by bare name (ru
   assert.deepEqual(checkIsolation(withTools([...ROUND_TOOLS]), { disallowed: ['Glob'] }).details[0].params, { extra: 'Glob', missing: '-' });
   // The kit's own denylist names no pinned tool bare.
   assert.deepEqual(checkIsolation(withTools([...ROUND_TOOLS]), { disallowed: ['WebFetch', 'WebSearch'] }).problems, []);
+});
+
+test('checkIsolation splits each deny element where the CLI splits a tool list, so one element can deny several tools (review M3)', () => {
+  const withTools = (tools) => isolatedWith((ev) => { initOf(ev).tools = tools; return ev; });
+  const noGlobGrep = withTools(ROUND_TOOLS.filter((n) => n !== 'Glob' && n !== 'Grep'));
+  for (const deny of [['Glob,Grep'], ['Glob Grep'], [' Glob', 'Grep '], ['Bash(curl:*),Glob Grep']]) {
+    assert.deepEqual(checkIsolation(noGlobGrep, { disallowed: deny }).problems, [], JSON.stringify(deny));
+  }
+  // A comma inside a rule's scope splits nothing.
+  assert.deepEqual(checkIsolation(noGlobGrep, { disallowed: ['Bash(x,Glob,Grep)'] }).details[0].params, { extra: '-', missing: 'Glob, Grep' });
 });
 
 // --- checkCli ------------------------------------------------------------------

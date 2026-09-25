@@ -24,18 +24,20 @@
 // A built-in tool the round itself denies by its bare name is removed from
 // the session by the CLI (measured on 24/09/2026: a bare "Bash" in
 // --disallowedTools removed Bash from the built-ins), so `disallowed`, the
-// round's own deny list, makes it expected absent (ruling R-B4). A rule
-// with a scope, such as `Glob(./secret/**)`, removes nothing.
+// round's own deny list, makes it expected absent (ruling R-B4). Each
+// element is split where the CLI splits a tool list, so `"Glob,Grep"`
+// denies both (review M3, 25/09/2026). A rule with a scope, such as
+// `Glob(./secret/**)`, removes nothing.
 //
 // Fail closed: a missing permissionMode is not dontAsk, a missing or
 // malformed mcp_servers list cannot prove there is no server, and a
 // missing or malformed tools list cannot prove which tools there are.
-import { ROUND_TOOLS } from '../harness/claude-code.mjs';
+import { ROUND_TOOLS, rulesIn } from '../harness/claude-code.mjs';
 
 const UNREADABLE_TOOLS = '(unreadable tools)';
 
 function builtinToolsDiff(tools, disallowed) {
-  const denied = new Set(disallowed.filter((rule) => typeof rule === 'string'));
+  const denied = new Set(disallowed.filter((rule) => typeof rule === 'string').flatMap((rule) => rulesIn(rule)));
   const expected = ROUND_TOOLS.filter((name) => !denied.has(name));
   if (!Array.isArray(tools)) return { extra: [UNREADABLE_TOOLS], missing: expected };
   const builtins = [...new Set(tools.map((name) => String(name)).filter((name) => !name.startsWith('mcp__')))];

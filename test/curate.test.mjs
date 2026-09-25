@@ -630,13 +630,62 @@ test('a built-in tool the vault denies by bare name is expected absent from the 
   assert.equal(control.watermark(), null);
 });
 
-test('a vault that adds a bare Read to the allow list never starts the model: exit 1 naming it, the day open', () => {
-  const w = makeCurateWorld({ config: (c) => { c.curate.allowed_tools_extra = ['Read']; } });
+test('a vault whose allow list grants a scoped tool with no scope is a configuration error: exit 2 naming the setting and the rule, in the vault\'s language, before the model; --dry says the same', () => {
+  for (const extra of [['Read'], ['Edit()'], ['Bash(*)'], ['Write(./**),Grep']]) {
+    const w = makeCurateWorld({ config: (c) => { c.curate.allowed_tools_extra = extra; } });
+    const r = w.curate();
+    assert.equal(r.status, EXIT.USAGE, r.stderr);
+    assert.equal(traces(w).model, false, 'the model was never started');
+    const last = w.lastRun();
+    assert.equal(last.reasonCode, 'config_invalid');
+    assert.ok(last.reason.includes('brain-kit.config.json curate.allowed_tools_extra'), last.reason);
+    assert.ok(last.reason.includes(extra.length === 1 && !extra[0].includes(',') ? extra[0] : 'Grep'), last.reason);
+    assert.doesNotMatch(last.reason, /unexpected error/);
+    assert.equal(w.watermark(), null);
+    const dry = w.curate(['--dry']);
+    assert.equal(dry.status, EXIT.USAGE, dry.stderr);
+    assert.ok(dry.stderr.includes('curate.allowed_tools_extra'), dry.stderr);
+  }
+  const pt = makeCurateWorld({ config: (c) => { c.lang = 'pt-BR'; c.curate.allowed_tools_extra = ['Read']; } });
+  const r = pt.curate();
+  assert.equal(r.status, EXIT.USAGE, r.stderr);
+  assert.match(pt.lastRun().reason, /concede Read sem escopo/);
+  // A scope, however wide, is a deliberate grant: the round runs.
+  const wide = makeCurateWorld({ config: (c) => { c.curate.allowed_tools_extra = ['Read(//**)']; } });
+  assert.equal(wide.curate().status, EXIT.OK);
+});
+
+test('a transcript in the window whose path no read rule can name stops the round before the model: exit 4 naming it and the characters, the day open', () => {
+  const w = makeCurateWorld();
+  const copy = join(w.projects, PROJECT, '(a) Read (b).jsonl');
+  writeFileSync(copy, readFileSync(w.transcript));
   const r = w.curate();
-  assert.equal(r.status, EXIT.FAILURE, r.stderr);
+  assert.equal(r.status, EXIT.SOURCE_UNREAD, r.stderr);
   assert.equal(traces(w).model, false, 'the model was never started');
-  assert.match(w.lastRun().reason, /"Read"/);
+  const last = w.lastRun();
+  assert.equal(last.reasonCode, 'source_unreadable');
+  assert.ok(last.reason.includes(copy), last.reason);
+  assert.match(last.reason, /hold \( \) in their path, which no read permission can name exactly/);
   assert.equal(w.watermark(), null);
+  assert.equal(w.notifications().length, 1);
+});
+
+test('a transcripts_dir holding such a character is refused with the machine file, before anything runs', () => {
+  const w = makeCurateWorld();
+  w.setMachine({ transcripts_dir: join(w.base, 'Sessões (cópia)') });
+  const r = w.curate();
+  assert.equal(r.status, EXIT.USAGE, r.stderr);
+  assert.equal(w.lastRun().reasonCode, 'machine_invalid');
+  assert.match(w.lastRun().reason, /transcripts_dir: must not hold \( \)/);
+  assert.equal(traces(w).model, false);
+});
+
+test('one element of the vault\'s deny list that the CLI splits into several tools expects all of them absent (review M3)', () => {
+  const w = makeCurateWorld({ config: (c) => { c.curate.disallowed_tools_extra = ['Glob,Grep']; } });
+  w.scenario({ rewrite: { tools: ['Bash', 'Read', 'Edit', 'Write', 'ToolSearch'] } });
+  const r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.equal(w.lastRun().isolation.ok, true);
 });
 
 test('the prompt carries the parameters block: the day as DD/MM/YYYY, the window, the transcript, the caps and the kit, and no signature line of its own', () => {

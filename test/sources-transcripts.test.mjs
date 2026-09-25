@@ -409,6 +409,62 @@ test('a relative transcripts_dir is refused by the machine check; absolute and ~
   assert.deepEqual(machineValueErrors({ transcripts_dir: '~/.claude/projects' }), []);
 });
 
+test('a transcripts_dir holding a character no read rule can carry is refused by the machine check, naming it; spaces and accents pass', () => {
+  for (const ch of ['*', '?', '[', ']', '{', '}', '(', ')', '\\', ',']) {
+    assert.deepEqual(machineValueErrors({ transcripts_dir: `/home/ana/Sessões ${ch} x` }), [
+      `$.transcripts_dir: must not hold ${ch}: a read permission cannot name such a path exactly (spaces and accents are fine)`,
+    ], ch);
+  }
+  for (const [ch, shown] of [['\n', 'U+000A'], ['\t', 'U+0009'], [String.fromCharCode(127), 'U+007F']]) {
+    const [error] = machineValueErrors({ transcripts_dir: `~/a${ch}b` });
+    assert.ok(error.startsWith(`$.transcripts_dir: must not hold ${shown}:`), `${shown}: ${error}`);
+  }
+  assert.deepEqual(machineValueErrors({ transcripts_dir: '/home/ana/Sessões de estudo/projetos' }), []);
+  assert.deepEqual(machineValueErrors({ transcripts_dir: '~/Área comum/projects' }), []);
+});
+
+test('a transcript the round would offer whose path no read rule can name is listed unreadable with its characters, never offered; the others are offered', () => {
+  const world = makeWorld();
+  const ok = world.write(PROJECT, 'ok.jsonl', [user('Ana asks about the plan', INSIDE)]);
+  const parens = world.write(PROJECT, '(a) Read (b).jsonl', [user('a copied session', INSIDE)]);
+  const star = world.write(PROJECT, 'z*.jsonl', [user('another session', INSIDE)]);
+  const newline = world.write(PROJECT, 'line\nbreak.jsonl', [user('one more', INSIDE)]);
+  const plan = world.collect();
+  assert.deepEqual(paths(plan), [ok]);
+  assert.deepEqual(plan.unreadable.map((f) => [f.path, f.unsafe]).sort(), [
+    [parens, ['(', ')']], [star, ['*']], [newline, ['U+000A']],
+  ].sort());
+  assert.equal(plan.dropped.unreadable, 3);
+  for (const file of [parens, star]) assert.ok(plan.promptBlock.includes(`- ${file} (project ${PROJECT}`), file);
+  assert.match(plan.promptBlock, /its path holds \( \), which no read permission can name exactly/);
+  assert.equal(plan.promptBlock.includes('could not be read (an I/O error'), false, 'not reported as an I/O error');
+  // The evidence still expects them: the day cannot close while they wait.
+  const record = { toolUses: [{ id: 't1', name: 'Read', input: { file_path: ok } }], toolResults: [{ toolUseId: 't1', isError: false }] };
+  assert.deepEqual(transcriptsSource.readEvidence(record, plan), { read: 1, expected: 4, ok: false });
+});
+
+test('a transcript with such a path that the round would not offer blocks nothing: outside the window, or not opened', () => {
+  const world = makeWorld();
+  const ok = world.write(PROJECT, 'ok.jsonl', [user('Ana asks about the plan', INSIDE)]);
+  world.write(PROJECT, '(old) Read.jsonl', [user('weeks ago', WEEKS_AGO)], { mtime: WEEKS_AGO });
+  world.write(PROJECT, 'z*.jsonl', [user('weeks ago, touched today', WEEKS_AGO)]);
+  const plan = world.collect();
+  assert.deepEqual(paths(plan), [ok]);
+  assert.deepEqual(plan.unreadable, []);
+  assert.equal(plan.dropped.modifiedBeforeWindow, 1);
+  assert.equal(plan.dropped.outOfWindow, 1);
+});
+
+test('every transcript of an included project whose folder name holds such a character is listed unreadable', () => {
+  const project = '-home-ana-notes (copy)';
+  const world = makeWorld({ include: [PROJECT, project] });
+  const ok = world.write(PROJECT, 'ok.jsonl', [user('Ana asks about the plan', INSIDE)]);
+  const inside = world.write(project, 'a.jsonl', [user('a session in the copied folder', INSIDE)]);
+  const plan = world.collect();
+  assert.deepEqual(paths(plan), [ok]);
+  assert.deepEqual(plan.unreadable.map((f) => [f.path, f.project, f.unsafe]), [[inside, project, ['(', ')']]]);
+});
+
 test('the prompt block lists each file with project, window span, size and sample offset, and only non-zero counters', () => {
   const world = makeWorld({ exclude: ['/skip-'] });
   const file = world.write(PROJECT, 'a.jsonl', [user('Ana asks', '2026-09-23T10:00:00.000Z'), assistant('ok', '2026-09-23T11:00:00.000Z')]);

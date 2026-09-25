@@ -13,8 +13,10 @@
 //    3. take the vault lock; held: exit 75 naming the holder
 //    4. wait for the network; none: exit 69 (did_not_wait is a note, R14)
 //    5. sync in process, under the round's lock; diverged: 75; failed: 1
-//    6. only now load the configuration and check the prompt it names, so
-//       a synced configuration is what runs (incident 14/09/2026)
+//    6. only now load the configuration and check the prompt it names and
+//       the allow rules it adds (one that grants a path or command tool
+//       with no scope: exit 2), so a synced configuration is what runs
+//       (incident 14/09/2026)
 //    7. the window from the watermark; a mark in the future: exit 1 naming
 //       `brain-kit watermark reopen`; nothing open: exit 0
 //    8. a dirty tree: exit 75 naming every file
@@ -73,7 +75,7 @@ import { emptyWindow } from '../guards/empty-window.mjs';
 import {
   addDays, advanceWatermark, localDay, parseSourcesLine, readWatermark, startOfDay, windowFor, WatermarkError,
 } from '../guards/watermark.mjs';
-import { buildArgv, runModel } from '../harness/claude-code.mjs';
+import { buildArgv, runModel, unscopedRules } from '../harness/claude-code.mjs';
 import { allowedTools, disallowedTools, kitCommand } from '../curate/tools.mjs';
 import { transcriptsSource } from '../sources/transcripts-claude-code.mjs';
 import { syncUnderLock } from './sync.mjs';
@@ -93,6 +95,8 @@ export const ROUND_TIMEOUT_MS = 60 * 60 * 1000;
 const FALLBACK_MAX_TURNS = 100;
 const FALLBACK_BUDGET_USD = 5;
 const NOTIFY_TIMEOUT_MS = 30000;
+// The setting a vault adds allow rules with, as a person finds it.
+const ALLOWED_EXTRA_SETTING = `${CONFIG_FILENAME} curate.allowed_tools_extra`;
 const API_ERROR = /API Error|\b401\b|authentication/i;
 const API_MARKERS = Object.freeze([/API Error/i, /\b401\b/, /authentication/i]);
 
@@ -593,6 +597,11 @@ export async function runCurate(argv, io, t, deps = {}) {
     const outside = promptOutsideVault(root, config);
     const promptSetting = `${CONFIG_FILENAME} curate.prompt`;
     if (outside !== null) return fail(EXIT.USAGE, 'prompt_outside', t('curate.prompt_outside', { path: outside, setting: promptSetting }));
+    // An allow rule that grants a scoped tool with no scope is a
+    // configuration error, said before anything runs (review M1 and M2,
+    // 25/09/2026); buildArgv would throw on it anyway.
+    const unscoped = unscopedRules(config.curate?.allowed_tools_extra ?? []);
+    if (unscoped.length > 0) return fail(EXIT.USAGE, 'config_invalid', t('curate.allowed_unscoped', { rules: unscoped.join(', '), setting: ALLOWED_EXTRA_SETTING }));
     const tz = config.vault?.timezone;
     const { active, required, unknownRequired, unknownBestEffort } = sourcesOf(config);
 
@@ -685,7 +694,16 @@ export async function runCurate(argv, io, t, deps = {}) {
       if (unreadable.length === 0) continue;
       const setting = `${CONFIG_FILENAME} sources.${id}.exclude_path_patterns`;
       log('plan', { [id]: { kept: plans[id].files.length, dropped: plans[id].dropped } });
-      return fail(EXIT.SOURCE_UNREAD, 'source_unreadable', t('curate.source_unreadable', { source: id, files: unreadable.map((f) => f.path).join(', '), setting, command: `brain-kit watermark assume-covered ${id}` }));
+      let reason = t('curate.source_unreadable', { source: id, files: unreadable.map((f) => f.path).join(', '), setting, command: `brain-kit watermark assume-covered ${id}` });
+      // A file whose path no read permission can name exactly: renaming
+      // it, not its permissions, is the fix, and the reason says so.
+      const unsafe = unreadable.filter((f) => Array.isArray(f.unsafe));
+      if (unsafe.length > 0) {
+        const unsafeFiles = unsafe.map((f) => f.path).join(', ');
+        const characters = [...new Set(unsafe.flatMap((f) => f.unsafe))].join(' ');
+        reason = `${reason} ${t('curate.source_unsafe_paths', { files: unsafeFiles, characters })}`;
+      }
+      return fail(EXIT.SOURCE_UNREAD, 'source_unreadable', reason);
     }
     // The first open day alone over a source's cap: no whole day fits, and
     // a round never reads part of a day (final review C1).
@@ -1001,6 +1019,11 @@ function dryRun({ root, stateDir, machine, claudeBin, io, env, now }) {
   if (config.curate?.enabled === false) {
     io.stdout.write(`${t('curate.disabled', { file: CONFIG_FILENAME })}\n`);
     return EXIT.OK;
+  }
+  const unscoped = unscopedRules(config.curate?.allowed_tools_extra ?? []);
+  if (unscoped.length > 0) {
+    io.stderr.write(`${t('curate.allowed_unscoped', { rules: unscoped.join(', '), setting: ALLOWED_EXTRA_SETTING })}\n`);
+    return EXIT.USAGE;
   }
   const tz = config.vault?.timezone;
   const { active, unknownRequired, unknownBestEffort } = sourcesOf(config);
