@@ -12,12 +12,13 @@
 // of `taxonomy.columns.<file>.labels` (the heading line the table sits
 // under, "## Open"), and the two columns are header cells of that table.
 // A vault whose configuration predates the setting reads the language
-// pack's own default list, the one `init` writes today, with each column
-// named by the vault's own column contract: the pack's default names a
-// column by its place in `taxonomy.columns.<file>.columns` (the deadline is
-// the fourth column of the follow-ups contract), and the vault's contract
-// at that place is the header `lint` holds its table to. The same default
-// for `briefing.upcoming_days`.
+// pack's own default list, the one `init` writes today, as it is: columns
+// are always found by their exact header name, never by their place (fix
+// round 1: a contract with a column inserted had its deadline read from the
+// column beside it). A table without the named column is a problem naming
+// file, heading and column, and none of its rows is bucketed; the owner
+// names the columns in `briefing.pending`. The same default for
+// `briefing.upcoming_days`.
 //
 // A cell's deadline is the FIRST date in it, written DD/MM/YYYY (day and
 // month may have one digit) or YYYY-MM-DD, that is a real calendar date:
@@ -57,15 +58,22 @@ import { addDays, localDay } from '../guards/watermark.mjs';
 // not glued to another digit on either side: "123/10/2026" holds no date.
 const DATE_IN_TEXT = /(?<!\d)(?:(\d{1,2})\/(\d{1,2})\/(\d{4})|(\d{4})-(\d{2})-(\d{2}))(?!\d)/g;
 
+// A day and a month with no year, or a two-digit year ("05/10", "05/10/26"):
+// no day can be computed from it, so the item stays undated, and a problem
+// says which text was not taken for a date. Not glued to a digit or a slash
+// on either side, so no part of a full DD/MM/YYYY matches.
+const DATE_WITHOUT_YEAR = /(?<![\d/])\d{1,2}\/\d{1,2}(?:\/\d{2})?(?![\d/])/g;
+
 const ATX_HEADING = /^ {0,3}(#{1,6})(?:[ \t]|$)/;
 
 function pad(n, width = 2) {
   return String(n).padStart(width, '0');
 }
 
-// The deadline a cell holds: `{ deadline, invalid }`, `deadline` the first
-// real date as YYYY-MM-DD or null, `invalid` every date-shaped text in the
-// cell that names no real day, as written.
+// The deadline a cell holds: `{ deadline, invalid, incomplete }`,
+// `deadline` the first real date as YYYY-MM-DD or null, `invalid` every
+// date-shaped text in the cell that names no real day, as written, and
+// `incomplete` every day and month written without a four-digit year.
 export function parseDeadline(cell) {
   const text = typeof cell === 'string' ? cell : '';
   let deadline = null;
@@ -81,7 +89,8 @@ export function parseDeadline(cell) {
     }
     if (deadline === null) deadline = `${pad(year, 4)}-${pad(month)}-${pad(day)}`;
   }
-  return { deadline, invalid };
+  const incomplete = [...text.matchAll(DATE_WITHOUT_YEAR)].map((match) => match[0]);
+  return { deadline, invalid, incomplete };
 }
 
 // Which bucket a deadline falls in: 'overdue' | 'today' | 'upcoming' |
@@ -95,7 +104,9 @@ export function bucketOf(deadline, today, upcomingDays) {
 }
 
 // True when `path` (vault-relative, posix) is one `never_read` names: the
-// same path, or a path under an entry ending in "/". An entry carrying a
+// same path, or a path under it, with or without a trailing "/" on the
+// entry ("people" covers people/ana.md as "people/" does, and never
+// peoplex/ana.md). An entry carrying a
 // fragment ("memory/log.md#full") names its file too: reading a table out
 // of a file means opening the whole file, which is what the fragment
 // forbids.
@@ -104,9 +115,9 @@ export function inNeverRead(path, neverRead) {
   for (const entry of neverRead) {
     if (typeof entry !== 'string' || entry === '') continue;
     const hash = entry.indexOf('#');
-    const target = (hash === -1 ? entry : entry.slice(0, hash)).replace(/^\.\//, '');
+    const target = (hash === -1 ? entry : entry.slice(0, hash)).replace(/^\.\//, '').replace(/\/+$/, '');
     if (target === '') continue;
-    if (target.endsWith('/') ? path.startsWith(target) : path === target) return true;
+    if (path === target || path.startsWith(`${target}/`)) return true;
   }
   return false;
 }
@@ -120,30 +131,14 @@ function defaultsFor(lang) {
   return packDefaults.get(chosen);
 }
 
-// The pack's default column name, as the vault's own contract names the
-// column at the same place; the pack's name when the vault declares no
-// such contract.
-function ownColumn(config, pack, file, name) {
-  const at = pack.taxonomy?.columns?.[file]?.columns?.indexOf(name) ?? -1;
-  const own = config?.taxonomy?.columns?.[file]?.columns;
-  return at !== -1 && Array.isArray(own) && typeof own[at] === 'string' ? own[at] : name;
-}
-
 // The pending tables the vault asks for, and how many days "upcoming"
 // spans: the configuration's own values, or its language pack's defaults
 // when the configuration predates them.
 export function pendingSettings(config) {
   const briefing = config?.briefing ?? {};
   const pack = defaultsFor(config?.lang);
-  const entries = Array.isArray(briefing.pending)
-    ? briefing.pending
-    : pack.briefing.pending.map((entry) => ({
-      ...entry,
-      date_column: ownColumn(config, pack, entry.file, entry.date_column),
-      what_column: ownColumn(config, pack, entry.file, entry.what_column),
-    }));
   return {
-    entries,
+    entries: Array.isArray(briefing.pending) ? briefing.pending : pack.briefing.pending,
     upcomingDays: Number.isInteger(briefing.upcoming_days) ? briefing.upcoming_days : pack.briefing.upcoming_days,
   };
 }
@@ -265,8 +260,9 @@ export function pendingBuckets({ root, config, today, tz }) {
       if (cells.every((cell) => cell === '')) continue;
       const line = prefix + section.start + row.lineIndex;
       const raw = cells[dateAt] ?? '';
-      const { deadline, invalid } = parseDeadline(raw);
+      const { deadline, invalid, incomplete } = parseDeadline(raw);
       for (const value of invalid) problems.push({ code: 'invalid_date', detail: { path, line, value } });
+      if (deadline === null) for (const value of incomplete) problems.push({ code: 'date_without_year', detail: { path, line, value } });
       const item = { file: path, line, what: cells[whatAt] ?? '', deadline, raw, order };
       order += 1;
       const bucket = bucketOf(deadline, day, upcomingDays);

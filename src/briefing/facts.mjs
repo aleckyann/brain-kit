@@ -9,6 +9,8 @@
 // for a merge, the notes past their stale_after, the pending items by
 // deadline, the working tree and the lock.
 //
+// Every open pull request is listed, never a first page (ruling R-T1).
+//
 // Where a fact cannot be known, the answer says so and says why; it never
 // stands in a guess. `gh` absent or failing gives `{ ok: false, reason }`
 // and no list, never an empty one; a last-run record that cannot be read is
@@ -28,7 +30,9 @@ import { run as runCommand } from '../exec.mjs';
 import { STATE_FILES } from '../state.mjs';
 import { walkVault as realWalkVault } from '../vault.mjs';
 import { listPublishable as realListPublishable, noteFileSet } from '../file-set.mjs';
-import { computeStale, isMarkdown, makeReadFile } from '../commands/validate.mjs';
+import { isMarkdown, makeReadFile } from '../commands/validate.mjs';
+import { readScalar, splitFrontmatter } from '../frontmatter.mjs';
+import { isValidIsoDate } from '../dates.mjs';
 import { aheadBehind, currentBranch, defaultBranch, defaultBranchUpstream, dirtyPaths, resolveCommit, runGit } from '../git.mjs';
 import { describeLock } from '../guards/lock.mjs';
 import { localDay } from '../guards/watermark.mjs';
@@ -38,11 +42,16 @@ import { ghEnvOf } from '../commands/propose.mjs';
 import { vaultClock } from '../commands/prompt.mjs';
 import { pendingBuckets } from './pending.mjs';
 
-// `gh pr list` returns at most this many pull requests when it is not
-// given --limit (gh's own default). A list that long may be cut: the
-// facts say so instead of stating the count as the whole.
-export const GH_LIST_DEFAULT_LIMIT = 30;
-export const PR_LIST_ARGS = Object.freeze(['pr', 'list', '--state', 'open', '--json', 'number,title,url,createdAt']);
+// Every open pull request, with no cap (ruling R-T1): `gh pr list` stops at
+// 30 unless given a --limit, and any number there is a cap nobody asked
+// for. `gh api --paginate` follows the API's next-page links until there
+// are none, and exits non-zero when any page fails, so exit 0 means every
+// page was read. {owner}/{repo} is filled by gh from the vault's own
+// remote (or GH_REPO). The filter prints each pull request as one line of
+// JSON (`tojson` makes it a string, which gh prints raw), whatever the
+// page it came from.
+export const PR_API_FILTER = '.[] | {number, title, url: .html_url, createdAt: .created_at} | tojson';
+export const PR_LIST_ARGS = Object.freeze(['api', '--paginate', '--method', 'GET', 'repos/{owner}/{repo}/pulls?state=open', '--jq', PR_API_FILTER]);
 
 // ISO weekday names, Sunday first as Date#getUTCDay counts them: an
 // identifier, translated only where a person reads it.
@@ -119,37 +128,65 @@ function unreadableRun(detail) {
   return { at: null, atHuman: null, exit: null, reasonCode: null, sources: {}, problem: String(detail) };
 }
 
-// The open pull requests, from `gh pr list` run in the vault.
+// The open pull requests, every page of them, from `gh api` run in the vault.
 function pullRequestFacts(root, config, env, tz, { run, findExecutable }) {
-  const unknown = (reason, detail = null) => ({ ok: false, reason, detail, items: null, mayHaveMore: false });
+  const unknown = (reason, detail = null) => ({ ok: false, reason, detail, items: null });
   const name = typeof config.git?.pr_command === 'string' && config.git.pr_command !== '' ? config.git.pr_command : 'gh';
   const program = findExecutable(name, String(env.PATH ?? '').split(delimiter));
   if (program === null) return unknown('absent');
   const result = run(program, [...PR_LIST_ARGS], { cwd: root, env: ghEnvOf(env) });
   if (result.status !== 0) return unknown('failed', firstLine(result.stderr || result.stdout) || `exit ${result.status}`);
-  let list;
-  try {
-    list = JSON.parse(result.stdout);
-  } catch (error) {
-    return unknown('unreadable', error.message);
+  const list = [];
+  for (const line of result.stdout.split('\n')) {
+    if (line.trim() === '') continue;
+    try {
+      list.push(JSON.parse(line));
+    } catch (error) {
+      return unknown('unreadable', `${error.message}: ${firstLine(line)}`);
+    }
   }
-  const valid = Array.isArray(list) && list.every((pr) => isPlainObject(pr) && Number.isInteger(pr.number)
+  const valid = list.every((pr) => isPlainObject(pr) && Number.isInteger(pr.number)
     && typeof pr.title === 'string' && typeof pr.url === 'string' && typeof pr.createdAt === 'string');
   if (!valid) return unknown('unreadable', firstLine(result.stdout));
   const items = list
     .map((pr) => ({ number: pr.number, title: pr.title, url: pr.url, createdHuman: humanDayOf(pr.createdAt, tz) }))
     .sort((a, b) => a.number - b.number);
-  return { ok: true, reason: null, detail: null, items, mayHaveMore: items.length >= GH_LIST_DEFAULT_LIMIT };
+  return { ok: true, reason: null, detail: null, items };
+}
+
+// A datetime carrying its offset (Z or +hh:mm): one without it would be
+// read in the machine's zone, which is no zone of the vault's.
+const INSTANT_WITH_OFFSET = /^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[Zz]|[+-]\d{2}:?\d{2})$/;
+
+// When a stale_after has come, in the vault's zone (ruling R-T3): a plain
+// YYYY-MM-DD is a civil date, due on that day in the vault's zone, and is
+// shown as written; a datetime with an offset is an instant, due at that
+// instant, and is shown as the vault's day it falls on. `{ stale, human }`,
+// or null for a value that is neither (validate's spec rules report it).
+// validate's own computeStale reads a plain date as UTC midnight, a day
+// early behind UTC; it is left as it is (parked for the backlog), and the
+// briefing states only what this function decides.
+export function staleVerdict(staleAfter, { today, now, tz }) {
+  if (typeof staleAfter !== 'string') return null;
+  if (isValidIsoDate(staleAfter)) return { stale: staleAfter <= today, human: humanDay(staleAfter) };
+  if (!INSTANT_WITH_OFFSET.test(staleAfter)) return null;
+  const at = new Date(staleAfter);
+  if (Number.isNaN(at.getTime())) return null;
+  return { stale: at.getTime() <= now.getTime(), human: humanDay(localDay(at, tz)) };
 }
 
 // The notes past their stale_after, over the same set `validate` judges.
-function staleFacts(root, config, now, tz, { walkVault, listPublishable }) {
+function staleFacts(root, config, now, today, tz, { walkVault, listPublishable }) {
   const walked = walkVault(root, config, { all: true });
   const fileSet = noteFileSet(walked, listPublishable(root));
   if (fileSet.failure) return { ok: false, reason: 'listing_failed', count: null, notes: null };
-  const files = fileSet.files.filter(isMarkdown);
-  const stale = computeStale(files, { root, config, readFile: makeReadFile(root) }, now);
-  const notes = stale.map((entry) => ({ path: entry.file, staleAfter: entry.staleAfter, staleAfterHuman: humanDayOf(entry.staleAfter, tz) }));
+  const readFile = makeReadFile(root);
+  const notes = [];
+  for (const path of fileSet.files.filter(isMarkdown).sort()) {
+    const staleAfter = readScalar(splitFrontmatter(readFile(path)).frontmatter, 'stale_after');
+    const verdict = staleVerdict(staleAfter, { today, now, tz });
+    if (verdict !== null && verdict.stale) notes.push({ path, staleAfter, staleAfterHuman: verdict.human });
+  }
   return { ok: true, reason: null, count: notes.length, notes };
 }
 
@@ -211,7 +248,7 @@ export function briefingFacts({ root, config, machine = null, stateDir, now = ne
     lastRun,
     connectorStates,
     openPullRequests: pullRequestFacts(root, config, env, tz, { run, findExecutable }),
-    stale: staleFacts(root, config, now, tz, { walkVault, listPublishable }),
+    stale: staleFacts(root, config, now, today, tz, { walkVault, listPublishable }),
     pending: pendingBuckets({ root, config, today, tz }),
     git: gitFacts(root, env),
     lock: lockFacts(root, env),

@@ -13,7 +13,7 @@ import { EXIT } from '../src/exit-codes.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { main } from '../src/cli.mjs';
 import { acquireLock } from '../src/guards/lock.mjs';
-import { briefingFacts, GH_LIST_DEFAULT_LIMIT, humanInstant, PR_LIST_ARGS } from '../src/briefing/facts.mjs';
+import { briefingFacts, humanInstant, PR_LIST_ARGS, staleVerdict } from '../src/briefing/facts.mjs';
 import { PREFLIGHT_JSON_VERSION, renderPreflight, runPreflight } from '../src/commands/preflight.mjs';
 import { CLEAN_ENV, git, makeRepo } from './helpers/git-repo.mjs';
 import { makeWorld } from './helpers/sync-world.mjs';
@@ -26,16 +26,32 @@ const REAL_GIT = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8', e
 
 const FACT_KEYS = ['today', 'todayHuman', 'weekday', 'tz', 'lastRun', 'connectorStates', 'openPullRequests', 'stale', 'pending', 'git', 'lock', 'questions'];
 
+// A fake gh that answers only the call the preflight makes: `gh api
+// --paginate ... --jq <filter>`, over pages of the GitHub API's own shape
+// (FAKE_GH_OUTPUT holds an array of pages). With --paginate it prints every
+// page, without it only the first, as gh does; the filter is applied as gh
+// would (one JSON line per pull request) only when it is the preflight's
+// own. Any other call is refused, so a changed argv is a failing test.
 const FAKE_GH = `#!${process.execPath}
 'use strict';
 const fs = require('node:fs');
+const args = process.argv.slice(2);
 const log = process.env.FAKE_GH_LOG;
-if (log) fs.appendFileSync(log, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd(), prompt: process.env.GH_PROMPT_DISABLED ?? null, gitDir: process.env.GIT_DIR ?? null }) + '\\n');
+if (log) fs.appendFileSync(log, JSON.stringify({ args, cwd: process.cwd(), prompt: process.env.GH_PROMPT_DISABLED ?? null, gitDir: process.env.GIT_DIR ?? null }) + '\\n');
+const expected = ${JSON.stringify(PR_LIST_ARGS)};
+const paginate = args.includes('--paginate');
+const rest = args.filter((arg) => arg !== '--paginate');
+if (JSON.stringify(rest) !== JSON.stringify(expected.filter((arg) => arg !== '--paginate'))) { process.stderr.write('fake gh: unexpected call\\n'); process.exit(2); }
 const mode = process.env.FAKE_GH_MODE || 'ok';
 if (mode === 'fail') { process.stderr.write('To get started with GitHub CLI, please run:  gh auth login\\n'); process.exit(4); }
 if (mode === 'garbage') { process.stdout.write('not json at all\\n'); process.exit(0); }
-if (mode === 'shape') { process.stdout.write(JSON.stringify([{ number: '7', title: 'x' }]) + '\\n'); process.exit(0); }
-process.stdout.write(fs.readFileSync(process.env.FAKE_GH_OUTPUT, 'utf8'));
+if (mode === 'shape') { process.stdout.write(JSON.stringify({ number: '7', title: 'x' }) + '\\n'); process.exit(0); }
+const pages = JSON.parse(fs.readFileSync(process.env.FAKE_GH_OUTPUT, 'utf8'));
+const line = (pr) => JSON.stringify({ number: pr.number, title: pr.title, url: pr.html_url, createdAt: pr.created_at });
+for (const [index, page] of (paginate ? pages : pages.slice(0, 1)).entries()) {
+  if (mode === 'failpage2' && index === 1) { process.stderr.write('HTTP 502: Bad Gateway (page 2)\\n'); process.exit(1); }
+  for (const pr of page) process.stdout.write(line(pr) + '\\n');
+}
 `;
 
 function baseConfig(overrides = {}) {
@@ -117,17 +133,21 @@ function makeFactsWorld({ config = {}, files = {}, gh = true } = {}) {
   const stateDir = join(base, 'state');
   mkdirSync(stateDir);
   const output = join(base, 'gh-output.json');
-  writeFileSync(output, '[]\n');
+  writeFileSync(output, '[[]]\n');
   const log = join(base, 'gh-calls.jsonl');
   const env = { ...CLEAN_ENV, HOME: home, PATH: bin, BRAIN_KIT_STATE_DIR: stateDir, FAKE_GH_OUTPUT: output, FAKE_GH_LOG: log, FAKE_GH_MODE: 'ok' };
   return {
-    root, stateDir, env, bin, log,
+    root, stateDir, env, bin, log, output,
     config: () => JSON.parse(readFileSync(join(root, 'brain-kit.config.json'), 'utf8')),
     facts(options = {}) {
       return briefingFacts({ root, config: this.config(), machine: null, stateDir, now: options.now ?? NOW, env: { ...env, ...(options.env ?? {}) } });
     },
+    // The pull requests, in the API's shape, 30 to a page as GitHub serves them.
     prs(list) {
-      writeFileSync(output, `${JSON.stringify(list)}\n`);
+      const raw = list.map((pr) => ({ number: pr.number, title: pr.title, html_url: pr.url, created_at: pr.createdAt, state: 'open', user: { login: 'ana' } }));
+      const pages = [];
+      for (let i = 0; i < raw.length; i += 30) pages.push(raw.slice(i, i + 30));
+      writeFileSync(output, `${JSON.stringify(pages.length === 0 ? [[]] : pages)}\n`);
     },
     lastRun(value) {
       writeFileSync(join(stateDir, 'last-run.json'), typeof value === 'string' ? value : `${JSON.stringify(value, null, 2)}\n`);
@@ -260,7 +280,7 @@ test('the text lists each source of the last run and the carried connector state
 
 // ------------------------------------------------------------ pull requests
 
-test('briefingFacts: open pull requests come from gh pr list, run in the vault with the argv given', () => {
+test('briefingFacts: open pull requests come from gh api, every page, run in the vault with the argv given', () => {
   const world = makeFactsWorld();
   world.prs([
     { number: 12, title: 'curate: 24/09', url: 'https://example.invalid/ana/brain/pull/12', createdAt: '2026-09-25T01:00:00Z' },
@@ -268,14 +288,15 @@ test('briefingFacts: open pull requests come from gh pr list, run in the vault w
   ]);
   const facts = world.facts();
   assert.deepEqual(facts.openPullRequests, {
-    ok: true, reason: null, detail: null, mayHaveMore: false,
+    ok: true, reason: null, detail: null,
     items: [
       { number: 9, title: 'curate: 23/09', url: 'https://example.invalid/ana/brain/pull/9', createdHuman: '23/09/2026' },
       { number: 12, title: 'curate: 24/09', url: 'https://example.invalid/ana/brain/pull/12', createdHuman: '24/09/2026' },
     ],
   }, '01:00 UTC of 25/09 is 22:00 of 24/09 at UTC-3');
   const [call] = world.calls();
-  assert.deepEqual(call.args, ['pr', 'list', '--state', 'open', '--json', 'number,title,url,createdAt']);
+  assert.deepEqual(call.args, ['api', '--paginate', '--method', 'GET', 'repos/{owner}/{repo}/pulls?state=open', '--jq', '.[] | {number, title, url: .html_url, createdAt: .created_at} | tojson']);
+  assert.equal(call.args.some((arg) => /limit|per_page|\b\d+\b/.test(arg)), false, 'no number anywhere in the call: no cap');
   assert.deepEqual([...PR_LIST_ARGS], call.args);
   assert.equal(call.cwd, world.root);
   assert.equal(call.prompt, '1', 'gh never prompts');
@@ -285,14 +306,14 @@ test('briefingFacts: open pull requests come from gh pr list, run in the vault w
 test('briefingFacts: gh absent is ok false with reason absent and no list', () => {
   const world = makeFactsWorld({ gh: false });
   const facts = world.facts();
-  assert.deepEqual(facts.openPullRequests, { ok: false, reason: 'absent', detail: null, items: null, mayHaveMore: false });
+  assert.deepEqual(facts.openPullRequests, { ok: false, reason: 'absent', detail: null, items: null });
   assert.deepEqual(world.calls(), []);
 });
 
 test('briefingFacts: gh failing is ok false with its first line, never an empty list', () => {
   const world = makeFactsWorld();
   const facts = world.facts({ env: { FAKE_GH_MODE: 'fail' } });
-  assert.deepEqual(facts.openPullRequests, { ok: false, reason: 'failed', detail: 'To get started with GitHub CLI, please run:  gh auth login', items: null, mayHaveMore: false });
+  assert.deepEqual(facts.openPullRequests, { ok: false, reason: 'failed', detail: 'To get started with GitHub CLI, please run:  gh auth login', items: null });
 });
 
 test('briefingFacts: gh printing something other than the list is unreadable, never a guess', () => {
@@ -303,14 +324,25 @@ test('briefingFacts: gh printing something other than the list is unreadable, ne
   assert.deepEqual([shape.ok, shape.reason, shape.items], [false, 'unreadable', null]);
 });
 
-test('briefingFacts: a list as long as gh\'s default limit may be cut, and says so', async () => {
+test('briefingFacts: more than 30 open pull requests across two pages are all listed, with no cap', async () => {
   const world = makeFactsWorld();
-  const list = Array.from({ length: GH_LIST_DEFAULT_LIMIT }, (_, i) => ({ number: i + 1, title: `pr ${i + 1}`, url: `https://example.invalid/pull/${i + 1}`, createdAt: '2026-09-20T12:00:00Z' }));
+  const list = Array.from({ length: 47 }, (_, i) => ({ number: 47 - i, title: `pr ${47 - i}`, url: `https://example.invalid/pull/${47 - i}`, createdAt: '2026-09-20T12:00:00Z' }));
   world.prs(list);
-  assert.equal(world.facts().openPullRequests.mayHaveMore, true);
-  assert.ok((await preflight(world, [])).out.includes('gh lists at most 30 when not asked for more: there may be more than these 30.'));
-  world.prs(list.slice(1));
-  assert.equal(world.facts().openPullRequests.mayHaveMore, false);
+  assert.equal(JSON.parse(readFileSync(world.output, 'utf8')).length, 2, 'the fake serves two pages, as GitHub would');
+  const prs = world.facts().openPullRequests;
+  assert.deepEqual(Object.keys(prs), ['ok', 'reason', 'detail', 'items']);
+  assert.equal(prs.ok, true);
+  assert.deepEqual(prs.items.map((pr) => pr.number), Array.from({ length: 47 }, (_, i) => i + 1), 'every one, in number order');
+  const { out } = await preflight(world, []);
+  assert.ok(out.includes('Open pull requests awaiting merge (47):\n  #1 pr 1, opened 20/09/2026, https://example.invalid/pull/1\n'), out);
+  assert.ok(out.includes('  #47 pr 47, opened 20/09/2026, https://example.invalid/pull/47'));
+  assert.doesNotMatch(out, /at most|may be more/);
+});
+
+test('briefingFacts: a page that fails midway is a failure, never the pages before it', () => {
+  const world = makeFactsWorld();
+  world.prs(Array.from({ length: 47 }, (_, i) => ({ number: i + 1, title: `pr ${i + 1}`, url: `https://example.invalid/pull/${i + 1}`, createdAt: '2026-09-20T12:00:00Z' })));
+  assert.deepEqual(world.facts({ env: { FAKE_GH_MODE: 'failpage2' } }).openPullRequests, { ok: false, reason: 'failed', detail: 'HTTP 502: Bad Gateway (page 2)', items: null });
 });
 
 test('the text states each pull request fact, and each way of not knowing it', async () => {
@@ -340,6 +372,47 @@ test('briefingFacts: the notes past their stale_after, with the day in the vault
       { path: 'notes/old.md', staleAfter: '2026-09-01T02:00:00+00:00', staleAfterHuman: '31/08/2026' },
     ],
   }, '02:00 UTC of 01/09 is 23:00 of 31/08 at UTC-3');
+});
+
+test('briefingFacts: a plain-date stale_after is a civil date of the vault\'s zone, shown as written; a datetime is an instant', async () => {
+  const world = makeFactsWorld({ files: {
+    'notes/plain.md': staleNote('2026-09-20'),
+    'notes/offset.md': staleNote('2026-09-20T00:00:00-03:00'),
+  } });
+  // 23:59 of 19/09 at UTC-3, already 20/09 in UTC: neither has come.
+  assert.deepEqual(world.facts({ now: new Date('2026-09-20T02:59:00Z') }).stale, { ok: true, reason: null, count: 0, notes: [] });
+  // 00:01 of 20/09 at UTC-3: both have.
+  const after = world.facts({ now: new Date('2026-09-20T03:01:00Z') }).stale;
+  assert.deepEqual(after.notes, [
+    { path: 'notes/offset.md', staleAfter: '2026-09-20T00:00:00-03:00', staleAfterHuman: '20/09/2026' },
+    { path: 'notes/plain.md', staleAfter: '2026-09-20', staleAfterHuman: '20/09/2026' },
+  ], 'the plain date is never shown as 19/09');
+  // The datetime's instant decides it to the minute; the plain date, the whole day.
+  const edge = world.facts({ now: new Date('2026-09-20T03:00:00Z') }).stale;
+  assert.deepEqual(edge.notes.map((n) => n.path), ['notes/offset.md', 'notes/plain.md']);
+  const { out } = await preflight(world, [], { now: new Date('2026-09-20T03:01:00Z') });
+  assert.ok(out.includes('Notes past their stale_after (2):\n  notes/offset.md, stale since 20/09/2026\n  notes/plain.md, stale since 20/09/2026'), out);
+});
+
+test('staleVerdict: a plain date by the day, a datetime with offset by the instant, anything else not judged', () => {
+  const at = { today: '2026-09-20', now: new Date('2026-09-20T03:00:00Z'), tz: UTC3 };
+  assert.deepEqual(staleVerdict('2026-09-20', at), { stale: true, human: '20/09/2026' });
+  assert.deepEqual(staleVerdict('2026-09-21', at), { stale: false, human: '21/09/2026' });
+  assert.deepEqual(staleVerdict('2026-09-20T00:00:00-03:00', at), { stale: true, human: '20/09/2026' });
+  assert.deepEqual(staleVerdict('2026-09-20T00:00:01-03:00', at), { stale: false, human: '20/09/2026' });
+  assert.deepEqual(staleVerdict('2026-09-20T02:00:00Z', at), { stale: true, human: '19/09/2026' }, 'an instant is shown as the vault\'s day');
+  for (const value of ['2026-09-20T10:00', '2026-02-30', 'soon', '', null, 20260920]) assert.equal(staleVerdict(value, at), null, String(value));
+});
+
+test('preflight: a machine.json that cannot be read is said on stderr, and the facts still print', async () => {
+  const world = makeFactsWorld();
+  writeFileSync(join(world.stateDir, 'machine.json'), '{ broken');
+  const { code, out, err } = await preflight(world, []);
+  assert.equal(code, EXIT.OK);
+  assert.match(err, /^brain-kit preflight: this machine's machine\.json cannot be read, and nothing below comes from it: Cannot parse /);
+  assert.match(out, /^Facts for the briefing/);
+  const json = await preflight(world, ['--json']);
+  assert.doesNotThrow(() => JSON.parse(json.out), 'stdout stays JSON');
 });
 
 test('briefingFacts: when git cannot list the vault the stale count is not known', () => {
@@ -436,8 +509,12 @@ test('preflight: the text in English, every section present', async () => {
   assert.equal(out, `${expected}\n`);
 });
 
+// The English column names of this world's tables, for a pt-BR vault: the
+// pack's Portuguese defaults would name columns these tables do not have.
+const ENGLISH_PENDING = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', 'en', 'config.defaults.json'), 'utf8')).briefing.pending;
+
 test('preflight: the text in Portuguese for a pt-BR vault, whatever the caller\'s language', async () => {
-  const world = makeFactsWorld({ config: { lang: 'pt-BR' } });
+  const world = makeFactsWorld({ config: { lang: 'pt-BR', briefing: { pending: ENGLISH_PENDING } } });
   const { code, out } = await preflight(world, []);
   assert.equal(code, EXIT.OK);
   assert.ok(out.startsWith(`Fatos para o briefing, calculados pelo brain-kit para ${world.root} (dias no fuso ${UTC3}):\nHoje: sexta-feira, 25/09/2026.\n`), out);
@@ -468,7 +545,7 @@ test('preflight --json: version, then exactly the facts\' keys in their order, a
   assert.deepEqual(facts, JSON.parse(JSON.stringify(world.facts())));
   assert.deepEqual(Object.keys(parsed.pending), ['overdue', 'today', 'upcoming', 'undated', 'later', 'upcomingDays', 'problems']);
   assert.deepEqual(Object.keys(parsed.pending.overdue[0]), ['file', 'line', 'what', 'deadline', 'raw']);
-  assert.deepEqual(Object.keys(parsed.openPullRequests), ['ok', 'reason', 'detail', 'items', 'mayHaveMore']);
+  assert.deepEqual(Object.keys(parsed.openPullRequests), ['ok', 'reason', 'detail', 'items']);
   assert.deepEqual(Object.keys(parsed.stale), ['ok', 'reason', 'count', 'notes']);
   assert.deepEqual(Object.keys(parsed.git), ['branch', 'defaultBranch', 'upstream', 'ahead', 'behind', 'dirty', 'reason']);
   assert.deepEqual(Object.keys(parsed.lock), ['held', 'command', 'reason']);
@@ -531,7 +608,7 @@ test('renderPreflight: an item with no what reads as a dash, a detached HEAD is 
   const t = createTranslator('en');
   const facts = {
     today: '2026-09-25', todayHuman: '25/09/2026', weekday: 'friday', tz: 'UTC', lastRun: null, connectorStates: {},
-    openPullRequests: { ok: true, reason: null, detail: null, items: [], mayHaveMore: false },
+    openPullRequests: { ok: true, reason: null, detail: null, items: [] },
     stale: { ok: false, reason: 'listing_failed', count: null, notes: null },
     pending: { overdue: [], today: [], upcoming: [], undated: [{ file: 'a.md', line: 3, what: '', deadline: null, raw: '' }], later: 2, upcomingDays: 3, problems: [] },
     git: { branch: null, defaultBranch: 'main', upstream: 'origin/main', ahead: 0, behind: 4, dirty: 2, reason: null },
@@ -581,18 +658,23 @@ test('the text names every weekday, and every pending problem, in both languages
     { code: 'tables_ignored', detail: { path: 'a.md', heading: '## Open', count: 2 } },
     { code: 'column_missing', detail: { path: 'a.md', heading: '## Open', column: 'Deadline', line: 12 } },
     { code: 'invalid_date', detail: { path: 'a.md', line: 13, value: '31/02/2026' } },
+    { code: 'date_without_year', detail: { path: 'a.md', line: 14, value: '05/10' } },
+    { code: 'from_the_future', detail: { path: 'a.md' } },
   ];
   for (const lang of ['en', 'pt-BR']) {
     const facts = makeFactsWorld().facts();
     facts.pending.problems = problems;
     const lines = renderPreflight(facts, t[lang], { vault: '/v' }).split('\n');
-    const at = lines.findIndex((line) => /\((12)\):$/.test(line));
+    const at = lines.findIndex((line) => /\((14)\):$/.test(line));
     assert.notEqual(at, -1, lang);
     const rendered = lines.slice(at + 1, at + 1 + problems.length);
     assert.equal(new Set(rendered).size, problems.length, `${lang}: each problem has its own sentence`);
     for (const line of rendered) assert.doesNotMatch(line, /\{\w+\}/, `${lang}: ${line}`);
     assert.ok(rendered[9].includes('2'), rendered[9]);
     assert.ok(rendered[10].includes('a.md:12') && rendered[10].includes('Deadline'), rendered[10]);
+    assert.ok(rendered[11].includes('a.md:13') && rendered[11].includes('31/02/2026'), rendered[11]);
+    assert.ok(rendered[12].includes('a.md:14') && rendered[12].includes('05/10'), rendered[12]);
+    assert.ok(rendered[13].includes('from_the_future') && rendered[13].includes('a.md'), 'an unknown code is named, never taken for another');
   }
 });
 

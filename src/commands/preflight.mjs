@@ -17,14 +17,14 @@
 // `deps` hands in the environment, the working directory, the clock and
 // briefingFacts' own deps, for the tests. Production passes nothing.
 import { existsSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { EXIT } from '../exit-codes.mjs';
-import { CONFIG_FILENAME, ConfigError, loadConfig, loadMachine } from '../config.mjs';
+import { CONFIG_FILENAME, ConfigError, loadConfig, loadMachine, MACHINE_FILENAME } from '../config.mjs';
 import { createTranslator, REFERENCE_LANG, SUPPORTED_LANGS } from '../lang.mjs';
 import { findVaultRoot } from '../vault.mjs';
 import { stateDirFor } from '../state.mjs';
 import { localDay } from '../guards/watermark.mjs';
-import { briefingFacts, GH_LIST_DEFAULT_LIMIT, humanDay } from '../briefing/facts.mjs';
+import { briefingFacts, humanDay } from '../briefing/facts.mjs';
 
 const ROOT_INDEX = 'index.md';
 export const PREFLIGHT_JSON_VERSION = 'brain-kit.preflight/1';
@@ -104,7 +104,6 @@ export function renderPullRequests(facts, t) {
   if (prs.items.length === 0) return [t('preflight.prs_none')];
   const lines = [t('preflight.prs_header', { count: prs.items.length })];
   for (const pr of prs.items) lines.push(t('preflight.pr', { number: pr.number, title: pr.title, created: pr.createdHuman ?? '-', url: pr.url }));
-  if (prs.mayHaveMore) lines.push(t('preflight.prs_more', { limit: GH_LIST_DEFAULT_LIMIT, count: prs.items.length }));
   return lines;
 }
 
@@ -130,7 +129,9 @@ function problemLine(t, { code, detail }) {
     case 'heading_repeated': return t('preflight.problem_heading_repeated', { path: detail.path, heading: detail.heading });
     case 'tables_ignored': return t('preflight.problem_tables_ignored', { path: detail.path, heading: detail.heading, count: detail.count });
     case 'column_missing': return t('preflight.problem_column_missing', { path: detail.path, line: detail.line, heading: detail.heading, column: detail.column });
-    default: return t('preflight.problem_invalid_date', { path: detail.path, line: detail.line, value: detail.value });
+    case 'invalid_date': return t('preflight.problem_invalid_date', { path: detail.path, line: detail.line, value: detail.value });
+    case 'date_without_year': return t('preflight.problem_date_without_year', { path: detail.path, line: detail.line, value: detail.value });
+    default: return t('preflight.problem_unknown', { code, detail: JSON.stringify(detail) });
   }
 }
 
@@ -239,11 +240,17 @@ export async function runPreflight(argv, io, t, deps = {}) {
     warn: (message) => io.stderr.write(`${message}\n`),
   });
   const stateDir = stateDirFor(root, env);
+  // No machine.json is an answer (a vault not registered on this machine);
+  // one that cannot be read is said, on stderr, and the facts go on without
+  // it: nothing the preflight states comes from it.
   let machine = null;
-  try {
-    machine = loadMachine(stateDir);
-  } catch (error) {
-    if (!(error instanceof ConfigError)) throw error;
+  if (existsSync(join(stateDir, MACHINE_FILENAME))) {
+    try {
+      machine = loadMachine(stateDir);
+    } catch (error) {
+      if (!(error instanceof ConfigError)) throw error;
+      io.stderr.write(`${reportT('preflight.machine_unreadable', { detail: error.message })}\n`);
+    }
   }
 
   try {

@@ -56,10 +56,10 @@ function assertPartition(result, rowCount) {
 // ------------------------------------------------------------ parseDeadline
 
 test('parseDeadline: DD/MM/YYYY, D/M/YYYY and YYYY-MM-DD read as the same day', () => {
-  assert.deepEqual(parseDeadline('05/10/2026'), { deadline: '2026-10-05', invalid: [] });
-  assert.deepEqual(parseDeadline('5/10/2026'), { deadline: '2026-10-05', invalid: [] });
-  assert.deepEqual(parseDeadline('2026-10-05'), { deadline: '2026-10-05', invalid: [] });
-  assert.deepEqual(parseDeadline('31/12/2026'), { deadline: '2026-12-31', invalid: [] });
+  assert.deepEqual(parseDeadline('05/10/2026'), { deadline: '2026-10-05', invalid: [], incomplete: [] });
+  assert.deepEqual(parseDeadline('5/10/2026'), { deadline: '2026-10-05', invalid: [], incomplete: [] });
+  assert.deepEqual(parseDeadline('2026-10-05'), { deadline: '2026-10-05', invalid: [], incomplete: [] });
+  assert.deepEqual(parseDeadline('31/12/2026'), { deadline: '2026-12-31', invalid: [], incomplete: [] });
 });
 
 test('parseDeadline: a date inside text is found', () => {
@@ -75,26 +75,42 @@ test('parseDeadline: with two dates the FIRST real one is the deadline, whatever
 });
 
 test('parseDeadline: a date that is not real is reported and never taken; a real one after it still is', () => {
-  assert.deepEqual(parseDeadline('31/02/2026'), { deadline: null, invalid: ['31/02/2026'] });
-  assert.deepEqual(parseDeadline('2026-02-30'), { deadline: null, invalid: ['2026-02-30'] });
-  assert.deepEqual(parseDeadline('2026-13-01'), { deadline: null, invalid: ['2026-13-01'] });
-  assert.deepEqual(parseDeadline('00/10/2026'), { deadline: null, invalid: ['00/10/2026'] });
-  assert.deepEqual(parseDeadline('31/02/2026 or 05/03/2026'), { deadline: '2026-03-05', invalid: ['31/02/2026'] });
-  assert.deepEqual(parseDeadline('05/03/2026 or 31/02/2026'), { deadline: '2026-03-05', invalid: ['31/02/2026'] });
+  assert.deepEqual(parseDeadline('31/02/2026'), { deadline: null, invalid: ['31/02/2026'], incomplete: [] });
+  assert.deepEqual(parseDeadline('2026-02-30'), { deadline: null, invalid: ['2026-02-30'], incomplete: [] });
+  assert.deepEqual(parseDeadline('2026-13-01'), { deadline: null, invalid: ['2026-13-01'], incomplete: [] });
+  assert.deepEqual(parseDeadline('00/10/2026'), { deadline: null, invalid: ['00/10/2026'], incomplete: [] });
+  assert.deepEqual(parseDeadline('31/02/2026 or 05/03/2026'), { deadline: '2026-03-05', invalid: ['31/02/2026'], incomplete: [] });
+  assert.deepEqual(parseDeadline('05/03/2026 or 31/02/2026'), { deadline: '2026-03-05', invalid: ['31/02/2026'], incomplete: [] });
 });
 
 test('parseDeadline: the leap day exists only in a leap year', () => {
   assert.equal(parseDeadline('29/02/2028').deadline, '2028-02-29');
-  assert.deepEqual(parseDeadline('29/02/2026'), { deadline: null, invalid: ['29/02/2026'] });
-  assert.deepEqual(parseDeadline('29/02/2100'), { deadline: null, invalid: ['29/02/2100'] });
+  assert.deepEqual(parseDeadline('29/02/2026'), { deadline: null, invalid: ['29/02/2026'], incomplete: [] });
+  assert.deepEqual(parseDeadline('29/02/2100'), { deadline: null, invalid: ['29/02/2100'], incomplete: [] });
   assert.equal(parseDeadline('2000-02-29').deadline, '2000-02-29');
 });
 
 test('parseDeadline: no date, or digits that only look like one, is no deadline and no problem', () => {
   for (const cell of ['', 'someday', 'after the board meeting', '10/2026', '123/10/2026', '05/10/20266', '12026-10-05', '2026-10-5', 'Q4']) {
-    assert.deepEqual(parseDeadline(cell), { deadline: null, invalid: [] }, cell);
+    assert.deepEqual(parseDeadline(cell), { deadline: null, invalid: [], incomplete: [] }, cell);
   }
-  assert.deepEqual(parseDeadline(undefined), { deadline: null, invalid: [] });
+  assert.deepEqual(parseDeadline(undefined), { deadline: null, invalid: [], incomplete: [] });
+});
+
+test('parseDeadline: a day and month with no four-digit year is named, never taken for a date', () => {
+  assert.deepEqual(parseDeadline('até 05/10'), { deadline: null, invalid: [], incomplete: ['05/10'] });
+  assert.deepEqual(parseDeadline('05/10/26'), { deadline: null, invalid: [], incomplete: ['05/10/26'] });
+  assert.deepEqual(parseDeadline('5/1 or 12/12'), { deadline: null, invalid: [], incomplete: ['5/1', '12/12'] });
+  assert.deepEqual(parseDeadline('05/10/2026'), { deadline: '2026-10-05', invalid: [], incomplete: [] }, 'no part of a full date is incomplete');
+  assert.deepEqual(parseDeadline('1/2/3'), { deadline: null, invalid: [], incomplete: [] });
+});
+
+test('pendingBuckets: a date with no year is a problem naming the file and line, and the item is undated', () => {
+  const { result } = buckets({ [FOLLOWUPS]: followups([['no year', 'até 05/10'], ['with a real one too', '05/10 or 12/10/2026']]), [PROMISES]: promises([]) });
+  assert.deepEqual(whats(result.undated), ['no year']);
+  assert.equal(result.later, 1, 'the cell with a real date is bucketed by it');
+  assert.deepEqual(result.problems, [{ code: 'date_without_year', detail: { path: FOLLOWUPS, line: 16, value: '05/10' } }],
+    'a cell whose deadline was found says nothing more');
 });
 
 // ------------------------------------------------------------ bucketOf
@@ -277,6 +293,11 @@ test('inNeverRead: a directory entry covers what is under it; a file entry, with
   assert.equal(inNeverRead('pending/follow-ups.md', list), false);
   assert.equal(inNeverRead('pending/follow-ups.md', undefined), false);
   assert.equal(inNeverRead('pending/follow-ups.md', ['./pending/']), true);
+  // Without the trailing slash, a folder entry still covers the folder.
+  assert.equal(inNeverRead('people/ana.md', ['people']), true);
+  assert.equal(inNeverRead('people', ['people']), true);
+  assert.equal(inNeverRead('peoplex/ana.md', ['people']), false);
+  assert.equal(inNeverRead('people/ana.md', ['people//']), true);
 });
 
 // ------------------------------------------------------------ today at the edges
@@ -325,33 +346,43 @@ test('pendingSettings: the configuration\'s own values, else its language pack\'
   const en = pack('en');
   assert.deepEqual(pendingSettings({ lang: 'en', briefing: {} }), { entries: en.briefing.pending, upcomingDays: 7 });
   assert.deepEqual(pendingSettings({ lang: 'en', briefing: {}, taxonomy: en.taxonomy }).entries, en.briefing.pending);
+  const columns = structuredClone(en.taxonomy.columns);
+  columns.followups.columns = ['When', 'Task', 'Who', 'Due', 'Then'];
+  assert.deepEqual(pendingSettings({ lang: 'en', briefing: {}, taxonomy: { columns } }).entries, en.briefing.pending,
+    'the defaults name columns by label, whatever the vault\'s contract');
   const own = [{ file: 'promises', heading: 'active_heading', date_column: 'Condition / deadline', what_column: 'What I promised' }];
   assert.deepEqual(pendingSettings({ lang: 'en', briefing: { pending: own, upcoming_days: 3 } }), { entries: own, upcomingDays: 3 });
   assert.deepEqual(pendingSettings({ lang: 'pt-BR', briefing: {} }).entries, pack('pt-BR').briefing.pending);
   assert.deepEqual(pendingSettings({ lang: 'en', briefing: { upcoming_days: 0 } }).upcomingDays, 0);
 });
 
-test('pendingSettings: with no briefing.pending, each default column is the vault\'s own column at the same place', () => {
-  const en = pack('en');
-  const columns = structuredClone(en.taxonomy.columns);
-  columns.followups.columns = ['When', 'Task', 'Who', 'Due', 'Then'];
-  const entries = pendingSettings({ lang: 'pt-BR', briefing: {}, taxonomy: { columns } }).entries;
-  assert.deepEqual(entries[0], { file: 'followups', heading: 'open_heading', date_column: 'Due', what_column: 'Task' });
-  assert.deepEqual(entries[1], { file: 'promises', heading: 'active_heading', date_column: 'Condition / deadline', what_column: 'What I promised' },
-    'a pt-BR vault whose contract is written in English reads English columns');
-  const none = pendingSettings({ lang: 'en', briefing: {}, taxonomy: {} }).entries;
-  assert.deepEqual(none, en.briefing.pending, 'no contract declared: the pack\'s names');
-  const own = [{ file: 'followups', heading: 'open_heading', date_column: 'Deadline', what_column: 'Next step' }];
-  assert.deepEqual(pendingSettings({ lang: 'en', briefing: { pending: own }, taxonomy: { columns } }).entries, own, 'a list the vault sets is taken as written');
+test('pendingBuckets: with no briefing.pending, an inserted column changes nothing: columns are found by name', () => {
+  // The review's case: a learned contract with Priority inserted before What.
+  const text = `${FRONT}\n## Open\n\n| Logged | Priority | What | With whom / where | Deadline | Next step |\n|---|---|---|---|---|---|\n| x | high | Send the report | Ana | 24/09/2026 | z |\n| x | low | Call the bank | bank | 2026-09-25 | z |\n`;
+  const columns = structuredClone(pack('en').taxonomy.columns);
+  columns.followups.columns = ['Logged', 'Priority', 'What', 'With whom / where', 'Deadline', 'Next step'];
+  const { result } = buckets({ [FOLLOWUPS]: text, [PROMISES]: promises([]) }, { config: { taxonomy: { columns } } });
+  assert.deepEqual(result.problems, []);
+  assert.deepEqual(whats(result.overdue), ['Send the report']);
+  assert.deepEqual(whats(result.today), ['Call the bank']);
+  assert.deepEqual(result.undated, []);
 });
 
-test('pendingBuckets: a vault with renamed columns and no briefing.pending reads its own table', () => {
+test('pendingBuckets: with no briefing.pending, a renamed column is a problem naming it, and no row is bucketed, not even undated', () => {
   const text = `${FRONT}\n## Open\n\n| When | Task | Who | Due | Then |\n|---|---|---|---|---|\n| x | renamed | y | 24/09/2026 | z |\n`;
   const columns = structuredClone(pack('en').taxonomy.columns);
   columns.followups.columns = ['When', 'Task', 'Who', 'Due', 'Then'];
   const { result } = buckets({ [FOLLOWUPS]: text, [PROMISES]: promises([]) }, { config: { taxonomy: { columns } } });
-  assert.deepEqual(result.problems, []);
-  assert.deepEqual(whats(result.overdue), ['renamed']);
+  assert.deepEqual(result.problems, [
+    { code: 'column_missing', detail: { path: FOLLOWUPS, heading: '## Open', column: 'Deadline', line: 12 } },
+    { code: 'column_missing', detail: { path: FOLLOWUPS, heading: '## Open', column: 'What', line: 12 } },
+  ]);
+  assert.deepEqual([result.overdue, result.today, result.upcoming, result.undated, result.later], [[], [], [], [], 0]);
+  // Naming the columns in briefing.pending reads it.
+  const named = buckets({ [FOLLOWUPS]: text, [PROMISES]: promises([]) }, {
+    config: { taxonomy: { columns }, briefing: { pending: [{ file: 'followups', heading: 'open_heading', date_column: 'Due', what_column: 'Task' }] } },
+  }).result;
+  assert.deepEqual([named.problems, whats(named.overdue)], [[], ['renamed']]);
 });
 
 test('the default pending roles name real headings and columns of each pack\'s own taxonomy', () => {
