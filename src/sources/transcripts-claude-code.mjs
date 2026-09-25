@@ -38,13 +38,17 @@
 // the file the mtime pre-filter lets through on every round. A line
 // longer than maxLineChars is skipped like a malformed one. `unreadable`
 // is only for a file that could not be read (an I/O error while statting
-// or scanning it) or decoded (not one of its lines parses as JSON); such a
-// file blocks its day, and curate refuses to start the model on it. A file
-// whose lines parse but carry no message timestamp (a title or summary
-// line only) is counted as `noTimestamp`: nothing in it can be dated, so
-// it belongs to no day and blocks none (final review I2, 24/09/2026: as
-// unreadable it kept its day open forever and every retry opened the same
-// pull request again). Nothing about one file throws out of `collect`.
+// or scanning it) or decoded (not one of its lines parses as JSON), or one
+// holding conversation (a user or assistant line) of which no line carries
+// a timestamp that parses: a field Claude Code renamed or reformatted must
+// stop the round loudly, never close its days as empty (re-review N1,
+// 24/09/2026). Such a file blocks its day, and curate refuses to start the
+// model on it. A file with no user or assistant line at all (a title or
+// summary line only, or nothing) is counted as `noTimestamp`: there is no
+// conversation in it to date, so it belongs to no day and blocks none
+// (final review I2, 24/09/2026: as unreadable it kept its day open forever
+// and every retry opened the same pull request again). Nothing about one
+// file throws out of `collect`.
 //
 // Transcript shape (Claude Code 2.1.281): one JSON object per line. Lines
 // of type user, assistant, system and attachment are messages and carry an
@@ -113,6 +117,7 @@ function signaturesOf(config) {
 //                  (`starts` holds each day's first instant, ascending)
 //   anyTimestamp:  whether any message timestamp parsed at all
 //   lines, parsed: non-blank lines judged, and how many parsed as JSON
+//   conversation:  lines of type user or assistant, dated or not
 //   selfTrace:     whether the first user message with text starts with a
 //                  signature
 //   sampleLine:    the 1-based number of the line holding byte sampleFrom,
@@ -124,6 +129,7 @@ function scanFile(path, size, sampleFrom, window, starts, signatures, io, limits
   let anyTimestamp = false;
   let lines = 0;
   let parsed = 0;
+  let conversation = 0;
   let firstUserSeen = false;
   let selfTrace = false;
   let sampleLine = 1;
@@ -139,6 +145,7 @@ function scanFile(path, size, sampleFrom, window, starts, signatures, io, limits
     }
     parsed += 1;
     if (line === null || typeof line !== 'object' || !MESSAGE_TYPES.has(line.type)) return;
+    if (line.type === 'user' || line.type === 'assistant') conversation += 1;
     if (!firstUserSeen && line.type === 'user' && line.isMeta !== true) {
       const content = userText(line.message?.content);
       if (content !== null) {
@@ -200,7 +207,7 @@ function scanFile(path, size, sampleFrom, window, starts, signatures, io, limits
   } finally {
     io.closeSync(fd);
   }
-  return { perDay, anyTimestamp, lines, parsed, selfTrace, sampleLine };
+  return { perDay, anyTimestamp, lines, parsed, conversation, selfTrace, sampleLine };
 }
 
 // The short identifier a capture names its session by: Claude Code names
@@ -351,8 +358,9 @@ function collect({ window, config, machine, home = homedir(), io = fs, limits = 
       } catch {
         found = null;
       }
-      // Not read, or not decoded: nothing in it is JSON.
-      if (found === null || (!found.anyTimestamp && found.lines > 0 && found.parsed === 0)) {
+      // Not read; not decoded (nothing in it is JSON); or a conversation
+      // none of whose lines can be dated.
+      if (found === null || (!found.anyTimestamp && ((found.lines > 0 && found.parsed === 0) || found.conversation > 0))) {
         dropped.unreadable += 1;
         unreadable.push({ path, project, bytes });
         continue;

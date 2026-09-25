@@ -126,7 +126,7 @@ test('lines without a timestamp, malformed lines and unknown types are skipped, 
   assert.equal(plan.files[0].lastAt, INSIDE, 'a line of an unknown type does not count as a message');
 });
 
-test('a file whose lines parse but carry no message timestamp is counted as noTimestamp, announced, and never unreadable (final review I2)', () => {
+test('a file with no conversation (no user or assistant line) is counted as noTimestamp, announced, and never unreadable (final review I2)', () => {
   const world = makeWorld();
   world.write(PROJECT, 'meta.jsonl', ['garbage', customTitle(), lastPrompt()]);
   world.write(PROJECT, 'summary.jsonl', [{ type: 'summary', summary: 'A session of Ana', leafUuid: 'x' }]);
@@ -136,8 +136,20 @@ test('a file whose lines parse but carry no message timestamp is counted as noTi
   assert.deepEqual(plan.unreadable, []);
   assert.equal(plan.dropped.unreadable, 0);
   assert.equal(plan.dropped.noTimestamp, 3);
-  assert.match(plan.promptBlock, /3 transcripts left out because no line in them carries a message timestamp/);
+  assert.match(plan.promptBlock, /3 transcripts left out because they hold no conversation/);
   assert.deepEqual(transcriptsSource.readEvidence({ toolUses: [], toolResults: [] }, plan), { read: 0, expected: 0, ok: true }, 'nothing expected, nothing blocked');
+});
+
+test('a conversation none of whose lines carries a timestamp that parses is unreadable, never noTimestamp: a renamed field must stop the round (re-review N1)', () => {
+  const world = makeWorld();
+  const renamed = (line) => { const { timestamp, ...rest } = line; return { ...rest, ts: timestamp }; };
+  const drifted = world.write(PROJECT, 'drifted.jsonl', [renamed(user('Ana decided to move the reading group', INSIDE)), renamed(assistant('Noted.', INSIDE))]);
+  const garbled = world.write(PROJECT, 'garbled.jsonl', [user('Ana asks', 'yesterday at noon'), customTitle()]);
+  world.write(PROJECT, 'summary.jsonl', [{ type: 'summary', summary: 'A session of Ana', leafUuid: 'x' }, customTitle()]);
+  const plan = world.collect();
+  assert.deepEqual(plan.unreadable.map((u) => u.path), [drifted, garbled].sort());
+  assert.equal(plan.dropped.noTimestamp, 1, 'only the file with no conversation at all');
+  assert.equal(transcriptsSource.readEvidence({ toolUses: [], toolResults: [] }, plan).ok, false);
 });
 
 test('a file of which no line parses as JSON cannot be decoded: unreadable and listed, never silently dropped', () => {

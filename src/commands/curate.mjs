@@ -455,7 +455,7 @@ export async function runCurate(argv, io, t, deps = {}) {
   const claudeBin = expandHome(machine.claude_bin, env);
 
   // 2. --dry: a read-only preview, from the working tree as it is.
-  if (parsed.dry) return dryRun({ root, stateDir, machine, claudeBin, io, t, env, now });
+  if (parsed.dry) return dryRun({ root, stateDir, machine, claudeBin, io, env, now });
 
   // The round's own state, filled as it goes and written at the end.
   const run = {
@@ -975,9 +975,11 @@ function finishRound({ run, io, log, stateDir, machine, env, started, lock, writ
 }
 
 // Step 2.
-function dryRun({ root, stateDir, machine, claudeBin, io, t, env, now }) {
-  io.stdout.write(`${t('curate.dry_header', {})}\n`);
+function dryRun({ root, stateDir, machine, claudeBin, io, env, now }) {
   const config = loadConfig(root);
+  // The preview speaks the vault's language, as the round it previews does.
+  const t = createTranslator(SUPPORTED_LANGS.includes(config.lang) ? config.lang : 'en');
+  io.stdout.write(`${t('curate.dry_header', {})}\n`);
   if (config.curate?.enabled === false) {
     io.stdout.write(`${t('curate.disabled', { file: CONFIG_FILENAME })}\n`);
     return EXIT.OK;
@@ -1014,12 +1016,12 @@ function dryRun({ root, stateDir, machine, claudeBin, io, t, env, now }) {
   const plans = collectPlans(active, window, config, machine, env, now, tz);
   for (const source of active) {
     const over = plans[source.id].overCap;
-    if (over) io.stdout.write(`${t('curate.cap_exceeded', { day: shown(over.day), count: over.files, cap: plans[source.id].cap, setting: `${CONFIG_FILENAME} curate.caps.${source.id}` })}\n`);
+    if (over) io.stdout.write(`${t('curate.dry_cap_exceeded', { day: shown(over.day), count: over.files, cap: plans[source.id].cap, setting: `${CONFIG_FILENAME} curate.caps.${source.id}` })}\n`);
   }
   const narrowed = narrowWindow(window, plans, active, tz);
   if (narrowed !== null) {
     const setting = `${CONFIG_FILENAME} curate.caps.${narrowed.source.id}`;
-    io.stdout.write(`${t('curate.days_deferred', { last: shown(narrowed.window.days.at(-1)), count: narrowed.deferred.length, days: narrowed.deferred.map(shown).join(', '), setting, cap: narrowed.cap })}\n`);
+    io.stdout.write(`${t('curate.dry_days_deferred', { last: shown(narrowed.window.days.at(-1)), count: narrowed.deferred.length, days: narrowed.deferred.map(shown).join(', '), setting, cap: narrowed.cap })}\n`);
   }
   for (const source of active) {
     io.stdout.write(`${t('curate.check_source', { source: source.id, kept: plans[source.id].files.length })}\n`);

@@ -201,7 +201,8 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   lists; drops the curator's own runs by their first user message only; caps by whole
   days, oldest first, leaving the days that do not fit for the next round (a first day
   that alone passes the cap stops the round with exit 4 before the model); counts a file
-  with no message timestamp apart, without blocking its day; and gives the model each
+  with no conversation (no user or assistant line) apart, without blocking its day, while
+  a conversation none of whose messages carries a readable timestamp stops the round; and gives the model each
   file's size and the line to start reading from (`sampleLine`).
 - A generic, domain-neutral curate prompt in both language packs, written from scratch,
   which a vault may override with `.brain-kit/prompts/curate.md` (never outside the vault).

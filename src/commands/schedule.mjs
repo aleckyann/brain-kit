@@ -203,10 +203,22 @@ function pinnedByManager(path) {
 // ROUND_COMMANDS that none of them holds, the directory where the
 // installing shell's PATH finds it. `missing` names the commands found in
 // neither. `systemPath` is for the tests.
-export function roundPath({ extra = [], claude = null, node, env, systemPath = SYSTEM_PATH }) {
+//
+// `recorded`, for `status`: the PATH read back from the installed entry.
+// When it starts with the same base directories, the directories install
+// added after them are taken from it, not from the current shell, so a
+// status run from a shell that does not find brain-kit or gh does not call
+// a correctly installed entry outdated (re-review Minor, 24/09/2026).
+export function roundPath({ extra = [], claude = null, node, env, systemPath = SYSTEM_PATH, recorded = null }) {
   const base = dedupe([...extra.map((dir) => expandHome(String(dir), env)), ...(claude ? [dirname(claude)] : []), dirname(node), ...systemPath]);
   const added = [];
   const missing = [];
+  const kept = typeof recorded === 'string' ? recorded.split(':') : null;
+  if (kept !== null && base.every((dir, index) => kept[index] === dir)) {
+    added.push(...dedupe(kept.slice(base.length).filter((dir) => dir !== '' && !base.includes(dir))));
+    for (const command of ROUND_COMMANDS) if (findExecutable(command, [...base, ...added]) === null) missing.push(command);
+    return { dirs: dedupe([...base, ...added]), missing };
+  }
   for (const command of ROUND_COMMANDS) {
     if (findExecutable(command, [...base, ...added]) !== null) continue;
     const found = findExecutable(command, String(env.PATH ?? '').split(delimiter));
@@ -219,12 +231,12 @@ export function roundPath({ extra = [], claude = null, node, env, systemPath = S
 // The PATH of the entry installed for this vault, read back from its file
 // (systemd, then launchd) or from its crontab block: { file, path }, or
 // null when none is installed or its PATH cannot be read. doctor checks it
-// reaches ROUND_COMMANDS.
-export function installedRoundPath({ machine, env }) {
+// reaches ROUND_COMMANDS; `status` passes its platform and compares with it.
+export function installedRoundPath({ machine, env, platform = null }) {
   const home = env.HOME || homedir();
   const name = `brain-kit-curate-${machine.vault_id}`;
   const service = join(configHome(env, home), 'systemd', 'user', `${name}.service`);
-  const serviceText = readText(service);
+  const serviceText = platform === null || platform === 'systemd' ? readText(service) : null;
   if (serviceText !== null) {
     const line = serviceText.split('\n').find((l) => l.startsWith('Environment="PATH='));
     if (line === undefined) return null;
@@ -233,13 +245,14 @@ export function installedRoundPath({ machine, env }) {
     return { file: service, path: value.slice('PATH='.length) };
   }
   const plist = join(home, 'Library', 'LaunchAgents', `${name}.plist`);
-  const plistText = readText(plist);
+  const plistText = platform === null || platform === 'launchd' ? readText(plist) : null;
   if (plistText !== null) {
     const match = /<key>PATH<\/key>\s*<string>([^<]*)<\/string>/.exec(plistText);
     if (match === null) return null;
     const value = match[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
     return { file: plist, path: value };
   }
+  if (platform !== null && platform !== 'cron') return null;
   const listed = run('crontab', ['-l'], { env });
   if (listed.status !== 0) return null;
   const lines = listed.stdout.split('\n');
@@ -384,7 +397,8 @@ export function runScheduleSync(argv, io, t, deps = {}) {
     complain(t('schedule.claude_not_found', { bin: machine.claude_bin }));
     return EXIT.USAGE;
   }
-  const { dirs: pathDirs, missing } = roundPath({ extra, claude, node, env, ...(deps.systemPath ? { systemPath: deps.systemPath } : {}) });
+  const recorded = parsed.action === 'status' ? installedRoundPath({ machine, env, platform })?.path ?? null : null;
+  const { dirs: pathDirs, missing } = roundPath({ extra, claude, node, env, recorded, ...(deps.systemPath ? { systemPath: deps.systemPath } : {}) });
   if (parsed.action === 'install' && missing.length > 0) {
     for (const command of missing) {
       const hint = t(command === 'gh' ? 'schedule.hint_gh' : 'schedule.hint_brain_kit');

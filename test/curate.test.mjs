@@ -937,3 +937,40 @@ test('curate.network_min_wait_ms reaches the network wait: at 0 a check that ans
   assert.equal(w.lastRun().network.warning, null);
   assert.doesNotMatch(w.logText(), /network_did_not_wait/);
 });
+
+test('the re-review\'s N1 reproduction: two sessions whose messages carry `ts` instead of `timestamp` exit 4 before the model, notified, and the mark stays', () => {
+  const w = makeCurateWorld();
+  rmSync(w.transcript);
+  const at = `${utcDay(-1)}T12:00:00.000Z`;
+  const drifted = [];
+  for (const id of ['dddddddd', 'eeeeeeee']) {
+    const path = join(w.projects, PROJECT, `${id}-1111-4222-8333-444444444444.jsonl`);
+    writeFileSync(path, `${JSON.stringify({ type: 'user', ts: at, message: { role: 'user', content: 'Ana decided to move the reading group' } })}\n${JSON.stringify({ type: 'assistant', ts: at, message: { role: 'assistant', content: [{ type: 'text', text: 'Noted.' }] } })}\n`);
+    drifted.push(path);
+  }
+  const r = w.curate();
+  assert.equal(r.status, EXIT.SOURCE_UNREAD, r.stderr);
+  const last = w.lastRun();
+  assert.equal(last.reasonCode, 'source_unreadable');
+  for (const path of drifted) assert.ok(last.reason.includes(path), path);
+  assert.equal(traces(w).model, false);
+  assert.equal(w.watermark(), null, 'no day closed as empty');
+  assert.equal(w.notifications().length, 1);
+});
+
+test('--dry previews an over-cap first day as what a round would do, in the vault\'s language, never as if a round ran', async () => {
+  const w = makeCurateWorld({ config: (c) => { c.lang = 'pt-BR'; } });
+  writeFileSync(join(w.state, 'watermark.json'), JSON.stringify({ sources: { transcripts: '2026-09-25' } }));
+  daySessions(w, '2026-09-26', 21, 'a');
+  const r = await curateInProcess(w, ['--dry'], { now: AFTER_28 });
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.match(r.stdout, /Uma rodada agora pararia antes do modelo: só o dia 26\/09\/2026 tem 21 transcrições/);
+  assert.doesNotMatch(r.stdout, /não foi iniciado|was not started|nenhuma marca andou/);
+
+  const d = makeCurateWorld();
+  writeFileSync(join(d.state, 'watermark.json'), JSON.stringify({ sources: { transcripts: '2026-09-25' } }));
+  daySessions(d, '2026-09-26', 5, 'a');
+  daySessions(d, '2026-09-27', 16, 'b');
+  const deferred = await curateInProcess(d, ['--dry'], { now: AFTER_28 });
+  assert.match(deferred.stdout, /A round now would read through 26\/09\/2026 and leave 2 day\(s\) \(27\/09\/2026, 28\/09\/2026\) for the next round/);
+});

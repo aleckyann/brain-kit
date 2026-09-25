@@ -555,3 +555,24 @@ test('install refuses with exit 2, naming the command and how to install it, whe
     assert.deepEqual(world.commands(), []);
   }
 });
+
+test('status compares with the PATH recorded in the installed unit: run from a shell that no longer finds brain-kit, a correct entry is still current; a changed base is still outdated', async () => {
+  const world = makeScheduleWorld({ roundTools: false });
+  writeFileSync(join(world.claudeDir, 'gh'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const npmBin = join(world.base, 'npm global', 'bin');
+  mkdirSync(npmBin, { recursive: true });
+  writeFileSync(join(npmBin, 'brain-kit'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  const node = join(world.base, 'node-dir', 'node');
+  mkdirSync(dirname(node), { recursive: true });
+  writeFileSync(node, '#!/bin/sh\n', { mode: 0o755 });
+  const deps = { node, systemPath: ['/nonexistent-system-dir'] };
+  const installed = await world.run(['install', '--platform', 'systemd'], { env: { PATH: `${world.fakeBin}:${npmBin}` }, ...deps });
+  assert.equal(installed.status, 0, installed.stderr);
+  const status = await world.run(['status', '--platform', 'systemd'], { env: { PATH: world.fakeBin }, ...deps });
+  assert.equal(status.status, 0, status.stdout + status.stderr);
+  assert.match(status.stdout, new RegExp(world.t('schedule.status_active', { name: world.name, platform: 'systemd' }).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  world.setMachine({ path_extra: ['/opt/tools/bin'] });
+  const changed = await world.run(['status', '--platform', 'systemd'], { env: { PATH: world.fakeBin }, ...deps });
+  assert.equal(changed.status, 1);
+  assert.match(changed.stdout, new RegExp(world.t('schedule.status_outdated', { name: world.name, platform: 'systemd' }).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+});

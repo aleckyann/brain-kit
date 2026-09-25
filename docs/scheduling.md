@@ -63,7 +63,8 @@ once broke a real routine.
 11. **The sources.** Each source lists the files of its window. A required source that is
     misconfigured (no projects, a missing transcripts directory, every listed project
     missing): exit 1, and no mark moves. A required source listing a file it cannot read
-    (an I/O error, or a file of which no line is JSON): exit 4 before the model, naming
+    (an I/O error, a file of which no line is JSON, or a conversation none of whose
+    messages carries a timestamp this version can read): exit 4 before the model, naming
     the file, since no round could close its day. The transcripts cap
     (`curate.caps.transcripts`) takes whole days, oldest first: the days that do not fit
     wait for the next round and are said on the output, in the log and in
@@ -133,7 +134,8 @@ What each platform does with a window missed while the machine was off or asleep
 - **cron**: a missed window is not caught up.
 
 `brain-kit schedule status` compares what is installed with what `install` would write
-now, asks the scheduler whether the entry is enabled, and prints the next three fire times
+now (the directories `install` added for `brain-kit` and `gh` are taken from the installed
+entry, not from the shell `status` runs in), asks the scheduler whether the entry is enabled, and prints the next three fire times
 and the last round's summary, both as DD/MM/YYYY HH:MM on the machine's clock.
 
 ## The watermark
@@ -158,9 +160,10 @@ is read tomorrow, once it has ended.
   the round exit 4: a file the model did not read, a transcript or a listed project
   directory that cannot be read (the model is then not started at all), a first day over
   the cap, or a last line that is missing or does not report the source. The mark stays,
-  and the next round reads the day again. A transcript whose lines carry no message
-  timestamp at all (only a title or a summary) belongs to no day: it is counted as
-  `noTimestamp` in `last-run.json` and blocks nothing.
+  and the next round reads the day again. A transcript with no conversation at all (no
+  user or assistant line: only a title or a summary) belongs to no day: it is counted as
+  `noTimestamp` in `last-run.json` and blocks nothing. One whose user or assistant lines
+  carry no timestamp this version can read is not empty: it stops the round (exit 4).
 
 The commands:
 
@@ -215,7 +218,7 @@ otherwise `~/.local/state/brain-kit/<vault name>-<hash>/` (or under `$XDG_STATE_
 | `window` | the days read (`days`), the instants the window spans, and `remaining` days left for the next round |
 | `deferredDays` | the open days left for the next round because they would pass the transcripts cap |
 | `network` | whether the network answered, after how long, and the `did_not_wait` note |
-| `sources` | per source: files kept by the plan, files read, whether its mark advanced, and `noTimestamp`, the files left out for holding no message timestamp |
+| `sources` | per source: files kept by the plan, files read, whether its mark advanced, and `noTimestamp`, the files left out for holding no conversation |
 | `warnings`, `remainingDays` | everything said on the way, and the days still open |
 | `costUsd`, `numTurns` | what the model cost and how many turns it took |
 | `denials` | the names of the tools the model was denied, never their input |
