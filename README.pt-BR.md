@@ -224,9 +224,20 @@ você responde, e o que o briefing captura, vira um único pull request pelo `pr
 --only`; sem nada a registrar, não há pull request. O `schedule install --job briefing`
 imprime a tarefa a criar no aplicativo Claude para desktop, que a skill `setup` registra
 para você; ela roda enquanto o aplicativo está aberto, e na próxima abertura dele quando
-estava fechado. As sessões da tarefa nunca chegam ao curador; um briefing que você pede
-numa sessão sua é seu, e o curador o lê. O [docs/briefing.md](docs/briefing.md) explica os
-blocos, os fatos e de onde cada um vem, a fila, a tarefa no aplicativo e o que nunca muda.
+estava fechado. Uma sessão que começa com o prompt da tarefa nunca chega ao curador; um
+briefing que você pede numa sessão sua é seu, e o curador o lê. O
+[docs/briefing.md](docs/briefing.md) explica os blocos, os fatos e de onde cada um vem, a
+fila, a tarefa no aplicativo e o que nunca muda.
+
+Ainda não medido: se o aplicativo para desktop entrega o prompt da tarefa à sessão como a
+primeira mensagem do usuário, sem mudança. O curador só descarta a sessão da tarefa se ele
+fizer isso. Se o aplicativo embrulhar o prompt (uma linha de invocação de skill, um
+cabeçalho), a sessão é lida como uma sua: o custo é o de um briefing que você mesmo pede
+(uma captura que a próxima rodada pode propor de novo, visível no diff, nada se perde), e
+só quando o diretório de trabalho da tarefa é um projeto listado em
+`sources.transcripts.include_projects`. Depois da primeira execução agendada, o `brain-kit
+curate --dry` mostra o plano das transcrições e quantas sessões ele deixou de fora como do
+próprio kit.
 
 ## O plugin do Claude Code
 

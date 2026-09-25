@@ -458,7 +458,14 @@ time, visible in the pull request's diff. `schedule status --job briefing` and `
 judge the task signed with the filter's own predicate, and refuse a signature that is
 blank, more than one line or padded with spaces, which could sign nothing
 ([briefing.md](briefing.md)); `test/incidents/2026-09-25-briefing-self-trace.test.mjs`
-(Phase 4).
+(Phase 4). Not measured yet: whether the desktop application hands the task's prompt to the session
+as its first user message, unchanged. The curator drops the task's session only if it
+does. If the application wraps the prompt (a skill invocation line, a header), the session
+is read like one of your own: the cost is the one of a briefing you ask for yourself (a
+capture the next round may propose again, visible in its diff, nothing lost), and only
+when the task's working directory is a project listed in
+`sources.transcripts.include_projects`. After the first scheduled run, `brain-kit curate
+--dry` shows the transcripts plan and how many sessions it left out as the kit's own.
 
 ### 11/08/2026: the cap threw away exactly the work of the day
 **What happened.** The cap on how many transcripts to read sorted candidates by

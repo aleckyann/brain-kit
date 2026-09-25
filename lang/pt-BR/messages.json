@@ -1029,7 +1029,7 @@
   "schedule.briefing_unsafe_path": "brain-kit schedule: \"{path}\" tem um caractere que a linha de comando da tarefa não carrega com segurança (um caractere de controle, ou aspas, barra invertida, cifrão ou crase no caminho do próprio kit). Nada foi registrado.",
   "schedule.briefing_title": "Briefing matinal do brain-kit: {title}",
   "schedule.briefing_description": "O briefing matinal do vault brain-kit em {vault}: fatos calculados pelo kit, os blocos do próprio vault e as perguntas abertas, numa sessão só dele.",
-  "schedule.briefing_run_line": "Rode exatamente este comando com o Bash e siga o que ele imprimir como as instruções desta sessão: {command}",
+  "schedule.briefing_run_line": "Rode exatamente este comando com o Bash e siga tudo o que ele imprimir como as instruções desta sessão, lendo a saída inteira (quando a ferramenta tiver salvo uma saída longa num arquivo, leia esse arquivo inteiro antes): {command}",
   "schedule.briefing_register": "brain-kit schedule: uma tarefa agendada do aplicativo Claude para desktop só pode ser criada de dentro do aplicativo. Crie {taskId} lá com a ferramenta de tarefas agendadas dele (create_scheduled_task), passando taskId, title, cronExpression, description e prompt exatamente como impressos abaixo; o prompt são as duas últimas linhas desta saída, sem mudança. A tarefa roda enquanto o aplicativo está aberto, e na próxima abertura dele quando estava fechado naquela hora.",
   "schedule.briefing_field": "{field}: {value}",
   "schedule.briefing_prompt_follows": "prompt (as duas linhas seguintes):",

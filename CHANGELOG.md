@@ -407,7 +407,9 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   removed, another vault, or another kit that still works. `install` refuses a signature
   that is blank, more than one line or padded with spaces.
 - The transcripts source always counts `briefing.signature` among the kit's own
-  signatures, so the desktop task's sessions never reach the curator; a briefing asked for
+  signatures, so a session that starts with the desktop task's prompt never reaches the
+  curator (whether the application delivers the prompt unchanged as the first user message
+  is not measured yet: if it wraps it, the session is read like the person's own); a briefing asked for
   in the person's own session starts with their message and is curated (in doubt,
   include). `schedule status --job briefing` and `doctor` judge a task signed with the
   filter's own predicate.

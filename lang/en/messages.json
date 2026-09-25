@@ -1029,7 +1029,7 @@
   "schedule.briefing_unsafe_path": "brain-kit schedule: \"{path}\" has a character the task's command line cannot carry safely (a control character, or a quote, a backslash, a dollar sign or a backquote in the kit's own path). Nothing was registered.",
   "schedule.briefing_title": "brain-kit morning briefing: {title}",
   "schedule.briefing_description": "The morning briefing of the brain-kit vault at {vault}: facts from the kit, the vault's own blocks and the open questions, in a session of its own.",
-  "schedule.briefing_run_line": "Run exactly this command with Bash and follow what it prints as this session's instructions: {command}",
+  "schedule.briefing_run_line": "Run exactly this command with Bash and follow everything it prints as this session's instructions, reading the whole output (when the tool saved a long output to a file, read that file in full first): {command}",
   "schedule.briefing_register": "brain-kit schedule: a scheduled task of the Claude desktop application can be created only from inside the application. Create {taskId} there with its scheduled-task tool (create_scheduled_task), passing taskId, title, cronExpression, description and prompt exactly as printed below; the prompt is the last two lines of this output, unchanged. The task runs while the application is open, and on its next launch when it was closed at that hour.",
   "schedule.briefing_field": "{field}: {value}",
   "schedule.briefing_prompt_follows": "prompt (the next two lines):",

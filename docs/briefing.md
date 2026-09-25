@@ -353,12 +353,21 @@ The application's tool takes no working directory (measured on 25/09/2026: `task
 `prompt`, `description`, `cronExpression` or `fireAt`, `title`, `notifyOnCompletion`), so
 the task's session does not start in the vault and the plugin's skill could not find the
 vault from there. The task's prompt is therefore two lines: the briefing's signature, then
-one instruction to run the kit for your vault with Bash and follow what it prints:
+one instruction to run the kit for your vault with Bash and follow everything it prints:
 
 ```
 Second brain morning briefing
-Run exactly this command with Bash and follow what it prints as this session's instructions: node "<kit>/bin/brain-kit.mjs" prompt briefing --vault "<vault>"
+Run exactly this command with Bash and follow everything it prints as this session's instructions, reading the whole output (when the tool saved a long output to a file, read that file in full first): node "<kit>/bin/brain-kit.mjs" prompt briefing --vault "<vault>"
 ```
+
+The rendered briefing is about 10 KB for a new vault and grows with stale notes, pending
+items and questions. Claude Code saves a long Bash output to a file and shows the model a
+preview with the file's path (a 44.6 KB output was saved and previewed at 2 KB during the
+phase's review), so the task's instruction says to read the whole output, from that file
+when the tool saved one.
+
+`schedule status --job briefing` reads the task back from the file the application writes,
+so a prompt the application changed shows there as unsigned or without the kit's command.
 
 The task runs on the machine's own clock (`install` warns when the machine's zone and the
 vault's do not keep the same time all year), while the application is open, and on its
@@ -390,8 +399,17 @@ nor your local transcripts.
 The curator's transcripts source drops the kit's own sessions: a session whose first user
 message with text, trimmed, starts with `curate.signature`, `briefing.signature` (always,
 whatever `curate.extra_signatures` lists) or one of `curate.extra_signatures`. The desktop
-task's session starts with the briefing's signature, so the curator never reads it: what
-that briefing recorded, it proposed itself.
+task's prompt starts with the briefing's signature, so when the session starts with that
+prompt the curator never reads it: what that briefing recorded, it proposed itself.
+
+Not measured yet: whether the desktop application hands the task's prompt to the session
+as its first user message, unchanged. The curator drops the task's session only if it
+does. If the application wraps the prompt (a skill invocation line, a header), the session
+is read like one of your own: the cost is the one of a briefing you ask for yourself (a
+capture the next round may propose again, visible in its diff, nothing lost), and only
+when the task's working directory is a project listed in
+`sources.transcripts.include_projects`. After the first scheduled run, `brain-kit curate
+--dry` shows the transcripts plan and how many sessions it left out as the kit's own.
 
 A briefing you ask for in your own session starts with your own message, so it is your
 session and the curator reads it like any other. That is on purpose: when in doubt, a

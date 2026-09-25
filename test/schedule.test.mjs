@@ -637,8 +637,8 @@ async function registeredPrompt(world) {
 
 test('install --job briefing prints the task to register in the vault\'s language and exits 3, for a vault under a path with a space and an accent', async () => {
   const expected = {
-    en: { title: "brain-kit morning briefing: Ana's Second Brain", run: /^Run exactly this command with Bash and follow what it prints as this session's instructions: / },
-    'pt-BR': { title: "Briefing matinal do brain-kit: Ana's Second Brain", run: /^Rode exatamente este comando com o Bash e siga o que ele imprimir como as instruções desta sessão: / },
+    en: { title: "brain-kit morning briefing: Ana's Second Brain", run: /^Run exactly this command with Bash and follow everything it prints as this session's instructions, reading the whole output \(when the tool saved a long output to a file, read that file in full first\): / },
+    'pt-BR': { title: "Briefing matinal do brain-kit: Ana's Second Brain", run: /^Rode exatamente este comando com o Bash e siga tudo o que ele imprimir como as instruções desta sessão, lendo a saída inteira \(quando a ferramenta tiver salvo uma saída longa num arquivo, leia esse arquivo inteiro antes\): / },
   };
   for (const [lang, want] of Object.entries(expected)) {
     const world = makeScheduleWorld({ vaultName: 'meu cérebro' });

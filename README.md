@@ -217,10 +217,20 @@ default) by `questions sweep`, which prints each one it archives. What you answe
 briefing captures, becomes one pull request through `propose --only`; with nothing to
 record there is none. `schedule install --job briefing` prints the task to create in the
 Claude desktop application, which the `setup` skill registers for you; it runs while the
-application is open, and on its next launch when it was closed. The desktop task's
-sessions never reach the curator; a briefing you ask for in your own session is yours, and
-the curator reads it. [docs/briefing.md](docs/briefing.md) explains the blocks, the
-facts and where each comes from, the queue, the desktop task and what never changes.
+application is open, and on its next launch when it was closed. A session that starts
+with the task's prompt never reaches the curator; a briefing you ask for in your own
+session is yours, and the curator reads it. [docs/briefing.md](docs/briefing.md) explains
+the blocks, the facts and where each comes from, the queue, the desktop task and what
+never changes.
+
+Not measured yet: whether the desktop application hands the task's prompt to the session
+as its first user message, unchanged. The curator drops the task's session only if it
+does. If the application wraps the prompt (a skill invocation line, a header), the session
+is read like one of your own: the cost is the one of a briefing you ask for yourself (a
+capture the next round may propose again, visible in its diff, nothing lost), and only
+when the task's working directory is a project listed in
+`sources.transcripts.include_projects`. After the first scheduled run, `brain-kit curate
+--dry` shows the transcripts plan and how many sessions it left out as the kit's own.
 
 ## The Claude Code plugin
 
