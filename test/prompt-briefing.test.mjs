@@ -396,6 +396,13 @@ test('a record of the asked questions that fails is said on stderr, the text is 
 
 // Task 3 re-review: the reading rule named only judgement and custom
 // blocks, so a fact block's own path (a pending table to update) was closed.
+// First real briefing run, 25/09/2026: the model shortened block titles
+// ("Sem data" for "Pendências sem data"), so the rule asks for them word for word.
+test('the prompt asks for every block title word for word, in both packs', () => {
+  assert.ok(packPrompt('en').includes('each under its own title, written word for word as it is below, never shortened or reworded.'));
+  assert.ok(packPrompt('pt-BR').includes('cada um sob o próprio título, escrito palavra por palavra como está abaixo, sem encurtar nem trocar.'));
+});
+
 test('the reading rule opens any path a block names, never-read still wins, in both packs', () => {
   const en = packPrompt('en');
   const pt = packPrompt('pt-BR');
