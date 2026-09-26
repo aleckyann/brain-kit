@@ -11,7 +11,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync, chmodSync, copyFileSync, existsSync, rmSync, unlinkSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, chmodSync, copyFileSync, existsSync, rmSync } from 'node:fs';
 import { delimiter } from 'node:path';
 import { join, dirname } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
@@ -73,11 +73,12 @@ const PATH_WITH_BRAIN_KIT = `${SHIM_DIR}${delimiter}${PATH_WITHOUT_BRAIN_KIT}`;
 const PERSONAL_PATTERNS = join(makeTempDir('brain-kit-template-personal-'), 'patterns.txt');
 writeFileSync(PERSONAL_PATTERNS, 'zqxpersonalmark\n');
 
-function git(cwd, args, { name = HUMAN_NAME, email = HUMAN_EMAIL, env = {} } = {}) {
+function git(cwd, args, { name = HUMAN_NAME, email = HUMAN_EMAIL, env = {}, input } = {}) {
   return spawnSync('git', ['-c', `user.name=${name}`, '-c', `user.email=${email}`, ...args], {
     cwd,
     encoding: 'utf8',
     env: { ...process.env, PATH: PATH_WITH_BRAIN_KIT, BRAIN_KIT_LEAK_PATTERNS: PERSONAL_PATTERNS, ...env },
+    input,
   });
 }
 
@@ -885,13 +886,26 @@ test('a plain-text note saved as brain-kit.config.json is an ordinary file, read
 test('a file named like the configuration in another case is an ordinary file', () => {
   // Byte for byte: Brain-Kit.Config.json at the vault root, a JSON object,
   // carrying the literal and taken out again. A comparison that folds case
-  // would exempt it.
+  // would exempt it. The two commits are built from objects, never through
+  // the working tree: a file system that folds case (APFS, on macOS) holds
+  // one of the two names, and writing the lookalike there overwrites the
+  // configuration itself, then deleting it deletes the configuration. What
+  // the push carries is the same history either way, and that is what the
+  // gate reads.
   const { work, bare } = setup({ config: WITH_LITERAL });
   commitEverything(work, 'init');
-  writeFileSync(join(work, 'Brain-Kit.Config.json'), JSON.stringify({ note: `the ${LITERAL} contract` }));
-  commitEverything(work, 'a lookalike');
-  unlinkSync(join(work, 'Brain-Kit.Config.json'));
-  commitEverything(work, 'gone again');
+  const out = (args, input) => {
+    const r = git(work, args, { input });
+    assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`);
+    return r.stdout.trim();
+  };
+  const blob = out(['hash-object', '-w', '--stdin'], JSON.stringify({ note: `the ${LITERAL} contract` }));
+  const listing = `${out(['ls-tree', '-z', 'HEAD'])}100644 blob ${blob}\tBrain-Kit.Config.json\0`;
+  const lookalike = out(['commit-tree', out(['mktree', '-z'], listing), '-p', 'HEAD', '-m', 'a lookalike']);
+  const gone = out(['commit-tree', 'HEAD^{tree}', '-p', lookalike, '-m', 'gone again']);
+  out(['update-ref', 'refs/heads/main', gone]);
+  assert.equal(out(['ls-tree', '--name-only', lookalike]).split('\n').filter((name) => /^brain-kit\.config\.json$/i.test(name)).length, 2, 'the lookalike sits beside the configuration');
+  assert.equal(out(['status', '--porcelain']), '', 'the working tree is untouched');
   const r = git(work, ['push', '-q', 'origin', 'main']);
   refusedByTheObjectScan(r);
   assert.match(r.stderr, /possible leak in Brain-Kit\.Config\.json \(CONTENT/);
@@ -1013,3 +1027,4 @@ test('the same on the default branch itself: a first push of main that drops and
   refusedByTheObjectScan(r);
   assert.equal(landedRef(bare, 'refs/heads/main'), false);
 });
+
