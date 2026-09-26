@@ -45,7 +45,7 @@ import {
 } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { KIT_ROOT } from '../src/version.mjs';
+import { KIT_ROOT, kitVersion } from '../src/version.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { splitFrontmatter, readMapping } from '../src/frontmatter.mjs';
@@ -888,16 +888,21 @@ test('--accept with nothing to accept writes nothing and says so', () => {
 
 // Kit version.
 
+// The running kit's version, and one newer than it, so these tests follow
+// package.json instead of pinning a release.
+const RUNNING = kitVersion();
+const NEWER = RUNNING.replace(/(\d+)$/, (n) => String(Number(n) + 1));
+
 test('a kit older than the configuration\'s kit_version is refused in every mode, nothing written', () => {
   const v = initVault();
   makeOlder(v.vault, 'AGENTS.md');
   unlinkSync(join(v.vault, 'SECURITY.md'));
-  setConfig(v.vault, 'kit_version', '0.0.2');
+  setConfig(v.vault, 'kit_version', NEWER);
   const before = snapshot(v.vault);
   for (const args of [[], ['--check'], ['--accept', 'SECURITY.md']]) {
     const r = update(v, args);
     assert.equal(r.status, EXIT.FAILURE, `${args}: ${r.stdout}\n${r.stderr}`);
-    assert.ok(r.stderr.includes(T('update.kit_older', { running: '0.0.1', configured: '0.0.2' })), r.stderr);
+    assert.ok(r.stderr.includes(T('update.kit_older', { running: RUNNING, configured: NEWER })), r.stderr);
     assert.deepEqual(snapshot(v.vault), before);
   }
 });
@@ -907,25 +912,25 @@ test('a kit newer than the configuration\'s kit_version sets it after a run, the
   makeOlder(v.vault, 'AGENTS.md');
   const file = join(v.vault, 'brain-kit.config.json');
   const original = readFileSync(file, 'utf8');
-  writeFileSync(file, original.replace('"kit_version": "0.0.1"', '"kit_version": "0.0.0"'));
+  writeFileSync(file, original.replace(`"kit_version": "${RUNNING}"`, '"kit_version": "0.0.0"'));
   const before = snapshot(v.vault);
   const check = update(v, ['--check']);
   assert.equal(check.status, EXIT.FAILURE, check.stdout + check.stderr);
-  says(check, 'update.would_bump', { from: '0.0.0', to: '0.0.1' });
+  says(check, 'update.would_bump', { from: '0.0.0', to: RUNNING });
   assert.deepEqual(snapshot(v.vault), before);
   const r = update(v);
   assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
-  says(r, 'update.bumped', { from: '0.0.0', to: '0.0.1' });
+  says(r, 'update.bumped', { from: '0.0.0', to: RUNNING });
   assert.equal(readFileSync(file, 'utf8'), original);
   assert.equal(update(v, ['--check']).status, EXIT.OK);
 });
 
 test('with only the kit version newer, --check exits 1 and a real run sets it', () => {
   const v = initVault();
-  setConfig(v.vault, 'kit_version', '0.0.1-rc.1');
+  setConfig(v.vault, 'kit_version', `${RUNNING}-rc.1`);
   assert.equal(update(v, ['--check']).status, EXIT.FAILURE);
   assert.equal(update(v).status, EXIT.OK);
-  assert.equal(readJson(join(v.vault, 'brain-kit.config.json')).kit_version, '0.0.1');
+  assert.equal(readJson(join(v.vault, 'brain-kit.config.json')).kit_version, RUNNING);
 });
 
 test('kit_version is not set when a write failed', async () => {
@@ -1149,7 +1154,7 @@ test('a configuration update cannot edit, with a newer kit, is refused before an
   const v = initVault();
   makeOlder(v.vault, 'AGENTS.md');
   const file = join(v.vault, 'brain-kit.config.json');
-  const text = readFileSync(file, 'utf8').replace('"kit_version": "0.0.1"', '"kit_version": "0.0.0"');
+  const text = readFileSync(file, 'utf8').replace(`"kit_version": "${RUNNING}"`, '"kit_version": "0.0.0"');
   const real = join(v.base, 'config-elsewhere.json');
   writeFileSync(real, text);
   unlinkSync(file);

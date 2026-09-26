@@ -1,6 +1,6 @@
 {
   "name": "second-brain-kit",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Second brain kit: an OKF markdown vault curated by AI agents through pull requests, packaged as an npm CLI and a Claude Code plugin",
   "type": "module",
   "license": "MIT",
