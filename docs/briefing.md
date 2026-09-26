@@ -60,6 +60,7 @@ working out whether something is late.
 | Pending items by deadline | the tables `briefing.pending` names (below) |
 | Git | the branch, how many paths the working tree changes, and how far the default branch is behind and ahead of its remote branch as of the last fetch: the briefing never fetches |
 | The vault lock | free, or held by which command |
+| The legacy lock | only when `machine.json` sets `paths.legacy_lock`: held by another process (a writer started now is postponed), free, or unusable with the writers' own refusal; probed without waiting, never created, never reported free while another process holds it |
 | The question queue | open, escalated and due for archiving, and every line that cannot be read (below) |
 
 On the one day a plain `stale_after` falls due, `validate` (which reads a plain date as

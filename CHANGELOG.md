@@ -464,8 +464,10 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   is not "held" as `lock_unusable`, never `lock_held`. A `propose` joined to the round
   never asks a second time, and `machine set` and `machine register` leave the bridge
   out, so it can always be turned off. The Stop hook stands down while another process
-  holds the file, and `doctor` gains `legacy-lock`: off, on, on and held right now, or on
-  and unusable.
+  holds the file, and names a bridge that cannot be used in its release line too;
+  `preflight` (and so the briefing) and the SessionStart line say when another process
+  holds it or when it cannot be used, never "free" while it is held; `doctor` gains
+  `legacy-lock`: off, on, on and held right now, or on and unusable.
 - `curate.budget_usd: null` runs a round with no cost cap: no `--max-budget-usd` is
   passed. A key left out keeps the default of 5 USD, and `0` is refused as configuration
   before any round (the schema validator now implements `exclusiveMinimum`). `curate

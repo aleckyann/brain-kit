@@ -493,10 +493,10 @@ test('briefingFacts: a repository with no remote says so', () => {
 
 test('briefingFacts: the lock, free and held', () => {
   const world = makeFactsWorld();
-  assert.deepEqual(world.facts().lock, { held: false, command: null, reason: null });
+  assert.deepEqual(world.facts().lock, { held: false, command: null, reason: null, legacy: null });
   const lock = acquireLock(world.root, { command: 'curate', env: world.env });
   try {
-    assert.deepEqual(world.facts().lock, { held: true, command: 'curate', reason: null });
+    assert.deepEqual(world.facts().lock, { held: true, command: 'curate', reason: null, legacy: null });
   } finally {
     lock.release();
   }
@@ -575,7 +575,7 @@ test('preflight --json: version, then exactly the facts\' keys in their order, a
   assert.deepEqual(Object.keys(parsed.openPullRequests), ['ok', 'reason', 'detail', 'items']);
   assert.deepEqual(Object.keys(parsed.stale), ['ok', 'reason', 'count', 'notes', 'unreadable']);
   assert.deepEqual(Object.keys(parsed.git), ['branch', 'defaultBranch', 'upstream', 'ahead', 'behind', 'dirty', 'reason']);
-  assert.deepEqual(Object.keys(parsed.lock), ['held', 'command', 'reason']);
+  assert.deepEqual(Object.keys(parsed.lock), ['held', 'command', 'reason', 'legacy']);
   world.lastRun({ at: '2026-09-25T12:30:00.000Z', exit: 0, reasonCode: null, sources: { calendar: { state: 'connected', advanced: true } } });
   const withRun = JSON.parse((await preflight(world, ['--json'])).out);
   assert.deepEqual(Object.keys(withRun.lastRun), ['at', 'atHuman', 'exit', 'reasonCode', 'sources', 'problem']);

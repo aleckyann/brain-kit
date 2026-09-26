@@ -26,7 +26,7 @@
 //       probed without waiting with a shared lock released at once,
 //       src/guards/legacy-lock.mjs); a bridge that cannot be used proves
 //       no writer: the ladder goes on, and a block names the problem,
-//       which `propose` would refuse on too
+//       which `propose` would refuse on too, as does a later release's line
 //    9. no snapshot of this tree for THIS session every dirty path is the session's
 //   10. nothing dirty since the snapshot          release (paths under
 //       .claude/worktrees/, Claude Code's agent worktrees, never count,
@@ -157,9 +157,12 @@ export function runStop(stdinText, env = process.env) {
     const proposed = proposedAmong(root, changed, env, t);
     const since = changed.filter((path) => !proposed.names.has(decodeBytes(path)));
     const note = proposed.notice;
+    // A release still names a legacy lock bridge that cannot be used: the
+    // next writer in this vault will refuse on it.
+    const withProblem = (text) => (legacyProblem === null ? text : `${text} ${legacyProblem}`);
     if (since.length === 0) {
-      if (proposed.names.size === 0) return release(t('hook.stop.release_clean', { count: before.length }), note);
-      return release(t('hook.stop.release_proposed', { count: proposed.names.size, branches: proposed.branches, inherited: before.length }), note);
+      if (proposed.names.size === 0) return release(withProblem(t('hook.stop.release_clean', { count: before.length })), note);
+      return release(withProblem(t('hook.stop.release_proposed', { count: proposed.names.size, branches: proposed.branches, inherited: before.length })), note);
     }
     const lines = [blockReason(t, since, before.length, trust, proposed)];
     if (staleLock) lines.push(t('hook.stop.block_stale_lock', { command: String(holder.command), pid: holder.pid }));

@@ -82,6 +82,17 @@ function gitOnlyPath(base) {
   return dir;
 }
 
+// A PATH holding git and flock and nothing else: no gh, so the briefing's
+// facts never ask a real one.
+function gitAndFlockPath(base) {
+  const dir = join(base, 'git-and-flock');
+  mkdirSync(dir);
+  for (const name of ['git', 'flock']) {
+    symlinkSync(spawnSync('sh', ['-c', 'command -v "$1"', 'sh', name], { encoding: 'utf8' }).stdout.trim(), join(dir, name));
+  }
+  return dir;
+}
+
 function thrown(fn) {
   let caught = null;
   try {
@@ -181,8 +192,11 @@ test('a writer holds the legacy lock exactly while it holds the vault lock: take
 
 test('a writer killed while it holds the legacy lock loses it at once: the kernel lets go, not the writer', NEEDS_FLOCK, async () => {
   const fx = bridgedVault();
-  const program = `const { acquireLock } = await import(${JSON.stringify(LOCK_URL)}); acquireLock(process.argv[1], { command: 'curate' }); process.stdout.write('held\\n'); setInterval(() => {}, 1 << 30);`;
-  const child = spawn(process.execPath, ['--input-type=module', '-e', program, fx.root], { env: fx.env, stdio: ['ignore', 'pipe', 'pipe'] });
+  // The child holds the lock until it is killed, or until its standard input
+  // (a pipe from this process) ends: a test process that dies before its
+  // finally leaves no writer behind.
+  const program = `const { acquireLock } = await import(${JSON.stringify(LOCK_URL)}); acquireLock(process.argv[1], { command: 'curate' }); process.stdin.on('end', () => process.exit(0)); process.stdin.resume(); process.stdout.write('held\\n');`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', program, fx.root], { env: fx.env, stdio: ['pipe', 'pipe', 'pipe'] });
   const exited = new Promise((resolve) => child.on('exit', (code, signal) => resolve({ code, signal })));
   try {
     await new Promise((resolve, reject) => {
@@ -476,6 +490,80 @@ test('the Stop hook with the bridge on and the file not there yet: free, and the
   const r = runHookProcess('stop', STOP_PAYLOAD(fx), { env: fx.env, cwd: join(fx.base, 'elsewhere') });
   assert.equal(JSON.parse(r.stdout).decision, 'block');
   assert.equal(existsSync(fx.file), false);
+});
+
+// --- the facts: preflight, the briefing, SessionStart ---------------------------------
+
+test('preflight and the briefing say the legacy lock is held while another process holds it, never free; free once it is not; unusable with the writers\' refusal; nothing with the bridge off', NEEDS_FLOCK, async () => {
+  const fx = bridgedVault();
+  const env = { ...fx.env, PATH: gitAndFlockPath(fx.base) };
+  const held = T.en('preflight.legacy_lock_held', { lock: fx.file });
+  const free = T.en('preflight.legacy_lock_free', { lock: fx.file });
+  const holder = startHolder(fx.file);
+  try {
+    await holder.ready;
+    const text = await kit(fx, ['preflight'], { env });
+    assert.equal(text.status, EXIT.OK, text.stderr);
+    assert.ok(text.stdout.includes(`${T.en('preflight.lock_free')}\n${held}\n`), text.stdout);
+    assert.equal(text.stdout.includes(free), false, 'never free while held');
+    const json = await kit(fx, ['preflight', '--json'], { env });
+    assert.deepEqual(JSON.parse(json.stdout).lock, { held: false, command: null, reason: null, legacy: { file: fx.file, state: 'held', reason: null } });
+    const briefing = await runWatched(process.execPath, [BIN, 'prompt', 'briefing', '--vault', fx.root], { file: fx.file, env, cwd: fx.base });
+    assert.equal(briefing.status, EXIT.OK, briefing.stderr);
+    assert.ok(briefing.stdout.includes(held), `the briefing's sources block says it is held:\n${briefing.stdout}`);
+    assert.equal(briefing.stdout.includes(free), false);
+  } finally {
+    await holder.stop();
+  }
+  let r = kitSync(fx, ['preflight'], { env });
+  assert.ok(r.stdout.includes(free) && !r.stdout.includes(held), r.stdout);
+  const gone = join(fx.base, 'gone');
+  setLegacy(fx, join(gone, 'legacy.lock'));
+  r = kitSync(fx, ['preflight'], { env });
+  const refusal = T.en('lock.legacy_dir_missing', { lock: join(gone, 'legacy.lock'), dir: gone });
+  assert.ok(r.stdout.includes(T.en('preflight.legacy_lock_unusable', { refusal })), r.stdout);
+  setLegacy(fx, null);
+  r = kitSync(fx, ['preflight'], { env });
+  assert.equal(r.stdout.includes(T.en('preflight.lock_free')), true);
+  assert.doesNotMatch(r.stdout, /Legacy lock/, 'with the bridge off, no line');
+});
+
+test('the SessionStart line says the legacy lock is held, or that it cannot be used, and nothing while it is free', NEEDS_FLOCK, async () => {
+  const fx = bridgedVault();
+  const payload = JSON.stringify({ session_id: 's1', source: 'startup', cwd: fx.root });
+  const contextOf = (r) => {
+    assert.equal(r.status, 0, r.stderr);
+    return JSON.parse(r.stdout).hookSpecificOutput.additionalContext;
+  };
+  const holder = startHolder(fx.file);
+  try {
+    await holder.ready;
+    const r = await runWatched(process.execPath, [BIN, 'hook', 'session-start'], { file: fx.file, env: fx.env, cwd: join(fx.base, 'elsewhere'), input: payload });
+    const context = contextOf(r);
+    assert.ok(context.includes(T.en('hook.session_start.legacy_lock_held', { lock: fx.file })), context);
+    assert.doesNotMatch(context, /\n/, 'still one line');
+  } finally {
+    await holder.stop();
+  }
+  const freeContext = contextOf(runHookProcess('session-start', payload, { env: fx.env, cwd: join(fx.base, 'elsewhere') }));
+  assert.doesNotMatch(freeContext, /legacy lock/i);
+  const gone = join(fx.base, 'gone');
+  setLegacy(fx, join(gone, 'legacy.lock'));
+  const refusal = T.en('lock.legacy_dir_missing', { lock: join(gone, 'legacy.lock'), dir: gone });
+  const unusableContext = contextOf(runHookProcess('session-start', payload, { env: fx.env, cwd: join(fx.base, 'elsewhere') }));
+  assert.ok(unusableContext.includes(T.en('hook.session_start.legacy_lock_unusable', { refusal })), unusableContext);
+});
+
+test('a Stop hook that releases a clean session still names a legacy lock bridge that cannot be used', NEEDS_FLOCK, () => {
+  const fx = bridgedVault();
+  const gone = join(fx.base, 'gone');
+  setLegacy(fx, join(gone, 'legacy.lock'));
+  beginSession(fx);
+  const r = runHookProcess('stop', STOP_PAYLOAD(fx), { env: fx.env, cwd: join(fx.base, 'elsewhere') });
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, '', 'released: nothing to propose');
+  const refusal = T.en('lock.legacy_dir_missing', { lock: join(gone, 'legacy.lock'), dir: gone });
+  assert.equal(r.stderr, `${T.en('hook.stop.release_clean', { count: 0 })} ${refusal}\n`);
 });
 
 // --- the bridge off ------------------------------------------------------------------

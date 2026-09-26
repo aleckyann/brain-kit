@@ -7,7 +7,8 @@
 // vault's time zone, the curator's last round and each source's state, the
 // connector states carried from round to round, the pull requests waiting
 // for a merge, the notes past their stale_after, the pending items by
-// deadline, the working tree, the lock and the question queue.
+// deadline, the working tree, the vault lock (and the legacy lock, when
+// machine.json sets one) and the question queue.
 //
 // Every open pull request is listed, never a first page (ruling R-T1).
 //
@@ -35,6 +36,7 @@ import { readScalar, splitFrontmatter } from '../frontmatter.mjs';
 import { isValidIsoDate } from '../dates.mjs';
 import { aheadBehind, currentBranch, defaultBranch, defaultBranchUpstream, dirtyPaths, resolveCommit, runGit } from '../git.mjs';
 import { describeLock } from '../guards/lock.mjs';
+import { legacyLockSetting, probeLegacyLock } from '../guards/legacy-lock.mjs';
 import { localDay } from '../guards/watermark.mjs';
 import { findExecutable as realFindExecutable } from '../doctor/checks.mjs';
 import { knownStates } from '../commands/curate.mjs';
@@ -249,13 +251,33 @@ function questionFacts(stateDir, config, today, env) {
   }
 }
 
-function lockFacts(root, env) {
+// The vault lock, and the legacy lock when the vault's machine.json sets
+// one (src/guards/legacy-lock.mjs). `held`, `command` and `reason` are the
+// vault lock's alone. `legacy` is null with the bridge off; otherwise the
+// file and its state right now, probed exactly as the Stop hook probes it
+// (without waiting, never creating the file): 'held' when another process
+// holds it, 'free' when none does, 'unusable' when no writer can take it,
+// with the writers' own refusal as `reason` ({ messageKey, params }). A
+// legacy lock another process holds is never reported free, whatever the
+// vault lock says.
+function lockFacts(root, env, stateDir) {
+  let vault;
   try {
     const holder = describeLock(root, { env });
-    return { held: holder !== null, command: holder === null ? null : (holder.command ?? null), reason: null };
+    vault = { held: holder !== null, command: holder === null ? null : (holder.command ?? null), reason: null };
   } catch (error) {
-    return { held: null, command: null, reason: firstLine(error.message) };
+    vault = { held: null, command: null, reason: firstLine(error.message) };
   }
+  return { ...vault, legacy: legacyFacts(stateDir, env) };
+}
+
+function legacyFacts(stateDir, env) {
+  const setting = legacyLockSetting(stateDir);
+  if (setting.state === 'off') return null;
+  if (setting.state === 'invalid') return { file: null, state: 'unusable', reason: { messageKey: setting.messageKey, params: setting.params } };
+  const probed = probeLegacyLock(setting.file, { env });
+  if (probed.state === 'unusable') return { file: setting.file, state: 'unusable', reason: { messageKey: probed.messageKey, params: probed.params } };
+  return { file: setting.file, state: probed.state, reason: null };
 }
 
 // `machine` is the vault's machine.json on this machine, or null; nothing
@@ -281,7 +303,7 @@ export function briefingFacts({ root, config, machine = null, stateDir, now = ne
     stale: staleFacts(root, config, now, today, tz, { walkVault, listPublishable }),
     pending: pendingBuckets({ root, config, today, tz }),
     git: gitFacts(root, env),
-    lock: lockFacts(root, env),
+    lock: lockFacts(root, env, stateDir),
     questions: questionFacts(stateDir, config, today, env),
   };
 }

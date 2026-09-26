@@ -186,11 +186,21 @@ export function renderGit(facts, t) {
   return lines;
 }
 
+// The vault lock's line, then, when machine.json sets a legacy lock, its
+// own line: held, free, or unusable with the writers' refusal. The briefing's
+// sources block prints the same lines (src/briefing/blocks.mjs).
 export function renderLock(facts, t) {
   const lock = facts.lock;
-  if (lock.held === null) return [t('preflight.lock_unknown', { reason: lock.reason ?? '-' })];
-  if (lock.held) return [t('preflight.lock_held', { command: lock.command ?? '-' })];
-  return [t('preflight.lock_free')];
+  const lines = [];
+  if (lock.held === null) lines.push(t('preflight.lock_unknown', { reason: lock.reason ?? '-' }));
+  else if (lock.held) lines.push(t('preflight.lock_held', { command: lock.command ?? '-' }));
+  else lines.push(t('preflight.lock_free'));
+  const legacy = lock.legacy ?? null;
+  if (legacy === null) return lines;
+  if (legacy.state === 'held') lines.push(t('preflight.legacy_lock_held', { lock: legacy.file }));
+  else if (legacy.state === 'free') lines.push(t('preflight.legacy_lock_free', { lock: legacy.file }));
+  else lines.push(t('preflight.legacy_lock_unusable', { refusal: t(legacy.reason.messageKey, legacy.reason.params) }));
+  return lines;
 }
 
 export function renderQuestions(facts, t) {
