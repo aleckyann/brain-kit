@@ -24,6 +24,7 @@ import { createTranslator } from '../src/lang.mjs';
 import { walkVault } from '../src/vault.mjs';
 import { KIT_ROOT } from '../src/version.mjs';
 import { git } from './helpers/git-repo.mjs';
+import { nonUtf8NameRefusal } from './helpers/tmp.mjs';
 import { configText, gitProbe, repoState } from './helpers/sync-world.mjs';
 import { BRANCH, NOW, PR_URL, fingerprint, makeProposeWorld, note } from './helpers/propose-world.mjs';
 
@@ -134,7 +135,7 @@ test('a path given relative to a subdirectory, and a deleted path, are proposed 
   assert.equal(git(world.vault, ['ls-files', published]).trim(), published, 'and the index still tracks the file');
 });
 
-test('a file name that is not valid UTF-8 never reaches a pull request: lint cannot scan it, so --all stops at the gate', async () => {
+test('a file name that is not valid UTF-8 never reaches a pull request: lint cannot scan it, so --all stops at the gate', { skip: nonUtf8NameRefusal() }, async () => {
   const world = makeProposeWorld();
   // "caf" + 0xe9 + ".txt": Latin-1, not UTF-8.
   const name = Buffer.concat([Buffer.from('caf'), Buffer.from([0xe9]), Buffer.from('.txt')]);

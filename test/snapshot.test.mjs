@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { isUtf8 } from 'node:buffer';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -7,7 +8,7 @@ import { takeSnapshot, readSnapshot, splitDirty } from '../src/guards/snapshot.m
 import { GUARD_FILES, GuardError } from '../src/guards/location.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
 import { createTranslator } from '../src/lang.mjs';
-import { makeTempDir } from './helpers/tmp.mjs';
+import { makeTempDir, nonUtf8NameRefusal } from './helpers/tmp.mjs';
 import { git, makeRepo, write } from './helpers/git-repo.mjs';
 
 const NOW = new Date('2026-09-16T09:30:00.000Z');
@@ -211,31 +212,44 @@ const AWKWARD = [
   ['only a non-UTF-8 byte apart, twice', bytesName('x', 0xff, '.md'), bytesName('x', 0xfe, '.md')],
 ];
 
-test('awkward names land on the right side of the split, as untracked files, byte for byte', () => {
+// The awkward names this machine's temporary directory can hold: every one
+// of them, except the names that are not valid UTF-8 where the file system
+// refuses those (APFS does). Which were left out is said in the report.
+function holdableAwkward(t) {
+  const refused = nonUtf8NameRefusal();
+  if (!refused) return AWKWARD;
+  const kept = AWKWARD.filter(([, foreign, own]) => [foreign, own].every((name) => typeof name === 'string' || isUtf8(name)));
+  t.diagnostic(`left out ${AWKWARD.filter((entry) => !kept.includes(entry)).map(([what]) => what).join('; ')}: ${refused}`);
+  return kept;
+}
+
+test('awkward names land on the right side of the split, as untracked files, byte for byte', (t) => {
+  const awkward = holdableAwkward(t);
   const root = makeRepo(FILES);
-  for (const [, foreign] of AWKWARD) write(root, foreign, 'the other session\n');
+  for (const [, foreign] of awkward) write(root, foreign, 'the other session\n');
   const snapshot = takeSnapshot(root);
-  for (const [, , own] of AWKWARD) write(root, own, 'this session\n');
-  assertSplit(splitDirty(root, snapshot), { before: AWKWARD.map(([, foreign]) => foreign), since: AWKWARD.map(([, , own]) => own) });
+  for (const [, , own] of awkward) write(root, own, 'this session\n');
+  assertSplit(splitDirty(root, snapshot), { before: awkward.map(([, foreign]) => foreign), since: awkward.map(([, , own]) => own) });
   // And after a round trip through the stored file.
-  assertSplit(splitDirty(root, readSnapshot(root)), { before: AWKWARD.map(([, foreign]) => foreign), since: AWKWARD.map(([, , own]) => own) });
+  assertSplit(splitDirty(root, readSnapshot(root)), { before: awkward.map(([, foreign]) => foreign), since: awkward.map(([, , own]) => own) });
 });
 
-test('awkward names land on the right side of the split as tracked, modified files too', () => {
+test('awkward names land on the right side of the split as tracked, modified files too', (t) => {
+  const awkward = holdableAwkward(t);
   const root = makeRepo(FILES);
-  for (const [, foreign, own] of AWKWARD) {
+  for (const [, foreign, own] of awkward) {
     write(root, foreign, 'committed\n');
     write(root, own, 'committed\n');
   }
   git(root, ['add', '-A']);
   git(root, ['commit', '-q', '-m', 'awkward names']);
-  for (const [, foreign] of AWKWARD) write(root, foreign, 'the other session\n');
+  for (const [, foreign] of awkward) write(root, foreign, 'the other session\n');
   const snapshot = takeSnapshot(root);
-  for (const [, , own] of AWKWARD) write(root, own, 'this session\n');
-  assertSplit(splitDirty(root, snapshot), { before: AWKWARD.map(([, foreign]) => foreign), since: AWKWARD.map(([, , own]) => own) });
+  for (const [, , own] of awkward) write(root, own, 'this session\n');
+  assertSplit(splitDirty(root, snapshot), { before: awkward.map(([, foreign]) => foreign), since: awkward.map(([, , own]) => own) });
 });
 
-test('a name that is not UTF-8 is stored as its bytes, and never collapses with its neighbour', () => {
+test('a name that is not UTF-8 is stored as its bytes, and never collapses with its neighbour', { skip: nonUtf8NameRefusal() }, () => {
   const root = makeRepo(FILES);
   const e9 = bytesName('caf', 0xe9, '.md');
   const e8 = bytesName('caf', 0xe8, '.md');

@@ -24,7 +24,7 @@ import { appendFileSync, chmodSync, copyFileSync, cpSync, existsSync, mkdirSync,
 import { Buffer } from 'node:buffer';
 import { join } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
-import { makeTempDir } from './helpers/tmp.mjs';
+import { makeTempDir, nonUtf8NameRefusal } from './helpers/tmp.mjs';
 import { MATCH_REMEDY } from '../src/commands/scan-blobs.mjs';
 
 const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
@@ -327,7 +327,9 @@ test('a reference name carrying a Latin-1 byte that matches an accented pattern 
   assert.equal(ok.status, 0, ok.stderr);
 });
 
-test('the same name, pushed for real through the installed gate, is refused and never reaches the remote', () => {
+// git keeps a branch as a file named after it, so where the file system
+// refuses the name, git cannot create the branch this push needs.
+test('the same name, pushed for real through the installed gate, is refused and never reaches the remote', { skip: nonUtf8NameRefusal() }, () => {
   const { root, work, bare } = setup();
   const { installed } = installGate(root, work);
   assert.equal(installed.status, 0, `${installed.stdout}${installed.stderr}`);

@@ -17,6 +17,7 @@ import { GUARD_FILES } from '../src/guards/location.mjs';
 import { proposedMatch, proposedRef } from '../src/guards/proposed.mjs';
 import { git, makeRepo, pathUnder } from './helpers/git-repo.mjs';
 import { hookEnv, makeHookVault, runHookProcess } from './helpers/hook-world.mjs';
+import { nonUtf8NameRefusal } from './helpers/tmp.mjs';
 
 // Characters built at run time: no escape is typed into a file here.
 const A_ACUTE = String.fromCodePoint(0xe1);
@@ -364,18 +365,29 @@ test('after the registered machine the ladder fails closed: git unable to read t
 
 // --- the listing ----------------------------------------------------------------
 
-test('a path with spaces and accents is listed readably, and one that is not valid UTF-8 is listed without throwing', () => {
+test('a path with spaces and accents is listed readably, and one that is not valid UTF-8 is listed without throwing', (t) => {
   const fx = makeHookVault();
   begin(fx);
   const accented = `notes/reuni${A_TILDE}o de mar${C_CEDILLA}o com ${A_ACUTE}gua.md`;
   mkdirSync(join(fx.root, 'notes'), { recursive: true });
   writeFileSync(join(fx.root, accented), 'x\n');
-  const bytes = Buffer.concat([Buffer.from('notes/caf'), Buffer.from([0xe9]), Buffer.from(' latin1.md')]);
-  writeFileSync(pathUnder(fx.root, bytes), 'x\n');
+  // The second name is Latin-1. A file system that refuses a name that is
+  // not valid UTF-8 cannot hold it, so there the accented name is listed
+  // alone and the report says the other half was not run; everywhere else
+  // both are listed, in byte order.
+  const expected = [`  ${accented}`];
+  const refused = nonUtf8NameRefusal();
+  if (refused) {
+    t.diagnostic(`the name that is not valid UTF-8 is left out: ${refused}`);
+  } else {
+    const bytes = Buffer.concat([Buffer.from('notes/caf'), Buffer.from([0xe9]), Buffer.from(' latin1.md')]);
+    writeFileSync(pathUnder(fx.root, bytes), 'x\n');
+    expected.unshift(`  notes/caf${String.fromCodePoint(0xe9)} latin1.md`);
+  }
   const reason = reasonOf(stop(fx));
   const lines = reason.split('\n');
-  assert.equal(lines[0], 'This session changed 2 path(s) in the vault:');
-  assert.deepEqual(lines.slice(1, 3), [`  notes/caf${String.fromCodePoint(0xe9)} latin1.md`, `  ${accented}`]);
+  assert.equal(lines[0], `This session changed ${expected.length} path(s) in the vault:`);
+  assert.deepEqual(lines.slice(1, 1 + expected.length), expected);
   assert.doesNotMatch(reason, /�/u);
 });
 

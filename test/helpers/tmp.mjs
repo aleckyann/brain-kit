@@ -16,9 +16,17 @@
 // test deliberately made unreadable, because a cleanup that can fail a
 // passing run is worse than one that occasionally leaves a directory
 // behind. A run killed by a signal this handler never sees still leaks.
-import { mkdtempSync, rmSync } from 'node:fs';
+//
+// WHAT THE TEMPORARY DIRECTORY'S FILE SYSTEM REFUSES. A probe, for the
+// tests whose subject needs a file name that some file systems cannot
+// hold. A test skips on what the probe finds on this machine, never on the
+// name of the platform: ext4 holds any byte in a name, APFS (macOS)
+// refuses a name that is not valid UTF-8, and a Linux machine can mount
+// the second kind as a Mac can the first.
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { Buffer } from 'node:buffer';
 
 const created = [];
 let registered = false;
@@ -39,4 +47,28 @@ export function makeTempDir(prefix) {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   created.push(dir);
   return dir;
+}
+
+let nonUtf8Refusal;
+
+// false when the temporary directory's file system takes a file name that
+// is not valid UTF-8 ("caf" and the single byte 0xe9, Latin-1), and
+// otherwise the reason it refused, for a test's skip message. Only the
+// refusals that mean "this name cannot exist here" count; anything else
+// (a full disk, a permission) is raised, so a machine in trouble never
+// reads as one that skips.
+export function nonUtf8NameRefusal() {
+  if (nonUtf8Refusal === undefined) {
+    const dir = makeTempDir('brain-kit-probe-bytes-');
+    const name = Buffer.concat([Buffer.from(`${dir}/caf`), Buffer.from([0xe9])]);
+    try {
+      writeFileSync(name, '');
+      rmSync(name);
+      nonUtf8Refusal = false;
+    } catch (error) {
+      if (error.code !== 'EILSEQ' && error.code !== 'EINVAL') throw error;
+      nonUtf8Refusal = `the file system of the temporary directory refuses a file name that is not valid UTF-8 (${error.code})`;
+    }
+  }
+  return nonUtf8Refusal;
 }

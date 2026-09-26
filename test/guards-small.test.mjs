@@ -10,7 +10,7 @@ import { emptyWindow } from '../src/guards/empty-window.mjs';
 import { DEFAULT_HOST, DEFAULT_PORT, waitForNetwork } from '../src/guards/network.mjs';
 import { checkDirtyTree } from '../src/guards/dirty-tree.mjs';
 import { CLEAN_ENV, git, makeRepo, write } from './helpers/git-repo.mjs';
-import { makeTempDir } from './helpers/tmp.mjs';
+import { makeTempDir, nonUtf8NameRefusal } from './helpers/tmp.mjs';
 
 // ------------------------------------------------------------ read evidence
 
@@ -258,7 +258,7 @@ test('dirty tree: modified, staged, deleted and untracked are listed with mtimes
   assert.match(byPath['notes/new.md'], /^\d{4}-\d{2}-\d{2}T/);
 });
 
-test('dirty tree: a name that is not valid UTF-8 finds its file, and is not reported as deleted', () => {
+test('dirty tree: a name that is not valid UTF-8 finds its file, and is not reported as deleted', { skip: nonUtf8NameRefusal() }, () => {
   const root = makeRepo({ 'index.md': '# Index\n' });
   const name = Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x2e, 0x6d, 0x64]);
   write(root, name, 'x\n');
