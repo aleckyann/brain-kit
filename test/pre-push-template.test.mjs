@@ -11,7 +11,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync, chmodSync, copyFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, chmodSync, copyFileSync, existsSync, rmSync, symlinkSync } from 'node:fs';
 import { delimiter } from 'node:path';
 import { join, dirname } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
@@ -1028,3 +1028,62 @@ test('the same on the default branch itself: a first push of main that drops and
   assert.equal(landedRef(bare, 'refs/heads/main'), false);
 });
 
+// --- bash 3.2, the bash a Mac ships ----------------------------------------
+//
+// The hook, and the enumeration push-gate runs (src/push/records.sh), are
+// bash scripts found as `bash` on PATH, and the bash macOS ships as
+// /bin/bash is 3.2: no associative arrays, no ${var,,}, and an empty array
+// expanded under `set -u` is an unbound variable. The rest of this file
+// runs them under whatever bash comes first on PATH, which on a machine
+// with a newer bash installed is not that one. This runs them under a bash
+// 3 where the machine has one, put first on PATH, which is how the hook's
+// `#!/usr/bin/env bash` and push-gate's `bash` both find it. The pushes are
+// chosen for the paths bash 3 is strict about: a new branch to an empty
+// remote (the enumeration's exclusion list is empty), a new branch to a
+// remote that publishes one (the list is not), the object scan refusing,
+// and the identity guard's loop.
+function bashMajor(bash) {
+  const r = spawnSync(bash, ['-c', 'echo "${BASH_VERSINFO[0]} ${BASH_VERSION}"'], { encoding: 'utf8' });
+  if (r.error || r.status !== 0) return null;
+  const [major, version] = r.stdout.trim().split(' ');
+  return { major: Number(major), version };
+}
+const SYSTEM_BASH = bashMajor('/bin/bash');
+const NO_BASH3 = SYSTEM_BASH !== null && SYSTEM_BASH.major === 3
+  ? false
+  : `no bash 3 to run the gate under: /bin/bash is ${SYSTEM_BASH === null ? 'not there' : `bash ${SYSTEM_BASH.version}`}`;
+
+test('under bash 3.2, the shipped gate lets a clean push through, refuses what the object scan finds, and still guards the default branch', { skip: NO_BASH3 }, (t) => {
+  const shims = makeTempDir('brain-kit-template-bash3-');
+  symlinkSync('/bin/bash', join(shims, 'bash'));
+  const env = { PATH: `${shims}${delimiter}${PATH_WITH_BRAIN_KIT}` };
+  const onPath = (path) => spawnSync('env', ['bash', '-c', 'echo "$BASH_VERSION"'], { encoding: 'utf8', env: { ...process.env, PATH: path } }).stdout.trim();
+  const seen = onPath(env.PATH);
+  assert.match(seen, /^3\./, 'the bash the hook and push-gate find is bash 3');
+  t.diagnostic(`ran under bash ${seen}; without the shim, bash on PATH is ${onPath(PATH_WITH_BRAIN_KIT)}`);
+
+  const { work, bare } = setup({ config: WITH_LITERAL });
+  commitEverything(work, 'init');
+  const clean = git(work, ['push', '-q', 'origin', 'main'], { env });
+  assert.equal(clean.status, 0, clean.stderr);
+  assert.equal(landedRef(bare, 'refs/heads/main'), true);
+
+  assert.equal(git(work, ['checkout', '-q', '-b', 'notes']).status, 0);
+  writeFileSync(join(work, 'people', 'ana.md'), `${CLEAN_PERSON}\nMet the ${LITERAL} team.\n`);
+  commitEverything(work, 'a note');
+  writeFileSync(join(work, 'people', 'ana.md'), CLEAN_PERSON);
+  commitEverything(work, 'take it out again');
+  const leak = git(work, ['push', '-q', 'origin', 'notes'], { env });
+  refusedByTheObjectScan(leak);
+  assert.match(leak.stderr, /possible leak in people\/ana\.md \(CONTENT/);
+  assert.doesNotMatch(leak.stderr, /unbound variable|bad substitution|syntax error/);
+  assert.equal(landedRef(bare, 'refs/heads/notes'), false);
+
+  const agent = { name: "Ana's Second Brain (curator)", email: AGENT_EMAIL };
+  assert.equal(git(work, ['checkout', '-q', 'main']).status, 0);
+  assert.equal(git(work, ['commit', '-q', '--allow-empty', '-m', 'curate: an agent commit'], agent).status, 0);
+  const direct = git(work, ['push', '-q', 'origin', 'main'], { ...agent, env });
+  assert.notEqual(direct.status, 0, direct.stderr);
+  assert.match(direct.stderr, /refusing a push to the default branch \('main'\)/);
+  assert.doesNotMatch(direct.stderr, /unbound variable|bad substitution|syntax error/);
+});
