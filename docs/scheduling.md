@@ -48,6 +48,9 @@ once broke a real routine.
 3. **The vault lock.** Another writer holds it (a `propose` of yours, another round): exit
    75 naming the holder. With `paths.legacy_lock` set, the legacy lock too
    ([below](#moving-from-a-legacy-lock)): held, exit 75 naming the file; unusable, exit 1.
+   `last-run.json` records a held lock as `lock_held` and every other refusal of this step
+   (a legacy lock that cannot be used, a file system without hard links, a vault that is
+   not a repository, a reclaim that died) as `lock_unusable`, with its own exit code.
 4. **The network.** The round waits for a connection, up to two minutes, by running
    `machine.network_check` or, when that is unset, by opening a connection to the model's
    endpoint. None: exit 69. A check that answers in under 100 milliseconds

@@ -321,6 +321,19 @@ test('a lock held by a live process exits 75 naming it, and the round does nothi
   }
 });
 
+test('a lock refusal that is not "held" is lock_unusable with its own exit, never lock_held: here a vault that is not a repository', () => {
+  const w = makeCurateWorld();
+  rmSync(join(w.vault, '.git'), { recursive: true, force: true });
+  const r = w.curate();
+  assert.equal(r.status, EXIT.USAGE, r.stderr);
+  const last = w.lastRun();
+  assert.equal(last.exit, EXIT.USAGE);
+  assert.equal(last.reasonCode, 'lock_unusable');
+  assert.match(last.reason, /is not inside a git working tree/);
+  assert.equal(w.notifications().at(-1).at(-1), last.reason);
+  assert.deepEqual(traces(w), NONE);
+});
+
 test('a dirty tree postpones the round with 75, naming the file, before anything is fetched', () => {
   const w = makeCurateWorld();
   writeFileSync(join(w.vault, 'draft.md'), 'draft\n');

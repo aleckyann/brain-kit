@@ -411,6 +411,24 @@ test('a round finding the legacy lock held postpones: exit 75, lock_held naming 
   }
 });
 
+test('a round whose legacy lock cannot be used stops with exit 1 as lock_unusable, never lock_held: the refusal is its reason and its notification, no model launched', NEEDS_FLOCK, () => {
+  const w = makeCurateWorld();
+  const gone = join(w.base, 'gone');
+  const file = join(gone, 'legacy.lock');
+  w.setMachine({ paths: { ...w.machine.paths, legacy_lock: file } });
+  const r = w.curate();
+  assert.equal(r.status, EXIT.FAILURE, r.stderr);
+  const refusal = T.en('lock.legacy_dir_missing', { lock: file, dir: gone });
+  const last = w.lastRun();
+  assert.equal(last.exit, EXIT.FAILURE);
+  assert.equal(last.reasonCode, 'lock_unusable');
+  assert.equal(last.reason, refusal);
+  assert.equal(w.notifications().at(-1).at(-1), refusal);
+  assert.deepEqual(w.launches(), [], 'no model was launched');
+  assert.deepEqual(w.roundFiles(), [], 'the vault lock was let go');
+  assert.equal(existsSync(gone), false, 'nothing was created');
+});
+
 // --- the Stop hook ---------------------------------------------------------------
 
 test('the Stop hook stands down while the legacy lock is held, naming it, even with session work to propose; once it is free it blocks again', NEEDS_FLOCK, async () => {

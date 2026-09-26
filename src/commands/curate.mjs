@@ -843,7 +843,11 @@ export async function runCurate(argv, io, t, deps = {}) {
     if (!(error instanceof GuardError)) throw error;
     const reason = t(error.messageKey, error.params);
     run.exit = error.exitCode;
-    run.reasonCode = 'lock_held';
+    // Held (the vault lock, or the legacy lock, exit 75) is a round
+    // postponed; every other refusal (a legacy lock bridge that cannot be
+    // used, no hard links, not a repository, a reclaim that died) is one no
+    // retry fixes, and is recorded as such, never as held.
+    run.reasonCode = error.exitCode === EXIT.TEMPFAIL ? 'lock_held' : 'lock_unusable';
     run.reason = reason;
     return finishRound({ run, io, log, stateDir, machine, env, started, lock: null, writeLastRun: true, check: false, notices });
   }
