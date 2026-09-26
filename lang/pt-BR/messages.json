@@ -465,7 +465,7 @@
   "doctor.turn_cap.unusable": "{setting} em {file} é {value}, e nenhuma rodada roda com esse limite: ponha um número inteiro de turnos acima de 0, ou null para rodar sem limite.",
   "doctor.time_cap.set": "o modelo de uma rodada é encerrado depois de {minutes} minuto(s) ({setting} em {file})",
   "doctor.time_cap.none": "sem limite de tempo: {setting} é null ou não está definido em {file}, então o modelo de uma rodada roda até terminar; um que trave segura a trava do vault até você pará-lo",
-  "doctor.time_cap.unusable": "{setting} em {file} é {value}, e nenhuma rodada roda com esse limite: ponha um número de minutos acima de 0, ou null para rodar sem limite.",
+  "doctor.time_cap.unusable": "{setting} em {file} é {value}, e nenhuma rodada roda com esse limite: ponha um número de minutos acima de 0 e no máximo {max}, ou null para rodar sem limite.",
   "doctor.privacy_keywords.ok": "o lint recusa uma linha acrescentada por uma mudança que tenha uma das {count} palavra(s)-chave de {setting}",
   "doctor.privacy_keywords.none": "{setting} em {file} não lista nenhuma palavra-chave, então o lint não recusa nenhuma linha acrescentada que fale da saúde ou da vida privada de alguém. Um vault criado antes dessa lista existir não tem nenhuma: copie a que o seu pack de idioma traz, em {defaults}.",
   "doctor.gitignore_node_modules.not_ignored": "{pattern} não é ignorado. Depois de um npm install neste vault, a regra de segredos lê cada arquivo que o kit instalado traz e aponta credenciais que não existem, uma recusa falsa. Adicione-o ao .gitignore.",

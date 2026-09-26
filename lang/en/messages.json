@@ -465,7 +465,7 @@
   "doctor.turn_cap.unusable": "{setting} in {file} is {value}, and no round runs with that limit: set a whole number of turns above 0, or null for no limit.",
   "doctor.time_cap.set": "a round's model is killed after {minutes} minute(s) ({setting} in {file})",
   "doctor.time_cap.none": "no time limit: {setting} is null or not set in {file}, so a round's model runs until it ends; one that hangs holds the vault lock until you stop it",
-  "doctor.time_cap.unusable": "{setting} in {file} is {value}, and no round runs with that limit: set a number of minutes above 0, or null for no limit.",
+  "doctor.time_cap.unusable": "{setting} in {file} is {value}, and no round runs with that limit: set a number of minutes above 0 and at most {max}, or null for no limit.",
   "doctor.privacy_keywords.ok": "lint refuses a line a change adds that holds one of the {count} keyword(s) in {setting}",
   "doctor.privacy_keywords.none": "{setting} in {file} lists no keyword, so lint refuses no added line that names someone's health or private life. A vault made before this list existed has none: copy the one your language pack ships, in {defaults}.",
   "doctor.gitignore_node_modules.not_ignored": "{pattern} is not ignored. After an npm install in this vault, the secrets rule reads every file the installed kit ships and reports credentials that do not exist, a false refusal. Add it to .gitignore.",

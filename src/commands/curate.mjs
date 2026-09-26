@@ -67,8 +67,11 @@
 // reader of last-run should take for one.
 //
 // `deps` carries the environment, the working directory, the clock, the
-// network wait's timing and a step observer, for the tests. Production
-// passes nothing.
+// network wait's timing, a step observer, the round's kill timer
+// (`roundTimeoutMs`, which overrides curate.timeout_minutes) and a wrapper
+// for the model's launcher (`runModel`, handed the very options the real
+// one gets, so a test can see that no kill timer is armed), for the tests.
+// Production passes nothing.
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -669,6 +672,12 @@ export function roundTurns(config) {
   const configured = config?.curate?.max_turns;
   return configured === undefined ? FALLBACK_MAX_TURNS : configured;
 }
+
+// The largest curate.timeout_minutes a round can keep: its milliseconds must
+// fit Node's timer (MAX_TIMER_MS, 2^31-1 ms, about 24.8 days), or the kill
+// would fire at once. The schema's maximum is this number, and doctor's
+// time-cap names it.
+export const MAX_TIMEOUT_MINUTES = 35791;
 
 // The round's time limit, in minutes: the number curate.timeout_minutes
 // sets, after which the model's whole process group is killed and the round
@@ -1322,7 +1331,7 @@ export async function runCurate(argv, io, t, deps = {}) {
           }
         }
       };
-      out = await runModel({
+      out = await (deps.runModel ?? runModel)({
         claudeBin, argv: argvList, prompt, cwd: root, env: childEnv, timeoutMs, onLine,
         abortSignal: AbortSignal.any([controller.signal, launchControl.signal]),
         ...(deps.killGraceMs !== undefined ? { killGraceMs: deps.killGraceMs } : {}),

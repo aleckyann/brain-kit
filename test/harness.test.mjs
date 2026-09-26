@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildArgv, CONNECTOR_ARGS, ISOLATION_ARGS, ROUND_ENV, ROUND_TOOLS, runModel, unscopedRules } from '../src/harness/claude-code.mjs';
+import { buildArgv, CONNECTOR_ARGS, ISOLATION_ARGS, MAX_TIMER_MS, ROUND_ENV, ROUND_TOOLS, runModel, unscopedRules } from '../src/harness/claude-code.mjs';
 import { parseStream } from '../src/harness/stream.mjs';
 import { checkIsolation } from '../src/guards/isolation.mjs';
 import { checkCli } from '../src/guards/cli.mjs';
@@ -348,6 +348,22 @@ test('runModel kills a child that outlives its timeout and reports the signal, n
   assert.equal(out.exitCode, null);
   assert.equal(out.signal, 'SIGTERM');
   assert.equal(out.record.init.permissionMode, 'dontAsk');
+});
+
+test('runModel refuses a timeout Node\'s timer cannot hold, before anything starts, never clamping it; the largest it holds is armed', async () => {
+  const s = scenario({ stream: join(FIXTURES, 'isolated-run.jsonl') });
+  assertFake(FAKE);
+  for (const timeoutMs of [MAX_TIMER_MS + 1, 35792 * 60000, 0, -1, Number.NaN, Number.POSITIVE_INFINITY, '60000']) {
+    assert.throws(
+      () => runModel({ claudeBin: FAKE, argv: buildArgv({}), prompt: 'x', cwd: s.dir, env: s.env, timeoutMs }),
+      (error) => error instanceof RangeError && error.message.includes(String(MAX_TIMER_MS)),
+      String(timeoutMs),
+    );
+  }
+  assert.throws(() => readFileSync(s.argvFile), { code: 'ENOENT' }, 'the model was never started');
+  const out = await runModel({ claudeBin: FAKE, argv: buildArgv({}), prompt: 'x', cwd: s.dir, env: s.env, timeoutMs: MAX_TIMER_MS });
+  assert.equal(out.timedOut, false, 'the largest delay the timer holds does not fire at once');
+  assert.equal(out.exitCode, 0);
 });
 
 test('runModel reports a binary that cannot start as a spawn error with no exit code', async () => {

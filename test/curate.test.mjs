@@ -9,6 +9,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, ut
 import { join } from 'node:path';
 import { constants as osConstants } from 'node:os';
 import { roundBudget, roundTimeoutMinutes, roundTurns, runCurate } from '../src/commands/curate.mjs';
+import { runModel } from '../src/harness/claude-code.mjs';
 import { acquireLock } from '../src/guards/lock.mjs';
 import { createTranslator, SUPPORTED_LANGS } from '../src/lang.mjs';
 import { KIT_ROOT } from '../src/version.mjs';
@@ -853,6 +854,31 @@ test('curate.timeout_minutes: null or left out runs the model with no time limit
   }
 });
 
+// Re-review Minor 2: "no time limit" must mean that no kill timer is armed at
+// all, not a default one. The round's launcher is wrapped, and each launch is
+// seen with the very options the real runModel gets: null for a null key or
+// one left out (runModel arms a timer only for a number), the configured
+// minutes in milliseconds otherwise.
+test('curate.timeout_minutes null or left out arms no kill timer at all: the model\'s launcher is handed none; a number is handed its milliseconds', async () => {
+  for (const [name, edit, expected] of [
+    ['null', (c) => { c.curate.timeout_minutes = null; }, null],
+    ['absent', (c) => { delete c.curate.timeout_minutes; }, null],
+    ['45', (c) => { c.curate.timeout_minutes = 45; }, 45 * 60 * 1000],
+  ]) {
+    const w = makeCurateWorld({ config: edit });
+    const launches = [];
+    const launcher = (options) => {
+      launches.push({ hasKey: Object.hasOwn(options, 'timeoutMs'), timeoutMs: options.timeoutMs });
+      return runModel(options);
+    };
+    const r = await curateInProcess(w, [], { ...instantNetwork(), runModel: launcher });
+    assert.equal(r.status, EXIT.OK, `${name}: ${r.stderr}`);
+    assert.equal(launches.length, 1, name);
+    assert.equal(launches[0].timeoutMs, expected, `${name}: the kill timer the model was launched with`);
+    assert.equal(w.lastRun().timeoutMinutes, expected === null ? null : 45, name);
+  }
+});
+
 test('a model that outlives curate.timeout_minutes is killed, and the round exits 1 as timed_out naming the minutes', async () => {
   const w = makeCurateWorld({ config: (c) => { c.curate.timeout_minutes = 0.02; } });
   w.scenario({ delayMs: 30000 });
@@ -888,12 +914,13 @@ test('--check and --dry say the turn and time limits in the vault\'s language, a
   assert.ok(w.curate(['--dry']).stdout.split('\n').includes(TIME_LINES.en.absent));
 });
 
-test('a turn limit of 0 or a fraction, and a time limit of 0 or below, are refused as configuration before any round, naming the key', () => {
+test('a turn limit of 0 or a fraction, and a time limit of 0 or below or above 35791 minutes, are refused as configuration before any round, naming the key', () => {
   for (const [edit, key] of [
     [(c) => { c.curate.max_turns = 0; }, '$.curate.max_turns: must be >= 1'],
     [(c) => { c.curate.max_turns = 2.5; }, '$.curate.max_turns: expected integer or null, got number'],
     [(c) => { c.curate.timeout_minutes = 0; }, '$.curate.timeout_minutes: must be > 0'],
     [(c) => { c.curate.timeout_minutes = -5; }, '$.curate.timeout_minutes: must be > 0'],
+    [(c) => { c.curate.timeout_minutes = 35792; }, '$.curate.timeout_minutes: must be <= 35791'],
   ]) {
     const w = makeCurateWorld({ config: edit });
     const r = w.curate();

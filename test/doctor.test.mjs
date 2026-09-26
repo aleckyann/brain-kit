@@ -2452,13 +2452,17 @@ test('time-cap: a number of minutes is the limit, and null or a key left out is 
 test('time-cap: a limit no round can run with fails, naming the value; config-valid refuses 0 through the schema', async () => {
   const fx = setup();
   const file = join(fx.root, 'brain-kit.config.json');
-  for (const [value, shown] of [[0, '0'], [-1, '-1'], ['60', '"60"'], [true, 'true']]) {
+  for (const [value, shown] of [[0, '0'], [-1, '-1'], ['60', '"60"'], [true, 'true'], [35792, '35792']]) {
     editJson(file, (config) => { config.curate.timeout_minutes = value; });
     const { report, code } = await doctor(fx, ['--only', 'time-cap']);
     const c = assertCheck(report, 'time-cap', 'fail', 'doctor.time_cap.unusable');
-    assert.deepEqual(c.params, { ...TIME_PARAMS, value: shown });
+    assert.deepEqual(c.params, { ...TIME_PARAMS, value: shown, max: 35791 });
     assert.equal(code, EXIT.FAILURE);
   }
+  // The largest whole number of minutes Node's timer holds passes.
+  editJson(file, (config) => { config.curate.timeout_minutes = 35791; });
+  const top = assertCheck((await doctor(fx, ['--only', 'time-cap'])).report, 'time-cap', 'ok', 'doctor.time_cap.set');
+  assert.deepEqual(top.params, { minutes: 35791, ...TIME_PARAMS });
   editJson(file, (config) => { config.curate.timeout_minutes = 0; });
   let c = assertCheck((await doctor(fx, ['--only', 'config-valid'])).report, 'config-valid', 'fail', 'doctor.config_valid.invalid');
   assert.deepEqual(c.params.errors, ['$.curate.timeout_minutes: must be > 0']);

@@ -8,6 +8,8 @@ import { KIT_ROOT } from '../src/version.mjs';
 import {
   validateConfig, validateMachine, findMachineOnlyKeys, loadConfig, loadMachine, ConfigError, CONFIG_FILENAME, RETIRED_MACHINE_PATHS, withoutRetiredPaths,
 } from '../src/config.mjs';
+import { MAX_TIMEOUT_MINUTES } from '../src/commands/curate.mjs';
+import { MAX_TIMER_MS } from '../src/harness/claude-code.mjs';
 
 const fixture = (name) => JSON.parse(readFileSync(join(KIT_ROOT, 'test', 'fixtures', name), 'utf8'));
 const rawFixture = (name) => readFileSync(join(KIT_ROOT, 'test', 'fixtures', name), 'utf8');
@@ -167,6 +169,33 @@ test('loadConfig refuses a cost cap of 0 with a ConfigError naming the key, as e
   config.curate.budget_usd = 0;
   writeFileSync(join(dir, CONFIG_FILENAME), JSON.stringify(config));
   assert.throws(() => loadConfig(dir), (error) => error instanceof ConfigError && error.errors.includes('$.curate.budget_usd: must be > 0'));
+});
+
+// Phase 5a, re-review Minor 1: Node fires a timer whose delay is above
+// 2^31-1 ms at once, so a curate.timeout_minutes whose milliseconds exceed it
+// would kill every round's model at its start. 35791 minutes is the largest
+// whole number that fits; 35792 is refused by the configuration itself, in
+// both example configurations, and a fraction above 35791 too.
+test('curate.timeout_minutes takes a number up to 35791 or null, and refuses 35792, whose kill Node\'s timer would fire at once', () => {
+  assert.ok(MAX_TIMEOUT_MINUTES * 60000 <= MAX_TIMER_MS && (MAX_TIMEOUT_MINUTES + 1) * 60000 > MAX_TIMER_MS, 'the largest whole number of minutes the timer holds');
+  const schema = JSON.parse(readFileSync(join(KIT_ROOT, 'schema', 'config.schema.json'), 'utf8'));
+  assert.equal(schema.properties.curate.properties.timeout_minutes.maximum, MAX_TIMEOUT_MINUTES);
+  for (const name of ['config/valid.json', 'config/valid-pt-BR.json']) {
+    const withValue = (value) => {
+      const config = fixture(name);
+      config.curate.timeout_minutes = value;
+      return validateConfig(config);
+    };
+    for (const value of [35791, 35790.5, 60, 0.02, null]) assert.deepEqual(withValue(value), [], `${name}: ${JSON.stringify(value)}`);
+    for (const value of [35792, 35791.5, 100000]) {
+      assert.deepEqual(withValue(value), ['$.curate.timeout_minutes: must be <= 35791'], `${name}: ${JSON.stringify(value)}`);
+    }
+  }
+  const dir = makeTempDir('brain-kit-timeout-');
+  const config = fixture('config/valid.json');
+  config.curate.timeout_minutes = 35792;
+  writeFileSync(join(dir, CONFIG_FILENAME), JSON.stringify(config));
+  assert.throws(() => loadConfig(dir), (error) => error instanceof ConfigError && error.errors.includes('$.curate.timeout_minutes: must be <= 35791'));
 });
 
 test('curate.schedule entries must be HH:MM', () => {

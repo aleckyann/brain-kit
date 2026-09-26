@@ -208,6 +208,10 @@ export function buildArgv({ mode = 'isolated', model, maxTurns, budgetUsd, allow
 
 const STDERR_TAIL_BYTES = 4096;
 const KILL_GRACE_MS = 5000;
+// The longest delay Node's timers hold: one above it fires at once (after 1
+// ms, with a TimeoutOverflowWarning), so a round given it would be killed at
+// its first instant. runModel refuses such a timeout, never clamps it.
+export const MAX_TIMER_MS = 2 ** 31 - 1;
 // After the CLI itself has exited, how long its standard output may stay
 // open (a child of its own still writing, or holding the pipe) before the
 // whole process group is killed so the round can finish.
@@ -246,9 +250,16 @@ function killGroup(child, signal) {
 // exited is killed after DRAIN_GRACE_MS, so the run still ends.
 // An `onLine` that throws aborts the run with that error as the reason.
 // The child gets `env` with ROUND_ENV merged over it, always.
+// `timeoutMs` null or left out arms no timer at all; anything else must be a
+// number of milliseconds above 0 and at most MAX_TIMER_MS, or runModel
+// throws a RangeError before anything is started: a timer Node cannot hold
+// would kill the model at once.
 export function runModel({
   claudeBin, argv, prompt, cwd, env = process.env, timeoutMs, onLine, killGraceMs = KILL_GRACE_MS, abortSignal, drainGraceMs = DRAIN_GRACE_MS,
 }) {
+  if (timeoutMs !== undefined && timeoutMs !== null && !(typeof timeoutMs === 'number' && timeoutMs > 0 && timeoutMs <= MAX_TIMER_MS)) {
+    throw new RangeError(`timeoutMs must be a number of milliseconds above 0 and at most ${MAX_TIMER_MS}, got ${JSON.stringify(timeoutMs)}`);
+  }
   return new Promise((resolve) => {
     const started = Date.now();
     const parser = createStreamParser();
