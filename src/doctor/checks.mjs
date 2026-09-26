@@ -39,7 +39,7 @@ import { run } from '../exec.mjs';
 import { EXIT } from '../exit-codes.mjs';
 import { decodeBytes } from '../io.mjs';
 import { CONFIG_FILENAME, ConfigError, MACHINE_FILENAME, canonicalPathMatches, findMachineOnlyKeys, loadConfig, validateConfig, validateMachine } from '../config.mjs';
-import { STATE_FILES, stateDirFor, vaultIdFor } from '../state.mjs';
+import { STATE_FILES, physicalPathOf, stateDirFor, vaultIdFor } from '../state.mjs';
 import { KIT_ROOT, kitVersion } from '../version.mjs';
 import { localGitVarNames, withoutLocalGitVars } from '../git-env.mjs';
 import { loadPatterns } from '../leak.mjs';
@@ -162,18 +162,22 @@ function realOrSelf(path) {
   }
 }
 
-// Two paths name the same place when their real paths match; when one of
-// them does not exist there is no real path to compare, and the lexical
-// comparison is the only honest answer left.
+// Two paths name the same place when their physical paths match: the real
+// path, or for a path that does not exist, the real path of the part of it
+// that does followed by the rest as spelt. Comparing a missing path as
+// written instead called a vault's own hook directory, absent, "elsewhere"
+// whenever a directory above the vault was a symbolic link, which on
+// macOS is every temporary directory; the lexical comparison is left only
+// for a path that cannot be resolved at all.
 function samePlace(a, b) {
-  const real = (p) => {
+  const physical = (p) => {
     try {
-      return realpathSync(p);
+      return physicalPathOf(resolve(p));
     } catch {
       return resolve(p);
     }
   };
-  return real(a) === real(b);
+  return physical(a) === physical(b);
 }
 
 // { ok: true, value } | { ok: false, missing, error }

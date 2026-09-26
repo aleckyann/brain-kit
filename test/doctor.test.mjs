@@ -654,6 +654,21 @@ test('hooks-path: fails when the hook itself is absent, and names the command th
   assert.ok(c.message.endsWith('Run: brain-kit update --install-hook'), c.message);
 });
 
+// A directory above the vault that is a symbolic link gives the vault two
+// spellings; git names the physical one, the person may reach the other.
+// A hook directory that does not exist was compared as written, so the
+// vault's own was called "elsewhere" and the remedy named was the wrong
+// one. On macOS every temporary directory is reached this way (/var leads
+// to /private/var); the link here makes the same case on any machine.
+test('hooks-path: a vault reached through a link, with no hook directory at all, is missing its hook, never pointing elsewhere', async () => {
+  const fx = setup({ hook: 'absent' });
+  const link = join(fx.base, 'link to the vault');
+  symlinkSync(fx.root, link);
+  const { report } = await doctor({ ...fx, root: link }, ['--only', 'hooks-path']);
+  const c = assertCheck(report, 'hooks-path', 'fail', 'doctor.hooks_path.hook_missing');
+  assert.equal(c.params.command, 'brain-kit update --install-hook');
+});
+
 test('hooks-path: with neither core.hooksPath nor a hook, the remedy is the command that installs both, not a hooksPath that leads to the next failure', async () => {
   const fx = setup({ hook: 'absent', hooksPath: null });
   const { report } = await doctor(fx, ['--only', 'hooks-path']);

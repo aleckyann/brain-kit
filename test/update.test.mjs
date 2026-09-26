@@ -1283,6 +1283,26 @@ test('--install-hook with core.hooksPath already at .githooks writes only the ho
   says(r, 'gate.installed_path_kept', { hook: join(v.vault, HOOK_PATH) });
 });
 
+// The vault reached through a symbolic link, core.hooksPath at .githooks
+// and no .githooks directory at all: the directory git runs hooks from is
+// the vault's own, spelt physically by git and through the link by the
+// person, and the hook is installed there. Compared as written, the missing
+// directory read as a core.hooksPath pointing elsewhere, and nothing was
+// installed. On macOS every temporary directory is reached this way (/var
+// leads to /private/var); the link here makes the same case on any machine.
+test('--install-hook through a link to the vault, with core.hooksPath at .githooks and no hook directory, installs the hook there', () => {
+  const v = initVault();
+  withoutHook(v);
+  rmSync(join(v.vault, '.githooks'), { recursive: true });
+  const link = join(v.base, 'link to the vault');
+  symlinkSync(v.vault, link);
+  const r = update({ ...v, vault: link }, ['--install-hook']);
+  assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
+  says(r, 'gate.installed_path_kept', { hook: join(link, HOOK_PATH) });
+  assert.deepEqual(readFileSync(join(v.vault, HOOK_PATH)), readFileSync(TEMPLATE_HOOK));
+  assert.equal(gitIn(v.vault, ['config', 'core.hooksPath']).stdout.trim(), '.githooks');
+});
+
 test('--install-hook leaves a hook of the person\'s own, and hooks git already runs, exactly as they are, and exits 3 printing the line to add', () => {
   const cases = {
     'own hook': (v) => {

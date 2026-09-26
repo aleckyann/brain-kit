@@ -1,9 +1,10 @@
-import { lstatSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync } from 'node:fs';
+import { lstatSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { run } from '../exec.mjs';
 import { localGitVarNames, withoutLocalGitVars } from '../git-env.mjs';
 import { MANIFEST_PATH, readManifest, serializeManifest } from '../manifest.mjs';
+import { physicalPathOf } from '../state.mjs';
 import { HOOK_PATH, TEMPLATE_HOOK, rollback, writeGateHook, writeNew } from './skeleton.mjs';
 
 // installGate: the ONE function that puts the adopter's push gate into a
@@ -66,15 +67,20 @@ function present(path) {
   }
 }
 
+// The same place when the physical paths match (src/state.mjs,
+// physicalPathOf): a hook directory not created yet is compared through
+// the real path of the vault above it, never as written, so a core.hooksPath
+// of .githooks is the vault's own even when a directory above the vault is
+// a symbolic link, as every temporary directory is on macOS.
 function samePlace(a, b) {
-  const real = (p) => {
+  const physical = (p) => {
     try {
-      return realpathSync(p);
+      return physicalPathOf(resolve(p));
     } catch {
       return resolve(p);
     }
   };
-  return real(a) === real(b);
+  return physical(a) === physical(b);
 }
 
 function firstLine(text) {
