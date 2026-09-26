@@ -55,6 +55,17 @@ Clause-by-clause mutation is mandatory where a deleted clause could advance a wa
 
 - [ ] Tests: argv with a number, with `null`, with the key absent; schema accepts null and refuses a negative or a string; doctor and the report wording in both languages. Commit `feat: curate.budget_usd null runs a round with no cost cap`.
 
+### Task 4: "all" transcript projects, and the team calendars' recorded authorization
+
+Found while adopting the reference vault (26/09/2026): two decisions the approved design asks the owner to make have no place in the configuration.
+
+**Files:** Modify `schema/config.schema.json`, `src/sources/transcripts-claude-code.mjs` (and whatever resolves `include_projects`), `src/sources/calendar-google.mjs` (and the prompt block that lists team calendars), `src/doctor/checks.mjs` (the `include-projects` check and the calendar check), `src/init/*` only if init writes these keys, both `messages.json`, `docs/config.md` and `docs/connectors.md`, tests.
+
+**Behaviour:**
+- `sources.transcripts.include_projects` accepts the string `"all"` besides a list of exact directory names. `"all"` means every project directory under the machine's transcripts directory at the time of the round, still minus `exclude_path_patterns`; it is the owner's explicit choice written in the configuration (the approved design: "all" requires explicit confirmation, and the configuration is that confirmation). An empty list still means none and still fails doctor as today. doctor's `include-projects` says "all (N projects today)" for `"all"`. Any other string is refused by the schema.
+- `sources.calendar.team_calendars` may only be non-empty when `sources.calendar.team_authorization` is present: `{ "by": "human:<handle>", "at": "YYYY-MM-DD" }`, the owner who authorised reading the team's calendars and the day. Without it, doctor fails naming the key and the round leaves the team calendars out of the prompt block (the owner's own calendar still read), saying so in its parameters; never an exit 4 for this alone. The authorization is printed in the round's parameters ("team calendars authorised by <by> on DD/MM/YYYY").
+- Tests: "all" resolving every directory with the exclusions applied, a list unchanged, empty list, a bad string refused; team calendars with and without the authorization (doctor, the prompt block, the parameters line), an authorization with a malformed date refused by the schema. Mutation over "all" resolution and the authorization gate. Commit `feat: include every transcript project on purpose, and record who authorised the team calendars`.
+
 ## After the last task (controller)
 
 Final review of the three tasks together, one fix dispatch, then the tag `v0.1.0-rc.1` (annotated) on the reviewed commit, pushed, for the reference vault to install from.
