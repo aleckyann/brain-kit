@@ -14,7 +14,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { acquireLock, describeLock, joinOrAcquire } from '../src/guards/lock.mjs';
@@ -26,7 +26,7 @@ import { runDoctor } from '../src/commands/doctor.mjs';
 import { KIT_ROOT } from '../src/version.mjs';
 import { makeTempDir } from './helpers/tmp.mjs';
 import { CLEAN_ENV, makeRepo } from './helpers/git-repo.mjs';
-import { BIN, makeHookVault, runHookProcess } from './helpers/hook-world.mjs';
+import { BIN, hookEnv, makeHookVault, runHookProcess } from './helpers/hook-world.mjs';
 import { makeCurateWorld, note } from './helpers/curate-world.mjs';
 import { flockProbe, flockAvailable, runWatched, startHolder } from './helpers/legacy-lock-world.mjs';
 
@@ -210,6 +210,95 @@ test('a writer killed while it holds the legacy lock loses it at once: the kerne
   } finally {
     child.kill('SIGKILL');
     await exited;
+  }
+});
+
+// --- every writer, one by one --------------------------------------------------
+
+// Everything a writer could change: HEAD, the tree's status, every ref, the
+// marks and the question queue (machine.json's paths name both inside the
+// state directory).
+function snapshot(fx) {
+  const git = (args) => {
+    const r = spawnSync('git', args, { cwd: fx.root, encoding: 'utf8', env: CLEAN_ENV });
+    assert.equal(r.status, 0, `git ${args.join(' ')}: ${r.stderr}`);
+    return r.stdout;
+  };
+  const read = (file) => (existsSync(file) ? readFileSync(file, 'utf8') : null);
+  return {
+    head: git(['rev-parse', 'HEAD']),
+    status: git(['status', '--porcelain=v1', '--untracked-files=all']),
+    refs: git(['for-each-ref', '--format=%(refname) %(objectname)']),
+    marks: read(join(fx.stateDir, 'watermark.json')),
+    queue: read(join(fx.stateDir, 'questions.log')),
+  };
+}
+
+test('every writer refuses at once while the legacy lock is held, exit 75 with the held-lock line, and changes nothing: propose outside a round, sync, verify, every watermark and questions write', NEEDS_FLOCK, async () => {
+  const fx = bridgedVault();
+  const legacyMark = join(fx.base, 'legacy-watermark');
+  writeFileSync(legacyMark, '2026-09-20\n');
+  writeFileSync(join(fx.root, 'draft.md'), note('Draft'));
+  // One question in the queue, so answer and archive have one to change.
+  const added = kitSync(fx, ['questions', 'add', 'Asked before the legacy job started?']);
+  assert.equal(added.status, EXIT.OK, added.stderr);
+  const id = /q-[0-9a-f]{8}/.exec(added.stdout)[0];
+  const writers = [
+    ['propose', 'Legacy lock held', '--only', 'draft.md'],
+    ['sync'],
+    ['verify', '--files', 'index.md'],
+    ['watermark', 'set', 'transcripts', '2026-09-01'],
+    ['watermark', 'reopen', 'transcripts', '2026-09-01'],
+    ['watermark', 'assume-covered', 'transcripts'],
+    ['watermark', 'import', '--from', legacyMark],
+    ['questions', 'add', 'Asked while the legacy job ran?'],
+    ['questions', 'answer', id],
+    ['questions', 'archive', id],
+    ['questions', 'sweep'],
+  ];
+  const before = snapshot(fx);
+  assert.notEqual(before.queue, null, 'the queue holds the seeded question');
+  const holder = startHolder(fx.file);
+  try {
+    await holder.ready;
+    for (const argv of writers) {
+      const label = argv.join(' ');
+      const r = await kit(fx, argv);
+      assert.equal(r.status, EXIT.TEMPFAIL, `${label}: ${r.stderr}`);
+      assert.equal(r.stderr, `${T.en('lock.legacy_held', { lock: fx.file })}\n`, label);
+      assert.equal(r.stdout, '', label);
+      assert.deepEqual(snapshot(fx), before, `${label} changed nothing`);
+      assert.equal(vaultLockLeft(fx), false, `${label} let the vault lock go`);
+    }
+    assert.equal(flockProbe(fx.file), 1, 'the holder held it throughout');
+  } finally {
+    await holder.stop();
+  }
+});
+
+test('the bridge is read from the state directory the vault itself derives, whatever directory the writer starts in', NEEDS_FLOCK, async () => {
+  const base = realpathSync(makeTempDir('brain-kit-legacy-derived-'));
+  for (const dir of ['home', 'elsewhere', 'locks']) mkdirSync(join(base, dir));
+  const env = { ...hookEnv(base), XDG_STATE_HOME: join(base, 'xdg') };
+  delete env.BRAIN_KIT_STATE_DIR;
+  const root = join(base, 'vault');
+  const run = (args, cwd) => spawnSync(process.execPath, [BIN, ...args], { cwd, env, encoding: 'utf8' });
+  let r = run(['init', root, '--yes', '--lang', 'en'], base);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const file = join(base, 'locks', 'legacy.lock');
+  r = run(['machine', 'set', 'paths.legacy_lock', file], root);
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.ok(r.stdout.includes(join(base, 'xdg', 'brain-kit')), `machine.json lives in the derived state directory: ${r.stdout}`);
+  const holder = startHolder(file);
+  try {
+    await holder.ready;
+    for (const argv of [['watermark', 'assume-covered', 'transcripts', root], ['questions', 'add', 'From elsewhere?', root]]) {
+      const refused = await runWatched(process.execPath, [BIN, ...argv], { file, env, cwd: join(base, 'elsewhere') });
+      assert.equal(refused.status, EXIT.TEMPFAIL, `${argv.join(' ')}: ${refused.stderr}`);
+      assert.equal(refused.stderr, `${T.en('lock.legacy_held', { lock: file })}\n`);
+    }
+  } finally {
+    await holder.stop();
   }
 });
 
