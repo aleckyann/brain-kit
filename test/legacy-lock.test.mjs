@@ -550,7 +550,7 @@ test('a legacy file this user may not open refuses, exit 1; one it may only read
   assert.equal(flockProbe(fx.file), 0);
 });
 
-test('a machine.json that cannot say whether the bridge is on refuses every writer, exit 1; a relative setting written by hand too', () => {
+test('a machine.json that cannot say whether the bridge is on refuses every writer, exit 1, and names the command that shows where it breaks; a relative setting written by hand too', () => {
   const fx = bridgedVault();
   const machineFile = join(fx.stateDir, 'machine.json');
   setLegacy(fx, 'relative/legacy.lock');
@@ -558,6 +558,18 @@ test('a machine.json that cannot say whether the bridge is on refuses every writ
   writeFileSync(machineFile, '{ not json');
   const error = refusedWith(fx, 'lock.legacy_machine_unreadable', { file: machineFile, detail: legacyLockSetting(fx.stateDir).params.detail }, machineFile);
   assert.match(error.params.detail, /JSON/);
+  // Neither machine set nor machine register can rewrite a file they cannot
+  // read, so the sentence sends the person to the check that shows the same
+  // place, in both languages.
+  rendersIn(error, 'brain-kit doctor --only machine-valid');
+  const shown = kitSync(fx, ['doctor', '--only', 'machine-valid']);
+  assert.equal(shown.status, EXIT.FAILURE);
+  assert.ok(shown.stdout.includes(error.params.detail), `doctor --only machine-valid shows the same place: ${shown.stdout}`);
+  for (const argv of [['machine', 'set', 'paths.legacy_lock', 'null'], ['machine', 'register']]) {
+    const r = kitSync(fx, argv);
+    assert.equal(r.status, EXIT.FAILURE, `${argv.join(' ')} cannot repair it: ${r.stderr}`);
+  }
+  assert.equal(readFileSync(machineFile, 'utf8'), '{ not json', 'and nothing rewrote it');
 });
 
 // --- machine set ---------------------------------------------------------------------
