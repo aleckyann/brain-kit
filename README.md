@@ -8,8 +8,10 @@
 > from an unattended round. Phase 3 is complete as well: the round also reads your calendar and
 > meeting notes through the claude.ai connectors, once you turn them on. Phase 4 is
 > complete: the morning briefing (`preflight`, `questions`, the `briefing` skill and its
-> desktop task). The package on npm is still the Phase 0 skeleton. Follow the repository
-> for the first usable release.
+> desktop task). Phase 5a adds what a vault moving from scripts of its own needs:
+> `watermark import`, a bridge to a legacy `flock` lock, and rounds with no cost cap when
+> the configuration asks for none. The package on npm is still the Phase 0 skeleton.
+> Follow the repository for the first usable release.
 
 A second brain in plain markdown, in the Open Knowledge Format (OKF) v0.2, kept by an
 AI agent that reads it through an index, feeds it every day from your own work (session
@@ -153,13 +155,17 @@ to the model.
 days after its own mark, oldest first and whole (as many as fit in
 `curate.caps.transcripts`; the rest wait for the next round), and its mark moves only when
 the round's record shows the source read and the model reported it; no day is ever closed
-unread. `schedule install|uninstall|status`
+unread. `watermark import --from <file>` carries over the mark of a legacy setup that kept
+one date in a file of its own, as the last day swept of every enabled source (or of the
+ones `--sources` names). A vault still run by a legacy job that holds a `flock` on a file
+can point `machine.json` `paths.legacy_lock` at that file, so the kit's writers and that
+job are never in the tree at once. `schedule install|uninstall|status`
 installs the round in daytime windows (09:30, 14:00 and 20:00 by default), named by what it
 does, with no dependency on a network target: systemd user timers are the reference, and
 launchd and cron are rendered too.
 
 [docs/scheduling.md](docs/scheduling.md) explains the round step by step, the windows, the
-watermark, the exit codes and what to do for each. [docs/security.md](docs/security.md)
+watermark and its import, moving from a legacy lock, the exit codes and what to do for each. [docs/security.md](docs/security.md)
 explains what isolates the model and the measurements behind it.
 
 ## Calendar and meeting notes

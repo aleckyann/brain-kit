@@ -9,8 +9,10 @@
 > perto. A fase 3 também está concluída: a rodada lê ainda a sua agenda e as suas notas de
 > reunião pelos conectores do claude.ai, depois que você os liga. A fase 4 também está
 > concluída: o briefing matinal (`preflight`, `questions`, a skill `briefing` e a tarefa dela
-> no aplicativo para desktop). O pacote no npm ainda é o esqueleto da fase 0. Acompanhe o
-> repositório para a primeira versão usável.
+> no aplicativo para desktop). A fase 5a traz o que um vault que sai de scripts próprios
+> precisa: o `watermark import`, uma ponte para uma trava `flock` legada e rodadas sem teto
+> de custo quando a configuração não pede nenhum. O pacote no npm ainda é o esqueleto da
+> fase 0. Acompanhe o repositório para a primeira versão usável.
 
 Um segundo cérebro em markdown puro, no Open Knowledge Format (OKF) v0.2, mantido por um
 agente de IA que o lê por um índice, o alimenta todo dia a partir do seu próprio trabalho
@@ -156,13 +158,18 @@ O `watermark` mostra e move o último dia varrido de cada fonte. Cada fonte lê 
 seguintes à própria marca, os mais antigos primeiro e inteiros (quantos couberem em
 `curate.caps.transcripts`; os demais ficam para a próxima rodada), e a marca dela só anda
 quando o registro da rodada mostra a fonte lida e o modelo a informou; nenhum dia é
-fechado sem ter sido lido. O
-`schedule install|uninstall|status` instala a rodada em janelas diurnas (09:30, 14:00 e
+fechado sem ter sido lido. O `watermark import --from <arquivo>` traz a marca d'água de
+uma instalação antiga que guardava uma data num arquivo próprio, como o último dia varrido
+de toda fonte habilitada (ou das que `--sources` nomeia). Um vault ainda rodado por um job
+antigo que segura um `flock` num arquivo pode apontar `paths.legacy_lock` do `machine.json`
+para esse arquivo, e então quem escreve pelo kit e esse job nunca ficam na árvore ao mesmo
+tempo. O `schedule install|uninstall|status` instala a rodada em janelas diurnas (09:30, 14:00 e
 20:00 por padrão), com um nome que diz o que ela faz e sem depender de nenhum alvo de rede:
 os timers de usuário do systemd são a referência, e launchd e cron também são gerados.
 
 O [docs/scheduling.md](docs/scheduling.md) explica a rodada passo a passo, as janelas, a
-marca d'água, os códigos de saída e o que fazer em cada um. O
+marca d'água e a importação dela, a saída de uma trava legada, os códigos de saída e o que
+fazer em cada um. O
 [docs/security.md](docs/security.md) explica o que isola o modelo e as medições por trás
 disso.
 

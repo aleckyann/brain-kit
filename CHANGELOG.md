@@ -443,6 +443,37 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   most one pull request with `--only`, no tool use naming a `never_read` path, and an old
   log section's marker never handed to the model.
 
+### Phase 5a: moving a vault from a legacy setup
+
+- `brain-kit watermark import --from <file> [--sources <id,...>] [dir]` carries over the
+  mark of a legacy setup that kept one date in a file of its own. The file's one line, a
+  day written YYYY-MM-DD (a final LF or CRLF allowed) not after yesterday in the vault's
+  zone, becomes the last day swept of every enabled source (the ones a round reads), or of
+  the ones `--sources` names. Every check runs before the first write; a refusal exits 2,
+  quotes the start of the file and changes nothing; the file is only read. It prints one
+  line per source, the day and the mark it replaced, and no "closed unread" line: it
+  trusts the legacy job for every day up to the imported one.
+- A bridge to a legacy `flock` lock. `machine.json` `paths.legacy_lock` (an absolute path,
+  `null` to turn it off, set with `machine set`) makes every command that takes the vault
+  lock also hold an exclusive flock(2) on that file, taken without waiting right after the
+  vault lock and let go with it: util-linux `flock` locks a descriptor the writer keeps
+  open, so the kernel releases it when the writer ends, crash included. A held legacy lock
+  postpones the writer with exit 75 naming the file. A bridge that cannot be used (not
+  Linux, no `flock`, the file's directory missing, a `machine.json` that cannot be read)
+  refuses with exit 1 and says how to repair it; a round records every lock refusal that
+  is not "held" as `lock_unusable`, never `lock_held`. A `propose` joined to the round
+  never asks a second time, and `machine set` and `machine register` leave the bridge
+  out, so it can always be turned off. The Stop hook stands down while another process
+  holds the file, and `doctor` gains `legacy-lock`: off, on, on and held right now, or on
+  and unusable.
+- `curate.budget_usd: null` runs a round with no cost cap: no `--max-budget-usd` is
+  passed. A key left out keeps the default of 5 USD, and `0` is refused as configuration
+  before any round (the schema validator now implements `exclusiveMinimum`). `curate
+  --check`, `--dry` and the round say which cap applies, `last-run.json` records
+  `budgetUsd`, and `doctor` gains `cost-cap`.
+- `docs/scheduling.md` gains "Moving from a legacy lock", with what the bridge does not
+  cover, and the rules of `watermark import`.
+
 ## 0.0.1 (published on npm on 18/09/2026)
 
 Phase 0: package skeleton, CLI router with exit codes, language packs (pt-BR reference, en),

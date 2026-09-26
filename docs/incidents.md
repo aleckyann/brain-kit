@@ -631,8 +631,9 @@ from there. It advances only on exit 0, so a round that dies halfway leaves the 
 open. A mark at D-1 with today's pull request merged is expected behaviour.
 **Where it lives in brain-kit.** `src/guards/watermark.mjs`,
 `brain-kit watermark show|set|reopen|assume-covered`, `brain-kit doctor` check
-`watermark` (Phase 2). `watermark import`, which carries marks over from the original
-vault, comes with the migration (Phase 5).
+`watermark` (Phase 2). `brain-kit watermark import --from <file>` (Phase 5a) carries the
+original vault's own mark over: the one day its file holds becomes the last day swept of
+every enabled source, or of the ones `--sources` names ([scheduling.md](scheduling.md)).
 
 ### 20/08/2026: the round closed a day it had never read
 **What happened.** The round recorded that the connectors had not come up, declared

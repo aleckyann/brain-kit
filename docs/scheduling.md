@@ -252,7 +252,26 @@ brain-kit watermark show                              # each source's mark and h
 brain-kit watermark reopen transcripts 2026-09-20     # read 20/09/2026 and every later day again
 brain-kit watermark set transcripts 2026-09-22        # record 22/09/2026 as the last day swept
 brain-kit watermark assume-covered transcripts        # mark yesterday as swept, listing every day it skips
+brain-kit watermark import --from /path/to/last-date  # a legacy setup's own mark, for every enabled source
+brain-kit watermark import --from /path/to/last-date --sources transcripts   # only the sources it swept
 ```
+
+`watermark import` carries over the mark of a legacy setup that kept one date in a file of
+its own. The file must hold exactly one line, the day written YYYY-MM-DD (a final LF or
+CRLF allowed), and the day must not be after yesterday; anything else is refused, exit 2,
+quoting the start of the file, and nothing is written. What it trusts, by design:
+
+- The file's day becomes the last day swept of every enabled source (the ones a round
+  reads), unless `--sources` names fewer. A legacy job that swept only some of them would
+  close the others' days too: name the sources it really swept.
+- It prints one line per source, the day written and the mark it replaced, and never the
+  "closed without having been read" line of `set` and `assume-covered`: every day up to
+  the imported one is taken as swept by the legacy job.
+- A day before a source's current mark moves that mark back, and the next round reads
+  the days after it again: read twice, never lost.
+- The file is read, and every check made, before the vault lock is taken. A legacy run
+  that ends in between writes a later day this import does not see, and the next round
+  reads that day again. The file is only read: never written, moved or removed.
 
 Days on the command line are written YYYY-MM-DD; everything the kit prints for you is
 DD/MM/YYYY. A mark can never name today or a later day. If one does (a clock that was
@@ -283,6 +302,11 @@ brain-kit machine set paths.legacy_lock /absolute/path/to/the/legacy.lock
 brain-kit doctor --only legacy-lock
 ```
 
+Read the legacy job's script first. `flock` locks a file, not a name: a job that deletes
+or replaces its lock file (an `rm` of it, a trap that removes it on exit, a new file each
+run) defeats any flock, the kit's included. The bridge works only against a job that
+keeps one file in place.
+
 From then on every command that takes the vault lock (a round, `propose`, `sync`,
 `verify`, and the writing subcommands of `watermark` and `questions`) also holds an
 exclusive flock on that file for as long as it holds the vault lock, taken without
@@ -303,6 +327,27 @@ works; do it once the legacy job is uninstalled:
 ```bash
 brain-kit machine set paths.legacy_lock null
 ```
+
+What the bridge does not cover, by design:
+
+- **An unreadable machine.json.** The setting lives in the vault's `machine.json`. One
+  that cannot be read or parsed might have the bridge on, so it refuses every writer with
+  exit 1. Neither `machine set` nor `machine register` can rewrite a file they cannot
+  read: repair it by hand where it breaks, which `brain-kit doctor --only machine-valid`
+  shows. Deleting `machine.json` turns the bridge off, since a vault with no
+  `machine.json` takes no legacy lock (and `machine register` does not recreate one
+  without `--from`).
+- **A round killed with SIGKILL.** The legacy lock, like the vault lock, is held by the
+  round's own process. A round killed with SIGKILL frees both at once, while the model it
+  started may still be running and writing; SIGTERM and SIGINT end the model first.
+- **Another working tree.** The bridge follows the state directory, the vault lock the
+  repository. A linked worktree, or a copy of the vault with a state directory of its
+  own, reads its own `machine.json`: it has no bridge unless one is set there, and its
+  writers run beside the legacy job, in a different working tree.
+- **The probe's side effect.** The Stop hook and `doctor` ask whether another process
+  holds the file with a shared lock, taken without waiting and dropped at once. A legacy
+  job that starts in that very instant finds the file locked and skips that run, and a
+  kit writer that starts then is postponed with exit 75.
 
 ## Exit codes, and what to do for each
 
