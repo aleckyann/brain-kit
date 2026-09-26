@@ -325,7 +325,6 @@
       ],
       "calendars": [],
       "team_calendars": [],
-      "team_calendars_consent_noted": false,
       "skip_events_with_owner": true,
       "dedup_by": "eventId",
       "privacy": {

@@ -16,7 +16,7 @@ import { parseStream } from '../src/harness/stream.mjs';
 import { connectorStates } from '../src/guards/connectors.mjs';
 import { validateSource } from '../src/sources/index.mjs';
 import { transcriptsSource } from '../src/sources/transcripts-claude-code.mjs';
-import { calendarSource } from '../src/sources/calendar-google.mjs';
+import { authorizationProblem, calendarSource } from '../src/sources/calendar-google.mjs';
 
 const FROM = new Date('2026-05-12T03:00:00.000Z');
 const TO = new Date('2026-05-13T03:00:00.000Z');
@@ -29,7 +29,7 @@ const LIST = `${PREFIX}list_events`;
 const OWNER = 'ana@example.com';
 const TEAM = Object.freeze(['bruno@example.com', 'carla@example.com']);
 // Who authorised reading the team's calendars, and the day (phase 5a task
-// 4): with it, the tests of consent below see consent as the only gate.
+// 4, rulings R-A5 and R-A6): the one gate on other people's calendars.
 const AUTHORIZED = Object.freeze({ by: 'human:ana', at: '2026-05-04' });
 const FIXTURE = fileURLToPath(new URL('./fixtures/stream/connectors-connected.jsonl', import.meta.url));
 
@@ -156,7 +156,7 @@ test('isConfigured: a non-empty list of calendar ids, none blank and none a plac
 });
 
 test('isConfigured looks at the owner calendars only: other people calendars never turn the source on', () => {
-  assert.equal(calendarSource.isConfigured(config({ calendar: { calendars: [], team_calendars: [...TEAM], team_calendars_consent_noted: true } })), false);
+  assert.equal(calendarSource.isConfigured(config({ calendar: { calendars: [], team_calendars: [...TEAM], team_authorization: AUTHORIZED } })), false);
 });
 
 test('isConfigured needs sources.calendar.enabled to be exactly true, besides the calendars', () => {
@@ -257,65 +257,60 @@ test('collect plans the configured calendars over the window, in the vault time 
 });
 
 test('collect lists a calendar named twice once', () => {
-  const plan = collect({ calendar: { calendars: [OWNER, OWNER], team_calendars: [TEAM[0], TEAM[0], OWNER], team_authorization: AUTHORIZED, team_calendars_consent_noted: true } });
+  const plan = collect({ calendar: { calendars: [OWNER, OWNER], team_calendars: [TEAM[0], TEAM[0], OWNER], team_authorization: AUTHORIZED } });
   assert.deepEqual(plan.calendars, [OWNER]);
   assert.deepEqual(plan.otherCalendars, [TEAM[0]]);
 });
 
-test('collect without recorded consent ignores other people calendars and says how many', () => {
-  const plan = collect({ calendar: { team_calendars: [...TEAM], team_authorization: AUTHORIZED, team_calendars_consent_noted: false } });
-  assert.deepEqual(plan.calendars, [OWNER]);
-  assert.deepEqual(plan.otherCalendars, []);
-  assert.deepEqual(plan.problems, [{ code: 'other_calendars_without_consent', detail: '2' }]);
-  assert.match(plan.promptBlock, /Calendars ignored in sources\.calendar\.team_calendars: 2\./);
-  assert.match(plan.promptBlock, /team_calendars_consent_noted/);
-  for (const id of TEAM) assert.ok(!plan.promptBlock.includes(id), `${id} must not reach the prompt`);
-});
-
-test('consent counts only as the boolean true: any other value is no consent', () => {
-  for (const noted of ['true', 1, 'yes', null, undefined]) {
-    const plan = collect({ calendar: { team_calendars: [...TEAM], team_authorization: AUTHORIZED, team_calendars_consent_noted: noted } });
-    assert.deepEqual(plan.otherCalendars, [], String(noted));
-    assert.deepEqual(plan.problems.map((p) => p.code), ['other_calendars_without_consent'], String(noted));
-  }
-});
-
-test('collect with recorded consent plans other people calendars beside the owner ones', () => {
-  const plan = collect({ calendar: { team_calendars: [...TEAM], team_authorization: AUTHORIZED, team_calendars_consent_noted: true } });
+// Phase 5a, task 4, rulings R-A5 and R-A6: the record of who authorised
+// reading the team's calendars, and the day, is the one gate, and the
+// source checks it, never the schema.
+test('collect with the recorded authorization plans other people calendars beside the owner ones', () => {
+  const plan = collect({ calendar: { team_calendars: [...TEAM], team_authorization: AUTHORIZED } });
   assert.deepEqual(plan.calendars, [OWNER]);
   assert.deepEqual(plan.otherCalendars, [...TEAM]);
   assert.deepEqual(plan.problems, []);
   for (const id of TEAM) assert.ok(plan.promptBlock.includes(JSON.stringify(listing({ calendarId: id }))), id);
 });
 
-test('a blank or placeholder entry of team_calendars names no calendar: never planned, never counted', () => {
-  const team = ['<teammate-email>', '', '  ', TEAM[0]];
-  assert.deepEqual(collect({ calendar: { team_calendars: team, team_authorization: AUTHORIZED, team_calendars_consent_noted: true } }).otherCalendars, [TEAM[0]]);
-  assert.deepEqual(collect({ calendar: { team_calendars: team, team_authorization: AUTHORIZED } }).problems, [{ code: 'other_calendars_without_consent', detail: '1' }]);
+test('the old consent flag gates nothing, whatever its value: the authorization alone decides', () => {
+  for (const noted of [true, false, 'yes', null, undefined]) {
+    const label = String(noted);
+    assert.deepEqual(collect({ calendar: { team_calendars: [...TEAM], team_authorization: AUTHORIZED, team_calendars_consent_noted: noted } }).otherCalendars, [...TEAM], label);
+    const without = collect({ calendar: { team_calendars: [...TEAM], team_calendars_consent_noted: noted } });
+    assert.deepEqual(without.otherCalendars, [], label);
+    assert.deepEqual(without.problems, [{ code: 'team_calendars_without_authorization', detail: '2', reason: 'absent' }], label);
+    assert.doesNotMatch(without.promptBlock, /team_calendars_consent_noted/, label);
+  }
 });
 
-test('without consent the count is of distinct calendars that are not already the owner ones', () => {
-  const plan = collect({ calendar: { team_calendars: [TEAM[0], TEAM[0], OWNER, TEAM[1], ` ${TEAM[1]} `], team_authorization: AUTHORIZED } });
-  assert.deepEqual(plan.problems, [{ code: 'other_calendars_without_consent', detail: '2' }]);
+test('a blank or placeholder entry of team_calendars names no calendar: never planned, never counted', () => {
+  const team = ['<teammate-email>', '', '  ', TEAM[0]];
+  assert.deepEqual(collect({ calendar: { team_calendars: team, team_authorization: AUTHORIZED } }).otherCalendars, [TEAM[0]]);
+  assert.deepEqual(collect({ calendar: { team_calendars: team } }).problems, [{ code: 'team_calendars_without_authorization', detail: '1', reason: 'absent' }]);
+});
+
+test('without the authorization the count is of distinct calendars that are not already the owner ones', () => {
+  const plan = collect({ calendar: { team_calendars: [TEAM[0], TEAM[0], OWNER, TEAM[1], ` ${TEAM[1]} `] } });
+  assert.deepEqual(plan.problems, [{ code: 'team_calendars_without_authorization', detail: '2', reason: 'absent' }]);
 });
 
 test('calendar ids are planned trimmed, so the ids the model is given are the ids it is checked against', () => {
-  const plan = collect({ calendar: { calendars: [` ${OWNER} `, OWNER], team_calendars: [` ${TEAM[0]}`], team_authorization: AUTHORIZED, team_calendars_consent_noted: true } });
+  const plan = collect({ calendar: { calendars: [` ${OWNER} `, OWNER], team_calendars: [` ${TEAM[0]}`], team_authorization: AUTHORIZED } });
   assert.deepEqual(plan.calendars, [OWNER]);
   assert.deepEqual(plan.otherCalendars, [TEAM[0]]);
   assert.ok(plan.promptBlock.includes(JSON.stringify(listing())), plan.promptBlock);
   assert.deepEqual(readCore(record([{ input: listing() }, { input: listing({ calendarId: TEAM[0] }) }]), plan), { read: 2, expected: 2, ok: true });
 });
 
-// Phase 5a, task 4: who authorised reading the team's calendars, and the day.
 test('without the recorded authorization the team calendars are left out and the block says so; the owner calendar is still planned and its listing alone reads the source', () => {
   for (const lang of ['en', 'pt-BR']) {
-    const plan = collect({ lang, calendar: { team_calendars: [...TEAM], team_calendars_consent_noted: true } });
+    const plan = collect({ lang, calendar: { team_calendars: [...TEAM] } });
     assert.equal(plan.configured, true, lang);
     assert.deepEqual(plan.calendars, [OWNER], lang);
     assert.deepEqual(plan.otherCalendars, [], lang);
     assert.equal(plan.teamAuthorization, null, lang);
-    assert.deepEqual(plan.problems, [{ code: 'team_calendars_without_authorization', detail: '2' }], lang);
+    assert.deepEqual(plan.problems, [{ code: 'team_calendars_without_authorization', detail: '2', reason: 'absent' }], lang);
     assert.ok(plan.promptBlock.includes('sources.calendar.team_authorization'), `${lang}: the block names the key`);
     assert.ok(plan.promptBlock.includes(JSON.stringify(listing())), `${lang}: the owner's calendar is still listed`);
     for (const id of TEAM) assert.ok(!plan.promptBlock.includes(id), `${lang}: ${id} must not reach the prompt`);
@@ -323,75 +318,90 @@ test('without the recorded authorization the team calendars are left out and the
     // A team calendar left out is never one the round must read.
     assert.deepEqual(readCore(record([{ input: listing() }]), plan), READ, lang);
   }
-  assert.match(collect({ calendar: { team_calendars: [...TEAM], team_calendars_consent_noted: true } }).promptBlock, /^Calendars ignored in sources\.calendar\.team_calendars: 2\. Someone else's calendar is read only when sources\.calendar\.team_authorization records who authorised reading the team's calendars and on which day/);
-  assert.match(collect({ lang: 'pt-BR', calendar: { team_calendars: [...TEAM], team_calendars_consent_noted: true } }).promptBlock, /^Agendas ignoradas em sources\.calendar\.team_calendars: 2\. A agenda de outra pessoa só é lida quando sources\.calendar\.team_authorization registra quem autorizou/);
+  assert.match(collect({ calendar: { team_calendars: [...TEAM] } }).promptBlock, /^Calendars ignored in sources\.calendar\.team_calendars: 2\. Someone else's calendar is read only when sources\.calendar\.team_authorization records who authorised reading the team's calendars and on which day, as by \(a person, human:<handle>\) and at \(the day, YYYY-MM-DD\)\. It is not set\.$/m);
+  assert.match(collect({ lang: 'pt-BR', calendar: { team_calendars: [...TEAM] } }).promptBlock, /^Agendas ignoradas em sources\.calendar\.team_calendars: 2\. A agenda de outra pessoa só é lida quando sources\.calendar\.team_authorization registra quem autorizou .* Ele não está definido\.$/m);
 });
 
-test('an authorization that is not a person and a day that exists records nothing', () => {
-  const odd = [
-    null, true, 'human:ana', [AUTHORIZED], {},
-    { by: 'human:ana' }, { at: '2026-05-04' },
-    { by: 'ana', at: '2026-05-04' }, { by: 'human:Ana', at: '2026-05-04' }, { by: 'process:ana', at: '2026-05-04' }, { by: 'human:', at: '2026-05-04' }, { by: 42, at: '2026-05-04' },
-    { by: 'human:ana', at: '04/05/2026' }, { by: 'human:ana', at: '2026-5-4' }, { by: 'human:ana', at: '2026-02-31' }, { by: 'human:ana', at: '2026-13-01' }, { by: 'human:ana', at: '2026-05-04T10:00:00Z' }, { by: 'human:ana', at: 20260504 },
+// Ruling R-A6: a malformed or impossible authorization records nothing, the
+// block says why, the owner's calendar is still planned, and the schema
+// never refuses it, so no command stops over it.
+test('an authorization that is not a person and a day that exists records nothing, the block says why, and the configuration still validates', () => {
+  const said = {
+    absent: /It is not set\./,
+    not_object: /It is set, but not as an object with by and at, so it records nothing\./,
+    by: /It is set, but its by is not a person written human:<handle>, so it records nothing\./,
+    at: /It is set, but its at is not a day written YYYY-MM-DD, so it records nothing\./,
+    day: /It is set, but its at names a day that does not exist, so it records nothing\./,
+  };
+  const cases = [
+    [null, 'absent'], [true, 'not_object'], ['human:ana', 'not_object'], [[AUTHORIZED], 'not_object'], [20260504, 'not_object'],
+    [{}, 'by'], [{ at: '2026-05-04' }, 'by'], [{ by: 'ana', at: '2026-05-04' }, 'by'], [{ by: 'human:Ana', at: '2026-05-04' }, 'by'],
+    [{ by: 'process:ana', at: '2026-05-04' }, 'by'], [{ by: 'human:', at: '2026-05-04' }, 'by'], [{ by: 42, at: '2026-05-04' }, 'by'],
+    [{ by: 'human:ana' }, 'at'], [{ by: 'human:ana', at: '04/05/2026' }, 'at'], [{ by: 'human:ana', at: '2026-5-4' }, 'at'],
+    [{ by: 'human:ana', at: '2026-05-04T10:00:00Z' }, 'at'], [{ by: 'human:ana', at: 20260504 }, 'at'],
+    [{ by: 'human:ana', at: '2026-02-31' }, 'day'], [{ by: 'human:ana', at: '2026-13-01' }, 'day'], [{ by: 'human:ana', at: '2025-02-29' }, 'day'],
   ];
-  for (const team_authorization of odd) {
-    const plan = collect({ calendar: { team_calendars: [TEAM[0]], team_calendars_consent_noted: true, team_authorization } });
-    assert.deepEqual(plan.otherCalendars, [], JSON.stringify(team_authorization));
-    assert.deepEqual(plan.problems, [{ code: 'team_calendars_without_authorization', detail: '1' }], JSON.stringify(team_authorization));
+  for (const [team_authorization, reason] of cases) {
+    const label = JSON.stringify(team_authorization);
+    assert.equal(authorizationProblem(team_authorization), reason, label);
+    const plan = collect({ calendar: { team_calendars: [TEAM[0]], team_authorization } });
+    assert.deepEqual(plan.otherCalendars, [], label);
+    assert.deepEqual(plan.calendars, [OWNER], `${label}: the owner's calendar is still planned`);
+    assert.deepEqual(plan.problems, [{ code: 'team_calendars_without_authorization', detail: '1', reason }], label);
+    assert.match(plan.promptBlock, said[reason], label);
+    assert.deepEqual(validateConfig(validConfig({ team_calendars: [TEAM[0]], team_authorization })), [], `${label}: never the schema's to refuse`);
   }
-  assert.deepEqual(collect({ calendar: { team_calendars: [TEAM[0]], team_calendars_consent_noted: true, team_authorization: { by: 'human:ana-2', at: '2024-02-29' } } }).otherCalendars, [TEAM[0]], 'a leap day exists');
+  assert.equal(authorizationProblem(undefined), 'absent');
+  assert.equal(authorizationProblem(AUTHORIZED), null);
+  assert.equal(authorizationProblem({ ...AUTHORIZED, note: 'agreed at the team meeting' }), null, 'keys besides by and at are not read');
+  assert.deepEqual(collect({ calendar: { team_calendars: [TEAM[0]], team_authorization: { by: 'human:ana-2', at: '2024-02-29' } } }).otherCalendars, [TEAM[0]], 'a leap day exists');
+  const pt = collect({ lang: 'pt-BR', calendar: { team_calendars: [TEAM[0]], team_authorization: { by: 'human:ana', at: '2026-02-31' } } }).promptBlock;
+  assert.match(pt, /Ele está definido, mas o at dele nomeia um dia que não existe, então não registra nada\./);
 });
 
-test('with the authorization and the consent recorded, the team calendars are planned and the block prints who authorised them and the day, DD/MM/YYYY', () => {
-  const plan = collect({ calendar: { team_calendars: [...TEAM], team_authorization: AUTHORIZED, team_calendars_consent_noted: true } });
+test('with the recorded authorization, the team calendars are planned and the block prints who authorised them and the day, DD/MM/YYYY', () => {
+  const plan = collect({ calendar: { team_calendars: [...TEAM], team_authorization: AUTHORIZED } });
   assert.deepEqual(plan.otherCalendars, [...TEAM]);
   assert.deepEqual(plan.teamAuthorization, { by: 'human:ana', at: '2026-05-04' });
   assert.deepEqual(plan.problems, []);
   const lines = plan.promptBlock.split('\n');
   assert.deepEqual(lines.filter((line) => line.includes('authorised')), ['Team calendars authorised by human:ana on 04/05/2026.']);
   assert.ok(lines.indexOf('Team calendars authorised by human:ana on 04/05/2026.') > lines.findIndex((line) => line.includes(TEAM[1])), 'after the calendars it covers');
-  const pt = collect({ lang: 'pt-BR', calendar: { team_calendars: [...TEAM], team_authorization: AUTHORIZED, team_calendars_consent_noted: true } }).promptBlock;
+  assert.ok(lines.some((line) => line.startsWith(`- ${TEAM[0]}, someone else's, read with the authorization the configuration records: `)), plan.promptBlock);
+  const pt = collect({ lang: 'pt-BR', calendar: { team_calendars: [...TEAM], team_authorization: AUTHORIZED } }).promptBlock;
   assert.ok(pt.split('\n').includes('Agendas da equipe autorizadas por human:ana em 04/05/2026.'), pt);
   assert.deepEqual(readCore(record([{ input: listing() }]), plan), { read: 1, expected: 3, ok: false }, 'planned, they must be read');
+  assert.deepEqual(collect({ calendar: { team_calendars: [TEAM[0]], team_authorization: { ...AUTHORIZED, note: 'x' } } }).teamAuthorization, { by: 'human:ana', at: '2026-05-04' }, 'only by and at are carried');
 });
 
-test('the authorization is printed only beside team calendars that are read: none listed, none left after the owner ones, or no consent', () => {
+test('the authorization is printed only beside team calendars that are read: none listed, or none left after the owner ones', () => {
   for (const calendar of [
-    { team_calendars: [], team_authorization: AUTHORIZED, team_calendars_consent_noted: true },
-    { team_calendars: [OWNER, '<teammate>'], team_authorization: AUTHORIZED, team_calendars_consent_noted: true },
-    { team_calendars: [...TEAM], team_authorization: AUTHORIZED, team_calendars_consent_noted: false },
+    { team_calendars: [], team_authorization: AUTHORIZED },
+    { team_calendars: [OWNER, '<teammate>'], team_authorization: AUTHORIZED },
   ]) {
     const plan = collect({ calendar });
     assert.equal(plan.teamAuthorization, null, JSON.stringify(calendar));
     assert.doesNotMatch(plan.promptBlock, /authorised by/, JSON.stringify(calendar));
   }
-  const off = collect({ calendar: { calendars: [], team_calendars: [...TEAM], team_authorization: AUTHORIZED, team_calendars_consent_noted: true } });
+  const off = collect({ calendar: { calendars: [], team_calendars: [...TEAM], team_authorization: AUTHORIZED } });
   assert.equal(off.teamAuthorization, null, 'a source that is off prints nothing about the team');
   assert.deepEqual(off.problems, [{ code: 'not_configured', detail: '' }]);
 });
 
-test('with neither record, both are named, the authorization first, and nothing but the owner calendar is planned', () => {
-  const plan = collect({ calendar: { team_calendars: [...TEAM] } });
-  assert.deepEqual(plan.problems, [{ code: 'team_calendars_without_authorization', detail: '2' }, { code: 'other_calendars_without_consent', detail: '2' }]);
-  assert.deepEqual(plan.otherCalendars, []);
-  const lines = plan.promptBlock.split('\n');
-  assert.match(lines[0], /sources\.calendar\.team_authorization/);
-  assert.match(lines[1], /sources\.calendar\.team_calendars_consent_noted/);
-});
-
-test('no team calendar at all is no problem, with or without consent', () => {
+test('no team calendar at all is no problem, with or without an authorization', () => {
   assert.deepEqual(collect({ calendar: { team_calendars: [] } }).problems, []);
-  assert.deepEqual(collect({ calendar: { team_calendars: [], team_calendars_consent_noted: true } }).problems, []);
+  assert.deepEqual(collect({ calendar: { team_calendars: [], team_authorization: AUTHORIZED } }).problems, []);
+  assert.deepEqual(collect({ calendar: { team_calendars: [], team_authorization: 'garbled' } }).problems, [], 'nothing to authorise, nothing to say');
 });
 
 test('an unconfigured calendar source plans nothing, reads nothing and says so', () => {
   for (const calendars of [[], ['<owner-email>']]) {
-    for (const consent of [true, false]) {
-      const plan = collect({ calendar: { calendars, team_calendars: [...TEAM], team_calendars_consent_noted: consent } });
+    for (const team_authorization of [AUTHORIZED, undefined, 'garbled']) {
+      const plan = collect({ calendar: { calendars, team_calendars: [...TEAM], team_authorization } });
       assert.equal(plan.configured, false);
       assert.deepEqual(plan.calendars, []);
       assert.deepEqual(plan.otherCalendars, []);
-      assert.deepEqual(plan.problems, [{ code: 'not_configured', detail: '' }], 'only why it is off, never the consent of a source that reads nothing');
+      assert.deepEqual(plan.problems, [{ code: 'not_configured', detail: '' }], 'only why it is off, never the authorization of a source that reads nothing');
       assert.match(plan.promptBlock, /sources\.calendar\.calendars/);
       assert.ok(!plan.promptBlock.includes(LIST), plan.promptBlock);
       assert.deepEqual(readCore(record([{ input: listing() }]), plan), { read: 0, expected: 0, ok: false });
@@ -403,7 +413,7 @@ test('an unconfigured calendar source plans nothing, reads nothing and says so',
 
 test('the prompt block gives every calendar the exact inputs: the window instants, the private-event filter, the page size and the vault time zone', () => {
   for (const lang of ['en', 'pt-BR']) {
-    const plan = collect({ lang, calendar: { calendars: [OWNER, 'primary'], team_calendars: [TEAM[0]], team_authorization: AUTHORIZED, team_calendars_consent_noted: true } });
+    const plan = collect({ lang, calendar: { calendars: [OWNER, 'primary'], team_calendars: [TEAM[0]], team_authorization: AUTHORIZED } });
     const block = plan.promptBlock;
     for (const id of [OWNER, 'primary', TEAM[0]]) {
       const input = `{"calendarId":"${id}","startTime":"2026-05-12T03:00:00.000Z","endTime":"2026-05-13T03:00:00.000Z","eventType":["DEFAULT"],"pageSize":250,"timeZone":"${TIMEZONE}"}`;
@@ -669,11 +679,11 @@ test('readEvidence: two calendars with one read is read 1 of 2, not ok', () => {
   assert.deepEqual(evidence([{ input: listing() }, { input: listing({ calendarId: 'primary' }) }], options), { read: 2, expected: 2, ok: true });
 });
 
-test('readEvidence: other people calendars planned with consent are expected too', () => {
-  const options = { calendar: { team_calendars: [TEAM[0]], team_authorization: AUTHORIZED, team_calendars_consent_noted: true } };
+test('readEvidence: other people calendars planned with the authorization are expected too', () => {
+  const options = { calendar: { team_calendars: [TEAM[0]], team_authorization: AUTHORIZED } };
   assert.deepEqual(evidence([{ input: listing() }], options), { read: 1, expected: 2, ok: false });
   assert.deepEqual(evidence([{ input: listing() }, { input: listing({ calendarId: TEAM[0] }) }], options), { read: 2, expected: 2, ok: true });
-  assert.deepEqual(evidence([{ input: listing({ calendarId: TEAM[0] }) }], { calendar: { team_calendars: [TEAM[0]] } }), UNREAD, 'without consent it is never planned');
+  assert.deepEqual(evidence([{ input: listing({ calendarId: TEAM[0] }) }], { calendar: { team_calendars: [TEAM[0]] } }), UNREAD, 'without the authorization it is never planned');
 });
 
 test('readEvidence reads a record with no tool use as nothing read', () => {
@@ -763,7 +773,6 @@ const CALENDAR_DEFAULTS = Object.freeze({
   tool_suffixes: ['list_events', 'get_event', 'list_calendars'],
   calendars: [],
   team_calendars: [],
-  team_calendars_consent_noted: false,
   skip_events_with_owner: true,
   dedup_by: 'eventId',
   privacy: { exclude_event_types: ['OUT_OF_OFFICE', 'FOCUS_TIME'], exclude_keywords: [], team_personal_events: 'drop' },
@@ -793,7 +802,7 @@ test('the schema holds enabled to a boolean and leaves the tool prefix and tools
   on.sources.calendar.enabled = true;
   on.sources.calendar.calendars = [OWNER, 'primary'];
   on.sources.calendar.team_calendars = [...TEAM];
-  on.sources.calendar.team_calendars_consent_noted = true;
+  on.sources.calendar.team_authorization = { ...AUTHORIZED };
   assert.deepEqual(validateConfig(on), []);
   assert.equal(calendarSource.isConfigured(on), true);
   for (const enabled of ['true', 1, null]) {

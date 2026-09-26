@@ -70,6 +70,7 @@ import { installedRoundPath, readBriefingTask, ROUND_COMMANDS, roundPath, runSch
 import { blockProblemLine, briefingSetting, validateBriefingBlocks } from '../briefing/blocks.mjs';
 import { queueFile, readQueue } from '../briefing/questions.mjs';
 import { ALL_PROJECTS, allProjects, exclusionPatterns, signatureProblems } from '../sources/transcripts-claude-code.mjs';
+import { authorizationWhy } from '../sources/calendar-google.mjs';
 // The same kind of cycle with curate.mjs, which imports expandHome from
 // here: the connectors check asks the round's own choice of launch mode
 // (chooseMode) and its own reading of a source that is off, so doctor and
@@ -794,6 +795,9 @@ const NO_MODEL_REASONS = Object.freeze(['up_to_date', 'nothing_to_curate']);
 const DEFAULT_TRANSCRIPTS_DIR = '~/.claude/projects';
 const INCLUDE_PROJECTS_KEY = 'sources.transcripts.include_projects';
 const TEAM_AUTHORIZATION_KEY = 'sources.calendar.team_authorization';
+// The calendar setting team_authorization replaced (ruling R-A5); no round
+// reads it any more.
+const CONSENT_FLAG = 'team_calendars_consent_noted';
 const CURATE_COMMAND = 'brain-kit curate';
 const SCHEDULE_INSTALL_COMMAND = 'brain-kit schedule install';
 const SCHEDULE_UNINSTALL_COMMAND = 'brain-kit schedule uninstall';
@@ -1486,12 +1490,10 @@ function deniedMessage(source, config, rules) {
   return { messageKey: 'curate.user_rules.denies_source', params: { rules: rules.join(', '), connector: source.serverSpec(config).serverDisplayName, tools: source.toolRules(config).allow.join(', ') } };
 }
 
-function consentMessage(count) {
-  return { messageKey: 'sources.calendar.other_calendars_without_consent', params: { count } };
-}
-
-function authorizationMessage(count) {
-  return { messageKey: 'sources.calendar.team_calendars_without_authorization', params: { count } };
+// The calendar block's own sentence for team calendars left out, why
+// included, as a message the report renders in its own language.
+function authorizationMessage(problem) {
+  return { messageKey: 'sources.calendar.team_calendars_without_authorization', params: { count: problem.detail, why: authorizationWhy(asMessage, problem.reason) } };
 }
 
 // The lines the probe itself adds: that it launched nothing, and why; that
@@ -1542,6 +1544,11 @@ function connectorsCheck(ctx) {
   const known = {};
   for (const source of listed) {
     const setting = `sources.${source.id}`;
+    // Ruling R-A5: a key no round reads any more, said while it is there,
+    // whatever its value and whether or not the source is on.
+    if (source.id === 'calendar' && isObject(config.sources?.calendar) && Object.hasOwn(config.sources.calendar, CONSENT_FLAG)) {
+      results.push({ id, status: 'warn', messageKey: 'doctor.connectors.consent_superseded', params: { source: source.id, old: `sources.calendar.${CONSENT_FLAG}`, key: TEAM_AUTHORIZATION_KEY, file: CONFIG_FILENAME } });
+    }
     if (!on.includes(source)) {
       const problems = offProblems(source, config, ctx.now, tz);
       const text = problemText(problems) || '-';
@@ -1576,21 +1583,16 @@ function connectorsCheck(ctx) {
         results.push(stateLine(id, source, spec, seen, whenRound(roundDay(entry.at, tz)), severity(source)));
       }
     }
-    // Other people's calendars a round leaves out (phase 5a task 4): with no
-    // recorded authorization this fails, naming the key, though the round
-    // still reads the owner's own calendars and never exits 4 for it; with
-    // no recorded consent it warns, as it always has.
-    const planned = offProblems(source, config, ctx.now, tz);
-    const authorization = planned.find((problem) => problem.code === 'team_calendars_without_authorization');
+    // Other people's calendars a round leaves out (phase 5a task 4, rulings
+    // R-A5 and R-A6): with no authorization recorded, or one that records
+    // nothing, this fails, naming the key and why, though the round still
+    // reads the owner's own calendars and never exits 4 for it.
+    const authorization = offProblems(source, config, ctx.now, tz).find((problem) => problem.code === 'team_calendars_without_authorization');
     if (authorization !== undefined) {
       results.push({
         id, status: 'fail', messageKey: 'doctor.connectors.team_authorization',
-        params: { source: source.id, detail: authorizationMessage(authorization.detail), key: TEAM_AUTHORIZATION_KEY, file: CONFIG_FILENAME },
+        params: { source: source.id, detail: authorizationMessage(authorization), key: TEAM_AUTHORIZATION_KEY, file: CONFIG_FILENAME },
       });
-    }
-    const consent = planned.find((problem) => problem.code === 'other_calendars_without_consent');
-    if (consent !== undefined) {
-      results.push({ id, status: 'warn', messageKey: 'doctor.connectors.consent', params: { source: source.id, detail: consentMessage(consent.detail) } });
     }
   }
   // The meeting notes close a day only with the calendar read over it, and

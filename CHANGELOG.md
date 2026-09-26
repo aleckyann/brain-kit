@@ -501,13 +501,19 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   round stops there until it can be listed or leaves the configuration, since its sessions
   could be on any day. `doctor`'s `include-projects` already said so; now it is true.
 - `sources.calendar.team_authorization: { "by": "human:<handle>", "at": "YYYY-MM-DD" }`
-  records who authorised reading the team's calendars and on which day (a day that exists:
-  a malformed or impossible date is refused as configuration). Team calendars are read only
-  with it, besides `team_calendars_consent_noted: true`. Without it the round leaves every
-  team calendar out, reads the owner's own, and says so in its parameters; it never exits
-  4 for that alone. With it, the parameters print "Team calendars authorised by <by> on
-  DD/MM/YYYY". `doctor` (check `connectors`) fails while team calendars are listed with no
-  authorization, naming the key.
+  records who authorised reading the team's calendars and on which day, and is now the one
+  gate on them: it replaces `team_calendars_consent_noted`, which is no longer read (`true`
+  authorises nothing). The calendar source checks it, never the configuration's
+  validation, so no command refuses to run over it: one that is missing, not in that form
+  or dated on a day that does not exist records nothing. The round then leaves every team
+  calendar out, reads the owner's own, and says how many and why in its parameters; it
+  never exits 4 for that alone. With one, the parameters print "Team calendars authorised
+  by <by> on DD/MM/YYYY". `doctor` (check `connectors`) fails while team calendars are
+  listed and no authorization records anything, naming the key and what is wrong with it,
+  and warns while `team_calendars_consent_noted` is still in the configuration, naming
+  both keys. **Upgrading:** a vault made before this change carries
+  `team_calendars_consent_noted` (`init` wrote `false`); remove it, and record a
+  `team_authorization` to keep reading team calendars.
 
 ## 0.0.1 (published on npm on 18/09/2026)
 

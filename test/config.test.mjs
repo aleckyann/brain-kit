@@ -222,41 +222,38 @@ test('sources.transcripts.include_projects takes a list or the string "all", and
   }
 });
 
-// Phase 5a, task 4: sources.calendar.team_authorization records who
-// authorised reading the team's calendars (a person, human:<handle>) and
-// the day (YYYY-MM-DD, a day that exists). Optional; when present, whole.
-test('sources.calendar.team_authorization takes { by: "human:<handle>", at: "YYYY-MM-DD" } and refuses a malformed date, a day that does not exist, or anything else', () => {
+// Phase 5a, task 4, ruling R-A6 (after R-E1): sources.calendar.team_authorization
+// records who authorised reading the team's calendars and the day, and the
+// calendar source is what checks it (src/sources/calendar-google.mjs,
+// authorizationProblem). The schema accepts any value, so no command ever
+// refuses a configuration over it: a malformed or impossible one only
+// leaves the team calendars out, and doctor fails naming it. The key it
+// replaced (ruling R-A5), team_calendars_consent_noted, stays accepted as a
+// boolean, so a configuration written before still validates.
+test('sources.calendar.team_authorization is never the schema\'s to refuse, whatever it holds; the old consent flag still validates', () => {
   const withValue = (value) => {
     const config = fixture('config/valid.json');
     config.sources.calendar.team_authorization = value;
     return validateConfig(config);
   };
   assert.deepEqual(validateConfig(fixture('config/valid.json')), [], 'absent');
-  for (const at of ['2026-09-26', '2024-02-29', '2026-12-31', '2026-01-01']) {
-    assert.deepEqual(withValue({ by: 'human:ana', at }), [], at);
-  }
-  assert.deepEqual(withValue({ by: 'human:ana-2', at: '2026-09-26' }), []);
-  for (const at of ['26/09/2026', '2026-9-26', '2026-09-6', '20260926', '2026-13-01', '2026-00-10', '2026-09-32', '2026-09-00', '2026-09-26T00:00:00Z', ' 2026-09-26', '']) {
-    assert.deepEqual(withValue({ by: 'human:ana', at }), [`$.sources.calendar.team_authorization.at: does not match /^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$/`], JSON.stringify(at));
-  }
-  for (const at of ['2026-02-31', '2025-02-29', '2026-04-31', '1900-02-29']) {
-    assert.deepEqual(withValue({ by: 'human:ana', at }), [`$.sources.calendar.team_authorization.at: "${at}" is not a day that exists`], at);
-  }
-  for (const by of ['ana', 'human:', 'human:Ana', 'human: ana', 'process:ana', 'human:-ana', '']) {
-    assert.deepEqual(withValue({ by, at: '2026-09-26' }), ['$.sources.calendar.team_authorization.by: does not match /^human:[a-z0-9][a-z0-9-]*$/'], JSON.stringify(by));
-  }
-  assert.deepEqual(withValue({ by: 'human:ana' }), ['$.sources.calendar.team_authorization.at: required']);
-  assert.deepEqual(withValue({ at: '2026-09-26' }), ['$.sources.calendar.team_authorization.by: required']);
-  assert.deepEqual(withValue({ by: 'human:ana', at: '2026-09-26', note: 'x' }), ['$.sources.calendar.team_authorization.note: unknown key']);
-  for (const value of [null, true, 'human:ana', ['human:ana', '2026-09-26'], { by: 'human:ana', at: 20260926 }]) {
-    const errors = withValue(value);
-    assert.ok(errors.length > 0 && errors.every((e) => e.startsWith('$.sources.calendar.team_authorization')), `${JSON.stringify(value)}: ${errors.join('\n')}`);
+  for (const value of [
+    { by: 'human:ana', at: '2026-09-26' }, { by: 'human:ana', at: '2026-02-31' }, { by: 'human:ana', at: '31/02/2026' }, { by: 'ana', at: '2026-09-26' },
+    { by: 'human:ana' }, {}, { by: 'human:ana', at: '2026-09-26', note: 'x' }, null, true, 'human:ana', ['human:ana', '2026-09-26'], 20260926,
+  ]) {
+    assert.deepEqual(withValue(value), [], JSON.stringify(value));
   }
   const dir = makeTempDir('brain-kit-team-authorization-');
   const config = fixture('config/valid.json');
   config.sources.calendar.team_authorization = { by: 'human:ana', at: '31/02/2026' };
   writeFileSync(join(dir, CONFIG_FILENAME), JSON.stringify(config));
-  assert.throws(() => loadConfig(dir), (error) => error instanceof ConfigError && error.errors.some((e) => e.startsWith('$.sources.calendar.team_authorization.at: ')));
+  assert.doesNotThrow(() => loadConfig(dir), 'every command that loads the configuration still runs');
+  const old = fixture('config/valid.json');
+  assert.equal(Object.hasOwn(old.sources.calendar, 'team_calendars_consent_noted'), false, 'the example no longer carries the old flag');
+  for (const noted of [true, false]) {
+    old.sources.calendar.team_calendars_consent_noted = noted;
+    assert.deepEqual(validateConfig(old), [], `a configuration written before still validates (${noted})`);
+  }
 });
 
 test('curate.schedule entries must be HH:MM', () => {

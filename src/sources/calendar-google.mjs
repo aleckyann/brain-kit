@@ -22,23 +22,25 @@
 // checked against.
 //
 // Other people's calendars (`sources.calendar.team_calendars`) are read
-// only when the vault records two things (docs/incidents.md, 11/08/2026, "a
-// squad's daily stand-up was invisible to the vault", and the undated "a
-// colleague's medical appointment was in the calendar window"): who
-// authorised reading the team's calendars and on which day,
-// `team_authorization: { by: "human:<handle>", at: "YYYY-MM-DD" }` (phase 5a
-// task 4; a human actor and a day that exists, or it records nothing), and
-// the people's consent, `team_calendars_consent_noted: true`, that boolean
-// and nothing else. Without either they are left out of the plan, and the
-// round is told how many were and which record is missing, one problem each
-// (`team_calendars_without_authorization`, then
-// `other_calendars_without_consent`); the owner's own calendars are planned
-// all the same, and a calendar left out is never one the round must read, so
-// neither record can make the source unread. With both, the prompt block
-// prints the authorization, its day DD/MM/YYYY. An entry of team_calendars
-// that is blank or a placeholder names no calendar and is not counted. A
-// calendar listed twice, or listed both as the owner's and as someone
-// else's, is planned once, as the owner's.
+// only when the vault records who authorised reading the team's calendars
+// and on which day (docs/incidents.md, 11/08/2026, "a squad's daily
+// stand-up was invisible to the vault", and the undated "a colleague's
+// medical appointment was in the calendar window"):
+// `team_authorization: { by: "human:<handle>", at: "YYYY-MM-DD" }`, a
+// person and a day that exists (phase 5a task 4). It replaced
+// `team_calendars_consent_noted`, which nothing reads any more (ruling
+// R-A5; doctor says so while the key is there). It is checked here, never
+// by the schema (ruling R-A6, after R-E1): a missing, malformed or
+// impossible authorization records nothing, so the team calendars are left
+// out of the plan and the round is told how many and why
+// (`team_calendars_without_authorization`, with its `reason`), while the
+// owner's own calendars are planned all the same; a calendar left out is
+// never one the round must read, so it can never make the source unread,
+// and no command refuses the configuration because of it. With it, the
+// prompt block prints who authorised them and the day, DD/MM/YYYY. An entry
+// of team_calendars that is blank or a placeholder names no calendar and is
+// not counted. A calendar listed twice, or listed both as the owner's and
+// as someone else's, is planned once, as the owner's.
 //
 // Read evidence is mechanical (D7), measured on the round record built by
 // src/harness/stream.mjs, never on the model's word, over every call of the
@@ -99,7 +101,7 @@
 // update_event, delete_event, respond_to_event) are denied to every round,
 // whatever the configuration says.
 import { createTranslator } from '../lang.mjs';
-import { isValidIsoDate } from '../dates.mjs';
+import { DATE_PATTERN, isValidIsoDate } from '../dates.mjs';
 
 const PRIMARY = 'primary';
 const LIST_EVENTS = 'list_events';
@@ -129,7 +131,8 @@ const TOOL_PREFIX = /^mcp__[A-Za-z0-9_-]+__$/;
 // An instant: an ISO 8601 date and time with an explicit offset.
 const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
 
-// The actor of a person, as the schema writes it for team_authorization.by.
+// A person, as the configuration writes one (actors.human): the only
+// team_authorization.by that records anything.
 const HUMAN_ACTOR = /^human:[a-z0-9][a-z0-9-]*$/;
 
 function isObject(value) {
@@ -151,16 +154,31 @@ function calendarIds(list) {
   return Array.isArray(list) ? [...new Set(list.filter(isCalendarId).map((id) => id.trim()))] : [];
 }
 
-// The recorded authorization to read the team's calendars, { by, at }, or
-// null when there is none: the key absent, or not a human actor and a day
-// that exists. The same reading as the configuration's validation (the
-// schema and src/config.mjs), so a configuration read raw, as doctor reads
-// it, never authorises more than a valid one would.
-function teamAuthorization(settings) {
-  const value = settings.team_authorization;
-  if (!isObject(value)) return null;
-  const { by, at } = value;
-  return typeof by === 'string' && HUMAN_ACTOR.test(by) && typeof at === 'string' && isValidIsoDate(at) ? { by, at } : null;
+// Why a team_authorization value records no authorization, or null when it
+// records one: 'absent' (no key, or null), 'not_object', 'by' (not a person
+// written human:<handle>), 'at' (not a day written YYYY-MM-DD) or 'day'
+// (written as one, but a day that does not exist, such as 31/02). Keys
+// besides by and at are not read.
+export function authorizationProblem(value) {
+  if (value === undefined || value === null) return 'absent';
+  if (!isObject(value)) return 'not_object';
+  if (typeof value.by !== 'string' || !HUMAN_ACTOR.test(value.by)) return 'by';
+  if (typeof value.at !== 'string' || !DATE_PATTERN.test(value.at)) return 'at';
+  if (!isValidIsoDate(value.at)) return 'day';
+  return null;
+}
+
+// The sentence saying why, in `t`'s terms: a translator, or doctor's
+// message maker (src/doctor/checks.mjs, asMessage), so doctor renders the
+// very sentence the round's parameters carry, in the report's language.
+export function authorizationWhy(t, reason) {
+  switch (reason) {
+    case 'not_object': return t('sources.calendar.team_authorization_not_object');
+    case 'by': return t('sources.calendar.team_authorization_bad_by');
+    case 'at': return t('sources.calendar.team_authorization_bad_at');
+    case 'day': return t('sources.calendar.team_authorization_no_such_day');
+    default: return t('sources.calendar.team_authorization_absent');
+  }
 }
 
 // DD/MM/YYYY, for a person.
@@ -238,8 +256,7 @@ function problemLine(t, problem) {
     case 'bad_tool_prefix': return t('sources.calendar.bad_tool_prefix', { prefix: JSON.stringify(problem.detail) });
     case 'bad_tool_suffixes': return t('sources.calendar.bad_tool_suffixes', { tools: problem.detail });
     case 'missing_tools': return t('sources.calendar.missing_tools', { tools: problem.detail });
-    case 'team_calendars_without_authorization': return t('sources.calendar.team_calendars_without_authorization', { count: problem.detail });
-    default: return t('sources.calendar.other_calendars_without_consent', { count: problem.detail });
+    default: return t('sources.calendar.team_calendars_without_authorization', { count: problem.detail, why: authorizationWhy(t, problem.reason) });
   }
 }
 
@@ -272,27 +289,25 @@ function renderPromptBlock(t, plan) {
 // (`disabled`; `not_enabled` with the number of calendars listed;
 // `not_configured`; `bad_tool_prefix` with the prefix; `bad_tool_suffixes`
 // with the tools outside the read tools; `missing_tools` with the tools it
-// needs), or, while it is on, `team_calendars_without_authorization` and
-// `other_calendars_without_consent`, each with the number of calendars left
-// out.
+// needs), or, while it is on, `team_calendars_without_authorization` with
+// the number of calendars left out and a `reason`, authorizationProblem's.
 function collect({ window, config }) {
   const settings = settingsOf(config);
   const problems = configurationProblems(config);
   const configured = problems.length === 0;
   const calendars = configured ? calendarIds(settings.calendars) : [];
   const others = calendarIds(settings.team_calendars).filter((id) => !calendars.includes(id));
-  const authorization = teamAuthorization(settings);
-  const consent = settings.team_calendars_consent_noted === true;
-  if (configured && others.length > 0) {
-    if (authorization === null) problems.push({ code: 'team_calendars_without_authorization', detail: String(others.length) });
-    if (!consent) problems.push({ code: 'other_calendars_without_consent', detail: String(others.length) });
+  const authorization = settings.team_authorization;
+  const reason = authorizationProblem(authorization);
+  if (configured && others.length > 0 && reason !== null) {
+    problems.push({ code: 'team_calendars_without_authorization', detail: String(others.length), reason });
   }
-  const readOthers = configured && authorization !== null && consent && others.length > 0;
+  const readOthers = configured && reason === null && others.length > 0;
   const plan = {
     configured,
     calendars,
     otherCalendars: readOthers ? others : [],
-    teamAuthorization: readOthers ? authorization : null,
+    teamAuthorization: readOthers ? { by: authorization.by, at: authorization.at } : null,
     window: { from: window.from.toISOString(), to: window.to.toISOString(), timezone: window.timezone ?? config?.vault?.timezone },
     toolPrefix: serverSpec(config).toolPrefix,
     problems,

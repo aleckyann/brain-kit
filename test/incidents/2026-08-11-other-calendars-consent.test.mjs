@@ -5,13 +5,14 @@
 // see; an event that already has the owner among its attendees is skipped,
 // and deduplication is by event id. And the undated incident beside it, "a
 // colleague's medical appointment was in the calendar window": reading
-// someone else's calendar needs a privacy filter and recorded consent. So
-// the calendar source reads `sources.calendar.team_calendars` only with
-// `team_calendars_consent_noted: true`; without it they are ignored, and
-// the round is told how many, never silently. Since phase 5a (task 4) the
-// vault must also record who authorised reading the team's calendars and on
-// which day (`team_authorization`); every test here records it, so consent
-// is the one gate these tests move.
+// someone else's calendar needs a privacy filter and a recorded decision.
+// Until phase 5a that record was `team_calendars_consent_noted: true`;
+// since then (task 4, ruling R-A5) it is `team_authorization`, who
+// authorised reading the team's calendars and on which day, and the old
+// flag gates nothing. So the calendar source reads
+// `sources.calendar.team_calendars` only with an authorization that
+// records something; without it they are ignored, and the round is told how
+// many and why, never silently.
 //
 // Replayed through the real pieces: the calendar source's collect, a stream
 // parsed by src/harness/stream.mjs, and the source's readEvidence through
@@ -32,6 +33,7 @@ const LIST = 'mcp__claude_ai_Google_Calendar__list_events';
 const OWNER = 'ana@example.com';
 const SQUAD = 'squad-calendar@example.com';
 const AUTHORIZED = Object.freeze({ by: 'human:ana', at: '2026-05-04' });
+const WITHOUT = Object.freeze({ team_authorization: undefined });
 
 function config(lang, calendar) {
   const c = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', lang, 'config.defaults.json'), 'utf8'));
@@ -59,25 +61,27 @@ function streamListing(calendarIds) {
   return parseStream(lines.map((line) => JSON.stringify(line)));
 }
 
-test('without recorded consent, the squad calendar is ignored and the round is told how many were', () => {
+test('without the recorded authorization, the squad calendar is ignored and the round is told how many were, and why', () => {
   for (const lang of ['en', 'pt-BR']) {
-    const p = plan({ team_calendars_consent_noted: false }, lang);
+    const p = plan(WITHOUT, lang);
     assert.deepEqual(p.otherCalendars, [], lang);
-    assert.deepEqual(p.problems, [{ code: 'other_calendars_without_consent', detail: '1' }], lang);
+    assert.deepEqual(p.problems, [{ code: 'team_calendars_without_authorization', detail: '1', reason: 'absent' }], lang);
     assert.ok(!p.promptBlock.includes(SQUAD), `${lang}: the ignored calendar never reaches the prompt`);
-    assert.ok(p.promptBlock.includes('sources.calendar.team_calendars_consent_noted'), `${lang}: the block names the setting`);
+    assert.ok(p.promptBlock.includes('sources.calendar.team_authorization'), `${lang}: the block names the setting`);
   }
-  assert.match(plan({ team_calendars_consent_noted: false }).promptBlock, /Calendars ignored in sources\.calendar\.team_calendars: 1\./);
-  assert.match(plan({ team_calendars_consent_noted: false }, 'pt-BR').promptBlock, /Agendas ignoradas em sources\.calendar\.team_calendars: 1\./);
+  assert.match(plan(WITHOUT).promptBlock, /Calendars ignored in sources\.calendar\.team_calendars: 1\..* It is not set\./);
+  assert.match(plan(WITHOUT, 'pt-BR').promptBlock, /Agendas ignoradas em sources\.calendar\.team_calendars: 1\..* Ele não está definido\./);
+  // The old consent flag, even true, records nothing any more.
+  assert.deepEqual(plan({ ...WITHOUT, team_calendars_consent_noted: true }).otherCalendars, []);
   // A model that lists it anyway gains nothing: the source expects the
   // owner's calendar only.
-  const p = plan({ team_calendars_consent_noted: false });
+  const p = plan(WITHOUT);
   assert.deepEqual(evidenceFor([calendarSource], { calendar: p }, streamListing([SQUAD])).calendar, { read: 0, expected: 1, ok: false, listed: null });
   assert.deepEqual(evidenceFor([calendarSource], { calendar: p }, streamListing([OWNER, SQUAD])).calendar, { read: 1, expected: 1, ok: true, listed: 1 });
 });
 
-test('with recorded consent, the squad calendar is planned with the same exact inputs, and the day is read only with it', () => {
-  const p = plan({ team_calendars_consent_noted: true });
+test('with the recorded authorization, the squad calendar is planned with the same exact inputs, and the day is read only with it', () => {
+  const p = plan({});
   assert.deepEqual(p.otherCalendars, [SQUAD]);
   assert.deepEqual(p.problems, []);
   assert.ok(p.promptBlock.includes(`{"calendarId":"${SQUAD}","startTime":"${FROM.toISOString()}","endTime":"${TO.toISOString()}","eventType":["DEFAULT"],"pageSize":250,"timeZone":"${TIMEZONE}"}`), p.promptBlock);
@@ -86,12 +90,12 @@ test('with recorded consent, the squad calendar is planned with the same exact i
 });
 
 test('the block that plans other people calendars skips the events the owner attends, deduplicates by id and carries the privacy policy', () => {
-  const en = plan({ team_calendars_consent_noted: true }).promptBlock;
+  const en = plan({}).promptBlock;
   assert.match(en, /skip every event that already includes the owner/);
   assert.match(en, /by its id/);
   assert.match(en, /only events with at least two attendees count/);
   assert.match(en, /Nothing about anyone's private life/);
-  const pt = plan({ team_calendars_consent_noted: true }, 'pt-BR').promptBlock;
+  const pt = plan({}, 'pt-BR').promptBlock;
   assert.match(pt, /pule todo evento que já inclui o dono/);
   assert.match(pt, /pelo id/);
   assert.match(pt, /só contam eventos com pelo menos dois participantes/);

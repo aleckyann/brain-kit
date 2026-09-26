@@ -2012,45 +2012,54 @@ test('include_projects "all": a round offers the sessions of every project direc
   assert.equal(traces(empty).model, false);
 });
 
-// Phase 5a, task 4: team calendars with no record of who authorised reading
-// them are left out of the round's parameters, which say so; the owner's
-// calendar is still offered, and its listing alone reads the source, so
-// even a required calendar never exits 4 for this alone. Recorded, the
-// parameters print the authorization and the team calendar must be read.
-test('team calendars without the recorded authorization: left out of the parameters, which say so; the owner\'s listing alone reads a required calendar, exit 0; recorded, the parameters print it and the team calendar must be read', () => {
+// Phase 5a, task 4, rulings R-A5 and R-A6: team calendars with no record of
+// who authorised reading them are left out of the round's parameters,
+// which say why; the owner's calendar is still offered, and its listing
+// alone reads the source, so even a required calendar never exits 4 for
+// this alone. The old consent flag, even true, authorises nothing. An
+// authorization that records nothing (here a day that does not exist) is
+// the same, and never stops the round as configuration. Recorded, the
+// parameters print it and the team calendar must be read.
+test('team calendars without a recorded authorization: left out of the parameters, which say why; the owner\'s listing alone reads a required calendar, exit 0; recorded, the parameters print it and the team calendar must be read', () => {
   const TEAM = 'team@example.com';
   const required = (extra) => (c) => {
     withConnectors({ meetingNotes: false })(c);
     c.curate.sources.required = ['transcripts', 'calendar'];
     c.curate.sources.best_effort = ['meeting_notes'];
     c.sources.calendar.team_calendars = [TEAM];
-    c.sources.calendar.team_calendars_consent_noted = true;
     extra(c);
   };
   const y = utcDay(-1);
   const owner = listEvents(dayStart(y), dayStart(utcDay(0)));
-  const w = makeCurateWorld({ config: required(() => {}) });
-  w.scenario({ actions: PROPOSE_NOTE(w), rewrite: connectorRewrite(w, { uses: [owner], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=empty' }) });
-  const r = w.curate();
-  assert.equal(r.status, EXIT.OK, r.stderr);
-  assert.deepEqual(w.watermark(), { transcripts: y, calendar: y });
-  const prompt = readFileSync(w.files.stdinFile, 'utf8');
-  assert.match(prompt, /Source calendar:\n[^]*Calendars ignored in sources\.calendar\.team_calendars: 1\. Someone else's calendar is read only when sources\.calendar\.team_authorization records who authorised reading the team's calendars and on which day/);
-  assert.ok(prompt.includes(JSON.stringify(owner.input)), 'the owner\'s calendar is still offered');
-  assert.equal(prompt.includes(TEAM), false, 'the team calendar never reaches the prompt');
-  assert.doesNotMatch(prompt, /authorised by/);
-  const last = w.lastRun();
-  assert.equal(last.sources.calendar.read, 1);
-  assert.equal(last.sources.calendar.expected, 1);
-  assert.ok(last.warnings.some((line) => line.includes('source calendar: team_calendars_without_authorization (1)')), JSON.stringify(last.warnings));
-  assert.match(r.stderr, /source calendar: team_calendars_without_authorization \(1\)/);
+  const ownerOnly = (world) => ({ actions: PROPOSE_NOTE(world), rewrite: connectorRewrite(world, { uses: [owner], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=empty' }) });
+  for (const [label, edit, why] of [
+    ['absent, the old consent flag true', (c) => { c.sources.calendar.team_calendars_consent_noted = true; }, /It is not set\./],
+    ['a day that does not exist', (c) => { c.sources.calendar.team_authorization = { by: 'human:ana', at: '2026-02-31' }; }, /It is set, but its at names a day that does not exist, so it records nothing\./],
+  ]) {
+    const w = makeCurateWorld({ config: required(edit) });
+    w.scenario(ownerOnly(w));
+    const r = w.curate();
+    assert.equal(r.status, EXIT.OK, `${label}: ${r.stderr}`);
+    assert.deepEqual(w.watermark(), { transcripts: y, calendar: y }, label);
+    const prompt = readFileSync(w.files.stdinFile, 'utf8');
+    assert.match(prompt, /Source calendar:\n[^]*Calendars ignored in sources\.calendar\.team_calendars: 1\. Someone else's calendar is read only when sources\.calendar\.team_authorization records who authorised reading the team's calendars and on which day/, label);
+    assert.match(prompt, why, label);
+    assert.ok(prompt.includes(JSON.stringify(owner.input)), `${label}: the owner's calendar is still offered`);
+    assert.equal(prompt.includes(TEAM), false, `${label}: the team calendar never reaches the prompt`);
+    assert.doesNotMatch(prompt, /authorised by/, label);
+    const last = w.lastRun();
+    assert.equal(last.sources.calendar.read, 1, label);
+    assert.equal(last.sources.calendar.expected, 1, label);
+    assert.ok(last.warnings.some((line) => line.includes('source calendar: team_calendars_without_authorization (1)')), JSON.stringify(last.warnings));
+    assert.match(r.stderr, /source calendar: team_calendars_without_authorization \(1\)/, label);
+  }
 
   const a = makeCurateWorld({ config: required((c) => { c.sources.calendar.team_authorization = { by: 'human:ana', at: '2026-09-04' }; }) });
-  a.scenario({ actions: PROPOSE_NOTE(a), rewrite: connectorRewrite(a, { uses: [owner], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=empty' }) });
+  a.scenario(ownerOnly(a));
   const ra = a.curate();
   const authorised = readFileSync(a.files.stdinFile, 'utf8');
   assert.match(authorised, /\nTeam calendars authorised by human:ana on 04\/09\/2026\.\n/);
-  assert.ok(authorised.includes(JSON.stringify(listEvents(dayStart(y), dayStart(utcDay(0)), { calendarId: TEAM }).input)), 'the team calendar is offered with its exact inputs');
+  assert.ok(authorised.includes(JSON.stringify(listEvents(dayStart(y), dayStart(utcDay(0)), { calendarId: TEAM }).input)), 'the team calendar is offered with its exact inputs, with no consent flag at all');
   assert.doesNotMatch(authorised, /team_calendars_without_authorization|sources\.calendar\.team_authorization records/);
   assert.equal(ra.status, EXIT.SOURCE_UNREAD, 'planned, the team calendar must be read: the owner\'s listing alone no longer reads the source');
   assert.match(a.lastRun().reason, /calendar \(1\/2\)/);

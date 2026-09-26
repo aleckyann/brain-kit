@@ -160,23 +160,29 @@ without a tool the source needs turns that source off, and only that source, wit
 problem named by the round and by `doctor`; the rest of the vault keeps working.
 
 **Someone else's calendar.** A calendar in `sources.calendar.team_calendars` is read only
-when the configuration records two things. `team_authorization` says who authorised reading
-the team's calendars and on which day:
+when `team_authorization` records who authorised reading the team's calendars and on which
+day:
 
 ```json
 "team_authorization": { "by": "human:ana", "at": "2026-09-01" }
 ```
 
-`by` is a person, written `human:<handle>`, and `at` is a day that exists, YYYY-MM-DD; any
-other shape is refused as configuration. `team_calendars_consent_noted: true` records that
-the people whose calendars they are have agreed. Without either, the round leaves every team
-calendar out, reads your own calendars as usual, and its parameters say how many were left
-out and which record is missing; a calendar left out is never one the round has to read, so
-this alone never makes a round exit 4, even with the calendar in `curate.sources.required`.
-`brain-kit doctor` (check `connectors`) fails while team calendars are listed with no
-authorization, naming `sources.calendar.team_authorization`, and warns while consent is not
-recorded. With both, the round's parameters print "Team calendars authorised by human:ana on
-01/09/2026" beside the calendars it lists. See "Privacy" below.
+`by` is a person, written `human:<handle>`, and `at` is a day that exists, YYYY-MM-DD. The
+calendar source checks it, never the configuration's validation, so no command refuses to
+run over it: one that is missing, not in that form, or dated on a day that does not exist
+(a 31st of February) records nothing. The round then leaves every team calendar out, reads
+your own calendars as usual, and its parameters say how many were left out and why; a
+calendar left out is never one the round has to read, so this alone never makes a round exit
+4, even with the calendar in `curate.sources.required`. `brain-kit doctor` (check
+`connectors`) fails while team calendars are listed and no authorization records anything,
+naming `sources.calendar.team_authorization` and what is wrong with it. With one, the
+round's parameters print "Team calendars authorised by human:ana on 01/09/2026" beside the
+calendars it lists. See "Privacy" below.
+
+`team_authorization` replaced `team_calendars_consent_noted`. The old key is no longer read,
+whatever its value: `true` authorises nothing, and while it is in the configuration `doctor`
+warns that `team_authorization` supersedes it. A vault made before this change carries it
+(`init` wrote `false`); remove it.
 
 **The rituals table.** The `seed-rituals` skill, which fills the weekly rhythm table from
 your calendar in your own interactive session, reads an empty `calendars` list as
@@ -330,10 +336,9 @@ The policy is written for any profession and any life:
   errands) is ever written, not even as a mention.
 - The event-type filter is part of the evidence, so an out-of-office entry never reaches
   the model at all.
-- Someone else's calendar is read only with `team_calendars_consent_noted: true` and a
-  `team_authorization`. Set the first only after those people have agreed: it is the vault's
-  record of their consent. Set the second only once reading the team's calendars has been
-  authorised: it records who authorised it and on which day.
+- Someone else's calendar is read only with a `team_authorization`, the vault's record of
+  who authorised reading the team's calendars and on which day. Record it only once that
+  reading has been authorised.
 - `lint` refuses a line a change adds that holds one of the terms in
   `privacy.third_party_keywords` (a list per language pack, about health and private life),
   so a pull request that writes one is refused before it is published. `brain-kit doctor`
@@ -365,7 +370,8 @@ was not connected in the last round, with the date of that round.
 **`brain-kit doctor`**, check `connectors`, says for each connector source listed: that it
 is off, and why when it is half configured; the state the last round saw, with that round's
 date; the prefix the tools were seen under, when it is not the configured one, naming both
-and the setting; other people's calendars listed without the recorded consent; every user
+and the setting; other people's calendars listed while no authorization records anything,
+a failure, and the superseded `team_calendars_consent_noted`, a warning; every user
 rule that refuses connector mode, with its file; and that the meeting notes wait for the
 calendar (`waiting_for_calendar`) when the calendar's last state, or a user rule, keeps it
 from being read. A state other than `connected` is a

@@ -2693,54 +2693,79 @@ test('connectors: a user rule for a source\'s whole server is named for that sou
   lineFor(report, 'meeting_notes', 'doctor.connectors.unseen');
 });
 
-test('connectors: other people\'s calendars without the recorded consent are named, with how many', async () => {
-  const fx = setup({ config: connectorConfig((c) => { c.sources.calendar.team_calendars = ['team@example.com', 'ana@example.com']; }) });
-  const { report } = await doctor(fx, ['--only', 'connectors']);
-  const consent = lineFor(report, 'calendar', 'doctor.connectors.consent');
-  assert.equal(consent.status, 'warn');
-  assert.deepEqual(consent.params.detail, { messageKey: 'sources.calendar.other_calendars_without_consent', params: { count: '2' } });
-  assert.match(consent.message, /team_calendars_consent_noted is true/);
-  const consented = setup({ config: connectorConfig((c) => { c.sources.calendar.team_calendars = ['team@example.com']; c.sources.calendar.team_calendars_consent_noted = true; }) });
-  assert.equal(connectorLines((await doctor(consented, ['--only', 'connectors'])).report).filter((c) => c.messageKey === 'doctor.connectors.consent').length, 0);
+// Phase 5a, task 4, ruling R-A5: team_authorization replaced
+// team_calendars_consent_noted, which no round reads any more; while the old
+// key is in the configuration, whatever its value and whether or not the
+// calendar is on, doctor warns, naming both keys, and it gates nothing.
+test('connectors: the old consent flag is superseded by team_authorization: a warning naming both keys, whatever its value, and it gates nothing', async () => {
+  for (const noted of [true, false]) {
+    for (const enabled of [true, false]) {
+      const fx = setup({ config: connectorConfig((c) => { c.sources.calendar.team_calendars_consent_noted = noted; c.sources.calendar.enabled = enabled; }) });
+      const { report, code } = await doctor(fx, ['--only', 'connectors']);
+      const label = `${noted}, enabled ${enabled}`;
+      const c = lineFor(report, 'calendar', 'doctor.connectors.consent_superseded');
+      assert.equal(c.status, 'warn', label);
+      assert.deepEqual(c.params, { source: 'calendar', old: 'sources.calendar.team_calendars_consent_noted', key: 'sources.calendar.team_authorization', file: 'brain-kit.config.json' }, label);
+      assert.equal(c.message, "calendar: sources.calendar.team_calendars_consent_noted is no longer read: sources.calendar.team_authorization replaced it, recording who authorised reading the team's calendars and on which day. Remove the old key from brain-kit.config.json.", label);
+      assert.equal(code, EXIT.OK, `${label}: a warning`);
+    }
+  }
+  // Without the key, nothing is said; with it true and team calendars but no authorization, they still fail.
+  const clean = setup({ config: connectorConfig() });
+  assert.equal(connectorLines((await doctor(clean, ['--only', 'connectors'])).report).some((line) => line.messageKey === 'doctor.connectors.consent_superseded'), false);
+  const trusting = setup({ config: connectorConfig((c) => { c.sources.calendar.team_calendars = ['team@example.com']; c.sources.calendar.team_calendars_consent_noted = true; }) });
+  const r = await doctor(trusting, ['--only', 'connectors']);
+  assert.equal(lineFor(r.report, 'calendar', 'doctor.connectors.team_authorization').status, 'fail', 'the old flag authorises nothing');
+  const f = fakeIo();
+  await runDoctor([trusting.root, '--only', 'connectors'], f.io, createTranslator('pt-BR'), { env: trusting.env, cwd: trusting.root });
+  assert.match(f.stdout(), /sources\.calendar\.team_calendars_consent_noted não é mais lido: sources\.calendar\.team_authorization o substituiu/);
 });
 
-// Phase 5a, task 4: team calendars with no record of who authorised reading
-// them fail doctor, naming the key; the round leaves them out and reads the
-// owner's calendar. A record that is not a person and a day that exists
-// records nothing, even in a configuration doctor reads raw.
-test('connectors: team calendars without the recorded authorization fail, naming sources.calendar.team_authorization; recorded, with consent, nothing is said', async () => {
-  const team = (edit) => connectorConfig((c) => { c.sources.calendar.team_calendars = ['team@example.com', 'ana@example.com']; c.sources.calendar.team_calendars_consent_noted = true; edit(c); });
+// Phase 5a, task 4, rulings R-A5 and R-A6: team calendars with no record of
+// who authorised reading them, or a record that records nothing (not a
+// person, not a day, a day that does not exist, not an object), fail
+// doctor, naming the key and why; the configuration itself stays valid, and
+// the round leaves them out and reads the owner's calendar.
+test('connectors: team calendars without a recorded authorization fail, naming sources.calendar.team_authorization and why; recorded, nothing is said', async () => {
+  const team = (edit) => connectorConfig((c) => { c.sources.calendar.team_calendars = ['team@example.com', 'ana@example.com']; edit(c); });
   const fx = setup({ config: team(() => {}) });
   const { report, code } = await doctor(fx, ['--only', 'connectors']);
   const c = lineFor(report, 'calendar', 'doctor.connectors.team_authorization');
   assert.equal(c.status, 'fail');
   assert.equal(c.params.key, 'sources.calendar.team_authorization');
   assert.equal(c.params.file, 'brain-kit.config.json');
-  assert.deepEqual(c.params.detail, { messageKey: 'sources.calendar.team_calendars_without_authorization', params: { count: '2' } });
-  assert.match(c.message, /^calendar: Calendars ignored in sources\.calendar\.team_calendars: 2\. .*sources\.calendar\.team_authorization records who authorised reading the team's calendars and on which day/);
-  assert.match(c.message, /Until sources\.calendar\.team_authorization is set in brain-kit\.config\.json, every round leaves those calendars out and still reads the owner's own\./);
+  assert.deepEqual(c.params.detail, {
+    messageKey: 'sources.calendar.team_calendars_without_authorization',
+    params: { count: '2', why: { messageKey: 'sources.calendar.team_authorization_absent', params: {} } },
+  });
+  assert.match(c.message, /^calendar: Calendars ignored in sources\.calendar\.team_calendars: 2\. .*sources\.calendar\.team_authorization records who authorised reading the team's calendars and on which day, as by \(a person, human:<handle>\) and at \(the day, YYYY-MM-DD\)\. It is not set\. /);
+  assert.match(c.message, /Until sources\.calendar\.team_authorization in brain-kit\.config\.json records it, every round leaves those calendars out and still reads the owner's own\./);
   assert.equal(code, EXIT.FAILURE, 'a failure, whatever the calendar\'s best effort');
-  assert.equal(connectorLines(report).some((line) => line.messageKey === 'doctor.connectors.consent'), false, 'consent is recorded');
-  for (const authorization of [{ by: 'human:ana', at: '2026-02-31' }, { by: 'ana', at: '2026-09-01' }, { by: 'human:ana', at: '01/09/2026' }, { by: 'human:ana' }, 'human:ana']) {
-    const odd = setup({ config: team((c) => { c.sources.calendar.team_authorization = authorization; }) });
-    lineFor((await doctor(odd, ['--only', 'connectors'])).report, 'calendar', 'doctor.connectors.team_authorization');
+  for (const [authorization, why, said] of [
+    [{ by: 'human:ana', at: '2026-02-31' }, 'sources.calendar.team_authorization_no_such_day', /its at names a day that does not exist/],
+    [{ by: 'ana', at: '2026-09-01' }, 'sources.calendar.team_authorization_bad_by', /its by is not a person written human:<handle>/],
+    [{ by: 'human:ana', at: '01/09/2026' }, 'sources.calendar.team_authorization_bad_at', /its at is not a day written YYYY-MM-DD/],
+    [{ by: 'human:ana' }, 'sources.calendar.team_authorization_bad_at', /its at is not a day written YYYY-MM-DD/],
+    ['human:ana', 'sources.calendar.team_authorization_not_object', /not as an object with by and at/],
+  ]) {
+    const odd = setup({ config: team((config) => { config.sources.calendar.team_authorization = authorization; }) });
+    const r = await doctor(odd, ['--only', 'config-valid,connectors']);
+    assertCheck(r.report, 'config-valid', 'ok', 'doctor.config_valid.ok');
+    const line = lineFor(r.report, 'calendar', 'doctor.connectors.team_authorization');
+    assert.equal(line.status, 'fail', JSON.stringify(authorization));
+    assert.equal(line.params.detail.params.why.messageKey, why, JSON.stringify(authorization));
+    assert.match(line.message, said, JSON.stringify(authorization));
   }
-  const authorised = setup({ config: team((c) => { c.sources.calendar.team_authorization = { by: 'human:ana', at: '2026-09-01' }; }) });
+  const authorised = setup({ config: team((config) => { config.sources.calendar.team_authorization = { by: 'human:ana', at: '2026-09-01' }; }) });
   const ok = await doctor(authorised, ['--only', 'connectors']);
-  assert.deepEqual(connectorLines(ok.report).filter((line) => ['doctor.connectors.team_authorization', 'doctor.connectors.consent'].includes(line.messageKey)), []);
+  assert.equal(connectorLines(ok.report).some((line) => line.messageKey === 'doctor.connectors.team_authorization'), false);
   assert.equal(ok.code, EXIT.OK);
-  // Authorised without the people's consent: the consent warning alone, as before.
-  const noConsent = setup({ config: team((c) => { c.sources.calendar.team_authorization = { by: 'human:ana', at: '2026-09-01' }; c.sources.calendar.team_calendars_consent_noted = false; }) });
-  const warned = await doctor(noConsent, ['--only', 'connectors']);
-  assert.equal(lineFor(warned.report, 'calendar', 'doctor.connectors.consent').status, 'warn');
-  assert.equal(connectorLines(warned.report).some((line) => line.messageKey === 'doctor.connectors.team_authorization'), false);
-  assert.equal(warned.code, EXIT.OK);
   // No team calendar: nothing to authorise.
   const alone = setup({ config: connectorConfig() });
   assert.equal(connectorLines((await doctor(alone, ['--only', 'connectors'])).report).some((line) => line.messageKey === 'doctor.connectors.team_authorization'), false);
   const f = fakeIo();
   await runDoctor([fx.root, '--only', 'connectors'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
-  assert.match(f.stdout(), /Enquanto sources\.calendar\.team_authorization não estiver em brain-kit\.config\.json, toda rodada deixa essas agendas de fora e continua lendo as do dono\./);
+  assert.match(f.stdout(), /Ele não está definido\. Enquanto sources\.calendar\.team_authorization em brain-kit\.config\.json não registrar isso, toda rodada deixa essas agendas de fora e continua lendo as do dono\./);
 });
 
 test('connectors: curate.enabled false passes; a configuration doctor cannot read warns', async () => {

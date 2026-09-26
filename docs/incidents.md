@@ -752,12 +752,12 @@ stand up, which the owner does not attend, never reached the vault at all.
 owner does not see. An event that already has the owner among its attendees is
 skipped, and deduplication is by event id.
 **Where it lives in brain-kit.** `src/sources/calendar-google.mjs` (other people's
-calendars in `sources.calendar.team_calendars`, read only with
-`team_calendars_consent_noted: true` and, since phase 5a, `team_authorization`, who
-authorised reading them and on which day; events that already include the owner skipped;
-deduplicated by event id), `brain-kit doctor` check `connectors` (calendars listed
-without the recorded consent, a warning, or without the recorded authorization, a
-failure), `test/incidents/2026-08-11-other-calendars-consent.test.mjs` (Phase 3).
+calendars in `sources.calendar.team_calendars`, read only with `team_authorization`,
+who authorised reading them and on which day, which in phase 5a replaced
+`team_calendars_consent_noted`; events that already include the owner skipped;
+deduplicated by event id), `brain-kit doctor` check `connectors` (calendars listed while
+no authorization records anything, a failure naming why; the old key, a warning),
+`test/incidents/2026-08-11-other-calendars-consent.test.mjs` (Phase 3).
 
 ### 21/08/2026: thirteen of sixteen attachments came back "not found"
 **What happened.** Of 16 minutes attached to the previous day's events, 13 returned
@@ -1130,8 +1130,9 @@ calendars requires an explicit privacy filter and recorded consent.
 block and the event-type filter in its evidence (`src/sources/calendar-google.mjs`), the
 curate prompt's rule `third-party-privacy`, `brain-kit lint` rule `privacy` on the
 lines a change adds (`privacy.third_party_keywords`, `src/rules/privacy-keywords.mjs`),
-`brain-kit doctor` check `privacy-keywords`, the consent recorded in
-`sources.calendar.team_calendars_consent_noted`,
+`brain-kit doctor` check `privacy-keywords`, the decision recorded in
+`sources.calendar.team_authorization` (who authorised reading the team's calendars, and
+when; until phase 5a, the consent flag `team_calendars_consent_noted`),
 `test/incidents/undated-colleague-health-in-calendar.test.mjs` (Phase 3).
 
 ### 18/08/2026: a one sided account became a confirmed pattern
