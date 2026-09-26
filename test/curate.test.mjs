@@ -2012,6 +2012,54 @@ test('include_projects "all": a round offers the sessions of every project direc
   assert.equal(traces(empty).model, false);
 });
 
+// Ruling R-A9 (26/09/2026): "all" over no project directory, like a list
+// none of whose projects exists, reads nothing, so the transcripts source
+// failed, never empty, and its mark never moves on it, best effort as
+// required. Best effort only means the round goes on without it and does
+// not exit for it. Before, a best-effort round closed the day as empty (the
+// vacuous advance), and with a connector source offered the model's
+// transcripts=empty did the same.
+test('with the transcripts best effort, "all" over no project directory, or a list none of whose projects exists, never moves their mark: the round goes on, exit 0, and says so', () => {
+  const bestEffort = (edit) => (c) => { c.curate.sources.required = []; c.curate.sources.best_effort = ['transcripts', 'calendar', 'meeting_notes']; edit(c); };
+  for (const [label, edit] of [
+    ['"all" over an empty folder', (c) => { c.sources.transcripts.include_projects = 'all'; }],
+    ['a list none of whose projects exists', (c) => { c.sources.transcripts.include_projects = ['-home-ana-gone']; }],
+  ]) {
+    const w = makeCurateWorld({ config: bestEffort(edit) });
+    const bare = join(w.base, 'bare-projects');
+    mkdirSync(bare);
+    w.setMachine({ transcripts_dir: bare });
+    const r = w.curate();
+    assert.equal(r.status, EXIT.OK, `${label}: ${r.stderr}`);
+    assert.equal(w.watermark(), null, `${label}: the mark never moves on a source that read nothing`);
+    assert.equal(traces(w).model, false, label);
+    assert.equal(w.lastRun().sources.transcripts.advanced, false, label);
+    assert.match(r.stderr, /the watermark of transcripts did not move \(no_evidence\)/, label);
+  }
+  // With a connector source offered too, the model runs and reports transcripts=empty: still no move.
+  const both = makeCurateWorld({ config: bestEffort((c) => { withConnectors({ meetingNotes: false })(c); c.sources.transcripts.include_projects = 'all'; }) });
+  const bare = join(both.base, 'bare-projects');
+  mkdirSync(bare);
+  both.setMachine({ transcripts_dir: bare });
+  const y = utcDay(-1);
+  both.scenario({ rewrite: connectorRewrite(both, { read: false, uses: [listEvents(dayStart(y), dayStart(utcDay(0)))], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=empty calendar=empty' }) });
+  const rb = both.curate();
+  assert.equal(rb.status, EXIT.OK, rb.stderr);
+  assert.deepEqual(both.watermark(), { calendar: y }, 'the calendar, read, closes its day; the transcripts, which read nothing, do not');
+  assert.match(rb.stderr, /the watermark of transcripts did not move \(no_evidence\)/);
+  // The calendar needs authentication at the first event: nothing is left for a model, and that path says the same.
+  const alone = makeCurateWorld({ config: bestEffort((c) => { withConnectors({ meetingNotes: false })(c); c.sources.transcripts.include_projects = 'all'; }) });
+  const empty = join(alone.base, 'bare-projects');
+  mkdirSync(empty);
+  alone.setMachine({ transcripts_dir: empty });
+  alone.scenario({ launches: [{ rewrite: { mcpServers: connectorServers({ calendar: 'needs-auth', drive: null }) }, delayMs: 60000 }] });
+  const ra = alone.curate();
+  assert.equal(ra.status, EXIT.OK, ra.stderr);
+  assert.equal(alone.lastRun().reasonCode, 'nothing_available');
+  assert.equal(alone.watermark(), null);
+  assert.match(ra.stderr, /the watermark of transcripts did not move \(no_evidence\)/);
+});
+
 // Phase 5a, task 4, rulings R-A5 and R-A6: team calendars with no record of
 // who authorised reading them are left out of the round's parameters,
 // which say why; the owner's calendar is still offered, and its listing

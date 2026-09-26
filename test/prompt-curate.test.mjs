@@ -189,13 +189,13 @@ const NEW_RULES = {
     'no-workaround': [/marks unavailable, or whose tools are not in your session, is written `unavailable`/, /not through the shell, not through another tool/],
     'notes-first-class': [/same weight as a transcript/, /A title and a link alone are never a capture/],
     'no-access-label': [/\*\*not verified\*\*, with this exact reason: `no access \(document store permission\)`/, /never empty, never missing/],
-    'third-party-privacy': [/private life of someone other than the owner/, /someone else's schedule, read with their consent: only the events they share with other people count/],
+    'third-party-privacy': [/private life of someone other than the owner/, /someone else's schedule, read with the authorization the configuration records: only the events they share with other people count/],
   },
   'pt-BR': {
     'no-workaround': [/marca como indisponível, ou cujas ferramentas não estão na sua sessão, é escrita `unavailable`/, /nem pelo shell, nem por outra ferramenta/],
     'notes-first-class': [/mesmo peso de uma transcrição/, /Título e link sozinhos nunca são captura/],
     'no-access-label': [/\*\*não verificado\*\*, com este motivo exato: `sem acesso \(permissão do repositório de documentos\)`/, /nunca está vazio, nunca está ausente/],
-    'third-party-privacy': [/vida particular de alguém que não seja o dono/, /compromissos de outra pessoa, lidos com o consentimento dela: só contam os eventos que ela compartilha com outras pessoas/],
+    'third-party-privacy': [/vida particular de alguém que não seja o dono/, /compromissos de outra pessoa, lidos com a autorização que a configuração registra: só contam os eventos que ela compartilha com outras pessoas/],
   },
 };
 

@@ -14,14 +14,15 @@
 // stops the round before the model (exit 4), no mark moves, the reason and
 // last-run.json name the directory, and every round stops there until it
 // can be listed or leaves the configuration; then the day is read and
-// closed as any other.
+// closed as any other. So does a project reached through a link the round
+// cannot follow (ruling R-A7), the last test below.
 //
 // Every round is `brain-kit curate` as a process, in the curate world: a
 // vault with a bare remote on this machine, the fake claude, a scratch
 // transcripts directory.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { EXIT } from '../../src/exit-codes.mjs';
 import { makeCurateWorld, note, PROJECT, utcDay } from '../helpers/curate-world.mjs';
@@ -74,3 +75,34 @@ for (const [label, include, bothRead] of [
     assert.deepEqual(w.lastRun().sources.transcripts, { kept: kept.length, read: kept.length, advanced: true, noTimestamp: 0 });
   });
 }
+
+// Ruling R-A7: the same holds for a project reached through a link the
+// round cannot follow, here a target that is gone as on a volume that is
+// not mounted. Under "all" it was left out in silence (the review's probe:
+// exit 0, the mark at yesterday, nothing in the warnings), and under a list
+// it read as missing. Once the link can be followed it is a project like
+// any other, read and closed.
+test('under include_projects "all", a symlinked project the round cannot follow stops it before the model (exit 4) with no mark; once it can be followed its session is read', () => {
+  const w = makeCurateWorld({ config: (c) => { c.sources.transcripts.include_projects = 'all'; } });
+  const volume = join(w.base, 'unmounted', 'volume');
+  const link = join(w.projects, '-home-ana-linked');
+  symlinkSync(volume, link);
+  w.scenario({ actions: propose(w) });
+  const r = w.curate();
+  assert.equal(r.status, EXIT.SOURCE_UNREAD, r.stderr);
+  assert.equal(w.watermark(), null, 'no mark moves');
+  assert.equal(w.launches().length, 0, 'the model is never started');
+  const last = w.lastRun();
+  assert.ok(last.reason.includes(link), `the reason names the link: ${last.reason}`);
+  assert.ok(last.warnings.some((line) => line.includes('project_unreadable (-home-ana-linked)')), JSON.stringify(last.warnings));
+  // Mounted again: the link is followed, its session read, the day closed.
+  mkdirSync(volume, { recursive: true });
+  const name = 'eeeeeeee-1111-4222-8333-444444444444.jsonl';
+  writeFileSync(join(volume, name), `${JSON.stringify(user('Ana wrote the plan', `${utcDay(-1)}T15:00:00.000Z`))}\n`);
+  const kept = [w.transcript, join(link, name)];
+  w.scenario({ actions: propose(w), rewrite: { toolUses: kept.map((file_path) => ({ name: 'Read', input: { file_path, offset: 1 } })) } });
+  const fixed = w.curate();
+  assert.equal(fixed.status, EXIT.OK, fixed.stderr);
+  assert.deepEqual(w.watermark(), { transcripts: utcDay(-1) });
+  assert.deepEqual(w.lastRun().sources.transcripts, { kept: 2, read: 2, advanced: true, noTimestamp: 0 });
+});

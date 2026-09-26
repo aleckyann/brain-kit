@@ -4,12 +4,12 @@
 // carries have their own files under test/incidents/.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, readSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { machineValueErrors } from '../src/config.mjs';
 import { emptyWindow } from '../src/guards/empty-window.mjs';
 import { validateSource } from '../src/sources/index.mjs';
-import { allProjects, exclusionPatterns, transcriptsSource, DEFAULT_LIMITS, SAMPLE_BYTES } from '../src/sources/transcripts-claude-code.mjs';
+import { allProjects, exclusionPatterns, projectEntryKind, transcriptsSource, DEFAULT_LIMITS, SAMPLE_BYTES } from '../src/sources/transcripts-claude-code.mjs';
 import {
   FROM, TO, NOW, INSIDE, WEEKS_AGO, PROJECT, OTHER_PROJECT,
   assistant, customTitle, lastPrompt, makeWorld, mode, paths, system, toolResult, user, userBlocks,
@@ -200,6 +200,106 @@ test('any value of include_projects but "all" or a list reads nothing; a list ho
   const inside = listed.write('all', 'b.jsonl', [user('a project called all', INSIDE)]);
   plan = listed.collect();
   assert.deepEqual(paths(plan), [inside]);
+});
+
+// Ruling R-A9 (26/09/2026): a plan that found nothing to read because
+// nothing is there failed, never an empty one: its evidence never counts as
+// read, so no advance, vacuous or not, moves the mark, required or best
+// effort.
+test('readEvidence is never ok for a plan that found nothing to read because nothing is there', () => {
+  for (const [label, world] of [
+    ['no project listed', makeWorld({ include: [] })],
+    ['the root missing', makeWorld({ missingRoot: true })],
+    ['no listed project there', makeWorld({ include: ['-home-ana-gone'] })],
+    ['"all" over no directory', makeWorld({ include: 'all' })],
+  ]) {
+    const plan = world.collect();
+    assert.equal(plan.misconfigured, true, label);
+    assert.deepEqual(transcriptsSource.readEvidence(record([]), plan), { read: 0, expected: 0, ok: false }, label);
+  }
+});
+
+// Ruling R-A7 (26/09/2026): a project reached through a link. One the round
+// can follow is a project like any other, under "all" and under a list; one
+// it cannot follow (into a directory it cannot enter, to a target that is
+// gone, a loop) is unread, never silently left out and never "missing"; a
+// listed name that is simply not there stays project_missing.
+test('projectEntryKind tells apart a directory, a link to one, anything else, a name gone, and a link it cannot follow', () => {
+  const world = makeWorld();
+  const dir = join(world.tmp, 'kinds');
+  mkdirSync(join(dir, 'real'), { recursive: true });
+  writeFileSync(join(dir, 'file'), '');
+  symlinkSync(join(dir, 'real'), join(dir, 'to-real'));
+  symlinkSync(join(dir, 'file'), join(dir, 'to-file'));
+  symlinkSync(join(dir, 'nowhere'), join(dir, 'dangling'));
+  symlinkSync(join(dir, 'loop'), join(dir, 'loop'));
+  assert.equal(projectEntryKind(join(dir, 'real')), 'directory');
+  assert.equal(projectEntryKind(join(dir, 'to-real')), 'directory');
+  assert.equal(projectEntryKind(join(dir, 'file')), 'other');
+  assert.equal(projectEntryKind(join(dir, 'to-file')), 'other');
+  assert.equal(projectEntryKind(join(dir, 'absent')), 'gone');
+  assert.equal(projectEntryKind(join(dir, 'dangling')), 'unreachable');
+  assert.equal(projectEntryKind(join(dir, 'loop')), 'unreachable');
+});
+
+test('a symlinked project the round can follow is read, under "all" and under a list', () => {
+  for (const include of ['all', ['-home-ana-linked']]) {
+    const world = makeWorld({ include });
+    const elsewhere = join(world.tmp, 'elsewhere');
+    mkdirSync(elsewhere);
+    writeFileSync(join(elsewhere, 'e.jsonl'), `${JSON.stringify(user('a session behind a link', INSIDE))}\n`);
+    symlinkSync(elsewhere, join(world.root, '-home-ana-linked'));
+    const plan = world.collect();
+    const label = JSON.stringify(include);
+    assert.deepEqual(paths(plan), [join(world.root, '-home-ana-linked', 'e.jsonl')], label);
+    assert.equal(plan.files[0].project, '-home-ana-linked', label);
+    assert.deepEqual(plan.problems, [], label);
+  }
+});
+
+test('a symlinked project the round cannot follow is unread, under "all" and under a list: into a directory it cannot enter, to a target that is gone, a loop', () => {
+  const cases = [
+    ['to a target that is gone, as on an unmounted volume', (world, link) => { symlinkSync(join(world.tmp, 'unmounted', 'volume'), link); }],
+    ['a loop', (world, link) => { symlinkSync(link, link); }],
+  ];
+  if (process.getuid?.() !== 0) {
+    cases.push(['into a directory it cannot enter', (world, link) => {
+      const locked = join(world.tmp, 'locked');
+      mkdirSync(join(locked, 'project'), { recursive: true });
+      symlinkSync(join(locked, 'project'), link);
+      chmodSync(locked, 0o000);
+      return () => chmodSync(locked, 0o755);
+    }]);
+  }
+  for (const [label, make] of cases) {
+    for (const include of ['all', [PROJECT, '-home-ana-linked']]) {
+      const world = makeWorld({ include });
+      const kept = world.write(PROJECT, 'a.jsonl', [user('Ana asks', INSIDE)]);
+      const link = join(world.root, '-home-ana-linked');
+      const restore = make(world, link);
+      const what = `${label}, ${JSON.stringify(include)}`;
+      try {
+        const plan = world.collect();
+        assert.deepEqual(paths(plan), [kept], what);
+        assert.deepEqual(plan.problems, [{ code: 'project_unreadable', detail: '-home-ana-linked' }], what);
+        assert.deepEqual(plan.unreadable, [{ path: link, project: '-home-ana-linked', bytes: 0, directory: true }], what);
+        assert.equal(plan.misconfigured, false, what);
+        assert.equal(transcriptsSource.readEvidence(record([{ path: kept }]), plan).ok, false, `${what}: never read while it stays so`);
+      } finally {
+        restore?.();
+      }
+    }
+  }
+});
+
+test('a transcripts directory reached through a link is followed', () => {
+  const world = makeWorld();
+  world.write(PROJECT, 'a.jsonl', [user('Ana asks', INSIDE)]);
+  const alias = join(world.tmp, 'projects-alias');
+  symlinkSync(world.root, alias);
+  const plan = transcriptsSource.collect({ window: { from: FROM, to: TO }, config: world.config, machine: { transcripts_dir: alias }, now: NOW });
+  assert.deepEqual(paths(plan), [join(alias, PROJECT, 'a.jsonl')]);
+  assert.deepEqual(plan.problems, []);
 });
 
 test('firstAt and lastAt are the earliest and latest message timestamps inside the window', () => {
@@ -704,7 +804,9 @@ test('readEvidence is never ok while the plan lists an unreadable file, even wit
 
 test('readEvidence is ok with nothing read when the plan kept no file', () => {
   const world = makeWorld();
+  mkdirSync(join(world.root, PROJECT));
   const plan = world.collect();
+  assert.equal(plan.misconfigured, false, 'the project is there and holds no session');
   assert.deepEqual(transcriptsSource.readEvidence(record([]), plan), { read: 0, expected: 0, ok: true });
 });
 

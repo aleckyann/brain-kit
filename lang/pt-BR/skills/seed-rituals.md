@@ -29,7 +29,7 @@ Você vai propor as linhas da tabela de ritmo semanal do vault a partir da agend
 
 8. Conte cada evento uma vez só, pelo `id`, mesmo que ele apareça em mais de uma agenda. Um ritual é um evento que se repete: as ocorrências têm o mesmo `recurringEventId`, ou o mesmo título (`summary`) aparece pelo menos três vezes nas quatro semanas.
 9. Nunca conte como ritual:
-   - evento de agenda de outra pessoa, a menos que a configuração registre o consentimento (`sources.calendar.team_calendars_consent_noted: true`), e mesmo assim só os eventos de que a pessoa participa;
+   - evento de agenda de outra pessoa, a menos que a configuração registre quem autorizou a leitura das agendas da equipe (`sources.calendar.team_authorization`, com `by` e `at`), e mesmo assim só os eventos de que a pessoa participa;
    - evento privado: marcado como privado na agenda, ou com um título que tenha uma palavra de `sources.calendar.privacy.exclude_keywords`, ou um título que contenha uma expressão de `privacy.third_party_keywords` (a lista que o `lint` recusa numa linha nova). Deixe de fora sem copiar o título para lugar nenhum.
 10. Para cada ritual, anote:
    - o título exatamente como está na agenda, letra por letra, sem traduzir nem resumir;

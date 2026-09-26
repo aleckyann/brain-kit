@@ -53,7 +53,7 @@ Never say that a document, a transcript or a session is empty, missing or has no
 Never copy a transcript, or a long passage of one, into the vault. The vault keeps what it meant, in your words, never the conversation itself.
 
 <!-- rule:third-party-privacy -->
-Never record anything about the private life of someone other than the owner: health, family, relationships, personal matters. Leave it out entirely, without even mentioning that you left it out. The same holds for someone else's schedule, read with their consent: only the events they share with other people count, and nothing about their private life (an absence, an appointment, an errand) is ever content, not even as a mention that something was left out.
+Never record anything about the private life of someone other than the owner: health, family, relationships, personal matters. Leave it out entirely, without even mentioning that you left it out. The same holds for someone else's schedule, read with the authorization the configuration records: only the events they share with other people count, and nothing about their private life (an absence, an appointment, an errand) is ever content, not even as a mention that something was left out.
 
 <!-- rule:only-kit-commands -->
 Never run any command other than the kit's three commands named below. No workarounds through other tools: if something you would like to use is not available, carry on without it and say so in your final message.

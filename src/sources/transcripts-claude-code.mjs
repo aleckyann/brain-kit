@@ -60,7 +60,10 @@
 // say otherwise (appending to a session does not touch its directory), so
 // it blocks every day of the source, in every window, until it can be
 // listed or leaves the configuration; curate refuses to start the model
-// on it, as on a file it cannot read.
+// on it, as on a file it cannot read. So is a project reached through a
+// link the round cannot follow (ruling R-A7: under "all" it was silently
+// left out, under a list called missing, and the mark moved on either
+// way); a name that is simply not there stays `project_missing`.
 //
 // Transcript shape (Claude Code 2.1.281): one JSON object per line. Lines
 // of type user, assistant, system and attachment are messages and carry an
@@ -127,18 +130,43 @@ export function exclusionPatterns(config) {
   return Array.isArray(patterns) ? patterns.filter((p) => typeof p === 'string' && p !== '') : [];
 }
 
+// What a name under the transcripts root is (ruling R-A7, 26/09/2026):
+// 'directory' (one, or a link to one), 'other' (a file, or a link to
+// something that is not a directory), 'gone' (nothing there any more) or
+// 'unreachable' (a link whose target cannot be looked at, for any reason: a
+// directory the round cannot enter, an unmounted volume, a loop). An
+// unreachable project may hold sessions of any day, so it is unread like
+// one that cannot be listed: never silently "not a project", never
+// "missing". doctor's include-projects asks this same function.
+export function projectEntryKind(path) {
+  let entry;
+  try {
+    entry = fs.lstatSync(path);
+  } catch {
+    return 'gone';
+  }
+  if (!entry.isSymbolicLink()) return entry.isDirectory() ? 'directory' : 'other';
+  try {
+    return fs.statSync(path).isDirectory() ? 'directory' : 'other';
+  } catch {
+    return 'unreachable';
+  }
+}
+
 // The project directories "all" stands for: of `names`, the listing of
-// `root`, each one that is a directory and that no pattern excludes whole,
-// sorted. A pattern excludes a directory whole when it is found in the
-// directory's path followed by the separator, the start of the path of
-// every transcript inside it; so no directory is left out here whose
-// transcripts the per-file exclusion would have kept, and one a pattern
-// such as "/-tmp-" or "--claude-worktrees-" covers is no project at all.
+// `root`, each one that is a directory, or a link the round cannot follow
+// (then unread, below), and that no pattern excludes whole, sorted. A
+// pattern excludes a directory whole when it is found in the directory's
+// path followed by the separator, the start of the path of every
+// transcript inside it; so no directory is left out here whose transcripts
+// the per-file exclusion would have kept, and one a pattern such as
+// "/-tmp-" or "--claude-worktrees-" covers is no project at all.
 export function allProjects(root, names, patterns) {
   return names
     .filter((name) => {
       const dir = join(root, name);
-      return isDirectory(dir) && !patterns.some((pattern) => `${dir}${sep}`.includes(pattern));
+      const kind = projectEntryKind(dir);
+      return (kind === 'directory' || kind === 'unreachable') && !patterns.some((pattern) => `${dir}${sep}`.includes(pattern));
     })
     .sort();
 }
@@ -423,12 +451,13 @@ function collect({ window, config, machine, home = homedir(), io = fs, limits = 
     const listed = new Set(names);
     for (const project of projects) {
       const dir = join(root, project);
-      const entries = listed.has(project) && isDirectory(dir) ? listDir(dir, { withFileTypes: true }) : undefined;
-      if (entries === undefined) problems.push({ code: 'project_missing', detail: project });
-      else if (entries === null) {
+      const kind = listed.has(project) ? projectEntryKind(dir) : 'gone';
+      const entries = kind === 'directory' ? listDir(dir, { withFileTypes: true }) : undefined;
+      if (kind === 'unreachable' || entries === null) {
         problems.push({ code: 'project_unreadable', detail: project });
         unreadable.push({ path: dir, project, bytes: 0, directory: true });
-      } else present.push({ project, entries });
+      } else if (entries === undefined) problems.push({ code: 'project_missing', detail: project });
+      else present.push({ project, entries });
     }
   }
   // Nothing to read because nothing is there; a directory that is there but
@@ -563,6 +592,12 @@ function collect({ window, config, machine, home = homedir(), io = fs, limits = 
 // to curate". So does a project directory the plan could not list (ruling
 // R-A4).
 function readEvidence(record, plan) {
+  // Nothing to read because nothing is there (misconfigured: no project
+  // listed, the root missing or unlistable, no listed project there, "all"
+  // over no directory) is a source that failed, never an empty one (ruling
+  // R-A9): nothing was read, so it never counts as read, and no advance,
+  // vacuous or not, moves its mark, required or best effort.
+  if (plan?.misconfigured === true) return { read: 0, expected: 0, ok: false };
   const failed = new Set();
   const answered = new Set();
   for (const result of record?.toolResults ?? []) {

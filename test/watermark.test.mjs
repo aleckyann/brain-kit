@@ -266,6 +266,16 @@ test('advance, ruling R-F1: a connector source\'s "empty" counts only when its r
   assert.deepEqual(advance(dir, 'transcripts', '2026-09-23', { modelExit: 0, evidence: { read: 0, expected: 0, ok: true, listed: 4 }, sourcesLine: { transcripts: 'empty' } }), { advanced: true, previous: null });
 });
 
+// Ruling R-A9 (26/09/2026): a source that could list nothing at all, because
+// nothing is there, expected nothing and read nothing: it failed, and a
+// vacuous advance, which stands for "nothing to read, and read", is never
+// its.
+test('advance, vacuous: never when the evidence does not count as read, even with nothing expected', () => {
+  const dir = stateDir();
+  assert.deepEqual(advance(dir, 'transcripts', '2026-09-23', { vacuous: true, evidence: { read: 0, expected: 0, ok: false } }), { advanced: false, reason: 'no_evidence' });
+  assert.equal(existsSync(join(dir, 'watermark.json')), false);
+});
+
 test('advance, vacuous: never for a source that lists something whenever it is on, even with nothing expected', () => {
   const dir = stateDir();
   const nothing = { read: 0, expected: 0, ok: true };

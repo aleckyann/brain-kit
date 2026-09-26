@@ -248,7 +248,10 @@ export function setWatermark(stateDir, sourceId, day) {
 
 // The round's write. Moves the mark of `sourceId` to `day` only when:
 //   - with `vacuous: true` (the empty window, no model ran): the source's
-//     evidence says it expected nothing (evidence.expected === 0);
+//     evidence says it expected nothing (evidence.expected === 0) and still
+//     counts as read (evidence.ok): a source that could list nothing at all,
+//     because nothing is there, failed, and is never an empty window
+//     (ruling R-A9, 26/09/2026);
 //   - otherwise: the model exited 0, AND the source's read evidence is ok,
 //     AND the model's sources line reports the source `ok`, or `empty`
 //     with evidence.expected === 0 (it said it found nothing, and the plan
@@ -283,6 +286,7 @@ export function advanceWatermark(stateDir, sourceId, day, {
   const listsNothing = emptyMeansNothingListed !== false;
   if (vacuous === true) {
     if (!listsNothing || !hasEvidence || evidence.expected !== 0) return { advanced: false, reason: 'not_vacuous' };
+    if (evidence.ok !== true) return { advanced: false, reason: 'no_evidence' };
   } else {
     if (modelExit !== 0) return { advanced: false, reason: 'model_exit' };
     if (!hasEvidence || evidence.ok !== true) return { advanced: false, reason: 'no_evidence' };

@@ -267,7 +267,7 @@ test('the seed-rituals body reads four weeks with explicit bounds and every page
     for (const token of [
       'ToolSearch', 'list_events', 'startTime', 'endTime', '{{today_iso}}T00:00:00', 'eventType: ["DEFAULT"]', 'pageSize: 250',
       'nextPageToken', 'pageToken', 'recurringEventId', 'organizer', 'sources.calendar.calendars', '`primary`',
-      'team_calendars_consent_noted', 'taxonomy.files.rituals', 'generated: { by: {{agent}}', 'privacy.confidential_dirs',
+      'sources.calendar.team_authorization', 'taxonomy.files.rituals', 'generated: { by: {{agent}}', 'privacy.confidential_dirs',
     ]) {
       assert.ok(body.includes(token), `${lang}: missing ${token}`);
     }

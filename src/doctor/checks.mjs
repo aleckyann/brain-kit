@@ -69,8 +69,8 @@ import { installedRoundPath, readBriefingTask, ROUND_COMMANDS, roundPath, runSch
 // asks: its reading of briefing.blocks and of the question queue.
 import { blockProblemLine, briefingSetting, validateBriefingBlocks } from '../briefing/blocks.mjs';
 import { queueFile, readQueue } from '../briefing/questions.mjs';
-import { ALL_PROJECTS, allProjects, exclusionPatterns, signatureProblems } from '../sources/transcripts-claude-code.mjs';
-import { authorizationWhy } from '../sources/calendar-google.mjs';
+import { ALL_PROJECTS, allProjects, exclusionPatterns, projectEntryKind, signatureProblems } from '../sources/transcripts-claude-code.mjs';
+import { authorizationWhy, calendarsListedTwice } from '../sources/calendar-google.mjs';
 // The same kind of cycle with curate.mjs, which imports expandHome from
 // here: the connectors check asks the round's own choice of launch mode
 // (chooseMode) and its own reading of a source that is off, so doctor and
@@ -1006,7 +1006,14 @@ function includeProjects(ctx) {
   const unreadable = [];
   for (const project of projects) {
     const dir = join(root, project);
-    if (!names.has(project) || !isDirectory(dir)) {
+    // The round's own reading of the name (ruling R-A7): a link it cannot
+    // follow is unread, as a directory it cannot list is.
+    const kind = names.has(project) ? projectEntryKind(dir) : 'gone';
+    if (kind === 'unreachable') {
+      unreadable.push(project);
+      continue;
+    }
+    if (kind !== 'directory') {
       missing.push(project);
       continue;
     }
@@ -1548,6 +1555,14 @@ function connectorsCheck(ctx) {
     // whatever its value and whether or not the source is on.
     if (source.id === 'calendar' && isObject(config.sources?.calendar) && Object.hasOwn(config.sources.calendar, CONSENT_FLAG)) {
       results.push({ id, status: 'warn', messageKey: 'doctor.connectors.consent_superseded', params: { source: source.id, old: `sources.calendar.${CONSENT_FLAG}`, key: TEAM_AUTHORIZATION_KEY, file: CONFIG_FILENAME } });
+    }
+    // Ruling R-A8: a calendar in both lists is read as someone else's, with
+    // the authorization, unless it is the owner's own; each one is named.
+    if (source.id === 'calendar') {
+      for (const twice of calendarsListedTwice(config)) {
+        if (twice.owner) results.push({ id, status: 'warn', messageKey: 'doctor.connectors.listed_twice_owner', params: { source: source.id, calendar: twice.calendar } });
+        else results.push({ id, status: 'warn', messageKey: 'doctor.connectors.listed_twice', params: { source: source.id, calendar: twice.calendar } });
+      }
     }
     if (!on.includes(source)) {
       const problems = offProblems(source, config, ctx.now, tz);

@@ -37,9 +37,15 @@ a round may read. Each round lists the transcripts directory again, so a project
 tomorrow is read from tomorrow on. `sources.transcripts.exclude_path_patterns` still
 applies: a directory a pattern covers whole (such as `/-tmp-` for scratch folders) is no
 project at all, and a file a pattern names is left out as with a list. `doctor` says
-`all (N project(s) today)`; "all" that finds no project directory makes every round refuse
-to run, and `doctor` fails, rather than a round closing days it never read. Any other string
-is refused as configuration, and a list holding "all" names a directory called `all`.
+`all (N project(s) today)`. Any other string is refused as configuration, and a list
+holding "all" names a directory called `all`.
+
+"all" that finds no project directory reads nothing, and so does a list none of whose
+projects exists: the transcripts source then counts as failed, never as empty, and its mark
+never moves on it, whether the transcripts are required or best effort. With them in
+`curate.sources.required`, the default, every round refuses to run (exit 1). With them in
+`curate.sources.best_effort`, the round goes on with its other sources and does not exit 4
+for them, and their days stay open. `doctor` fails in both cases.
 
 The calendar and the meeting notes are off until you turn them on:
 [connectors.md](connectors.md) says how, and `brain-kit doctor --only connectors --probe`
@@ -376,7 +382,7 @@ What the bridge does not cover, by design:
 | 1 | The round failed | Read `reason` in `last-run.json`. It names the setting or the command that fixes it: a diverged branch to reconcile, a watermark to reopen, a CLI to reinstall, a file the round left behind. |
 | 2 | Not a vault, or a bad setting | Fix `machine.json` or `brain-kit.config.json` as the message says, then `brain-kit doctor`. |
 | 3 | Proposed, but the pull request is not open | The commit and branch are pushed; from the vault, run the `gh pr create --head <branch> --fill` the reason names (check `gh auth status`). The mark advanced. |
-| 4 | A required source was not read | Only a source in `curate.sources.required` sets it; a best-effort one never does. The reason says which. A file that cannot be read (`source_unreadable`): fix its permissions, or add a pattern for it to `sources.transcripts.exclude_path_patterns`; `brain-kit watermark assume-covered` skips its days once you have looked. A project directory that cannot be listed (`source_unreadable` too, the reason names it): its sessions could be on any day, so skipping days does not clear it and every round stops there until you fix its permissions or take it out of `sources.transcripts.include_projects` (with `"all"`, a pattern covering the whole directory leaves it out). A first day over the cap (`cap_exceeded`): raise `curate.caps.transcripts` or exclude some projects. Otherwise `last-run.json` says how many files of how many were read, or that the model's last line did not report the source. The day stays open and the next round reads it. |
+| 4 | A required source was not read | Only a source in `curate.sources.required` sets it; a best-effort one never does. The reason says which. A file that cannot be read (`source_unreadable`): fix its permissions, or add a pattern for it to `sources.transcripts.exclude_path_patterns`; `brain-kit watermark assume-covered` skips its days once you have looked. A project directory that cannot be listed, or a link to one the round cannot follow (into a directory it cannot enter, to a volume that is not mounted, a loop) (`source_unreadable` too, the reason names it): its sessions could be on any day, so skipping days does not clear it and every round stops there until you fix its permissions or take it out of `sources.transcripts.include_projects` (with `"all"`, a pattern covering the whole directory leaves it out). A first day over the cap (`cap_exceeded`): raise `curate.caps.transcripts` or exclude some projects. Otherwise `last-run.json` says how many files of how many were read, or that the model's last line did not report the source. The day stays open and the next round reads it. |
 | 69 | No network, or the model unavailable | Usually passes on its own at the next window. An authentication error means your Claude Code login expired: log in again. |
 | 75 | Postponed | Another writer holds the vault lock or the legacy lock, or the tree is dirty (the files are listed). Commit, propose or discard them; the next window retries. A tree that stays dirty stops every round, so do not let it sit. |
 

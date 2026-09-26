@@ -177,7 +177,10 @@ calendar left out is never one the round has to read, so this alone never makes 
 `connectors`) fails while team calendars are listed and no authorization records anything,
 naming `sources.calendar.team_authorization` and what is wrong with it. With one, the
 round's parameters print "Team calendars authorised by human:ana on 01/09/2026" beside the
-calendars it lists. See "Privacy" below.
+calendars it lists. A calendar listed both in `calendars` and in `team_calendars` is someone
+else's, read only with the authorization, unless it is your own calendar (`primary`, or the
+id `owner.email` or `briefing.calendar_id` names), which is always read as yours; `doctor`
+warns on each calendar listed in both, naming it. See "Privacy" below.
 
 `team_authorization` replaced `team_calendars_consent_noted`. The old key is no longer read,
 whatever its value: `true` authorises nothing, and while it is in the configuration `doctor`

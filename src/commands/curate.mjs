@@ -32,7 +32,9 @@
 //       first open day with more transcripts than the cap: exit 4 before
 //       the model, no mark moves; days past the cap are deferred and the
 //       window ends at the last covered day; nothing in the window:
-//       advance vacuously and exit 0
+//       advance vacuously and exit 0 (never a source whose plan found
+//       nothing to read because nothing is there: it failed, and keeps
+//       its day open even as a best-effort source, ruling R-A9)
 //   12. the launch mode (decisions D1 and D3): with a connector source to
 //       read, the person's user settings are read and mirrored; connector
 //       mode unless a rule refuses it (every connector source is then
@@ -1183,6 +1185,9 @@ export async function runCurate(argv, io, t, deps = {}) {
         const moved = advanceWatermark(stateDir, source.id, through, { vacuous: true, evidence: evidence[source.id], timezone: tz, now, emptyMeansNothingListed: source.emptyMeansNothingListed !== false });
         run.sources[source.id].advanced = moved.advanced;
         log('watermark', { source: source.id, day: through, vacuous: true, ...moved });
+        // A best-effort source that read nothing (ruling R-A9) keeps its day
+        // open, and the round says so.
+        if (!moved.advanced) io.stderr.write(`${t('curate.not_advanced', { source: source.id, reason: moved.reason })}\n`);
       }
       run.exit = EXIT.OK;
       run.reasonCode = 'nothing_to_curate';
@@ -1461,6 +1466,7 @@ export async function runCurate(argv, io, t, deps = {}) {
         const moved = advanceWatermark(stateDir, source.id, through, { vacuous: true, evidence: evidence[source.id], timezone: tz, now, emptyMeansNothingListed: source.emptyMeansNothingListed !== false });
         run.sources[source.id].advanced = moved.advanced;
         log('watermark', { source: source.id, day: through, vacuous: true, ...moved });
+        if (!moved.advanced) io.stderr.write(`${t('curate.not_advanced', { source: source.id, reason: moved.reason })}\n`);
       }
       for (const source of offered.filter((s) => unavailable.get(s.id) === WAITING_FOR_CALENDAR)) {
         log('watermark', { source: source.id, day: null, advanced: false, reason: WAITING_FOR_CALENDAR });

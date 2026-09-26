@@ -492,14 +492,21 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   directories `exclude_path_patterns` covers whole, the file patterns still applied. It is
   the owner's explicit choice, written in the configuration; any other string is refused as
   configuration, and a list holding "all" names a directory called `all`. "all" that finds
-  no project directory makes the round refuse (`all_empty`) rather than close a day nobody
-  read. `doctor`'s `include-projects` says `all (N project(s) today)`.
+  no project directory (`all_empty`), like a list none of whose projects exists, reads
+  nothing: the transcripts source counts as failed, never as empty, and its mark never moves
+  on it, required or best effort. Required, the round refuses (exit 1); best effort, the
+  round goes on with its other sources and does not exit 4 for them, and their days stay
+  open. `doctor`'s `include-projects` says `all (N project(s) today)`.
 - A project directory a round cannot list no longer lets the transcripts mark advance
   (before, it was only a warning, and the round closed days whose sessions in it nobody
   read). It is unread, like a file that cannot be read: with the transcripts required the
   round stops before the model (exit 4), the reason and `last-run.json` name it, and every
   round stops there until it can be listed or leaves the configuration, since its sessions
-  could be on any day. `doctor`'s `include-projects` already said so; now it is true.
+  could be on any day. `doctor`'s `include-projects` already said so; now it is true. So is
+  a project reached through a link the round cannot follow (into a directory it cannot enter,
+  to a volume that is not mounted, a loop): under "all" it was left out in silence, under a
+  list called missing, and the mark moved on either way. A link the round can follow is a
+  project like any other; a listed name that is simply not there still only warns.
 - `sources.calendar.team_authorization: { "by": "human:<handle>", "at": "YYYY-MM-DD" }`
   records who authorised reading the team's calendars and on which day, and is now the one
   gate on them: it replaces `team_calendars_consent_noted`, which is no longer read (`true`
@@ -511,7 +518,13 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   by <by> on DD/MM/YYYY". `doctor` (check `connectors`) fails while team calendars are
   listed and no authorization records anything, naming the key and what is wrong with it,
   and warns while `team_calendars_consent_noted` is still in the configuration, naming
-  both keys. **Upgrading:** a vault made before this change carries
+  both keys. A calendar listed both in `calendars` and in `team_calendars` is now someone
+  else's, read only with the authorization, unless it is the owner's own (`primary`, or the
+  id `owner.email` or `briefing.calendar_id` names), which is always read as the owner's;
+  phase 3 planned it as the owner's, so it reached the model with no authorization. `doctor`
+  warns on each one listed in both. The seed-rituals skill and the curate prompt's privacy
+  rule now speak of the recorded authorization, not of consent. **Upgrading:** a vault made
+  before this change carries
   `team_calendars_consent_noted` (`init` wrote `false`); remove it, and record a
   `team_authorization` to keep reading team calendars.
 

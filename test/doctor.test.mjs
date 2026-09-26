@@ -2017,6 +2017,29 @@ test('include-projects: a list holding "all" names a directory called all, and a
   assertCheck(r.report, 'include-projects', 'fail', 'doctor.include_projects.empty');
 });
 
+// Ruling R-A7: a project reached through a link is the round's own reading
+// of it (projectEntryKind): one it can follow is a project, counted by
+// "all"; one it cannot follow is unread, a failure naming it, never
+// "missing" and never left out of the count.
+test('include-projects: a symlinked project is counted when it can be followed, and fails as unread when it cannot, under "all" and a list', async () => {
+  const fx = setup({ config: configWith((c) => { c.sources.transcripts.include_projects = 'all'; }) });
+  const projects = join(fx.home, '.claude', 'projects');
+  const elsewhere = join(fx.base, 'elsewhere');
+  mkdirSync(elsewhere);
+  symlinkSync(elsewhere, join(projects, '-home-ana-linked'));
+  let r = await doctor(fx, ['--only', 'include-projects']);
+  assert.deepEqual(assertCheck(r.report, 'include-projects', 'ok', 'doctor.include_projects.all').params.count, 2);
+  symlinkSync(join(fx.base, 'unmounted', 'volume'), join(projects, '-home-ana-gone'));
+  r = await doctor(fx, ['--only', 'include-projects']);
+  const c = assertCheck(r.report, 'include-projects', 'fail', 'doctor.include_projects.unreadable');
+  assert.deepEqual(c.params.projects, ['-home-ana-gone']);
+  assert.match(c.message, /Fix the directory's permissions, or the link that leads to it\./);
+  const listed = setup({ config: configWith((cfg) => { cfg.sources.transcripts.include_projects = ['-home-ana-brain', '-home-ana-gone', '-home-ana-absent']; }) });
+  symlinkSync(join(listed.base, 'unmounted', 'volume'), join(listed.home, '.claude', 'projects', '-home-ana-gone'));
+  r = await doctor(listed, ['--only', 'include-projects']);
+  assert.deepEqual(assertCheck(r.report, 'include-projects', 'fail', 'doctor.include_projects.unreadable').params.projects, ['-home-ana-gone'], 'a dangling link is unread; the absent name alone would only warn');
+});
+
 // --- watermark ---------------------------------------------------------------
 
 function markAt(fx, day) {
@@ -2744,6 +2767,8 @@ test('connectors: team calendars without a recorded authorization fail, naming s
   for (const [authorization, why, said] of [
     [{ by: 'human:ana', at: '2026-02-31' }, 'sources.calendar.team_authorization_no_such_day', /its at names a day that does not exist/],
     [{ by: 'ana', at: '2026-09-01' }, 'sources.calendar.team_authorization_bad_by', /its by is not a person written human:<handle>/],
+    [{ by: 'human:ana extra', at: '2026-09-01' }, 'sources.calendar.team_authorization_bad_by', /its by is not a person written human:<handle>/],
+    [{ by: 'human:ana\n', at: '2026-09-01' }, 'sources.calendar.team_authorization_bad_by', /its by is not a person written human:<handle>/],
     [{ by: 'human:ana', at: '01/09/2026' }, 'sources.calendar.team_authorization_bad_at', /its at is not a day written YYYY-MM-DD/],
     [{ by: 'human:ana' }, 'sources.calendar.team_authorization_bad_at', /its at is not a day written YYYY-MM-DD/],
     ['human:ana', 'sources.calendar.team_authorization_not_object', /not as an object with by and at/],
@@ -2766,6 +2791,43 @@ test('connectors: team calendars without a recorded authorization fail, naming s
   const f = fakeIo();
   await runDoctor([fx.root, '--only', 'connectors'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
   assert.match(f.stdout(), /Ele não está definido\. Enquanto sources\.calendar\.team_authorization em brain-kit\.config\.json não registrar isso, toda rodada deixa essas agendas de fora e continua lendo as do dono\./);
+});
+
+// Ruling R-A8: a calendar listed both in calendars and in team_calendars is
+// read as someone else's, only with the authorization, unless it is the
+// owner's own (primary, owner.email, briefing.calendar_id); doctor warns on
+// each one, naming it, whether or not the calendar is on.
+test('connectors: every calendar listed in both lists is named: someone else\'s unless it is the owner\'s own', async () => {
+  for (const enabled of [true, false]) {
+    const fx = setup({ config: connectorConfig((c) => {
+      c.sources.calendar.enabled = enabled;
+      c.sources.calendar.calendars = ['primary', 'bruno@example.com'];
+      c.sources.calendar.team_calendars = ['bruno@example.com', 'primary', 'carla@example.com'];
+    }) });
+    const { report, code } = await doctor(fx, ['--only', 'connectors']);
+    const team = lineFor(report, 'calendar', 'doctor.connectors.listed_twice');
+    assert.equal(team.status, 'warn');
+    assert.deepEqual(team.params, { source: 'calendar', calendar: 'bruno@example.com' });
+    assert.equal(team.message, "calendar: bruno@example.com is in both sources.calendar.calendars and sources.calendar.team_calendars, so a round reads it as someone else's calendar, and only with sources.calendar.team_authorization. Keep it in one of the two lists.");
+    const own = lineFor(report, 'calendar', 'doctor.connectors.listed_twice_owner');
+    assert.deepEqual(own.params, { source: 'calendar', calendar: 'primary' });
+    assert.equal(own.message, "calendar: primary is in both sources.calendar.calendars and sources.calendar.team_calendars; it is the owner's own calendar, so a round always reads it as the owner's. Take it out of sources.calendar.team_calendars.");
+    if (enabled) {
+      // bruno is now a team calendar: with carla, two left out for want of an authorization.
+      assert.deepEqual(lineFor(report, 'calendar', 'doctor.connectors.team_authorization').params.detail.params.count, '2');
+      assert.equal(code, EXIT.FAILURE);
+    }
+  }
+  // The owner's e-mail (the fixture's owner.email and briefing.calendar_id) is the owner's own.
+  const mine = setup({ config: connectorConfig((c) => { c.sources.calendar.calendars = ['ana@example.com']; c.sources.calendar.team_calendars = ['ana@example.com']; }) });
+  const r = await doctor(mine, ['--only', 'connectors']);
+  assert.equal(lineFor(r.report, 'calendar', 'doctor.connectors.listed_twice_owner').params.calendar, 'ana@example.com');
+  assert.equal(connectorLines(r.report).some((line) => line.messageKey === 'doctor.connectors.team_authorization'), false, 'the owner\'s own calendar needs no authorization');
+  const clean = setup({ config: connectorConfig() });
+  assert.equal(connectorLines((await doctor(clean, ['--only', 'connectors'])).report).some((line) => line.messageKey.startsWith('doctor.connectors.listed_twice')), false);
+  const f = fakeIo();
+  await runDoctor([mine.root, '--only', 'connectors'], f.io, createTranslator('pt-BR'), { env: mine.env, cwd: mine.root });
+  assert.match(f.stdout(), /ana@example\.com está em sources\.calendar\.calendars e em sources\.calendar\.team_calendars; é a agenda do próprio dono/);
 });
 
 test('connectors: curate.enabled false passes; a configuration doctor cannot read warns', async () => {

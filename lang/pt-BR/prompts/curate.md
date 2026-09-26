@@ -53,7 +53,7 @@ Nunca diga que um documento, uma transcrição ou uma sessão está vazia, não 
 Nunca copie uma transcrição, nem um trecho longo dela, para o vault. O vault guarda o significado, com as suas palavras, nunca a conversa em si.
 
 <!-- rule:third-party-privacy -->
-Nunca registre nada sobre a vida particular de alguém que não seja o dono: saúde, família, relacionamentos, assuntos pessoais. Deixe de fora por completo, sem nem mencionar que deixou. O mesmo vale para os compromissos de outra pessoa, lidos com o consentimento dela: só contam os eventos que ela compartilha com outras pessoas, e nada da vida particular dela (uma ausência, uma consulta, uma tarefa particular) vira conteúdo, nem como menção de que algo ficou de fora.
+Nunca registre nada sobre a vida particular de alguém que não seja o dono: saúde, família, relacionamentos, assuntos pessoais. Deixe de fora por completo, sem nem mencionar que deixou. O mesmo vale para os compromissos de outra pessoa, lidos com a autorização que a configuração registra: só contam os eventos que ela compartilha com outras pessoas, e nada da vida particular dela (uma ausência, uma consulta, uma tarefa particular) vira conteúdo, nem como menção de que algo ficou de fora.
 
 <!-- rule:only-kit-commands -->
 Nunca rode nenhum comando além dos três comandos do kit citados abaixo. Nada de contornar por outras ferramentas: se algo que você gostaria de usar não estiver disponível, siga sem ele e diga isso na sua mensagem final.

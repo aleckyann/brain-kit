@@ -39,8 +39,14 @@
 // and no command refuses the configuration because of it. With it, the
 // prompt block prints who authorised them and the day, DD/MM/YYYY. An entry
 // of team_calendars that is blank or a placeholder names no calendar and is
-// not counted. A calendar listed twice, or listed both as the owner's and
-// as someone else's, is planned once, as the owner's.
+// not counted. A calendar listed twice in one list is planned once. One
+// listed both as the owner's and as someone else's is someone else's, and
+// read only with the authorization (ruling R-A8, 26/09/2026: planned as the
+// owner's, it reached the model with no authorization and outside the
+// privacy line for someone else's calendar), unless it is the owner's own
+// calendar (`primary`, or the id owner.email or briefing.calendar_id
+// names), which is always read as the owner's. doctor warns on each one
+// listed in both (calendarsListedTwice).
 //
 // Read evidence is mechanical (D7), measured on the round record built by
 // src/harness/stream.mjs, never on the model's word, over every call of the
@@ -181,6 +187,24 @@ export function authorizationWhy(t, reason) {
   }
 }
 
+// The owner's own calendar ids (ruling R-A8): `primary`, and the ids the
+// configuration names as the owner's, owner.email and briefing.calendar_id
+// (init writes the owner's e-mail in both), trimmed, a blank entry or a
+// placeholder naming none.
+function ownerCalendarIds(config) {
+  return new Set([PRIMARY, ...calendarIds([config?.owner?.email, config?.briefing?.calendar_id])]);
+}
+
+// Each calendar listed both in calendars and in team_calendars, in the
+// order of calendars, with whether it is the owner's own (always read as
+// the owner's) or not (read as someone else's, with the authorization).
+export function calendarsListedTwice(config) {
+  const settings = settingsOf(config);
+  const team = calendarIds(settings.team_calendars);
+  const owner = ownerCalendarIds(config);
+  return calendarIds(settings.calendars).filter((id) => team.includes(id)).map((id) => ({ calendar: id, owner: owner.has(id) }));
+}
+
 // DD/MM/YYYY, for a person.
 function shownDay(day) {
   const [y, m, d] = day.split('-');
@@ -295,8 +319,10 @@ function collect({ window, config }) {
   const settings = settingsOf(config);
   const problems = configurationProblems(config);
   const configured = problems.length === 0;
-  const calendars = configured ? calendarIds(settings.calendars) : [];
-  const others = calendarIds(settings.team_calendars).filter((id) => !calendars.includes(id));
+  const team = calendarIds(settings.team_calendars);
+  const owner = ownerCalendarIds(config);
+  const calendars = configured ? calendarIds(settings.calendars).filter((id) => !team.includes(id) || owner.has(id)) : [];
+  const others = team.filter((id) => !calendars.includes(id));
   const authorization = settings.team_authorization;
   const reason = authorizationProblem(authorization);
   if (configured && others.length > 0 && reason !== null) {
