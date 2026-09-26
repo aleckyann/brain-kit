@@ -103,11 +103,11 @@ once broke a real routine.
     default of 5 USD when the key is left out, or none when it is `null`, in which case the
     command line carries no `--max-budget-usd` at all. The turn limit: `curate.max_turns`,
     the default of 100 when the key is left out, or none when it is `null` (no
-    `--max-turns`). The time limit: `curate.timeout_minutes`, a number of minutes after
-    which the model is killed and the round exits 1 (`timed_out`), or none when it is
-    `null` or left out, the default: the model then runs until it ends by itself, and one
-    that hangs holds the vault lock until you stop it (every later round postpones with
-    exit 75, naming it, and notifies). The prompt goes on standard input. The first
+    `--max-turns`). The time limit: `curate.timeout_minutes`, a number of minutes (at
+    most 35791, the longest Node's timer holds) after which the model is killed and the
+    round exits 1 (`timed_out`), or none when it is `null` or left out, the default: the
+    model then runs until it ends by itself ([a round that hangs](#a-round-that-hangs)).
+    The prompt goes on standard input. The first
     event the CLI prints says which permission mode, hooks, MCP servers, built-in tools and
     memory folders are in effect; if it is not exactly the isolation of the mode the round
     asked for, the model is stopped at once: exit 1. In connector mode the same event says
@@ -350,10 +350,12 @@ What the bridge does not cover, by design:
   repository. A linked worktree, or a copy of the vault with a state directory of its
   own, reads its own `machine.json`: it has no bridge unless one is set there, and its
   writers run beside the legacy job, in a different working tree.
-- **The probe's side effect.** The Stop hook and `doctor` ask whether another process
-  holds the file with a shared lock, taken without waiting and dropped at once. A legacy
-  job that starts in that very instant finds the file locked and skips that run, and a
-  kit writer that starts then is postponed with exit 75.
+- **The probe's side effect.** The Stop hook (at every session end), the SessionStart
+  line (at every session start), `brain-kit preflight` and so the morning briefing's
+  facts, and `doctor` ask whether another process holds the file with a shared lock,
+  taken without waiting and dropped at once. A legacy job that starts in that very
+  instant finds the file locked and skips that run, and a kit writer that starts then is
+  postponed with exit 75.
 
 ## Exit codes, and what to do for each
 
@@ -423,6 +425,34 @@ the number, the default when `curate.budget_usd` is left out, or no cap when it 
 `null`; `turn-cap`, the same for `curate.max_turns`; `time-cap`, a number of minutes or no
 time limit). `brain-kit doctor --probe` asks the CLI for each connector's state now, without a
 round.
+
+## A round that hangs
+
+With no time limit (`curate.timeout_minutes` null or left out, the default), a model that
+hangs keeps its round running, and the round keeps the vault lock (and the legacy lock,
+when one is set), until you stop it. What the next windows do depends on the scheduler:
+
+- **systemd and launchd:** a timer does not start a `Type=oneshot` service that is still
+  running, and launchd does not start a job that is still running, so the later windows
+  do not run at all and nothing notifies until the hung round is stopped. This is what
+  systemd.timer(5) and launchd document; it has not been measured with the kit's own units.
+- **cron:** every window starts a new round, which finds the vault lock held, exits 75
+  naming the hung round, and notifies you.
+
+A hung round shows as `Vault lock: held by "curate".` in `brain-kit preflight` (and in the
+morning briefing), and `brain-kit doctor` says under `time-cap` that no time limit is set.
+See it and stop it with the name `brain-kit schedule status` prints
+(`brain-kit-curate-<vault_id>`):
+
+```bash
+systemctl --user status brain-kit-curate-<vault_id>.service
+systemctl --user stop brain-kit-curate-<vault_id>.service
+launchctl kill SIGTERM gui/$(id -u)/brain-kit-curate-<vault_id>   # on macOS
+```
+
+Stopping it sends the round SIGTERM: it ends its model's whole process group, lets go of
+its locks, exits 1 (`interrupted`) and notifies. To keep a cap instead, set
+`curate.timeout_minutes` (60 is the kill every round had before phase 5a).
 
 ## When rounds seem to do nothing
 

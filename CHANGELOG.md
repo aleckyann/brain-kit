@@ -475,11 +475,16 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   `budgetUsd`, and `doctor` gains `cost-cap`.
 - `curate.max_turns: null` runs a round with no turn limit (no `--max-turns`; a key left
   out keeps 100), and `curate.timeout_minutes` replaces the fixed hour after which every
-  round's model was killed: a number of minutes keeps that kill, and `null`, both packs'
-  default, sets no time limit, since the owner never asked for one. `0` is refused
-  as configuration for both. The round, `--check` and `--dry` say both limits,
+  round's model was killed: a number of minutes (above 0, at most 35791, the longest
+  Node's timer holds) keeps that kill, and `null`, both packs' default, or the key left
+  out sets no time limit, since the owner never asked for one. `0` is refused as
+  configuration for both. The round, `--check` and `--dry` say both limits,
   `last-run.json` records `maxTurns` and `timeoutMinutes`, and `doctor` gains `turn-cap`
-  and `time-cap`.
+  and `time-cap`. **Upgrading:** a vault created before phase 5a has no
+  `curate.timeout_minutes` key, so its rounds go from the 60-minute kill to no time limit;
+  set `curate.timeout_minutes` (60 keeps the old kill) to keep a cap. With none, a round
+  that hangs stops the later windows under systemd and launchd until it is stopped
+  (`docs/scheduling.md`, "A round that hangs").
 - `docs/scheduling.md` gains "Moving from a legacy lock", with what the bridge does not
   cover, and the rules of `watermark import`.
 

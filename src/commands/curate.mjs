@@ -685,9 +685,11 @@ export const MAX_TIMEOUT_MINUTES = 35791;
 // default), and the model then runs until it ends by itself. Until phase
 // 5a every round was killed after a fixed hour, a limit its owner never
 // asked for (ruling R-A3, 25/09/2026). With none, a model that hangs holds
-// the vault lock until a person stops it, and every later round postpones
-// (exit 75, naming the round) and notifies. The round, --check, --dry and
-// doctor's time-cap all read it here.
+// the vault lock until a person stops it: under systemd and launchd, which do
+// not start a job that is still running, the later windows simply do not run
+// and nothing notifies; under cron each later round postpones (exit 75,
+// naming the round) and notifies (docs/scheduling.md, "A round that hangs").
+// The round, --check, --dry and doctor's time-cap all read it here.
 export function roundTimeoutMinutes(config) {
   const configured = config?.curate?.timeout_minutes;
   return configured === undefined ? null : configured;
