@@ -1,7 +1,7 @@
 import { chmodSync, mkdirSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
-import { basename, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 
 // Names of every file (or, for LOG_DIR, directory) later slices write inside
 // a vault's state directory. Declared here, in the one module that resolves
@@ -52,28 +52,39 @@ function shortHash(absoluteVaultPath) {
   return createHash('sha256').update(absoluteVaultPath).digest('hex').slice(0, 8);
 }
 
-// The real path of a vault that exists, so a vault reached through a
-// symbolic link resolves to the same state directory (and machine.json) as
-// through its real path; a path that does not exist yet (init, before it
-// creates the vault) is only made absolute. Any other failure to resolve
-// is raised, never guessed around.
-function realPathOf(absolute) {
+// The physical path of an absolute path: its real path when it exists, and
+// when it does not, the real path of the deepest part of it that does,
+// followed by the rest as it is spelt. That is the path it has, or will
+// have once it is created, with every symbolic link above it resolved.
+// Only making a missing path absolute is not enough on a machine where a
+// directory above it is a link, which on macOS includes every temporary
+// directory (/var and /tmp lead to /private/var and /private/tmp): the
+// same place would be spelt two ways, and a state directory derived from
+// one spelling is not found from the other. Any failure other than a
+// missing path is raised, never guessed around.
+export function physicalPathOf(absolute) {
   try {
     return realpathSync(absolute);
   } catch (error) {
-    if (error.code === 'ENOENT') return absolute;
-    throw error;
+    if (error.code !== 'ENOENT') throw error;
   }
+  const parent = dirname(absolute);
+  if (parent === absolute) return absolute;
+  return join(physicalPathOf(parent), basename(absolute));
 }
 
 // Resolve the per-vault state directory. BRAIN_KIT_STATE_DIR, when set, is a
 // full override (used by tests and by anyone who wants to pin the exact
 // path) and the vault path is not consulted at all. Otherwise the directory
-// is derived from the vault's absolute path under the user's state home, so
-// the same vault always resolves to the same directory and two different
-// vaults never collide.
+// is derived from the vault's physical path under the user's state home, so
+// a vault reached through a symbolic link resolves to the same state
+// directory (and machine.json) as through its real path, the same vault
+// always resolves to the same directory, and two different vaults never
+// collide. A vault path that does not exist (init, before it creates the
+// vault; the old path `machine register --from` names) derives from the
+// physical path it would have.
 export function stateDirFor(vaultRoot, env = process.env) {
-  return stateDirForPath(realPathOf(resolve(vaultRoot)), env);
+  return stateDirForPath(physicalPathOf(resolve(vaultRoot)), env);
 }
 
 // The same derivation from a path taken as it is spelt, with no symbolic

@@ -22,7 +22,7 @@ import { spawnSync } from 'node:child_process';
 import {
   chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { makeTempDir } from './helpers/tmp.mjs';
 import { KIT_ROOT } from '../src/version.mjs';
@@ -1202,14 +1202,22 @@ test('show says so when the record names a path the vault is no longer at, and s
 // --- vaults the real init created ------------------------------------------------
 
 // A vault made by `brain-kit init --yes`, through the real launcher, with
-// HOME, git's configuration and the state home all in scratch.
-function initVault() {
+// HOME, git's configuration and the state home all in scratch. With
+// `linkedStateHome`, XDG_STATE_HOME is a symbolic link to the directory
+// that holds the state, as a state home below a linked directory is.
+function initVault({ linkedStateHome = false } = {}) {
   const base = makeTempDir('brain-kit-machine-init-');
   const home = join(base, 'home');
   mkdirSync(home);
   writeFileSync(join(home, '.gitconfig'), '');
+  let stateHome = join(base, 'state');
+  if (linkedStateHome) {
+    mkdirSync(stateHome);
+    symlinkSync(stateHome, join(base, 'state link'));
+    stateHome = join(base, 'state link');
+  }
   const env = {
-    PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(home, '.config'), XDG_STATE_HOME: join(base, 'state'),
+    PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: join(home, '.config'), XDG_STATE_HOME: stateHome,
     GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(home, '.gitconfig'), BRAIN_KIT_LANG: 'en',
   };
   const root = join(base, PARENT_NAME, VAULT_NAME);
@@ -1241,6 +1249,67 @@ test('show, set and register work on a vault the real init created, and doctor g
   assert.deepEqual(after.notify_command, ['notify-send', 'brain-kit']);
   doctor = await stateChecks(newRoot, fx.env);
   for (const check of ['machine-valid', 'state-dir-resolves', 'state-dir-mode']) assert.equal(doctor.byId[check].status, 'ok', check);
+});
+
+// --- a path that passes through a symbolic link ------------------------------------
+//
+// Where a directory above a path is a symbolic link, the path has two
+// spellings, and the kit derives and records the physical one. On macOS
+// every temporary directory is reached this way (/var leads to
+// /private/var), which is how these were found; the links here make the
+// same cases on any machine.
+
+test('register --from takes the old path as the person spelt it, through a linked directory above it, whether the vault left it empty or left a link there', async () => {
+  for (const leaveLink of [false, true]) {
+    const base = realpathSync(makeTempDir('brain-kit-machine-linked-'));
+    const real = join(base, 'real parent');
+    const linked = join(base, `linked ${E_ACUTE}`);
+    mkdirSync(real);
+    symlinkSync(real, linked);
+    const env = { HOME: join(base, 'home'), XDG_STATE_HOME: join(base, 'state'), PATH: process.env.PATH };
+    mkdirSync(env.HOME);
+    const oldRoot = makeVaultAt(join(linked, VAULT_NAME));
+    const stateDir = stateDirFor(oldRoot, env);
+    assert.equal(stateDir, stateDirFor(join(real, VAULT_NAME), env), 'the state is derived from the physical path');
+    writeMachine(stateDir, machineFor(oldRoot, stateDir));
+    const newRoot = join(base, `moved ${E_ACUTE}`, VAULT_NAME);
+    mkdirSync(dirname(newRoot));
+    renameSync(oldRoot, newRoot);
+    if (leaveLink) symlinkSync(newRoot, oldRoot);
+    const fx = { env, root: newRoot };
+    const r = await machine(fx, ['register', '--from', oldRoot], { cwd: newRoot });
+    assert.equal(r.code, EXIT.OK, `${leaveLink}: ${r.stderr}`);
+    assert.equal(existsSync(stateDir), false, `${leaveLink}: the old state moved`);
+    const target = stateDirFor(newRoot, env);
+    assert.equal(readJson(join(target, 'machine.json')).canonical_path, realpathSync(newRoot));
+    const doctor = await stateChecks(newRoot, env);
+    for (const id of ['machine-valid', 'state-dir-resolves', 'state-dir-mode']) {
+      assert.equal(doctor.byId[id].status, 'ok', `${leaveLink}: ${JSON.stringify(doctor.byId[id])}`);
+    }
+  }
+});
+
+test('register through a state home reached by a link moves state_dir and every path init recorded by its real path, and none is left naming the old directory', async () => {
+  const fx = initVault({ linkedStateHome: true });
+  const before = readJson(fx.machineFile);
+  const oldReal = realpathSync(fx.stateDir);
+  assert.notEqual(fx.stateDir, oldReal, 'the precondition: the state home is reached through a link');
+  assert.equal(before.state_dir, oldReal, 'init records the state directory by its real path');
+  const oldRoot = fx.root;
+  const newRoot = moveVault(fx);
+  const r = await machine(fx, ['register', '--from', oldRoot], { cwd: newRoot });
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  const target = stateDirFor(newRoot, fx.env);
+  const after = readJson(join(target, 'machine.json'));
+  const newReal = realpathSync(target);
+  assert.equal(after.state_dir, newReal);
+  assert.deepEqual(after.paths, {
+    watermark: join(newReal, STATE_FILES.WATERMARK),
+    last_run: join(newReal, STATE_FILES.LAST_RUN),
+    log_dir: join(newReal, STATE_FILES.LOG_DIR),
+    questions_log: join(newReal, STATE_FILES.QUESTIONS_LOG),
+  });
+  assert.equal(existsSync(oldReal), false, 'the old directory is gone, so nothing may still name it');
 });
 
 // --- usage and wiring -----------------------------------------------------------

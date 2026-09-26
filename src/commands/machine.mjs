@@ -84,7 +84,7 @@ import {
   CONFIG_FILENAME, MACHINE_FILENAME, canonicalPathMatches, machineSchema, validateMachine, withoutRetiredPaths,
 } from '../config.mjs';
 import { findVaultRoot, isVaultRoot } from '../vault.mjs';
-import { ensureStateDir, stateDirFor, stateDirForPath, stateRootFor } from '../state.mjs';
+import { ensureStateDir, physicalPathOf, stateDirFor, stateDirForPath, stateRootFor } from '../state.mjs';
 import { decodeBytes } from '../io.mjs';
 import { isInside } from '../init/skeleton.mjs';
 import { acquireLock } from '../guards/lock.mjs';
@@ -434,11 +434,20 @@ function runSet(io, t, root, env, parsed, deps) {
 
 // --- register --------------------------------------------------------------------
 
-// `value` moved from inside `from` to the same place inside `to`; anything
-// else (a path a person pointed elsewhere, a relative name) is left alone.
-function rebase(value, from, to) {
-  if (typeof value !== 'string' || !isAbsolute(value) || !isInside(value, from)) return value;
-  return join(to, relative(from, value));
+// `value` moved from inside the state directory `oldDir` to the same place
+// inside `newDir`; anything else (a path a person pointed elsewhere, a
+// relative name) is left alone. A path is inside `oldDir` in either of its
+// spellings: as the state home derives it, and physically, which is how
+// init records state_dir and every paths entry. Through a state home
+// reached by a symbolic link the two differ, and a path recorded
+// physically that was not moved would still name the directory the state
+// just left. Each spelling moves to the same spelling of `newDir`.
+function rebase(value, oldDir, newDir) {
+  if (typeof value !== 'string' || !isAbsolute(value)) return value;
+  for (const [base, destination] of [[oldDir.derived, newDir.derived], [oldDir.physical, newDir.physical]]) {
+    if (isInside(value, base)) return join(destination, relative(base, value));
+  }
+  return value;
 }
 
 // State directories under the state root whose machine.json names a vault
@@ -472,12 +481,19 @@ function orphanedStates(env, except, realRoot) {
 }
 
 // The state directory --from names: the old path's derivation through its
-// real path, then as it is spelt (a link left at the old path resolves to
-// the new one, and its old state is under the old name). The first that
-// holds a machine.json and is not the target wins; the target itself only
-// when nothing else holds one. null when none does.
+// physical path (the real path of whatever part of it still exists, since
+// a vault that moved is usually gone from there), then with only the links
+// above it resolved (a link left at the old path resolves to the new one,
+// and its old state is under the old name, recorded when every directory
+// above it was already resolved), then exactly as it is spelt. The first
+// that holds a machine.json and is not the target wins; the target itself
+// only when nothing else holds one. null when none does.
 function sourceFor(from, env, target) {
-  const candidates = [...new Set([stateDirFor(from, env), stateDirForPath(from, env)])];
+  const candidates = [...new Set([
+    stateDirFor(from, env),
+    stateDirForPath(join(physicalPathOf(dirname(from)), basename(from)), env),
+    stateDirForPath(from, env),
+  ])];
   const holding = candidates.filter((dir) => existsSync(join(dir, MACHINE_FILENAME)));
   return holding.find((dir) => dir !== target) ?? (holding.includes(target) ? target : null);
 }
@@ -585,8 +601,12 @@ function registerLocked(io, t, { realRoot, target, env, from, deps }) {
 
   const next = structuredClone(withoutRetiredPaths(read.value));
   next.canonical_path = realRoot;
-  if (next.state_dir !== undefined) next.state_dir = rebase(next.state_dir, source, target);
-  for (const [name, path] of Object.entries(next.paths)) next.paths[name] = rebase(path, source, target);
+  // The target's physical path is the one the rename below gives it, known
+  // before the rename from whatever part of it already exists.
+  const oldDir = { derived: source, physical: physicalPathOf(source) };
+  const newDir = { derived: target, physical: physicalPathOf(target) };
+  if (next.state_dir !== undefined) next.state_dir = rebase(next.state_dir, oldDir, newDir);
+  for (const [name, path] of Object.entries(next.paths)) next.paths[name] = rebase(path, oldDir, newDir);
   const errors = validate(next);
   if (errors.length > 0) {
     io.stderr.write(`${t('machine.invalid', { file: sourceFile, errors })}\n`);
