@@ -211,11 +211,18 @@ test('an ignored file is not a dirty tree', async () => {
   assert.equal(world.sha('main'), world.sha('main', world.elsewhere));
 });
 
+// The sequence editor that puts `break` first in a rebase's todo list. Not
+// `sed -i -e "1i break"`: that is GNU sed, and BSD sed (macOS) refuses it
+// ("command i expects \ followed by text"), so there the rebase never
+// stopped. POSIX sh, printf, cat and mv do the same on both; git appends
+// the todo file's path as the last argument.
+const BREAK_FIRST = `sh -c 'printf "break\\n" | cat - "$1" > "$1.brain-kit" && mv "$1.brain-kit" "$1"' --`;
+
 test('a rebase stopped with a clean tree is postponed with exit 75, and nothing moves', async () => {
   const world = makeWorld();
   world.commitLocal(2);
   const stop = spawnSync('git', ['-c', 'user.name=Ana', '-c', 'user.email=ana@example.com', 'rebase', '-i', 'HEAD~1'], {
-    cwd: world.vault, encoding: 'utf8', env: { ...CLEAN_ENV, GIT_SEQUENCE_EDITOR: 'sed -i -e "1i break"' },
+    cwd: world.vault, encoding: 'utf8', env: { ...CLEAN_ENV, GIT_SEQUENCE_EDITOR: BREAK_FIRST },
   });
   assertOk(stop, 'rebase stopping at break');
   assert.equal(git(world.vault, ['status', '--porcelain']), '', 'the tree is clean: only the rebase makes it unsafe');

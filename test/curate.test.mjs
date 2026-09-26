@@ -1258,6 +1258,16 @@ function hookWorld() {
   return w;
 }
 
+// The shell a model would run to insert `line` as the second line of the
+// hook: the hook's first line, the new one, then the rest, read from the
+// copy at `from`. Not `sed -i '2i ...'`: that is GNU sed, and BSD sed
+// (macOS) takes the argument after -i as a backup suffix, so there the
+// command failed, the hook was never edited, and the round had nothing to
+// refuse. head, printf and tail do the same on both.
+function insertSecondLine(from, line, to) {
+  return `{ head -n 1 "${from}"; printf '%s\\n' '${line}'; tail -n +2 "${from}"; } > "${to}"`;
+}
+
 test('a round whose model edits the pre-push hook and proposes: propose refuses, the hook never runs, and the round exits non-zero', () => {
   const w = hookWorld();
   const hook = join(w.vault, '.githooks/pre-push');
@@ -1265,7 +1275,7 @@ test('a round whose model edits the pre-push hook and proposes: propose refuses,
   const marker = join(w.base, 'ran-outside-the-allowlist');
   w.scenario({
     actions: [
-      { run: ['sh', '-c', `cp "${hook}" "${saved}" && sed -i '2i touch "${marker}"' "${hook}"`] },
+      { run: ['sh', '-c', `cp "${hook}" "${saved}" && ${insertSecondLine(saved, `touch "${marker}"`, hook)}`] },
       { write: { path: 'notes/m.md', content: note('Meeting') } },
       w.proposeAction('notes/m.md'),
       { run: ['sh', '-c', `cat "${saved}" > "${hook}"`] },
@@ -1284,9 +1294,10 @@ test('a round whose model edits the pre-push hook and proposes: propose refuses,
   // Without the revert, the hook itself is what the round reports as left.
   const w2 = hookWorld();
   const hook2 = join(w2.vault, '.githooks/pre-push');
+  const saved2 = join(w2.base, 'pre-push.orig');
   w2.scenario({
     actions: [
-      { run: ['sh', '-c', `sed -i '2i echo changed' "${hook2}"`] },
+      { run: ['sh', '-c', `cp "${hook2}" "${saved2}" && ${insertSecondLine(saved2, 'echo changed', hook2)}`] },
       { write: { path: 'notes/m.md', content: note('Meeting') } },
       w2.proposeAction('notes/m.md'),
     ],
