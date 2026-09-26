@@ -1971,6 +1971,52 @@ test('include-projects: with transcripts in no curate source there is nothing to
   assertCheck(report, 'include-projects', 'ok', 'doctor.include_projects.not_used');
 });
 
+// Phase 5a, task 4: "all" is counted as the round resolves it, today: every
+// directory under the transcripts directory, minus those a pattern of
+// exclude_path_patterns leaves out whole; a plain file is no project.
+test('include-projects: "all" passes saying how many projects it reads today, the excluded directories left out of the count', async () => {
+  const fx = setup({ config: configWith((c) => { c.sources.transcripts.include_projects = 'all'; c.sources.transcripts.exclude_path_patterns = ['/-tmp-', '--claude-worktrees-']; }) });
+  const projects = join(fx.home, '.claude', 'projects');
+  for (const dir of ['-home-ana-code', '-tmp-scratch', '-home-ana-brain--claude-worktrees-agent-1']) mkdirSync(join(projects, dir));
+  writeFileSync(join(projects, 'stray.jsonl'), '{}\n');
+  const { report, code } = await doctor(fx, ['--only', 'include-projects']);
+  const c = assertCheck(report, 'include-projects', 'ok', 'doctor.include_projects.all');
+  assert.deepEqual(c.params, { count: 2, root: projects });
+  assert.equal(c.message, `all (2 project(s) today) under ${projects}`);
+  assert.equal(code, EXIT.OK);
+  // A directory made after the configuration was written counts the next time.
+  mkdirSync(join(projects, '-home-ana-new'));
+  assert.equal(assertCheck((await doctor(fx, ['--only', 'include-projects'])).report, 'include-projects', 'ok', 'doctor.include_projects.all').params.count, 3);
+  const f = fakeIo();
+  await runDoctor([fx.root, '--only', 'include-projects'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
+  assert.match(f.stdout(), /all \(3 projeto\(s\) hoje\) em /);
+});
+
+test('include-projects: "all" over a transcripts directory with no project left fails naming the key; a missing directory fails as for a list', async () => {
+  const fx = setup({ config: configWith((c) => { c.sources.transcripts.include_projects = 'all'; c.sources.transcripts.exclude_path_patterns = ['-home-ana-']; }) });
+  let r = await doctor(fx, ['--only', 'include-projects']);
+  const c = assertCheck(r.report, 'include-projects', 'fail', 'doctor.include_projects.all_empty');
+  assert.deepEqual(c.params, { key: 'sources.transcripts.include_projects', file: join(fx.root, 'brain-kit.config.json'), root: join(fx.home, '.claude', 'projects') });
+  assert.match(c.message, /is "all", but .* holds no project directory today/);
+  assert.equal(r.code, EXIT.FAILURE);
+  const bare = setup({ config: configWith((c) => { c.sources.transcripts.include_projects = 'all'; }), machine: { transcripts_dir: '~/empty' } });
+  mkdirSync(join(bare.home, 'empty'));
+  r = await doctor(bare, ['--only', 'include-projects']);
+  assertCheck(r.report, 'include-projects', 'fail', 'doctor.include_projects.all_empty');
+  const gone = setup({ config: configWith((c) => { c.sources.transcripts.include_projects = 'all'; }), machine: { transcripts_dir: '~/nowhere' } });
+  r = await doctor(gone, ['--only', 'include-projects']);
+  assertCheck(r.report, 'include-projects', 'fail', 'doctor.include_projects.root_missing');
+});
+
+test('include-projects: a list holding "all" names a directory called all, and an empty list still fails', async () => {
+  let fx = setup({ config: configWith((c) => { c.sources.transcripts.include_projects = ['all']; }) });
+  let r = await doctor(fx, ['--only', 'include-projects']);
+  assert.deepEqual(assertCheck(r.report, 'include-projects', 'fail', 'doctor.include_projects.all_missing').params.projects, ['all']);
+  fx = setup({ config: configWith((c) => { c.sources.transcripts.include_projects = []; }) });
+  r = await doctor(fx, ['--only', 'include-projects']);
+  assertCheck(r.report, 'include-projects', 'fail', 'doctor.include_projects.empty');
+});
+
 // --- watermark ---------------------------------------------------------------
 
 function markAt(fx, day) {
@@ -2656,6 +2702,45 @@ test('connectors: other people\'s calendars without the recorded consent are nam
   assert.match(consent.message, /team_calendars_consent_noted is true/);
   const consented = setup({ config: connectorConfig((c) => { c.sources.calendar.team_calendars = ['team@example.com']; c.sources.calendar.team_calendars_consent_noted = true; }) });
   assert.equal(connectorLines((await doctor(consented, ['--only', 'connectors'])).report).filter((c) => c.messageKey === 'doctor.connectors.consent').length, 0);
+});
+
+// Phase 5a, task 4: team calendars with no record of who authorised reading
+// them fail doctor, naming the key; the round leaves them out and reads the
+// owner's calendar. A record that is not a person and a day that exists
+// records nothing, even in a configuration doctor reads raw.
+test('connectors: team calendars without the recorded authorization fail, naming sources.calendar.team_authorization; recorded, with consent, nothing is said', async () => {
+  const team = (edit) => connectorConfig((c) => { c.sources.calendar.team_calendars = ['team@example.com', 'ana@example.com']; c.sources.calendar.team_calendars_consent_noted = true; edit(c); });
+  const fx = setup({ config: team(() => {}) });
+  const { report, code } = await doctor(fx, ['--only', 'connectors']);
+  const c = lineFor(report, 'calendar', 'doctor.connectors.team_authorization');
+  assert.equal(c.status, 'fail');
+  assert.equal(c.params.key, 'sources.calendar.team_authorization');
+  assert.equal(c.params.file, 'brain-kit.config.json');
+  assert.deepEqual(c.params.detail, { messageKey: 'sources.calendar.team_calendars_without_authorization', params: { count: '2' } });
+  assert.match(c.message, /^calendar: Calendars ignored in sources\.calendar\.team_calendars: 2\. .*sources\.calendar\.team_authorization records who authorised reading the team's calendars and on which day/);
+  assert.match(c.message, /Until sources\.calendar\.team_authorization is set in brain-kit\.config\.json, every round leaves those calendars out and still reads the owner's own\./);
+  assert.equal(code, EXIT.FAILURE, 'a failure, whatever the calendar\'s best effort');
+  assert.equal(connectorLines(report).some((line) => line.messageKey === 'doctor.connectors.consent'), false, 'consent is recorded');
+  for (const authorization of [{ by: 'human:ana', at: '2026-02-31' }, { by: 'ana', at: '2026-09-01' }, { by: 'human:ana', at: '01/09/2026' }, { by: 'human:ana' }, 'human:ana']) {
+    const odd = setup({ config: team((c) => { c.sources.calendar.team_authorization = authorization; }) });
+    lineFor((await doctor(odd, ['--only', 'connectors'])).report, 'calendar', 'doctor.connectors.team_authorization');
+  }
+  const authorised = setup({ config: team((c) => { c.sources.calendar.team_authorization = { by: 'human:ana', at: '2026-09-01' }; }) });
+  const ok = await doctor(authorised, ['--only', 'connectors']);
+  assert.deepEqual(connectorLines(ok.report).filter((line) => ['doctor.connectors.team_authorization', 'doctor.connectors.consent'].includes(line.messageKey)), []);
+  assert.equal(ok.code, EXIT.OK);
+  // Authorised without the people's consent: the consent warning alone, as before.
+  const noConsent = setup({ config: team((c) => { c.sources.calendar.team_authorization = { by: 'human:ana', at: '2026-09-01' }; c.sources.calendar.team_calendars_consent_noted = false; }) });
+  const warned = await doctor(noConsent, ['--only', 'connectors']);
+  assert.equal(lineFor(warned.report, 'calendar', 'doctor.connectors.consent').status, 'warn');
+  assert.equal(connectorLines(warned.report).some((line) => line.messageKey === 'doctor.connectors.team_authorization'), false);
+  assert.equal(warned.code, EXIT.OK);
+  // No team calendar: nothing to authorise.
+  const alone = setup({ config: connectorConfig() });
+  assert.equal(connectorLines((await doctor(alone, ['--only', 'connectors'])).report).some((line) => line.messageKey === 'doctor.connectors.team_authorization'), false);
+  const f = fakeIo();
+  await runDoctor([fx.root, '--only', 'connectors'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
+  assert.match(f.stdout(), /Enquanto sources\.calendar\.team_authorization não estiver em brain-kit\.config\.json, toda rodada deixa essas agendas de fora e continua lendo as do dono\./);
 });
 
 test('connectors: curate.enabled false passes; a configuration doctor cannot read warns', async () => {

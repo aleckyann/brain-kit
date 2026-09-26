@@ -487,6 +487,21 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   (`docs/scheduling.md`, "A round that hangs").
 - `docs/scheduling.md` gains "Moving from a legacy lock", with what the bridge does not
   cover, and the rules of `watermark import`.
+- `sources.transcripts.include_projects` takes the string `"all"` besides a list: every
+  project directory under the transcripts directory at the time of the round, minus the
+  directories `exclude_path_patterns` covers whole, the file patterns still applied. It is
+  the owner's explicit choice, written in the configuration; any other string is refused as
+  configuration, and a list holding "all" names a directory called `all`. "all" that finds
+  no project directory makes the round refuse (`all_empty`) rather than close a day nobody
+  read. `doctor`'s `include-projects` says `all (N project(s) today)`.
+- `sources.calendar.team_authorization: { "by": "human:<handle>", "at": "YYYY-MM-DD" }`
+  records who authorised reading the team's calendars and on which day (a day that exists:
+  a malformed or impossible date is refused as configuration). Team calendars are read only
+  with it, besides `team_calendars_consent_noted: true`. Without it the round leaves every
+  team calendar out, reads the owner's own, and says so in its parameters; it never exits
+  4 for that alone. With it, the parameters print "Team calendars authorised by <by> on
+  DD/MM/YYYY". `doctor` (check `connectors`) fails while team calendars are listed with no
+  authorization, naming the key.
 
 ## 0.0.1 (published on npm on 18/09/2026)
 

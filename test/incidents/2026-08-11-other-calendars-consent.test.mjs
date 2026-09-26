@@ -8,7 +8,10 @@
 // someone else's calendar needs a privacy filter and recorded consent. So
 // the calendar source reads `sources.calendar.team_calendars` only with
 // `team_calendars_consent_noted: true`; without it they are ignored, and
-// the round is told how many, never silently.
+// the round is told how many, never silently. Since phase 5a (task 4) the
+// vault must also record who authorised reading the team's calendars and on
+// which day (`team_authorization`); every test here records it, so consent
+// is the one gate these tests move.
 //
 // Replayed through the real pieces: the calendar source's collect, a stream
 // parsed by src/harness/stream.mjs, and the source's readEvidence through
@@ -28,11 +31,12 @@ const TIMEZONE = 'America/Argentina/Buenos_Aires';
 const LIST = 'mcp__claude_ai_Google_Calendar__list_events';
 const OWNER = 'ana@example.com';
 const SQUAD = 'squad-calendar@example.com';
+const AUTHORIZED = Object.freeze({ by: 'human:ana', at: '2026-05-04' });
 
 function config(lang, calendar) {
   const c = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', lang, 'config.defaults.json'), 'utf8'));
   c.vault.timezone = TIMEZONE;
-  c.sources.calendar = { ...c.sources.calendar, enabled: true, calendars: [OWNER], team_calendars: [SQUAD], ...calendar };
+  c.sources.calendar = { ...c.sources.calendar, enabled: true, calendars: [OWNER], team_calendars: [SQUAD], team_authorization: AUTHORIZED, ...calendar };
   return c;
 }
 

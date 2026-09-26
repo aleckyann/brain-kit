@@ -198,6 +198,67 @@ test('curate.timeout_minutes takes a number up to 35791 or null, and refuses 357
   assert.throws(() => loadConfig(dir), (error) => error instanceof ConfigError && error.errors.includes('$.curate.timeout_minutes: must be <= 35791'));
 });
 
+// Phase 5a, task 4: include_projects is a list of exact directory names or
+// the one string "all", the owner's explicit choice of every project; any
+// other string, and anything else, is refused naming the key. A list
+// holding "all" is a list.
+test('sources.transcripts.include_projects takes a list or the string "all", and refuses any other string', () => {
+  for (const name of ['config/valid.json', 'config/valid-pt-BR.json']) {
+    const withValue = (value) => {
+      const config = fixture(name);
+      config.sources.transcripts.include_projects = value;
+      return validateConfig(config);
+    };
+    for (const value of ['all', [], ['-home-ana-brain'], ['all'], ['-home-ana-brain', '-home-ana-code']]) {
+      assert.deepEqual(withValue(value), [], `${name}: ${JSON.stringify(value)}`);
+    }
+    for (const value of ['ALL', 'All', ' all', 'all ', 'all\n', '', 'none', '*', 'everything', '-home-ana-brain']) {
+      assert.deepEqual(withValue(value), ['$.sources.transcripts.include_projects: does not match /^all$/'], `${name}: ${JSON.stringify(value)}`);
+    }
+    for (const value of [null, true, 1, { all: true }, [1]]) {
+      const errors = withValue(value);
+      assert.ok(errors.length > 0 && errors.every((e) => e.startsWith('$.sources.transcripts.include_projects')), `${name}: ${JSON.stringify(value)}: ${errors.join('\n')}`);
+    }
+  }
+});
+
+// Phase 5a, task 4: sources.calendar.team_authorization records who
+// authorised reading the team's calendars (a person, human:<handle>) and
+// the day (YYYY-MM-DD, a day that exists). Optional; when present, whole.
+test('sources.calendar.team_authorization takes { by: "human:<handle>", at: "YYYY-MM-DD" } and refuses a malformed date, a day that does not exist, or anything else', () => {
+  const withValue = (value) => {
+    const config = fixture('config/valid.json');
+    config.sources.calendar.team_authorization = value;
+    return validateConfig(config);
+  };
+  assert.deepEqual(validateConfig(fixture('config/valid.json')), [], 'absent');
+  for (const at of ['2026-09-26', '2024-02-29', '2026-12-31', '2026-01-01']) {
+    assert.deepEqual(withValue({ by: 'human:ana', at }), [], at);
+  }
+  assert.deepEqual(withValue({ by: 'human:ana-2', at: '2026-09-26' }), []);
+  for (const at of ['26/09/2026', '2026-9-26', '2026-09-6', '20260926', '2026-13-01', '2026-00-10', '2026-09-32', '2026-09-00', '2026-09-26T00:00:00Z', ' 2026-09-26', '']) {
+    assert.deepEqual(withValue({ by: 'human:ana', at }), [`$.sources.calendar.team_authorization.at: does not match /^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$/`], JSON.stringify(at));
+  }
+  for (const at of ['2026-02-31', '2025-02-29', '2026-04-31', '1900-02-29']) {
+    assert.deepEqual(withValue({ by: 'human:ana', at }), [`$.sources.calendar.team_authorization.at: "${at}" is not a day that exists`], at);
+  }
+  for (const by of ['ana', 'human:', 'human:Ana', 'human: ana', 'process:ana', 'human:-ana', '']) {
+    assert.deepEqual(withValue({ by, at: '2026-09-26' }), ['$.sources.calendar.team_authorization.by: does not match /^human:[a-z0-9][a-z0-9-]*$/'], JSON.stringify(by));
+  }
+  assert.deepEqual(withValue({ by: 'human:ana' }), ['$.sources.calendar.team_authorization.at: required']);
+  assert.deepEqual(withValue({ at: '2026-09-26' }), ['$.sources.calendar.team_authorization.by: required']);
+  assert.deepEqual(withValue({ by: 'human:ana', at: '2026-09-26', note: 'x' }), ['$.sources.calendar.team_authorization.note: unknown key']);
+  for (const value of [null, true, 'human:ana', ['human:ana', '2026-09-26'], { by: 'human:ana', at: 20260926 }]) {
+    const errors = withValue(value);
+    assert.ok(errors.length > 0 && errors.every((e) => e.startsWith('$.sources.calendar.team_authorization')), `${JSON.stringify(value)}: ${errors.join('\n')}`);
+  }
+  const dir = makeTempDir('brain-kit-team-authorization-');
+  const config = fixture('config/valid.json');
+  config.sources.calendar.team_authorization = { by: 'human:ana', at: '31/02/2026' };
+  writeFileSync(join(dir, CONFIG_FILENAME), JSON.stringify(config));
+  assert.throws(() => loadConfig(dir), (error) => error instanceof ConfigError && error.errors.some((e) => e.startsWith('$.sources.calendar.team_authorization.at: ')));
+});
+
 test('curate.schedule entries must be HH:MM', () => {
   const config = fixture('config/valid.json');
   config.curate.schedule = ['9h30'];

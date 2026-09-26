@@ -173,7 +173,9 @@ Within that, what limits how much the model reads is not the permission system:
 - **`include_projects`.** Only the Claude Code projects your configuration lists are ever
   offered to the model, and only the sessions whose messages fall inside the round's
   window. The plan in the prompt names each file, how large it is and where to start
-  reading it.
+  reading it. `"all"` in place of the list is the one way to offer every project, and only
+  because the configuration says so ([scheduling.md](scheduling.md)); the transcripts a
+  round reads are still only the sessions of the window, each named in the plan.
 - **The prompt.** It tells the model to sample a long transcript from its end and then in
   slices, never whole, and states what it may not carry into the vault.
 - **The cost ceiling.** Every round runs with `--max-turns` (`curate.max_turns`, default

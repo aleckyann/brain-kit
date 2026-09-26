@@ -30,6 +30,17 @@ project directories (the names under `~/.claude/projects`) whose sessions feed t
 Nothing outside that list is ever offered to the model. An empty list makes every round
 refuse to run, and `doctor` says so.
 
+To feed the vault from every project instead, write the string `"all"` in place of the list:
+`"include_projects": "all"`. Nothing reads every project unless the configuration says so in
+those words, and it is your choice to make: every session on this machine becomes something
+a round may read. Each round lists the transcripts directory again, so a project you start
+tomorrow is read from tomorrow on. `sources.transcripts.exclude_path_patterns` still
+applies: a directory a pattern covers whole (such as `/-tmp-` for scratch folders) is no
+project at all, and a file a pattern names is left out as with a list. `doctor` says
+`all (N project(s) today)`; "all" that finds no project directory makes every round refuse
+to run, and `doctor` fails, rather than a round closing days it never read. Any other string
+is refused as configuration, and a list holding "all" names a directory called `all`.
+
 The calendar and the meeting notes are off until you turn them on:
 [connectors.md](connectors.md) says how, and `brain-kit doctor --only connectors --probe`
 checks, without a round, that their connectors are there.

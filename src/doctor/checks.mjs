@@ -69,7 +69,7 @@ import { installedRoundPath, readBriefingTask, ROUND_COMMANDS, roundPath, runSch
 // asks: its reading of briefing.blocks and of the question queue.
 import { blockProblemLine, briefingSetting, validateBriefingBlocks } from '../briefing/blocks.mjs';
 import { queueFile, readQueue } from '../briefing/questions.mjs';
-import { signatureProblems } from '../sources/transcripts-claude-code.mjs';
+import { ALL_PROJECTS, allProjects, exclusionPatterns, signatureProblems } from '../sources/transcripts-claude-code.mjs';
 // The same kind of cycle with curate.mjs, which imports expandHome from
 // here: the connectors check asks the round's own choice of launch mode
 // (chooseMode) and its own reading of a source that is off, so doctor and
@@ -793,6 +793,7 @@ const SOFT_EXITS = Object.freeze([EXIT.DEGRADED, EXIT.UNAVAILABLE, EXIT.TEMPFAIL
 const NO_MODEL_REASONS = Object.freeze(['up_to_date', 'nothing_to_curate']);
 const DEFAULT_TRANSCRIPTS_DIR = '~/.claude/projects';
 const INCLUDE_PROJECTS_KEY = 'sources.transcripts.include_projects';
+const TEAM_AUTHORIZATION_KEY = 'sources.calendar.team_authorization';
 const CURATE_COMMAND = 'brain-kit curate';
 const SCHEDULE_INSTALL_COMMAND = 'brain-kit schedule install';
 const SCHEDULE_UNINSTALL_COMMAND = 'brain-kit schedule uninstall';
@@ -954,10 +955,14 @@ function claudeIsolationFlags(ctx) {
 }
 
 // The transcripts source reads only the projects the configuration lists
-// (src/sources/transcripts-claude-code.mjs): an empty list, or one naming
-// directories that are not there, makes every round refuse or read less
-// than the person thinks. A listed project that cannot be read makes the
-// round exit 4; one that is missing is a warning in the round, and here.
+// (src/sources/transcripts-claude-code.mjs), or, with "all", every project
+// directory under the transcripts root that exclude_path_patterns leaves: an
+// empty list, one naming directories that are not there, or "all" over a
+// folder that holds none makes every round refuse or read less than the
+// person thinks. A listed project that cannot be read makes the round exit
+// 4; one that is missing is a warning in the round, and here. "all" is
+// counted as the source resolves it (allProjects), now: the next round
+// resolves it again, so the count is today's.
 function includeProjects(ctx) {
   const id = 'include-projects';
   const inputs = curateInputs(ctx, id);
@@ -971,10 +976,11 @@ function includeProjects(ctx) {
     return { id, status: 'ok', messageKey: 'doctor.include_projects.not_used', params: { file } };
   }
   const listed = config.sources?.transcripts?.include_projects;
-  const projects = [...new Set(Array.isArray(listed) ? listed.filter((p) => typeof p === 'string' && p !== '') : [])];
+  const all = listed === ALL_PROJECTS;
+  let projects = [...new Set(Array.isArray(listed) ? listed.filter((p) => typeof p === 'string' && p !== '') : [])];
   const configured = machineObject(ctx)?.transcripts_dir;
   const root = expandHome(typeof configured === 'string' && configured !== '' ? configured : DEFAULT_TRANSCRIPTS_DIR, ctx.env);
-  if (projects.length === 0) {
+  if (!all && projects.length === 0) {
     return { id, status: 'fail', messageKey: 'doctor.include_projects.empty', params: { file, key, root } };
   }
   if (!isDirectory(root)) {
@@ -985,6 +991,12 @@ function includeProjects(ctx) {
     names = new Set(readdirSync(root));
   } catch (error) {
     return { id, status: 'fail', messageKey: 'doctor.include_projects.root_unreadable', params: { root, error: error.code ?? error.message } };
+  }
+  if (all) {
+    projects = allProjects(root, [...names], exclusionPatterns(config));
+    if (projects.length === 0) {
+      return { id, status: 'fail', messageKey: 'doctor.include_projects.all_empty', params: { key, file, root } };
+    }
   }
   const missing = [];
   const unreadable = [];
@@ -1009,6 +1021,7 @@ function includeProjects(ctx) {
   if (missing.length > 0) {
     return { id, status: 'warn', messageKey: 'doctor.include_projects.some_missing', params: { projects: missing, root, file, key } };
   }
+  if (all) return { id, status: 'ok', messageKey: 'doctor.include_projects.all', params: { count: projects.length, root } };
   return { id, status: 'ok', messageKey: 'doctor.include_projects.ok', params: { count: projects.length, root } };
 }
 
@@ -1477,6 +1490,10 @@ function consentMessage(count) {
   return { messageKey: 'sources.calendar.other_calendars_without_consent', params: { count } };
 }
 
+function authorizationMessage(count) {
+  return { messageKey: 'sources.calendar.team_calendars_without_authorization', params: { count } };
+}
+
 // The lines the probe itself adds: that it launched nothing, and why; that
 // the CLI cannot be run; that it printed no init event; or that its init
 // event shows what would stop a round in connector mode (exit 1, whatever
@@ -1559,7 +1576,19 @@ function connectorsCheck(ctx) {
         results.push(stateLine(id, source, spec, seen, whenRound(roundDay(entry.at, tz)), severity(source)));
       }
     }
-    const consent = offProblems(source, config, ctx.now, tz).find((problem) => problem.code === 'other_calendars_without_consent');
+    // Other people's calendars a round leaves out (phase 5a task 4): with no
+    // recorded authorization this fails, naming the key, though the round
+    // still reads the owner's own calendars and never exits 4 for it; with
+    // no recorded consent it warns, as it always has.
+    const planned = offProblems(source, config, ctx.now, tz);
+    const authorization = planned.find((problem) => problem.code === 'team_calendars_without_authorization');
+    if (authorization !== undefined) {
+      results.push({
+        id, status: 'fail', messageKey: 'doctor.connectors.team_authorization',
+        params: { source: source.id, detail: authorizationMessage(authorization.detail), key: TEAM_AUTHORIZATION_KEY, file: CONFIG_FILENAME },
+      });
+    }
+    const consent = planned.find((problem) => problem.code === 'other_calendars_without_consent');
     if (consent !== undefined) {
       results.push({ id, status: 'warn', messageKey: 'doctor.connectors.consent', params: { source: source.id, detail: consentMessage(consent.detail) } });
     }

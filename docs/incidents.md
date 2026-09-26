@@ -753,10 +753,11 @@ owner does not see. An event that already has the owner among its attendees is
 skipped, and deduplication is by event id.
 **Where it lives in brain-kit.** `src/sources/calendar-google.mjs` (other people's
 calendars in `sources.calendar.team_calendars`, read only with
-`team_calendars_consent_noted: true`; events that already include the owner skipped;
+`team_calendars_consent_noted: true` and, since phase 5a, `team_authorization`, who
+authorised reading them and on which day; events that already include the owner skipped;
 deduplicated by event id), `brain-kit doctor` check `connectors` (calendars listed
-without the recorded consent), `test/incidents/2026-08-11-other-calendars-consent.test.mjs`
-(Phase 3).
+without the recorded consent, a warning, or without the recorded authorization, a
+failure), `test/incidents/2026-08-11-other-calendars-consent.test.mjs` (Phase 3).
 
 ### 21/08/2026: thirteen of sixteen attachments came back "not found"
 **What happened.** Of 16 minutes attached to the previous day's events, 13 returned

@@ -4,6 +4,7 @@ import { validateSchema } from './schema.mjs';
 import { KIT_ROOT } from './version.mjs';
 import { decodeBytes } from './io.mjs';
 import { unsafeRuleCharacters } from './curate/rule-path.mjs';
+import { isValidIsoDate } from './dates.mjs';
 
 export const CONFIG_FILENAME = 'brain-kit.config.json';
 export const MACHINE_FILENAME = 'machine.json';
@@ -53,7 +54,25 @@ export function validateConfig(config) {
     errors.push(`${where}: machine-only key is not allowed in the versioned config (it belongs in ${MACHINE_FILENAME})`);
   }
   errors.push(...confidentialFieldErrors(config));
+  errors.push(...teamAuthorizationErrors(config, errors));
   return errors;
+}
+
+// sources.calendar.team_authorization.at is the day the owner authorised
+// reading the team's calendars, and a round prints it as a fact ("team
+// calendars authorised by ... on DD/MM/YYYY"). The schema holds it to the
+// shape of a day, and a day that never happened (a 31st of February)
+// passes that shape, so it is refused here, by the calendar's own
+// arithmetic (src/dates.mjs). A value the schema already refuses is
+// reported once, by the schema.
+const TEAM_AUTHORIZATION_AT = '$.sources.calendar.team_authorization.at';
+
+function teamAuthorizationErrors(config, errors) {
+  const authorization = config?.sources?.calendar?.team_authorization;
+  if (authorization === null || typeof authorization !== 'object' || Array.isArray(authorization)) return [];
+  const { at } = authorization;
+  if (typeof at !== 'string' || errors.some((error) => error.startsWith(`${TEAM_AUTHORIZATION_AT}:`)) || isValidIsoDate(at)) return [];
+  return [`${TEAM_AUTHORIZATION_AT}: ${JSON.stringify(at)} is not a day that exists`];
 }
 
 // privacy.confidential_field names the frontmatter field the privacy rule

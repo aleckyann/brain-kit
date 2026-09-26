@@ -5,10 +5,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { machineValueErrors } from '../src/config.mjs';
 import { validateSource } from '../src/sources/index.mjs';
-import { transcriptsSource, DEFAULT_LIMITS, SAMPLE_BYTES } from '../src/sources/transcripts-claude-code.mjs';
+import { allProjects, exclusionPatterns, transcriptsSource, DEFAULT_LIMITS, SAMPLE_BYTES } from '../src/sources/transcripts-claude-code.mjs';
 import {
   FROM, TO, NOW, INSIDE, WEEKS_AGO, PROJECT, OTHER_PROJECT,
   assistant, customTitle, lastPrompt, makeWorld, mode, paths, system, toolResult, user, userBlocks,
@@ -75,6 +75,100 @@ test('a listed project that is missing is a problem; misconfigured only when eve
   const empty = none.collect();
   assert.equal(empty.misconfigured, true);
   assert.deepEqual(empty.problems.map((p) => p.code), ['project_missing', 'project_missing']);
+});
+
+// Phase 5a, task 4: include_projects "all", the owner's explicit choice of
+// every project directory under the transcripts directory, resolved at the
+// time of the round, still minus exclude_path_patterns.
+test('"all" reads every project directory under the transcripts directory at the time of the round, minus what exclude_path_patterns leaves out', () => {
+  const world = makeWorld({ include: 'all', exclude: ['/-tmp-', '--claude-worktrees-', 'skip-me'] });
+  const a = world.write(PROJECT, 'a.jsonl', [user('Ana asks about the plan', INSIDE)]);
+  const b = world.write(OTHER_PROJECT, 'b.jsonl', [user('Ana writes code', INSIDE)]);
+  world.write(OTHER_PROJECT, 'skip-me.jsonl', [user('a session a pattern names', INSIDE)]);
+  world.write('-tmp-scratch', 'c.jsonl', [user('a scratch session', INSIDE)]);
+  world.write(`${PROJECT}--claude-worktrees-agent-1`, 'd.jsonl', [user('a worktree session', INSIDE)]);
+  writeFileSync(join(world.root, 'stray.jsonl'), `${JSON.stringify(user('a file beside the projects', INSIDE))}\n`);
+  const plan = world.collect();
+  assert.deepEqual(paths(plan).sort(), [a, b].sort());
+  assert.deepEqual(plan.files.map((file) => file.project).sort(), [OTHER_PROJECT, PROJECT].sort());
+  assert.deepEqual(plan.problems, []);
+  assert.equal(plan.misconfigured, false);
+  assert.equal(plan.dropped.excludedPath, 1, 'the file a pattern names inside a project; a directory a pattern covers is no project at all');
+  // A project made after the configuration was written is read by the next round.
+  const e = world.write('-home-ana-new', 'e.jsonl', [user('a session in a new project', INSIDE)]);
+  assert.deepEqual(paths(world.collect()).sort(), [a, b, e].sort());
+});
+
+test('allProjects: the directories of a listing, sorted; a plain file is none; a pattern drops a directory only when it covers every path inside it', () => {
+  const world = makeWorld({ include: 'all' });
+  for (const dir of ['-b', '-a', '-tmp-x', '-c']) mkdirSync(join(world.root, dir));
+  writeFileSync(join(world.root, 'stray.jsonl'), '');
+  const names = ['-c', 'stray.jsonl', '-a', '-tmp-x', '-b'];
+  assert.deepEqual(allProjects(world.root, names, []), ['-a', '-b', '-c', '-tmp-x']);
+  assert.deepEqual(allProjects(world.root, names, ['/-tmp-']), ['-a', '-b', '-c']);
+  assert.deepEqual(allProjects(world.root, names, [`-b${sep}`]), ['-a', '-c', '-tmp-x'], 'a pattern ending with the separator names the directory');
+  assert.deepEqual(allProjects(world.root, names, [`-b${sep}a.jsonl`, 'a.jsonl']), ['-a', '-b', '-c', '-tmp-x'], 'a pattern naming a file inside leaves the directory');
+  assert.deepEqual(allProjects(world.root, ['-gone'], []), [], 'a name no longer there');
+  assert.deepEqual(exclusionPatterns({ sources: { transcripts: { exclude_path_patterns: ['/-tmp-', '', 7, null] } } }), ['/-tmp-'], 'an empty pattern would exclude everything');
+  assert.deepEqual(exclusionPatterns({ sources: { transcripts: { exclude_path_patterns: '/-tmp-' } } }), []);
+  assert.deepEqual(exclusionPatterns({}), []);
+});
+
+test('"all" with no project directory left is misconfigured and says so, naming the directory; a missing directory is still root_missing', () => {
+  const empty = makeWorld({ include: 'all' });
+  let plan = empty.collect();
+  assert.equal(plan.misconfigured, true);
+  assert.deepEqual(plan.problems, [{ code: 'all_empty', detail: empty.root }]);
+  assert.deepEqual(plan.files, []);
+  assert.ok(plan.promptBlock.includes(`sources.transcripts.include_projects is "all", but ${empty.root} holds no project directory today`), plan.promptBlock);
+  assert.doesNotMatch(plan.promptBlock, /No transcript has a message inside the window/);
+  const excluded = makeWorld({ include: 'all', exclude: ['-home-ana-'] });
+  excluded.write(PROJECT, 'a.jsonl', [user('Ana asks', INSIDE)]);
+  plan = excluded.collect();
+  assert.equal(plan.misconfigured, true);
+  assert.deepEqual(plan.problems.map((p) => p.code), ['all_empty']);
+  const gone = makeWorld({ include: 'all', missingRoot: true });
+  plan = gone.collect();
+  assert.equal(plan.misconfigured, true);
+  assert.deepEqual(plan.problems.map((p) => p.code), ['root_missing']);
+  const pt = makeWorld({ include: 'all', lang: 'pt-BR' }).collect();
+  assert.match(pt.promptBlock, /sources\.transcripts\.include_projects é "all", mas .* não tem hoje diretório de projeto nenhum/);
+});
+
+test('"all" with a project directory that cannot be listed names it and reads the others', { skip: process.getuid?.() === 0 ? 'root lists any directory' : false }, () => {
+  const world = makeWorld({ include: 'all' });
+  const kept = world.write(PROJECT, 'a.jsonl', [user('Ana asks', INSIDE)]);
+  world.write(OTHER_PROJECT, 'b.jsonl', [user('Ana codes', INSIDE)]);
+  const locked = join(world.root, OTHER_PROJECT);
+  chmodSync(locked, 0o000);
+  try {
+    const plan = world.collect();
+    assert.deepEqual(paths(plan), [kept]);
+    assert.deepEqual(plan.problems, [{ code: 'project_unreadable', detail: OTHER_PROJECT }]);
+    assert.equal(plan.misconfigured, false);
+    assert.match(plan.promptBlock, new RegExp(`The project ${OTHER_PROJECT} exists under .* but could not be listed`));
+  } finally {
+    chmodSync(locked, 0o755);
+  }
+});
+
+test('any value of include_projects but "all" or a list reads nothing; a list holding "all" names a directory called all', () => {
+  for (const include of ['ALL', 'everything', PROJECT, 42, null, { all: true }]) {
+    const world = makeWorld({ include });
+    world.write(PROJECT, 'a.jsonl', [user('Ana asks', INSIDE)]);
+    const plan = world.collect();
+    assert.deepEqual(plan.files, [], JSON.stringify(include));
+    assert.equal(plan.misconfigured, true, JSON.stringify(include));
+    assert.deepEqual(plan.problems.map((p) => p.code), ['no_projects'], JSON.stringify(include));
+  }
+  const listed = makeWorld({ include: ['all'] });
+  listed.write(PROJECT, 'a.jsonl', [user('Ana asks', INSIDE)]);
+  let plan = listed.collect();
+  assert.deepEqual(plan.files, []);
+  assert.deepEqual(plan.problems, [{ code: 'project_missing', detail: 'all' }]);
+  const inside = listed.write('all', 'b.jsonl', [user('a project called all', INSIDE)]);
+  plan = listed.collect();
+  assert.deepEqual(paths(plan), [inside]);
 });
 
 test('firstAt and lastAt are the earliest and latest message timestamps inside the window', () => {

@@ -19,6 +19,7 @@ import {
   BIN, CALENDAR_PREFIX, CALENDAR_TOOLS, CONNECTOR_TOOLS, connectorServers, dayStart, DRIVE_PREFIX, DRIVE_TOOLS, FAKE, listEvents, makeCurateWorld, note,
   PROJECT, searchNotes, STREAMS, utcDay, withConnectors,
 } from './helpers/curate-world.mjs';
+import { user } from './helpers/transcripts-world.mjs';
 
 const t = createTranslator('en');
 
@@ -1974,6 +1975,85 @@ test('a required connector source that is unavailable leaves the round exit 4 af
   assert.match(w.lastRun().reason, /calendar \(0\/1\)/);
   assert.equal(w.watermark(), null, 'no mark moves on exit 4');
   assert.equal(w.notifications().length, 1, 'the exit is announced; a required source\'s state change is not announced on its own');
+});
+
+// Phase 5a, task 4: include_projects "all" through a real round. A project
+// the configuration never names is offered, each session by its exact
+// path, and must be read; a directory a pattern covers is no project; "all"
+// over a folder that holds no project refuses before the model, naming the
+// setting, and no mark moves.
+test('include_projects "all": a round offers the sessions of every project directory, a covered one left out, and "all" over a folder with no project exits 1 naming the setting', () => {
+  const w = makeCurateWorld({ config: (c) => { c.sources.transcripts.include_projects = 'all'; c.sources.transcripts.exclude_path_patterns = ['/-tmp-']; } });
+  const noon = `${utcDay(-1)}T12:30:00.000Z`;
+  mkdirSync(join(w.projects, '-home-ana-code'));
+  const second = join(w.projects, '-home-ana-code', 'bbbbbbbb-1111-4222-8333-444444444444.jsonl');
+  writeFileSync(second, `${JSON.stringify(user('Ana fixed the build', noon))}\n`);
+  mkdirSync(join(w.projects, '-tmp-scratch'));
+  writeFileSync(join(w.projects, '-tmp-scratch', 'cccccccc-1111-4222-8333-444444444444.jsonl'), `${JSON.stringify(user('a scratch session', noon))}\n`);
+  const reads = [w.transcript, second].map((file_path) => ({ name: 'Read', input: { file_path, offset: 1 } }));
+  w.scenario({ actions: PROPOSE_NOTE(w), rewrite: { toolUses: reads } });
+  const r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  const prompt = readFileSync(w.files.stdinFile, 'utf8');
+  assert.ok(prompt.includes(w.transcript) && prompt.includes(second), 'both projects are offered');
+  assert.equal(prompt.includes('-tmp-scratch'), false, 'a directory a pattern covers is no project');
+  assert.deepEqual(w.lastRun().sources.transcripts, { kept: 2, read: 2, advanced: true, noTimestamp: 0 });
+  assert.deepEqual(w.watermark(), { transcripts: utcDay(-1) });
+
+  const empty = makeCurateWorld({ config: (c) => { c.sources.transcripts.include_projects = 'all'; } });
+  const bare = join(empty.base, 'bare-projects');
+  mkdirSync(bare);
+  empty.setMachine({ transcripts_dir: bare });
+  const re = empty.curate();
+  assert.equal(re.status, EXIT.FAILURE, re.stderr);
+  assert.match(re.stderr, /all_empty/);
+  assert.match(re.stderr, /sources\.transcripts\.include_projects/);
+  assert.equal(empty.watermark(), null);
+  assert.equal(traces(empty).model, false);
+});
+
+// Phase 5a, task 4: team calendars with no record of who authorised reading
+// them are left out of the round's parameters, which say so; the owner's
+// calendar is still offered, and its listing alone reads the source, so
+// even a required calendar never exits 4 for this alone. Recorded, the
+// parameters print the authorization and the team calendar must be read.
+test('team calendars without the recorded authorization: left out of the parameters, which say so; the owner\'s listing alone reads a required calendar, exit 0; recorded, the parameters print it and the team calendar must be read', () => {
+  const TEAM = 'team@example.com';
+  const required = (extra) => (c) => {
+    withConnectors({ meetingNotes: false })(c);
+    c.curate.sources.required = ['transcripts', 'calendar'];
+    c.curate.sources.best_effort = ['meeting_notes'];
+    c.sources.calendar.team_calendars = [TEAM];
+    c.sources.calendar.team_calendars_consent_noted = true;
+    extra(c);
+  };
+  const y = utcDay(-1);
+  const owner = listEvents(dayStart(y), dayStart(utcDay(0)));
+  const w = makeCurateWorld({ config: required(() => {}) });
+  w.scenario({ actions: PROPOSE_NOTE(w), rewrite: connectorRewrite(w, { uses: [owner], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=empty' }) });
+  const r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.deepEqual(w.watermark(), { transcripts: y, calendar: y });
+  const prompt = readFileSync(w.files.stdinFile, 'utf8');
+  assert.match(prompt, /Source calendar:\n[^]*Calendars ignored in sources\.calendar\.team_calendars: 1\. Someone else's calendar is read only when sources\.calendar\.team_authorization records who authorised reading the team's calendars and on which day/);
+  assert.ok(prompt.includes(JSON.stringify(owner.input)), 'the owner\'s calendar is still offered');
+  assert.equal(prompt.includes(TEAM), false, 'the team calendar never reaches the prompt');
+  assert.doesNotMatch(prompt, /authorised by/);
+  const last = w.lastRun();
+  assert.equal(last.sources.calendar.read, 1);
+  assert.equal(last.sources.calendar.expected, 1);
+  assert.ok(last.warnings.some((line) => line.includes('source calendar: team_calendars_without_authorization (1)')), JSON.stringify(last.warnings));
+  assert.match(r.stderr, /source calendar: team_calendars_without_authorization \(1\)/);
+
+  const a = makeCurateWorld({ config: required((c) => { c.sources.calendar.team_authorization = { by: 'human:ana', at: '2026-09-04' }; }) });
+  a.scenario({ actions: PROPOSE_NOTE(a), rewrite: connectorRewrite(a, { uses: [owner], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=empty' }) });
+  const ra = a.curate();
+  const authorised = readFileSync(a.files.stdinFile, 'utf8');
+  assert.match(authorised, /\nTeam calendars authorised by human:ana on 04\/09\/2026\.\n/);
+  assert.ok(authorised.includes(JSON.stringify(listEvents(dayStart(y), dayStart(utcDay(0)), { calendarId: TEAM }).input)), 'the team calendar is offered with its exact inputs');
+  assert.doesNotMatch(authorised, /team_calendars_without_authorization|sources\.calendar\.team_authorization records/);
+  assert.equal(ra.status, EXIT.SOURCE_UNREAD, 'planned, the team calendar must be read: the owner\'s listing alone no longer reads the source');
+  assert.match(a.lastRun().reason, /calendar \(1\/2\)/);
 });
 
 test('when what is left after the connectors is a transcripts plan with nothing in it, no model runs again: the transcripts advance as an empty window does, the calendar\'s day stays open, exit 0', () => {

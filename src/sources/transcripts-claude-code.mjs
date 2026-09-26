@@ -62,9 +62,20 @@
 // messages and are skipped. Only the `.jsonl` files directly inside a
 // listed project directory are sessions; subdirectories (subagent
 // transcripts) are not walked.
+//
+// Which project directories: the names `sources.transcripts.include_projects`
+// lists, by exact name, or, when it is the string "all" (phase 5a task 4:
+// the owner's explicit choice, and the configuration is that confirmation),
+// every directory under the transcripts root at the time of the round,
+// minus each one an `exclude_path_patterns` pattern excludes whole
+// (allProjects, which doctor's include-projects asks too). A list holding
+// "all" names a directory called "all", nothing more. "all" that finds no
+// directory reads nothing and says so (`all_empty`), and the round refuses,
+// as it does for a list none of whose projects is there, rather than close
+// a day nobody read. Any other value lists no project (`no_projects`).
 import * as fs from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { createTranslator } from '../lang.mjs';
 import { addDays, localDay, startOfDay } from '../guards/watermark.mjs';
@@ -73,6 +84,8 @@ import { unsafeRuleCharacters } from '../curate/rule-path.mjs';
 export const SAMPLE_BYTES = 64 * 1024;
 export const MTIME_SLACK_MS = 15 * 60 * 1000;
 export const DEFAULT_LIMITS = Object.freeze({ chunkBytes: 256 * 1024, maxLineChars: 32 * 1024 * 1024 });
+// The one value of include_projects that is not a list.
+export const ALL_PROJECTS = 'all';
 
 const MESSAGE_TYPES = new Set(['user', 'assistant', 'system', 'attachment']);
 
@@ -98,6 +111,29 @@ function listDir(path, options) {
   } catch {
     return null;
   }
+}
+
+// The exclude_path_patterns a round applies: the non-empty strings (an empty
+// one is a substring of every path, and would exclude every file).
+export function exclusionPatterns(config) {
+  const patterns = config?.sources?.transcripts?.exclude_path_patterns;
+  return Array.isArray(patterns) ? patterns.filter((p) => typeof p === 'string' && p !== '') : [];
+}
+
+// The project directories "all" stands for: of `names`, the listing of
+// `root`, each one that is a directory and that no pattern excludes whole,
+// sorted. A pattern excludes a directory whole when it is found in the
+// directory's path followed by the separator, the start of the path of
+// every transcript inside it; so no directory is left out here whose
+// transcripts the per-file exclusion would have kept, and one a pattern
+// such as "/-tmp-" or "--claude-worktrees-" covers is no project at all.
+export function allProjects(root, names, patterns) {
+  return names
+    .filter((name) => {
+      const dir = join(root, name);
+      return isDirectory(dir) && !patterns.some((pattern) => `${dir}${sep}`.includes(pattern));
+    })
+    .sort();
 }
 
 // The text of a user line's content, or null when it has none: a string
@@ -269,6 +305,7 @@ export function sessionId(fileName) {
 
 function problemLine(t, problem, root) {
   if (problem.code === 'no_projects') return t('sources.transcripts.problem_no_projects');
+  if (problem.code === 'all_empty') return t('sources.transcripts.problem_all_empty', { root });
   if (problem.code === 'root_missing') return t('sources.transcripts.problem_root_missing', { root });
   if (problem.code === 'root_unreadable') return t('sources.transcripts.problem_root_unreadable', { root });
   if (problem.code === 'project_unreadable') return t('sources.transcripts.problem_project_unreadable', { project: problem.detail, root });
@@ -348,8 +385,9 @@ function daysOf(window, config) {
 function collect({ window, config, machine, home = homedir(), io = fs, limits = DEFAULT_LIMITS }) {
   const settings = config?.sources?.transcripts ?? {};
   const root = expandHome(machine?.transcripts_dir ?? join('~', '.claude', 'projects'), home);
-  const projects = [...new Set(settings.include_projects ?? [])];
-  const patterns = (settings.exclude_path_patterns ?? []).filter((p) => typeof p === 'string' && p !== '');
+  const all = settings.include_projects === ALL_PROJECTS;
+  const named = Array.isArray(settings.include_projects) ? [...new Set(settings.include_projects)] : [];
+  const patterns = exclusionPatterns(config);
   const capValue = config?.curate?.caps?.transcripts;
   const cap = Number.isInteger(capValue) && capValue >= 0 ? capValue : Infinity;
   const signatures = signaturesOf(config);
@@ -361,10 +399,13 @@ function collect({ window, config, machine, home = homedir(), io = fs, limits = 
   const starts = days.map((d) => d.start);
 
   const rootExists = isDirectory(root);
-  const names = projects.length && rootExists ? listDir(root) : null;
-  if (projects.length === 0) problems.push({ code: 'no_projects', detail: '' });
+  const names = (all || named.length > 0) && rootExists ? listDir(root) : null;
+  if (!all && named.length === 0) problems.push({ code: 'no_projects', detail: '' });
   else if (!rootExists) problems.push({ code: 'root_missing', detail: root });
   else if (names === null) problems.push({ code: 'root_unreadable', detail: root });
+  // "all" is resolved here, at the time of the round.
+  const projects = all && names !== null ? allProjects(root, names, patterns) : named;
+  if (all && names !== null && projects.length === 0) problems.push({ code: 'all_empty', detail: root });
 
   const present = [];
   if (names !== null) {

@@ -160,9 +160,23 @@ without a tool the source needs turns that source off, and only that source, wit
 problem named by the round and by `doctor`; the rest of the vault keeps working.
 
 **Someone else's calendar.** A calendar in `sources.calendar.team_calendars` is read only
-when `team_calendars_consent_noted` is `true`, which records that the people whose calendar
-it is have agreed. Without it, the round leaves those calendars out and says how many. See
-"Privacy" below.
+when the configuration records two things. `team_authorization` says who authorised reading
+the team's calendars and on which day:
+
+```json
+"team_authorization": { "by": "human:ana", "at": "2026-09-01" }
+```
+
+`by` is a person, written `human:<handle>`, and `at` is a day that exists, YYYY-MM-DD; any
+other shape is refused as configuration. `team_calendars_consent_noted: true` records that
+the people whose calendars they are have agreed. Without either, the round leaves every team
+calendar out, reads your own calendars as usual, and its parameters say how many were left
+out and which record is missing; a calendar left out is never one the round has to read, so
+this alone never makes a round exit 4, even with the calendar in `curate.sources.required`.
+`brain-kit doctor` (check `connectors`) fails while team calendars are listed with no
+authorization, naming `sources.calendar.team_authorization`, and warns while consent is not
+recorded. With both, the round's parameters print "Team calendars authorised by human:ana on
+01/09/2026" beside the calendars it lists. See "Privacy" below.
 
 **The rituals table.** The `seed-rituals` skill, which fills the weekly rhythm table from
 your calendar in your own interactive session, reads an empty `calendars` list as
@@ -316,8 +330,10 @@ The policy is written for any profession and any life:
   errands) is ever written, not even as a mention.
 - The event-type filter is part of the evidence, so an out-of-office entry never reaches
   the model at all.
-- Someone else's calendar is read only with `team_calendars_consent_noted: true`. Set it
-  only after those people have agreed: it is the vault's record of their consent.
+- Someone else's calendar is read only with `team_calendars_consent_noted: true` and a
+  `team_authorization`. Set the first only after those people have agreed: it is the vault's
+  record of their consent. Set the second only once reading the team's calendars has been
+  authorised: it records who authorised it and on which day.
 - `lint` refuses a line a change adds that holds one of the terms in
   `privacy.third_party_keywords` (a list per language pack, about health and private life),
   so a pull request that writes one is refused before it is published. `brain-kit doctor`
