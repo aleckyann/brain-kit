@@ -2,7 +2,34 @@
 
 ## Unreleased
 
-Nothing below is on npm yet. It runs from a clone of the repository.
+### Known gaps found while moving the reference vault onto the kit (26/09/2026)
+
+- `machine register` rebinds a vault that moved; it cannot create the state of an
+  already adopted vault on a machine that never had it (a second clone, a new machine),
+  and `init --adopt` refuses an adopted vault. Until then, `machine.json` is written by
+  hand in the kit's format.
+- The kit ships no CI workflow template for a vault, which the approved design lists.
+- A custom briefing block's `read` accepts files only; the global `briefing.read` accepts
+  folders.
+- The `today_calendar` block names the calendar tools by the CLI's prefix; the desktop
+  app names them differently, so the block skips itself there. A custom block that names
+  the tool by its suffix (`list_events`) works around it.
+- The `strategy` block reads every note the index links under a matching title, not only
+  the most recent one.
+- The privacy rule's structural clauses (a link into a confidential folder, a confidential
+  mark outside one) judge the whole vault in every base, so a vault with such links from
+  before cannot keep a narrow confidential boundary; a vault that is private as a whole
+  can declare `confidential_dirs: ["."]`.
+- `curate.promotion_map` and the `hooks.*` keys are read by no code.
+- The calendar source asks for `DEFAULT` events only, so focus blocks never reach a round.
+- `verify` refuses in a checkout whose local git identity is the agent's.
+- A pre-release version (`0.1.0-rc.1`) breaks the hooks' vault sentinel, which accepts
+  `x.y.z` only.
+
+## 0.0.2 (tagged `v0.0.2` on 26/09/2026, not on npm)
+
+The version the reference vault installs, from the tag (see the README, "Installing a
+fixed version"). It holds every phase below, 1 to 5a.
 
 ### Phase 1, slice 1A: the validator
 

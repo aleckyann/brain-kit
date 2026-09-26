@@ -10,7 +10,10 @@
 > complete: the morning briefing (`preflight`, `questions`, the `briefing` skill and its
 > desktop task). Phase 5a adds what a vault moving from scripts of its own needs:
 > `watermark import`, a bridge to a legacy `flock` lock, and rounds with no cost, turn or
-> time limit when the configuration asks for none. The package on npm is still the Phase 0 skeleton.
+> time limit when the configuration asks for none. Phase 5 is in progress: the reference vault
+> this kit was extracted from now runs its configuration, CI, push gate and Stop hook from
+> the kit, and its scheduled curator switches over after a three-day shadow. The tag
+> `v0.0.2` is the version it installs; the package on npm is still the Phase 0 skeleton.
 > Follow the repository for the first usable release.
 
 A second brain in plain markdown, in the Open Knowledge Format (OKF) v0.2, kept by an
@@ -238,6 +241,27 @@ when the task's working directory is a project listed in
 `sources.transcripts.include_projects`. After the first scheduled run, `brain-kit curate
 --dry` shows the transcripts plan and how many sessions it left out as the kit's own.
 
+## Installing a fixed version
+
+A vault you depend on should run a fixed version of the kit, not whatever the default
+branch holds today. The tag `v0.0.2` is the first such version. `npm i -g
+github:aleckyann/brain-kit#v0.0.2` installs it where npm may fetch git packages; where
+it may not (npm refuses with `EALLOWGIT`), pack the tag yourself, install the tarball,
+and keep the unpacked copy for the plugin:
+
+```bash
+git clone https://github.com/aleckyann/brain-kit.git
+mkdir -p ~/.local/share/brain-kit/v0.0.2
+git -C brain-kit archive v0.0.2 | tar -x -C ~/.local/share/brain-kit/v0.0.2
+cd ~/.local/share/brain-kit/v0.0.2 && npm pack && npm i -g ./second-brain-kit-0.0.2.tgz
+claude plugin marketplace add ~/.local/share/brain-kit/v0.0.2
+claude plugin install brain-kit@brain-kit --scope user
+```
+
+`claude plugin marketplace add aleckyann/brain-kit` follows the repository's default
+branch instead. A vault's CI can pin the kit the same way, checking it out at the tag's
+commit next to the vault.
+
 ## The Claude Code plugin
 
 Load it from a clone with `claude --plugin-dir path/to/brain-kit`, or install it from the
@@ -268,7 +292,7 @@ marketplace. Inside a vault:
 | 2 | Scheduled curator over local transcripts, scheduler templates | done |
 | 3 | Calendar and meeting-notes sources (best effort by design) | done |
 | 4 | Morning briefing | done |
-| 5 | Migration of the original vault onto the kit | planned |
+| 5 | Migration of the original vault onto the kit (5a, what a migrating vault needs: done, tagged `v0.0.2`) | in progress |
 | 6 | 0.1.0 release | planned |
 | 7 | Other forges, other harnesses, more sources, each only when a second real case needs it | planned |
 

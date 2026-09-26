@@ -11,8 +11,11 @@
 > concluída: o briefing matinal (`preflight`, `questions`, a skill `briefing` e a tarefa dela
 > no aplicativo para desktop). A fase 5a traz o que um vault que sai de scripts próprios
 > precisa: o `watermark import`, uma ponte para uma trava `flock` legada e rodadas sem teto
-> de custo, de turnos ou de tempo quando a configuração não pede nenhum. O pacote no npm ainda é o esqueleto da
-> fase 0. Acompanhe o repositório para a primeira versão usável.
+> de custo, de turnos ou de tempo quando a configuração não pede nenhum. A fase 5 está em
+> andamento: o vault de referência de onde este kit saiu já roda a configuração, o CI, o
+> gate de push e o hook Stop pelo kit, e o curador agendado dele troca depois de três dias
+> de shadow. A tag `v0.0.2` é a versão que ele instala; o pacote no npm ainda é o esqueleto
+> da fase 0. Acompanhe o repositório para a primeira versão usável.
 
 Um segundo cérebro em markdown puro, no Open Knowledge Format (OKF) v0.2, mantido por um
 agente de IA que o lê por um índice, o alimenta todo dia a partir do seu próprio trabalho
@@ -246,6 +249,27 @@ só quando o diretório de trabalho da tarefa é um projeto listado em
 curate --dry` mostra o plano das transcrições e quantas sessões ele deixou de fora como do
 próprio kit.
 
+## Instalando uma versão fixa
+
+Um vault do qual você depende deve rodar uma versão fixa do kit, e não o que o branch
+padrão tiver hoje. A tag `v0.0.2` é a primeira. `npm i -g github:aleckyann/brain-kit#v0.0.2`
+a instala onde o npm pode baixar pacotes de git; onde não pode (o npm recusa com
+`EALLOWGIT`), empacote a tag você mesmo, instale o tarball e guarde a cópia
+desempacotada para o plugin:
+
+```bash
+git clone https://github.com/aleckyann/brain-kit.git
+mkdir -p ~/.local/share/brain-kit/v0.0.2
+git -C brain-kit archive v0.0.2 | tar -x -C ~/.local/share/brain-kit/v0.0.2
+cd ~/.local/share/brain-kit/v0.0.2 && npm pack && npm i -g ./second-brain-kit-0.0.2.tgz
+claude plugin marketplace add ~/.local/share/brain-kit/v0.0.2
+claude plugin install brain-kit@brain-kit --scope user
+```
+
+`claude plugin marketplace add aleckyann/brain-kit` segue o branch padrão do repositório.
+O CI de um vault pode fixar o kit do mesmo jeito, baixando-o no commit da tag ao lado do
+vault.
+
 ## O plugin do Claude Code
 
 Carregue a partir de um clone com `claude --plugin-dir caminho/do/brain-kit`, ou instale
@@ -276,7 +300,7 @@ A pasta `evals/` traz um caso de `claude plugin eval` por skill e idioma; veja
 | 2 | Curador agendado sobre transcripts locais, templates de agendamento | concluída |
 | 3 | Fontes de agenda e notas de reunião (best effort por desenho) | concluída |
 | 4 | Briefing matinal | concluída |
-| 5 | Migração do vault original para o kit | planejada |
+| 5 | Migração do vault original para o kit (5a, o que um vault em migração precisa: concluída, tag `v0.0.2`) | em andamento |
 | 6 | Publicação 0.1.0 | planejada |
 | 7 | Outras forjas, outros harnesses, mais fontes, cada um só quando um segundo caso real precisar | planejada |
 
