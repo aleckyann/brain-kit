@@ -800,20 +800,25 @@ test('machine.json lands in the state directory with mode 0600, the directory wi
   const machine = JSON.parse(readFileSync(machinePath, 'utf8'));
   assert.deepEqual(validateMachine(machine), []);
   assert.equal(machine.canonical_path, realpathSync(vault));
-  assert.equal(machine.state_dir, state);
+  // init records the state directory by its real path, as it records the
+  // vault: through a directory above it that is a link (every temporary
+  // directory on macOS is one), BRAIN_KIT_STATE_DIR as given is not it.
+  const realState = realpathSync(state);
+  assert.equal(machine.state_dir, realState);
   assert.match(machine.vault_id, /^vault-[0-9a-f]{8}$/);
   // The lock and the snapshot live in the repository, not here, and
   // machine.json names neither (src/guards/location.mjs).
   assert.equal('lock' in machine.paths, false);
   assert.equal('snapshot' in machine.paths, false);
   assert.deepEqual(Object.keys(machine.paths).sort(), ['last_run', 'log_dir', 'questions_log', 'watermark']);
-  assert.equal(machine.paths.log_dir, join(state, 'logs'));
+  assert.equal(machine.paths.log_dir, join(realState, 'logs'));
   assert.equal(typeof machine.claude_bin, 'string');
   assert.ok(machine.claude_bin.length > 0);
   // The versioned configuration carries none of it.
   const configText = readFileSync(join(vault, CONFIG_FILENAME), 'utf8');
   assert.deepEqual(findMachineOnlyKeys(JSON.parse(configText)), []);
   assert.equal(configText.includes(state), false);
+  assert.equal(configText.includes(realState), false);
 });
 
 test('claude_bin resolves from PATH to an absolute executable, or is the literal claude when absent', () => {
@@ -862,7 +867,11 @@ for (const [validateCode, lintCode, expected] of [[1, 0, 1], [0, 1, 1], [0, 3, 3
     };
     const r = await initDirect([vault, '--from-answers', file], { env: testEnv(state), checks });
     assert.equal(r.code, expected, r.stdout + r.stderr);
-    assert.deepEqual(calls, [['validate', vault], ['lint', vault, '--base', 'all']]);
+    // Both run on the vault init made, by its real path: init resolves the
+    // target before it writes a byte (on macOS the temporary directory is
+    // reached through /var, a link to /private/var).
+    const real = realpathSync(vault);
+    assert.deepEqual(calls, [['validate', real], ['lint', real, '--base', 'all']]);
   });
 }
 

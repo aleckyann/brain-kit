@@ -5,7 +5,7 @@
 // directory; the person's own ~/.claude is never read.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { blockingMessage, mirrorUserRules, userSettingsFiles } from '../src/curate/user-rules.mjs';
 import { KIT_SUBCOMMANDS } from '../src/curate/tools.mjs';
@@ -305,7 +305,12 @@ test('a path scope whose tail could climb out of its literal prefix is judged by
 });
 
 test('a vault, a home or a folder reached through a link is judged by where the link leads too (review M1)', () => {
-  const root = makeTempDir('brain-kit-user-rules-links-');
+  // By its real path, so that `real` below is where the links lead and no
+  // link sits above it: on macOS the temporary directory itself is reached
+  // through one (/var leads to /private/var), and a rule naming `real` as
+  // spelt there would name the vault through a link, the case this test
+  // sets apart below.
+  const root = realpathSync(makeTempDir('brain-kit-user-rules-links-'));
   const real = join(root, 'data', 'vault');
   mkdirSync(join(real, 'notes'), { recursive: true });
   mkdirSync(join(root, 'data', 'vault2'), { recursive: true });

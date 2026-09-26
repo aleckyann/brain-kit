@@ -41,7 +41,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
-  chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync,
+  chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
@@ -1393,7 +1394,10 @@ test('--install-hook in a vault below the top of its repository, or where core.h
   const before = snapshot(nested.vault);
   const r = update(nested, ['--install-hook']);
   assert.equal(r.status, EXIT.FAILURE, r.stdout + r.stderr);
-  assert.ok(r.stderr.includes(T('gate.not_top_level', { dir: nested.vault, top: nested.base, line: GATE_LINE })), r.stderr);
+  // The top is the one git prints, its real path (on macOS the temporary
+  // directory is reached through /var, a link to /private/var); the vault
+  // is named as it was reached.
+  assert.ok(r.stderr.includes(T('gate.not_top_level', { dir: nested.vault, top: realpathSync(nested.base), line: GATE_LINE })), r.stderr);
   assert.deepEqual(snapshot(nested.vault), before);
   assert.deepEqual(readFileSync(join(nested.base, '.git', 'config')), outerConfig);
 
