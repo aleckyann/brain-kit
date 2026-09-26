@@ -447,7 +447,7 @@ test('watermark writes take the vault lock: a live holder postpones with 75 and 
   const root = vaultRepo();
   const state = stateDir();
   setWatermark(state, 'transcripts', '2026-09-20');
-  const lock = acquireLock(root, { command: 'curate', env: CLEAN_ENV });
+  const lock = acquireLock(root, { command: 'curate', env: { ...CLEAN_ENV, BRAIN_KIT_STATE_DIR: state } });
   try {
     for (const argv of [['set', 'transcripts', '2026-09-22'], ['reopen', 'transcripts', '2026-09-18'], ['assume-covered', 'transcripts']]) {
       const r = await run(root, argv, { state });

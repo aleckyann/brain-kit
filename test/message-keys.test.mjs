@@ -170,6 +170,8 @@ function allSites() {
     ...extractRuleMessageSites(readSrc('src/init/gate.mjs'), 'src/init/gate.mjs'),
     ...extractRuleMessageSites(readSrc('src/guards/location.mjs'), 'src/guards/location.mjs'),
     ...extractRuleMessageSites(readSrc('src/guards/lock.mjs'), 'src/guards/lock.mjs'),
+    // Phase 5a, task 2: the bridge to a legacy lock's refusals.
+    ...extractRuleMessageSites(readSrc('src/guards/legacy-lock.mjs'), 'src/guards/legacy-lock.mjs'),
     ...extractRuleMessageSites(readSrc('src/guards/snapshot.mjs'), 'src/guards/snapshot.mjs'),
     // Phase 2's guards whose results carry { messageKey, params } for the
     // round (and doctor) to render.

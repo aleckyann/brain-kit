@@ -21,6 +21,12 @@
 //       a holder provably dead by the lock's own staleness rule is no
 //       writer: the ladder goes on, and a block names the stale lock
 //       (the hook never reclaims or deletes it)
+//   8b. the legacy lock is held                   release (the legacy job, or
+//       any writer holding the file machine.json paths.legacy_lock names,
+//       probed without waiting with a shared lock released at once,
+//       src/guards/legacy-lock.mjs); a bridge that cannot be used proves
+//       no writer: the ladder goes on, and a block names the problem,
+//       which `propose` would refuse on too
 //    9. no snapshot of this tree for THIS session every dirty path is the session's
 //   10. nothing dirty since the snapshot          release (paths under
 //       .claude/worktrees/, Claude Code's agent worktrees, never count,
@@ -38,6 +44,7 @@ import { lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { canonicalPathMatches, loadMachine, MACHINE_FILENAME } from '../config.mjs';
 import { describeLock, isLockHolderStale } from '../guards/lock.mjs';
+import { probeLegacyLock } from '../guards/legacy-lock.mjs';
 import { locateRepository } from '../guards/location.mjs';
 import { readSnapshot, splitDirty } from '../guards/snapshot.mjs';
 import { branchesOf, pinnedEntries, proposedMatch, readLedger } from '../guards/proposed.mjs';
@@ -128,6 +135,11 @@ export function runStop(stdinText, env = process.env) {
       if (holder.pid === null) return release(t('hook.stop.release_lock_unreadable'));
       return release(t('hook.stop.release_lock_held', { command: String(holder.command), pid: holder.pid }));
     }
+    // loadMachine refused anything but an absolute path or null here.
+    const legacyFile = typeof machine.paths?.legacy_lock === 'string' ? machine.paths.legacy_lock : null;
+    const legacy = legacyFile === null ? null : probeLegacyLock(legacyFile, { env });
+    if (legacy !== null && legacy.state === 'held') return release(t('hook.stop.release_legacy_held', { lock: legacyFile }));
+    const legacyProblem = legacy !== null && legacy.state === 'unusable' ? t(legacy.messageKey, legacy.params) : null;
     let snapshot = null;
     try {
       snapshot = readSnapshot(root, { env });
@@ -149,8 +161,10 @@ export function runStop(stdinText, env = process.env) {
       if (proposed.names.size === 0) return release(t('hook.stop.release_clean', { count: before.length }), note);
       return release(t('hook.stop.release_proposed', { count: proposed.names.size, branches: proposed.branches, inherited: before.length }), note);
     }
-    const reason = blockReason(t, since, before.length, trust, proposed);
-    return block(staleLock ? `${reason}\n${t('hook.stop.block_stale_lock', { command: String(holder.command), pid: holder.pid })}` : reason, note);
+    const lines = [blockReason(t, since, before.length, trust, proposed)];
+    if (staleLock) lines.push(t('hook.stop.block_stale_lock', { command: String(holder.command), pid: holder.pid }));
+    if (legacyProblem !== null) lines.push(legacyProblem);
+    return block(lines.join('\n'), note);
   } catch (error) {
     return block(t('hook.stop.block_failed', { detail: detailOf(error, t) }));
   }

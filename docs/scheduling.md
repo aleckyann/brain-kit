@@ -45,7 +45,8 @@ once broke a real routine.
    connector mode, and the full command line of the model, reading the configuration as it
    is in the working tree now, unsynced. It takes no lock and writes nothing.
 3. **The vault lock.** Another writer holds it (a `propose` of yours, another round): exit
-   75 naming the holder.
+   75 naming the holder. With `paths.legacy_lock` set, the legacy lock too
+   ([below](#moving-from-a-legacy-lock)): held, exit 75 naming the file; unusable, exit 1.
 4. **The network.** The round waits for a connection, up to two minutes, by running
    `machine.network_check` or, when that is unset, by opening a connection to the model's
    endpoint. None: exit 69. A check that answers in under 100 milliseconds
@@ -264,6 +265,39 @@ What counts as read has limits, by design:
   track: a file the model wrote into a path the vault's `.gitignore` ignores is not
   reported.
 
+## Moving from a legacy lock
+
+A vault that already runs scripts of its own often has a scheduled job that holds an
+exclusive `flock` on one file for its whole run (`exec 9>>/path/to/file; flock -n 9`), and
+a Stop hook that stands down while it does. While that job and the kit's rounds are both
+installed, point the kit at the same file:
+
+```bash
+brain-kit machine set paths.legacy_lock /absolute/path/to/the/legacy.lock
+brain-kit doctor --only legacy-lock
+```
+
+From then on every command that takes the vault lock (a round, `propose`, `sync`,
+`verify`, and the writing subcommands of `watermark` and `questions`) also holds an
+exclusive flock on that file for as long as it holds the vault lock, taken without
+waiting. While the legacy job holds it, the command is postponed exactly as for a held
+vault lock: exit 75, naming the file. While the command holds it, the legacy job's own
+`flock -n` fails, as it does against a run of its own. The kernel lets go of it when the command
+ends, however it ends. The kit creates the file when it is not there, as `flock` does,
+and never writes or deletes it. The `propose` a round's model runs joins the round and
+does not take the lock a second time. The kit's Stop hook stands down while another
+process holds it.
+
+The bridge needs Linux and util-linux `flock` on the `PATH` the command runs with. One
+that cannot be used (not Linux, no `flock`, the file's directory missing) refuses every
+writer with exit 1 until you fix it or turn it off, and `brain-kit doctor` says which.
+`machine set` and `machine register` never take the legacy lock, so turning it off always
+works; do it once the legacy job is uninstalled:
+
+```bash
+brain-kit machine set paths.legacy_lock null
+```
+
 ## Exit codes, and what to do for each
 
 | Exit | Meaning | What to do |
@@ -274,7 +308,7 @@ What counts as read has limits, by design:
 | 3 | Proposed, but the pull request is not open | The commit and branch are pushed; from the vault, run the `gh pr create --head <branch> --fill` the reason names (check `gh auth status`). The mark advanced. |
 | 4 | A required source was not read | Only a source in `curate.sources.required` sets it; a best-effort one never does. The reason says which. A file that cannot be read (`source_unreadable`): fix its permissions, or add a pattern for it to `sources.transcripts.exclude_path_patterns`; `brain-kit watermark assume-covered` skips its days once you have looked. A first day over the cap (`cap_exceeded`): raise `curate.caps.transcripts` or exclude some projects. Otherwise `last-run.json` says how many files of how many were read, or that the model's last line did not report the source. The day stays open and the next round reads it. |
 | 69 | No network, or the model unavailable | Usually passes on its own at the next window. An authentication error means your Claude Code login expired: log in again. |
-| 75 | Postponed | Another writer holds the lock, or the tree is dirty (the files are listed). Commit, propose or discard them; the next window retries. A tree that stays dirty stops every round, so do not let it sit. |
+| 75 | Postponed | Another writer holds the vault lock or the legacy lock, or the tree is dirty (the files are listed). Commit, propose or discard them; the next window retries. A tree that stays dirty stops every round, so do not let it sit. |
 
 ## Reading last-run.json and the logs
 

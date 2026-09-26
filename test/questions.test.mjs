@@ -528,7 +528,7 @@ test('questions writes take the vault lock: a live holder postpones every write 
   const q = record('Locked?', { createdOn: '2026-08-01' });
   seed(state, [q]);
   const before = readFileSync(logOf(state));
-  const lock = acquireLock(root, { command: 'curate', env: CLEAN_ENV });
+  const lock = acquireLock(root, { command: 'curate', env: { ...CLEAN_ENV, BRAIN_KIT_STATE_DIR: state } });
   try {
     for (const argv of [['add', 'Another?'], ['answer', q.id], ['archive', q.id], ['sweep']]) {
       const r = await run(root, argv, { state });
@@ -605,7 +605,7 @@ test('writers that joined a round\'s vault lock are serialised by the queue lock
   const state = stateDir();
   const home = makeTempDir('brain-kit-questions-home-');
   const texts = Array.from({ length: 12 }, (_, i) => `Joined question ${i}?`);
-  const lock = acquireLock(root, { command: 'curate', env: CLEAN_ENV });
+  const lock = acquireLock(root, { command: 'curate', env: { ...CLEAN_ENV, BRAIN_KIT_STATE_DIR: state } });
   let results;
   try {
     const env = { ...CLEAN_ENV, BRAIN_KIT_STATE_DIR: state, HOME: home, BRAIN_KIT_LANG: 'en', BRAIN_KIT_ROUND_TOKEN: lock.token };

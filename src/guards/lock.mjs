@@ -108,6 +108,18 @@
 // those that name no one (killed before their first byte) or belong to a
 // snapshot, or are a round record's temporary file or guard (never the
 // record itself), once they are an hour old: no live write takes that long.
+//
+// THE LEGACY LOCK. When the vault's machine.json sets `paths.legacy_lock`,
+// acquireLock also takes an exclusive kernel flock(2) on that file, without
+// waiting, right after the vault lock, and its release lets go of both
+// (src/guards/legacy-lock.mjs is the bridge, and says how a Node process
+// holds a flock). Taking it is the last step of every acquire, so a legacy
+// lock someone else holds, or a bridge that cannot be used, releases the
+// vault lock this acquire had just placed and throws: LegacyLockHeld, exit
+// 75, as a held vault lock is, or a refusal, exit 1. The vault lock is taken
+// first so that a writer of the kit holding both is named by its holder,
+// never reported as "the legacy lock is held". A joined command
+// (joinOrAcquire) takes neither: the round it joins holds both.
 import {
   closeSync, constants, fstatSync, linkSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, unlinkSync, writeSync,
 } from 'node:fs';
@@ -115,6 +127,7 @@ import { randomBytes } from 'node:crypto';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { EXIT } from '../exit-codes.mjs';
+import { takeBridge } from './legacy-lock.mjs';
 import { GUARD_FILES, GuardError, locateRepository } from './location.mjs';
 
 // How many times one acquire goes round when the lock changes under it
@@ -415,8 +428,10 @@ function reclaim(ctx, seen) {
   }
 }
 
-// `root` is any directory inside the vault's working tree. `deps` is a
-// test seam and nothing else, after src/exec.mjs's precedent:
+// `root` is any directory inside the vault's working tree. `legacyLock:
+// false` leaves the legacy lock out (see the header); only `machine set`
+// and `machine register` pass it (src/commands/machine.mjs says why). `deps`
+// is a test seam and nothing else, after src/exec.mjs's precedent:
 //   onStage(name)  called at the four points where another process can
 //                  change the lock under this one: the lock's name was
 //                  found taken ('occupied'), the lock was judged stale
@@ -430,15 +445,40 @@ function reclaim(ctx, seen) {
 //                  platform, another boot or another namespace.
 //   link           stands in for fs.linkSync, so a test can be a file system
 //                  without hard links.
+//   platform       stands in for process.platform in the legacy lock, so a
+//                  test can be a machine that is not Linux.
 // Production never passes any of them.
-export function acquireLock(root, { command, now = new Date(), env = process.env } = {}, deps = {}) {
-  const { onStage = () => {}, identity = currentIdentity(), link = linkSync } = deps;
+export function acquireLock(root, { command, now = new Date(), env = process.env, legacyLock = true } = {}, deps = {}) {
+  const { onStage = () => {}, identity = currentIdentity(), link = linkSync, platform = process.platform } = deps;
   if (typeof command !== 'string' || command === '') {
     throw new TypeError('acquireLock needs the name of the command taking the lock');
   }
   const { commonDir, gitDir } = locateRepository(root, env);
   for (const dir of new Set([commonDir, gitDir])) sweepLeftovers(dir, identity);
-  return acquireIn(commonDir, GUARD_FILES.LOCK, GUARD_FILES.LOCK_RECLAIM, { command, now }, { onStage, identity, link });
+  const lock = acquireIn(commonDir, GUARD_FILES.LOCK, GUARD_FILES.LOCK_RECLAIM, { command, now }, { onStage, identity, link });
+  return legacyLock ? withLegacyLock(lock, root, { env, platform }) : lock;
+}
+
+// `lock` with the legacy lock added, when the bridge is on: release lets go
+// of the legacy lock, then of the vault lock, and answers as the vault
+// lock's own release does. Anything that stops the legacy lock from being
+// taken releases `lock` before it is thrown on.
+function withLegacyLock(lock, root, { env, platform }) {
+  let legacy;
+  try {
+    legacy = takeBridge(root, { env, platform });
+  } catch (error) {
+    lock.release();
+    throw error;
+  }
+  if (legacy === null) return lock;
+  return {
+    ...lock,
+    release: () => {
+      legacy.release();
+      return lock.release();
+    },
+  };
 }
 
 // The acquisition itself, for a lock named `lockName` in `dir` with its
@@ -510,8 +550,11 @@ export function acquireFileLock(dir, name, { command, now = new Date() } = {}, d
 // when env.BRAIN_KIT_ROUND_TOKEN has the token's shape, a lock file is
 // there, its holder's token equals it and that holder is not stale; then
 // `{ joined: true, holder, lockPath, token, release }` where release never
-// removes anything (the round releases its own lock). In every other case
-// exactly acquireLock, with `joined: false`. See the header.
+// removes anything (the round releases its own lock). A join never takes
+// the legacy lock either: the round holds it, and a second flock on the
+// same file, from a new descriptor, would be refused by the round's own.
+// In every other case exactly acquireLock, with `joined: false`. See the
+// header.
 export function joinOrAcquire(root, { command, now = new Date(), env = process.env } = {}, deps = {}) {
   const wanted = env.BRAIN_KIT_ROUND_TOKEN;
   if (typeof wanted === 'string' && TOKEN_SHAPE.test(wanted)) {

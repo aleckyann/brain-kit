@@ -16,6 +16,12 @@ import { makeTempDir } from './helpers/tmp.mjs';
 import { git, makeRepo } from './helpers/git-repo.mjs';
 import { makeHookVault, runHookProcess } from './helpers/hook-world.mjs';
 
+// acquireLock reads the vault's machine.json for the legacy lock bridge
+// (src/guards/legacy-lock.mjs), through the state directory its env implies:
+// the calls here that pass no env, and the children they start, use a scratch
+// one, never the person's own.
+process.env.BRAIN_KIT_STATE_DIR = makeTempDir('brain-kit-lock-state-');
+
 const CHILD = fileURLToPath(new URL('./helpers/lock-child.mjs', import.meta.url));
 const WATCHER = fileURLToPath(new URL('./helpers/lock-watcher.mjs', import.meta.url));
 const NOW = new Date('2026-07-29T09:30:00.000Z');

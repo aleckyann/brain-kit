@@ -32,6 +32,18 @@
 // command takes (src/guards/lock.mjs), in the repository, so a held lock is
 // exit 75 naming its holder. `show` only reads.
 //
+// WHY `set` AND `register` LEAVE THE LEGACY LOCK OUT. Every other writer
+// also holds the legacy lock machine.json `paths.legacy_lock` names
+// (src/guards/legacy-lock.mjs). These two do not: `machine set
+// paths.legacy_lock <path>` and `... null` are how that bridge is set,
+// changed and turned off, and a bridge that cannot be used (its directory
+// gone, no flock program) refuses every writer that takes it, so taking it
+// here would lock out the one command that repairs it, leaving a 0600 JSON
+// file to edit by hand. They write machine.json, in the state directory,
+// and never the vault's tree, which is what the legacy lock keeps a second
+// writer out of; the vault lock still keeps two kit writers of machine.json
+// apart.
+//
 // WHY `set` PARSES BY THE SCHEMA'S TYPE. An array key (notify_command,
 // network_check, path_extra) is an argument vector handed to spawnSync one
 // element per argument, never a command line: it is taken only as a JSON
@@ -234,11 +246,12 @@ function refuseStateInsideVault(io, t, stateDir, root, realRoot) {
 
 // Runs `work` holding the vault lock, and releases it however `work` ends.
 // A lock that cannot be taken is the guard's own exit code (75 when held,
-// naming the holder; 2 outside a repository) and its own message.
+// naming the holder; 2 outside a repository) and its own message. The
+// legacy lock is left out (see the header).
 function withVaultLock(io, t, root, env, command, work) {
   let lock;
   try {
-    lock = acquireLock(root, { command, env });
+    lock = acquireLock(root, { command, env, legacyLock: false });
   } catch (error) {
     if (!(error instanceof GuardError)) throw error;
     io.stderr.write(`${t(error.messageKey, error.params)}\n`);

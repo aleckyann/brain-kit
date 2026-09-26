@@ -50,6 +50,7 @@ import { MANIFEST_PATH, readManifest } from '../manifest.mjs';
 import { compareVersions } from '../commands/update.mjs';
 import { defaultBranch, defaultBranchUpstream, remoteBranches, trackedRemote } from '../git.mjs';
 import { checkCli } from '../guards/cli.mjs';
+import { legacyLockSetting, probeLegacyLock } from '../guards/legacy-lock.mjs';
 import { buildArgv, rulesIn, runModel, unscopedRules } from '../harness/claude-code.mjs';
 import { checkIsolation } from '../guards/isolation.mjs';
 import { CONNECTOR_STATES, connectorStateMessage, connectorStates } from '../guards/connectors.mjs';
@@ -614,6 +615,24 @@ function stateDirMode(ctx) {
     return { id, status: 'fail', messageKey: 'doctor.state_dir_mode.file_mode', params: { file, mode: octal(fileStats.mode), expected: octal(MACHINE_FILE_MODE) } };
   }
   return { id, status: 'ok', messageKey: 'doctor.state_dir_mode.ok', params: { dir } };
+}
+
+// The bridge to a legacy lock (src/guards/legacy-lock.mjs), read and probed
+// exactly as a writer and the Stop hook read and probe it: off (no
+// paths.legacy_lock, or no machine.json, which machine-valid reports), on
+// and working (free, or held right now by another process), or on and
+// unusable, which fails, because every writer refuses while it is. A
+// machine.json that cannot say whether the bridge is on fails for the same
+// reason. The probe never waits and never creates the file.
+function legacyLockCheck(ctx) {
+  const id = 'legacy-lock';
+  const setting = legacyLockSetting(ctx.stateDir);
+  if (setting.state === 'off') return { id, status: 'ok', messageKey: 'doctor.legacy_lock.off', params: {} };
+  if (setting.state === 'invalid') return { id, status: 'fail', messageKey: setting.messageKey, params: setting.params };
+  const probed = probeLegacyLock(setting.file, { env: ctx.env });
+  if (probed.state === 'unusable') return { id, status: 'fail', messageKey: probed.messageKey, params: probed.params };
+  if (probed.state === 'held') return { id, status: 'ok', messageKey: 'doctor.legacy_lock.on_held', params: { lock: setting.file } };
+  return { id, status: 'ok', messageKey: 'doctor.legacy_lock.on', params: { lock: setting.file } };
 }
 
 function kitVersionCheck(ctx) {
@@ -1650,6 +1669,7 @@ export const CHECKS = new Map([
   ['machine-valid', machineValid],
   ['state-dir-resolves', stateDirResolves],
   ['state-dir-mode', stateDirMode],
+  ['legacy-lock', legacyLockCheck],
   ['kit-version', kitVersionCheck],
   ['gh-present', ghPresent],
   ['claude-present', claudePresent],

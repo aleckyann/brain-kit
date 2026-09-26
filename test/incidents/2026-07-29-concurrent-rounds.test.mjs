@@ -19,6 +19,12 @@ import { acquireLock, currentIdentity, describeLock, LockHeld } from '../../src/
 import { EXIT } from '../../src/exit-codes.mjs';
 import { GUARD_FILES } from '../../src/guards/location.mjs';
 import { makeRepo } from '../helpers/git-repo.mjs';
+import { makeTempDir } from '../helpers/tmp.mjs';
+
+// acquireLock reads the vault's machine.json for the legacy lock bridge
+// (src/guards/legacy-lock.mjs): the rounds here, and the calls in this
+// process, derive a scratch state directory, never the person's own.
+process.env.BRAIN_KIT_STATE_DIR = makeTempDir('brain-kit-incident-0729-state-');
 
 const CHILD = fileURLToPath(new URL('../helpers/lock-child.mjs', import.meta.url));
 

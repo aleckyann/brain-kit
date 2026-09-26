@@ -124,7 +124,11 @@ export function machineSchema() {
 //   - a transcripts_dir holding a character no read permission can name
 //     exactly (src/curate/rule-path.mjs): every transcript under it would
 //     be listed unreadable and stop every round, so it is said once here.
-//     Spaces and accents are fine (measured).
+//     Spaces and accents are fine (measured);
+//   - a paths.legacy_lock that is not an absolute path (null turns the
+//     bridge off): the legacy job locks one file, and a relative name, or
+//     one under `~/`, is a different file for every directory a writer
+//     starts in, or none at all (src/guards/legacy-lock.mjs).
 const MACHINE_PATH_KEYS = Object.freeze(['canonical_path', 'claude_bin', 'state_dir', 'transcripts_dir']);
 const MACHINE_ARGV_KEYS = Object.freeze(['network_check', 'notify_command']);
 
@@ -151,6 +155,10 @@ export function machineValueErrors(machine) {
   if (paths !== null && typeof paths === 'object' && !Array.isArray(paths)) {
     for (const [key, value] of Object.entries(paths)) {
       if (isBlank(value)) errors.push(`$.paths.${key}: must not be empty`);
+    }
+    const legacy = paths.legacy_lock;
+    if (typeof legacy === 'string' && !isBlank(legacy) && !isAbsolute(legacy)) {
+      errors.push('$.paths.legacy_lock: must be an absolute path (null turns the legacy lock bridge off)');
     }
   }
   for (const key of MACHINE_ARGV_KEYS) {
