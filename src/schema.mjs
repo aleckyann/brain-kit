@@ -1,7 +1,9 @@
 // Minimal JSON Schema subset validator with no dependencies. It supports the
 // keywords brain-kit's own schemas use and nothing else: type (string or
 // array), properties, required, additionalProperties (boolean or schema),
-// enum, const, items, minimum, maximum, minLength, pattern.
+// enum, const, items, minimum, exclusiveMinimum (a number, as in the draft
+// the schemas declare), maximum, minLength, pattern. A keyword it does not
+// know is ignored, so a schema must never rely on one missing here.
 // Returns an array of "path: message" strings; an empty array means valid.
 export function validateSchema(value, schema, path = '$') {
   const errors = [];
@@ -20,6 +22,7 @@ export function validateSchema(value, schema, path = '$') {
   }
   if (typeof value === 'number') {
     if (schema.minimum !== undefined && value < schema.minimum) errors.push(`${path}: must be >= ${schema.minimum}`);
+    if (schema.exclusiveMinimum !== undefined && value <= schema.exclusiveMinimum) errors.push(`${path}: must be > ${schema.exclusiveMinimum}`);
     if (schema.maximum !== undefined && value > schema.maximum) errors.push(`${path}: must be <= ${schema.maximum}`);
   }
   if (typeof value === 'string') {

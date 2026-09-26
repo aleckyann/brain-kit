@@ -36,6 +36,19 @@ test('checks enum, const, pattern, minLength, minimum and maximum', () => {
   assert.deepEqual(validateSchema(9, { type: 'integer', maximum: 5 }), ['$: must be <= 5']);
 });
 
+// Phase 5a, ruling R-A1: exclusiveMinimum, so a schema can refuse the bound
+// itself (a cost cap of 0) the way it refuses every other invalid value.
+test('checks exclusiveMinimum: the bound itself and below are refused, anything above passes, and a value it does not apply to is left to type', () => {
+  const schema = { type: ['number', 'null'], exclusiveMinimum: 0 };
+  assert.deepEqual(validateSchema(0, schema), ['$: must be > 0']);
+  assert.deepEqual(validateSchema(-0.5, schema), ['$: must be > 0']);
+  assert.deepEqual(validateSchema(0.01, schema), []);
+  assert.deepEqual(validateSchema(5, schema), []);
+  assert.deepEqual(validateSchema(null, schema), []);
+  assert.deepEqual(validateSchema('5', schema), ['$: expected number or null, got string']);
+  assert.deepEqual(validateSchema({ cap: 2 }, { type: 'object', properties: { cap: { type: 'number', exclusiveMinimum: 2 } } }), ['$.cap: must be > 2']);
+});
+
 test('validates array items with indexed paths', () => {
   const errors = validateSchema(['a', 2], { type: 'array', items: { type: 'string' } });
   assert.deepEqual(errors, ['$[1]: expected string, got number']);

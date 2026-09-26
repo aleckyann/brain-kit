@@ -2334,7 +2334,7 @@ test('cost-cap: a number is the cap, a key left out is the default said as such,
   assert.equal(r.code, EXIT.OK);
 });
 
-test('cost-cap: a cap no round can run with fails, naming the value: 0, which the harness refuses, and anything the schema refuses', async () => {
+test('cost-cap: a cap no round can run with fails, naming the value: 0 and anything else the schema refuses', async () => {
   const fx = setup();
   const file = join(fx.root, 'brain-kit.config.json');
   for (const [value, shown] of [[0, '0'], [-1, '-1'], ['5', '"5"'], [true, 'true']]) {
@@ -2344,6 +2344,32 @@ test('cost-cap: a cap no round can run with fails, naming the value: 0, which th
     assert.deepEqual(c.params, { ...BUDGET_PARAMS, value: shown });
     assert.equal(c.message, `curate.budget_usd in brain-kit.config.json is ${shown}, and no round runs with that cap: set a positive number of USD, or null for no cap.`);
     assert.equal(code, EXIT.FAILURE);
+  }
+});
+
+// Ruling R-A1: config-valid refuses a cap of 0 the way curate and validate
+// do, through the schema's exclusiveMinimum, naming the key in either pack.
+test('config-valid: a cost cap of 0 or below fails naming curate.budget_usd, in either pack; 0.01 and null pass', async () => {
+  const fx = setup();
+  const file = join(fx.root, 'brain-kit.config.json');
+  for (const value of [0, -1]) {
+    editJson(file, (config) => { config.curate.budget_usd = value; });
+    const { report, code } = await doctor(fx, ['--only', 'config-valid']);
+    const c = assertCheck(report, 'config-valid', 'fail', 'doctor.config_valid.invalid');
+    assert.deepEqual(c.params.errors, ['$.curate.budget_usd: must be > 0'], String(value));
+    assert.equal(code, EXIT.FAILURE);
+    for (const lang of ['en', 'pt-BR']) {
+      const f = fakeIo();
+      await runDoctor([fx.root, '--only', 'config-valid'], f.io, createTranslator(lang), { env: fx.env, cwd: fx.root });
+      assert.ok(f.stdout().includes('$.curate.budget_usd: must be > 0'), `${lang}: ${f.stdout()}`);
+      assert.ok(f.stdout().includes(lang === 'en' ? 'is invalid' : 'é inválido'), `${lang}: ${f.stdout()}`);
+    }
+  }
+  for (const value of [0.01, null]) {
+    editJson(file, (config) => { config.curate.budget_usd = value; });
+    const { report } = await doctor(fx, ['--only', 'config-valid,cost-cap']);
+    assertCheck(report, 'config-valid', 'ok', 'doctor.config_valid.ok');
+    assertCheck(report, 'cost-cap', 'ok', value === null ? 'doctor.cost_cap.none' : 'doctor.cost_cap.set');
   }
 });
 

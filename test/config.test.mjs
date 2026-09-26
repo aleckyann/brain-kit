@@ -136,24 +136,37 @@ test('unknown top-level keys and bad enums are reported', () => {
 });
 
 // Phase 5a: curate.budget_usd null is the owner asking for no cost cap, so
-// the schema takes it beside a number; a negative number or a string is
-// still refused, and a configuration that leaves the key out stays valid
-// (a round then gets the default cap).
-test('curate.budget_usd takes a non-negative number or null, refuses a negative number or a string, and may be left out', () => {
-  for (const value of [5, 0.5, 0, null]) {
-    const config = fixture('config/valid.json');
-    config.curate.budget_usd = value;
-    assert.deepEqual(validateConfig(config), [], JSON.stringify(value));
+// the schema takes it beside a positive number; 0 is refused as a
+// configuration error naming the key (ruling R-A1: never a crash inside
+// the round's command line), as are a negative number and a string; a
+// configuration that leaves the key out stays valid (a round then gets the
+// default cap). Both example configurations, the English and the pt-BR one.
+test('curate.budget_usd takes a positive number or null, refuses 0, a negative number or a string naming the key, and may be left out', () => {
+  for (const name of ['config/valid.json', 'config/valid-pt-BR.json']) {
+    const withValue = (value) => {
+      const config = fixture(name);
+      config.curate.budget_usd = value;
+      return validateConfig(config);
+    };
+    for (const value of [5, 0.5, 0.01, null]) assert.deepEqual(withValue(value), [], `${name}: ${JSON.stringify(value)}`);
+    const absent = fixture(name);
+    delete absent.curate.budget_usd;
+    assert.deepEqual(validateConfig(absent), [], name);
+    assert.deepEqual(withValue(0), ['$.curate.budget_usd: must be > 0'], `${name}: 0`);
+    assert.deepEqual(withValue(-1), ['$.curate.budget_usd: must be > 0'], `${name}: -1`);
+    for (const value of [-0.01, '5', 'none', true, [], {}]) {
+      const errors = withValue(value);
+      assert.ok(errors.length > 0 && errors.every((e) => e.startsWith('$.curate.budget_usd: ')), `${name}: ${JSON.stringify(value)}: ${errors.join('\n')}`);
+    }
   }
-  const absent = fixture('config/valid.json');
-  delete absent.curate.budget_usd;
-  assert.deepEqual(validateConfig(absent), []);
-  for (const value of [-1, -0.01, '5', 'none', true, [], {}]) {
-    const config = fixture('config/valid.json');
-    config.curate.budget_usd = value;
-    const errors = validateConfig(config);
-    assert.ok(errors.some((e) => e.startsWith('$.curate.budget_usd:')), `${JSON.stringify(value)}: ${errors.join('\n')}`);
-  }
+});
+
+test('loadConfig refuses a cost cap of 0 with a ConfigError naming the key, as every command that reads the configuration does', () => {
+  const dir = makeTempDir('brain-kit-budget-');
+  const config = fixture('config/valid.json');
+  config.curate.budget_usd = 0;
+  writeFileSync(join(dir, CONFIG_FILENAME), JSON.stringify(config));
+  assert.throws(() => loadConfig(dir), (error) => error instanceof ConfigError && error.errors.includes('$.curate.budget_usd: must be > 0'));
 });
 
 test('curate.schedule entries must be HH:MM', () => {

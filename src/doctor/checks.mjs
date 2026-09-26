@@ -1299,9 +1299,10 @@ function roundScope(ctx) {
 // (roundBudget, src/commands/curate.mjs): the number curate.budget_usd
 // sets, the default when the key is absent, or no cap at all when it is
 // null (phase 5a). The three are said apart, so an owner who removed the
-// key to lift the cap learns that the default still applies. A value no
-// round can run with fails: 0, which the harness refuses before the model
-// starts, and anything the schema refuses, on which every round stops.
+// key to lift the cap learns that the default still applies. A value the
+// schema refuses (0 among them, by exclusiveMinimum) fails here too, as it
+// does config-valid: this check reads the file as it is, and every round
+// stops on such a value before it starts.
 function costCap(ctx) {
   const id = 'cost-cap';
   const inputs = curateInputs(ctx, id);

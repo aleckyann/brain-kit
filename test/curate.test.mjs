@@ -705,6 +705,41 @@ test('--check and --dry say the cost cap in the vault\'s language, and their com
   }
 });
 
+// Ruling R-A1: a cap of 0 is a configuration problem, said before any round
+// with the key named (the schema's exclusiveMinimum), never a crash inside
+// the model's command line. The round cannot read the vault's language from
+// a configuration it refuses, so it speaks the caller's (BRAIN_KIT_LANG).
+test('curate.budget_usd 0 is refused as configuration before any round: exit 2 naming the key in either pack, the same from --dry and validate, never the harness\'s crash', () => {
+  const SAID = { en: 'the vault\'s configuration, as synced, cannot be used', 'pt-BR': 'a configuração do vault, já sincronizada, não serve' };
+  const KEY = '$.curate.budget_usd: must be > 0';
+  const CRASH = /budgetUsd must be a positive number|internal/;
+  for (const lang of ['en', 'pt-BR']) {
+    const w = makeCurateWorld({ config: (c) => { c.lang = lang; c.curate.budget_usd = 0; } });
+    const r = w.curate([], { BRAIN_KIT_LANG: lang });
+    assert.equal(r.status, EXIT.USAGE, `${lang}: ${r.stderr}`);
+    assert.deepEqual(traces(w), { network: true, fetched: true, snapshot: false, cli: false, model: false }, `${lang}: stopped at the configuration, step 6`);
+    const last = w.lastRun();
+    assert.equal(last.reasonCode, 'config_invalid', lang);
+    assert.ok(last.reason.includes(SAID[lang]) && last.reason.includes(KEY), `${lang}: ${last.reason}`);
+    assert.doesNotMatch(last.reason, CRASH, lang);
+    assert.equal(Object.hasOwn(last, 'budgetUsd'), false, lang);
+    assert.equal(w.watermark(), null, lang);
+    const dry = w.curate(['--dry'], { BRAIN_KIT_LANG: lang });
+    assert.equal(dry.status, EXIT.USAGE, `${lang}: ${dry.stderr}`);
+    assert.ok(dry.stderr.includes(KEY), `${lang}: ${dry.stderr}`);
+    assert.doesNotMatch(dry.stderr, CRASH, lang);
+    const validate = spawnSync(process.execPath, [BIN, 'validate', w.vault], { cwd: w.vault, env: { ...w.env, BRAIN_KIT_LANG: lang }, encoding: 'utf8' });
+    assert.equal(validate.status, EXIT.USAGE, `${lang}: ${validate.stderr}`);
+    assert.ok(validate.stderr.includes(KEY), `${lang}: ${validate.stderr}`);
+  }
+  // A cap just above 0 runs, and passes itself.
+  const w = makeCurateWorld({ config: (c) => { c.curate.budget_usd = 0.01; } });
+  const r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.deepEqual(budgetFlags(JSON.parse(readFileSync(w.files.argvFile, 'utf8'))), ['0.01']);
+  assert.equal(w.lastRun().budgetUsd, 0.01);
+});
+
 test('a round that ends before the model records no cost cap in last-run.json', () => {
   const w = makeCurateWorld({ config: (c) => { c.curate.budget_usd = null; } });
   writeFileSync(join(w.state, 'watermark.json'), JSON.stringify({ sources: { transcripts: utcDay(-1) } }));
