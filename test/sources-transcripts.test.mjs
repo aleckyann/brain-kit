@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { machineValueErrors } from '../src/config.mjs';
+import { emptyWindow } from '../src/guards/empty-window.mjs';
 import { validateSource } from '../src/sources/index.mjs';
 import { allProjects, exclusionPatterns, transcriptsSource, DEFAULT_LIMITS, SAMPLE_BYTES } from '../src/sources/transcripts-claude-code.mjs';
 import {
@@ -146,9 +147,39 @@ test('"all" with a project directory that cannot be listed names it and reads th
     assert.deepEqual(paths(plan), [kept]);
     assert.deepEqual(plan.problems, [{ code: 'project_unreadable', detail: OTHER_PROJECT }]);
     assert.equal(plan.misconfigured, false);
-    assert.match(plan.promptBlock, new RegExp(`The project ${OTHER_PROJECT} exists under .* but could not be listed`));
+    assert.match(plan.promptBlock, new RegExp(`The project ${OTHER_PROJECT} exists under .* but could not be listed, so none of its transcripts was read, and no day of this source closes until it can be listed\\.`));
+    assert.deepEqual(plan.unreadable, [{ path: locked, project: OTHER_PROJECT, bytes: 0, directory: true }]);
+    assert.equal(transcriptsSource.readEvidence(record([{ path: kept }]), plan).ok, false);
   } finally {
     chmodSync(locked, 0o755);
+  }
+});
+
+// Ruling R-A4 (26/09/2026): a project directory the round cannot list holds
+// sessions of any day, so it is unread, never "nothing in the window": the
+// plan is not misconfigured (that is exit 1, a configuration to fix), the
+// window is not empty, and no evidence can read the source while it stays so.
+test('the only project, unlistable: not misconfigured, never an empty window, never read, and the block claims no empty window', { skip: process.getuid?.() === 0 ? 'root lists any directory' : false }, () => {
+  for (const include of [[OTHER_PROJECT], 'all']) {
+    const world = makeWorld({ include });
+    world.write(OTHER_PROJECT, 'b.jsonl', [user('Ana codes', INSIDE)]);
+    const locked = join(world.root, OTHER_PROJECT);
+    chmodSync(locked, 0o000);
+    try {
+      const plan = world.collect();
+      const label = JSON.stringify(include);
+      assert.deepEqual(plan.files, [], label);
+      assert.equal(plan.misconfigured, false, label);
+      assert.deepEqual(plan.unreadable, [{ path: locked, project: OTHER_PROJECT, bytes: 0, directory: true }], label);
+      assert.deepEqual(plan.problems, [{ code: 'project_unreadable', detail: OTHER_PROJECT }], label);
+      assert.equal(emptyWindow({ transcripts: plan }), false, label);
+      assert.deepEqual(transcriptsSource.readEvidence(record([]), plan), { read: 0, expected: 1, ok: false }, label);
+      assert.doesNotMatch(plan.promptBlock, /No transcript has a message inside the window/, label);
+      assert.equal(plan.dropped.unreadable, 0, `${label}: a directory is no transcript`);
+      assert.equal(plan.promptBlock.split('\n').filter((line) => line.includes(OTHER_PROJECT)).length, 1, `${label}: named once, by its problem line`);
+    } finally {
+      chmodSync(locked, 0o755);
+    }
   }
 });
 
@@ -482,6 +513,9 @@ test('an unlistable project or transcripts directory is a problem, never an exce
     assert.deepEqual(plan.problems, [{ code: 'project_unreadable', detail: OTHER_PROJECT }]);
     assert.equal(plan.misconfigured, false);
     assert.match(plan.promptBlock, /could not be listed/);
+    // Ruling R-A4: unread, so the source is never read while it stays so.
+    assert.deepEqual(plan.unreadable, [{ path: locked, project: OTHER_PROJECT, bytes: 0, directory: true }]);
+    assert.deepEqual(transcriptsSource.readEvidence(record([{ path: kept }]), plan), { read: 1, expected: 2, ok: false });
   } finally {
     chmodSync(locked, 0o755);
   }

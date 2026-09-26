@@ -494,6 +494,12 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   configuration, and a list holding "all" names a directory called `all`. "all" that finds
   no project directory makes the round refuse (`all_empty`) rather than close a day nobody
   read. `doctor`'s `include-projects` says `all (N project(s) today)`.
+- A project directory a round cannot list no longer lets the transcripts mark advance
+  (before, it was only a warning, and the round closed days whose sessions in it nobody
+  read). It is unread, like a file that cannot be read: with the transcripts required the
+  round stops before the model (exit 4), the reason and `last-run.json` name it, and every
+  round stops there until it can be listed or leaves the configuration, since its sessions
+  could be on any day. `doctor`'s `include-projects` already said so; now it is true.
 - `sources.calendar.team_authorization: { "by": "human:<handle>", "at": "YYYY-MM-DD" }`
   records who authorised reading the team's calendars and on which day (a day that exists:
   a malformed or impossible date is refused as configuration). Team calendars are read only

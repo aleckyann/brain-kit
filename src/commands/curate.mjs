@@ -1129,6 +1129,14 @@ export async function runCurate(argv, io, t, deps = {}) {
         const characters = [...new Set(unsafe.flatMap((f) => f.unsafe))].join(' ');
         reason = `${reason} ${t('curate.source_unsafe_paths', { files: unsafeFiles, characters })}`;
       }
+      // A project directory that could not be listed (ruling R-A4): its
+      // sessions could be on any day, so skipping days does not clear it;
+      // listing it, or leaving it out of the configuration, does.
+      const directories = unreadable.filter((f) => f.directory === true);
+      if (directories.length > 0) {
+        const dirs = directories.map((f) => f.path).join(', ');
+        reason = `${reason} ${t('curate.source_unlistable_dirs', { dirs, projects: `${CONFIG_FILENAME} sources.${id}.include_projects`, patterns: setting })}`;
+      }
       return fail(EXIT.SOURCE_UNREAD, 'source_unreadable', reason);
     }
     // The first open day alone over a source's cap: no whole day fits, and

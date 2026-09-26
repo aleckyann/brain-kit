@@ -53,7 +53,14 @@
 // conversation in it to date, so it belongs to no day and blocks none
 // (final review I2, 24/09/2026: as unreadable it kept its day open forever
 // and every retry opened the same pull request again). Nothing about one
-// file throws out of `collect`.
+// file throws out of `collect`. A project directory that cannot be listed
+// is `unreadable` too, marked `directory` (ruling R-A4, 26/09/2026: as a
+// warning alone it let the round close days whose sessions in it nobody
+// read): its sessions could be on any day, and no modification time can
+// say otherwise (appending to a session does not touch its directory), so
+// it blocks every day of the source, in every window, until it can be
+// listed or leaves the configuration; curate refuses to start the model
+// on it, as on a file it cannot read.
 //
 // Transcript shape (Claude Code 2.1.281): one JSON object per line. Lines
 // of type user, assistant, system and attachment are messages and carry an
@@ -325,10 +332,14 @@ function renderPromptBlock(t, plan) {
         bytes: file.bytes, sampleLine: file.sampleLine,
       }));
     }
-  } else if (!plan.misconfigured) {
+  } else if (!plan.misconfigured && !plan.unreadable.some((entry) => entry.directory === true)) {
+    // Not said while a project directory could not be listed: its
+    // transcripts may well have messages in the window.
     lines.push(t('sources.transcripts.none_in_window', { from: plan.window.from, to: plan.window.to }));
   }
   for (const file of plan.unreadable) {
+    // A directory is named by its own problem line, above.
+    if (file.directory === true) continue;
     if (Array.isArray(file.unsafe)) lines.push(t('sources.transcripts.unsafe_line', { path: file.path, project: file.project, bytes: file.bytes, characters: file.unsafe.join(' ') }));
     else lines.push(t('sources.transcripts.unreadable_line', { path: file.path, project: file.project, bytes: file.bytes }));
   }
@@ -411,13 +422,19 @@ function collect({ window, config, machine, home = homedir(), io = fs, limits = 
   if (names !== null) {
     const listed = new Set(names);
     for (const project of projects) {
-      const entries = listed.has(project) && isDirectory(join(root, project)) ? listDir(join(root, project), { withFileTypes: true }) : undefined;
+      const dir = join(root, project);
+      const entries = listed.has(project) && isDirectory(dir) ? listDir(dir, { withFileTypes: true }) : undefined;
       if (entries === undefined) problems.push({ code: 'project_missing', detail: project });
-      else if (entries === null) problems.push({ code: 'project_unreadable', detail: project });
-      else present.push({ project, entries });
+      else if (entries === null) {
+        problems.push({ code: 'project_unreadable', detail: project });
+        unreadable.push({ path: dir, project, bytes: 0, directory: true });
+      } else present.push({ project, entries });
     }
   }
-  const misconfigured = present.length === 0;
+  // Nothing to read because nothing is there; a directory that is there but
+  // cannot be listed is a source not read (exit 4), never a configuration
+  // to fix (exit 1).
+  const misconfigured = present.length === 0 && !unreadable.some((entry) => entry.directory === true);
 
   const openBefore = window.from.getTime() - MTIME_SLACK_MS;
   for (const { project, entries } of present) {
@@ -543,7 +560,8 @@ function collect({ window, config, machine, home = homedir(), io = fs, limits = 
 // lists as unreadable counts as expected and can never be read (controller
 // ruling, fix round 1 of task 6): a day holding a session nobody could open
 // stays open, loudly, until a person looks, instead of closing as "nothing
-// to curate".
+// to curate". So does a project directory the plan could not list (ruling
+// R-A4).
 function readEvidence(record, plan) {
   const failed = new Set();
   const answered = new Set();
