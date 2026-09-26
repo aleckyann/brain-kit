@@ -74,7 +74,7 @@ import { signatureProblems } from '../sources/transcripts-claude-code.mjs';
 // here: the connectors check asks the round's own choice of launch mode
 // (chooseMode) and its own reading of a source that is off, so doctor and
 // the round cannot disagree.
-import { BLOCKED_BY_USER_RULES, chooseMode, offOnPurpose, offProblems, problemText, roundBudget, SECOND_DOOR, WAITING_FOR_CALENDAR } from '../commands/curate.mjs';
+import { BLOCKED_BY_USER_RULES, chooseMode, offOnPurpose, offProblems, problemText, roundBudget, roundTimeoutMinutes, roundTurns, SECOND_DOOR, WAITING_FOR_CALENDAR } from '../commands/curate.mjs';
 
 export const MINIMUM_NODE_MAJOR = 24;
 export const HOOKS_DIR = '.githooks';
@@ -1318,6 +1318,43 @@ function costCap(ctx) {
   return { id, status: 'ok', messageKey: 'doctor.cost_cap.set', params: { usd, setting, file: CONFIG_FILENAME } };
 }
 
+// The turn limit every round runs under, read the way the round reads it
+// (roundTurns): the whole number curate.max_turns sets, the default when the
+// key is absent, or none when it is null (phase 5a, ruling R-A3). A value no
+// round can run with (0, a fraction, anything the schema refuses) fails.
+function turnCap(ctx) {
+  const id = 'turn-cap';
+  const inputs = curateInputs(ctx, id);
+  if (inputs.result) return inputs.result;
+  if (inputs.disabled) return curateDisabled(ctx, id);
+  const setting = 'curate.max_turns';
+  const turns = roundTurns(inputs.config);
+  if (turns !== null && !(Number.isInteger(turns) && turns >= 1)) {
+    return { id, status: 'fail', messageKey: 'doctor.turn_cap.unusable', params: { setting, file: CONFIG_FILENAME, value: JSON.stringify(turns) } };
+  }
+  if (turns === null) return { id, status: 'ok', messageKey: 'doctor.turn_cap.none', params: { setting, file: CONFIG_FILENAME } };
+  if (inputs.config.curate?.max_turns === undefined) return { id, status: 'ok', messageKey: 'doctor.turn_cap.default', params: { turns, setting, file: CONFIG_FILENAME } };
+  return { id, status: 'ok', messageKey: 'doctor.turn_cap.set', params: { turns, setting, file: CONFIG_FILENAME } };
+}
+
+// The time limit, read the way the round reads it (roundTimeoutMinutes): a
+// number of minutes after which a round's model is killed, or none when
+// curate.timeout_minutes is null or left out (the packs' default). A value
+// no round can run with (0 or less, anything that is not a number) fails.
+function timeCap(ctx) {
+  const id = 'time-cap';
+  const inputs = curateInputs(ctx, id);
+  if (inputs.result) return inputs.result;
+  if (inputs.disabled) return curateDisabled(ctx, id);
+  const setting = 'curate.timeout_minutes';
+  const minutes = roundTimeoutMinutes(inputs.config);
+  if (minutes !== null && !(typeof minutes === 'number' && Number.isFinite(minutes) && minutes > 0)) {
+    return { id, status: 'fail', messageKey: 'doctor.time_cap.unusable', params: { setting, file: CONFIG_FILENAME, value: JSON.stringify(minutes) } };
+  }
+  if (minutes === null) return { id, status: 'ok', messageKey: 'doctor.time_cap.none', params: { setting, file: CONFIG_FILENAME } };
+  return { id, status: 'ok', messageKey: 'doctor.time_cap.set', params: { minutes, setting, file: CONFIG_FILENAME } };
+}
+
 // --- connectors ------------------------------------------------------------------
 //
 // The two connector sources, calendar and meeting notes, are best effort
@@ -1702,6 +1739,8 @@ export const CHECKS = new Map([
   ['claude-isolation-flags', claudeIsolationFlags],
   ['round-scope', roundScope],
   ['cost-cap', costCap],
+  ['turn-cap', turnCap],
+  ['time-cap', timeCap],
   ['include-projects', includeProjects],
   ['connectors', connectorsCheck],
   ['watermark', watermarkCheck],

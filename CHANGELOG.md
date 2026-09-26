@@ -473,6 +473,13 @@ Nothing below is on npm yet. It runs from a clone of the repository.
   before any round (the schema validator now implements `exclusiveMinimum`). `curate
   --check`, `--dry` and the round say which cap applies, `last-run.json` records
   `budgetUsd`, and `doctor` gains `cost-cap`.
+- `curate.max_turns: null` runs a round with no turn limit (no `--max-turns`; a key left
+  out keeps 100), and `curate.timeout_minutes` replaces the fixed hour after which every
+  round's model was killed: a number of minutes keeps that kill, and `null`, both packs'
+  default, sets no time limit, since the owner never asked for one. `0` is refused
+  as configuration for both. The round, `--check` and `--dry` say both limits,
+  `last-run.json` records `maxTurns` and `timeoutMinutes`, and `doctor` gains `turn-cap`
+  and `time-cap`.
 - `docs/scheduling.md` gains "Moving from a legacy lock", with what the bridge does not
   cover, and the rules of `watermark import`.
 

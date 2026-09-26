@@ -272,6 +272,7 @@
     "signature": "Curador do segundo cérebro",
     "max_turns": 100,
     "budget_usd": 5,
+    "timeout_minutes": null,
     "network_min_wait_ms": 100,
     "caps": {
       "transcripts": 20,

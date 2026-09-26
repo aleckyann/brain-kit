@@ -37,9 +37,12 @@
 //       read, the person's user settings are read and mirrored; connector
 //       mode unless a rule refuses it (every connector source is then
 //       blocked_by_user_rules, and the round runs isolated); --check: print
-//       the plan, the mode, the cost cap and the prompt's size, exit 0
+//       the plan, the mode, the round's limits and the prompt's size, exit 0
 //   13. run the model, with no --max-budget-usd when curate.budget_usd is
-//       null (roundBudget); an init event that fails the isolation check
+//       null (roundBudget), no --max-turns when curate.max_turns is null
+//       (roundTurns), and killed after curate.timeout_minutes when that is
+//       a number, never otherwise (roundTimeoutMinutes: exit 1, timed_out);
+//       an init event that fails the isolation check
 //       of its mode kills it at once: exit 1; in connector mode, an init
 //       event where a connector source is not there (decision D4, ruling
 //       R-B1) kills it before its first turn, and the round launches once
@@ -102,20 +105,17 @@ import { promptOutsideVault, renderCuratePrompt } from './prompt.mjs';
 
 const ROOT_INDEX = 'index.md';
 
-// The longest a round's model may run. An unattended round that hangs
-// holds the vault's lock for as long as it runs, and the next scheduled
-// window (hours later) would find it held; an hour is far beyond any round
-// measured (minutes) and well inside the gap between two windows.
-export const ROUND_TIMEOUT_MS = 60 * 60 * 1000;
-
 // Used only when the configuration leaves the key out (ruling R10: a round
-// the owner said nothing about runs bounded). `curate.budget_usd: null` is
-// not leaving it out: it is the owner asking for no cost cap at all (phase
-// 5a), and the round then passes no --max-budget-usd (roundBudget).
+// the owner said nothing about runs bounded). A key set to null is not
+// leaving it out: it is the owner asking for no cap at all (phase 5a,
+// rulings R-A1 and R-A3), and the round then passes no --max-budget-usd
+// (roundBudget) or no --max-turns (roundTurns).
 const FALLBACK_MAX_TURNS = 100;
 const FALLBACK_BUDGET_USD = 5;
-// The setting of the cost cap, as a person finds it.
+// The settings of the round's limits, as a person finds them.
 const BUDGET_SETTING = `${CONFIG_FILENAME} curate.budget_usd`;
+const TURNS_SETTING = `${CONFIG_FILENAME} curate.max_turns`;
+const TIMEOUT_SETTING = `${CONFIG_FILENAME} curate.timeout_minutes`;
 const NOTIFY_TIMEOUT_MS = 30000;
 // The setting a vault adds allow rules with, as a person finds it.
 const ALLOWED_EXTRA_SETTING = `${CONFIG_FILENAME} curate.allowed_tools_extra`;
@@ -661,11 +661,52 @@ function budgetLine(t, config) {
   return t('curate.cost_cap', { usd, setting: BUDGET_SETTING });
 }
 
+// The round's turn limit: the integer curate.max_turns sets; null when it
+// is null, the owner asking for no turn limit, so the round passes no
+// --max-turns at all; the fallback (100) only when the key is absent.
+// The round, --check, --dry and doctor's turn-cap all read it here.
+export function roundTurns(config) {
+  const configured = config?.curate?.max_turns;
+  return configured === undefined ? FALLBACK_MAX_TURNS : configured;
+}
+
+// The round's time limit, in minutes: the number curate.timeout_minutes
+// sets, after which the model's whole process group is killed and the round
+// exits 1 as timed_out; null when it is null or left out (both packs'
+// default), and the model then runs until it ends by itself. Until phase
+// 5a every round was killed after a fixed hour, a limit its owner never
+// asked for (ruling R-A3, 25/09/2026). With none, a model that hangs holds
+// the vault lock until a person stops it, and every later round postpones
+// (exit 75, naming the round) and notifies. The round, --check, --dry and
+// doctor's time-cap all read it here.
+export function roundTimeoutMinutes(config) {
+  const configured = config?.curate?.timeout_minutes;
+  return configured === undefined ? null : configured;
+}
+
+function turnsLine(t, config) {
+  const turns = roundTurns(config);
+  if (turns === null) return t('curate.turn_cap_none', { setting: TURNS_SETTING });
+  if (config.curate?.max_turns === undefined) return t('curate.turn_cap_default', { turns, setting: TURNS_SETTING });
+  return t('curate.turn_cap', { turns, setting: TURNS_SETTING });
+}
+
+function timeLine(t, config) {
+  const minutes = roundTimeoutMinutes(config);
+  if (minutes === null) return t('curate.time_cap_none', { setting: TIMEOUT_SETTING });
+  return t('curate.time_cap', { minutes, setting: TIMEOUT_SETTING });
+}
+
+// What the round, --check and --dry say about the round's three limits.
+function limitLines(t, config) {
+  return [budgetLine(t, config), turnsLine(t, config), timeLine(t, config)];
+}
+
 function modelArgv(config, machine, tools, mode = 'isolated') {
   return buildArgv({
     mode,
     model: machine.model ?? undefined,
-    maxTurns: config.curate?.max_turns ?? FALLBACK_MAX_TURNS,
+    maxTurns: roundTurns(config),
     budgetUsd: roundBudget(config),
     allowed: tools.allowed,
     disallowed: tools.disallowed,
@@ -808,11 +849,12 @@ export async function runCurate(argv, io, t, deps = {}) {
   // connector states it knew are carried forward and compared with this
   // round's (step 18).
   const previousRun = readLastRun(stateDir);
-  // `budgetUsd` stays undefined, so out of last-run.json, until the model
-  // is launched: then the cap it runs under, a number or null for none.
+  // `budgetUsd`, `maxTurns` and `timeoutMinutes` stay undefined, so out of
+  // last-run.json, until the model is launched: then the limits it runs
+  // under, each a number or null for none.
   const run = {
     at: now.toISOString(), durationMs: null, exit: null, reasonCode: null, reason: null, window: null, network: null,
-    sources: {}, warnings: [], remainingDays: 0, deferredDays: [], costUsd: null, budgetUsd: undefined, numTurns: null, denials: [], isolation: null, proposed: null, leftovers: [],
+    sources: {}, warnings: [], remainingDays: 0, deferredDays: [], costUsd: null, budgetUsd: undefined, maxTurns: undefined, timeoutMinutes: undefined, numTurns: null, denials: [], isolation: null, proposed: null, leftovers: [],
     mode: null, relaunched: false, notConfigured: [], userRules: null, connectorStates: knownStates(previousRun),
   };
   // The notifications this round owes besides the one for a non-zero exit:
@@ -1199,7 +1241,7 @@ export async function runCurate(argv, io, t, deps = {}) {
       for (const line of modeLines(t, choice)) io.stdout.write(`${line}\n`);
       for (const line of sourceLines(t, { active, plans, days, unavailable, config, blocks: true })) io.stdout.write(`${line}\n`);
       io.stdout.write(`${t('curate.check_argv', { bin: claudeBin, argv: JSON.stringify(argvList) })}\n`);
-      io.stdout.write(`${budgetLine(t, config)}\n`);
+      for (const line of limitLines(t, config)) io.stdout.write(`${line}\n`);
       io.stdout.write(`${t('curate.check_prompt', { chars: prompt.length, bytes: Buffer.byteLength(prompt) })}\n`);
       run.exit = EXIT.OK;
       run.reasonCode = 'check';
@@ -1217,10 +1259,16 @@ export async function runCurate(argv, io, t, deps = {}) {
     let isolationAbort = null;
     let launchMode = choice.mode;
     let launchTools = choice.tools;
+    // The kill timer: the owner's curate.timeout_minutes, or none; a test
+    // hands in its own milliseconds.
+    const minutes = roundTimeoutMinutes(config);
+    const timeoutMs = deps.roundTimeoutMs ?? (minutes === null ? null : minutes * 60 * 1000);
     if (!nothingLeft()) {
       io.stdout.write(`${t('curate.model_start', { days: window.days.map(shown).join(', ') })}\n`);
-      io.stdout.write(`${budgetLine(t, config)}\n`);
+      for (const line of limitLines(t, config)) io.stdout.write(`${line}\n`);
       run.budgetUsd = roundBudget(config);
+      run.maxTurns = roundTurns(config);
+      run.timeoutMinutes = timeoutMs === null ? null : timeoutMs / 60000;
     }
     for (let launch = 1; !nothingLeft(); launch += 1) {
       const launchSources = choice.available;
@@ -1275,7 +1323,7 @@ export async function runCurate(argv, io, t, deps = {}) {
         }
       };
       out = await runModel({
-        claudeBin, argv: argvList, prompt, cwd: root, env: childEnv, timeoutMs: deps.roundTimeoutMs ?? ROUND_TIMEOUT_MS, onLine,
+        claudeBin, argv: argvList, prompt, cwd: root, env: childEnv, timeoutMs, onLine,
         abortSignal: AbortSignal.any([controller.signal, launchControl.signal]),
         ...(deps.killGraceMs !== undefined ? { killGraceMs: deps.killGraceMs } : {}),
       });
@@ -1486,7 +1534,7 @@ export async function runCurate(argv, io, t, deps = {}) {
     } else if (interrupted) {
       exit = fail(EXIT.FAILURE, 'interrupted', t('curate.interrupted', { signal: interrupted }));
     } else if (out.timedOut) {
-      exit = fail(EXIT.FAILURE, 'timed_out', t('curate.model_timed_out', { minutes: Math.ceil((deps.roundTimeoutMs ?? ROUND_TIMEOUT_MS) / 60000) }));
+      exit = fail(EXIT.FAILURE, 'timed_out', t('curate.model_timed_out', { minutes: Math.ceil(timeoutMs / 60000) }));
     } else if (!modelOk) {
       const subtype = result?.subtype ?? '-';
       const api = API_ERROR.test(out.stderrTail) || (result?.isError === true && API_ERROR.test(result.text ?? ''));
@@ -1708,6 +1756,6 @@ function dryRun({ root, stateDir, machine, claudeBin, io, env, now }) {
   for (const line of sourceLines(t, { active, plans, days, unavailable, config, blocks: false })) io.stdout.write(`${line}\n`);
   const argv = modelArgv(config, machine, choice.tools, choice.mode);
   io.stdout.write(`${t('curate.check_argv', { bin: claudeBin, argv: JSON.stringify(argv) })}\n`);
-  io.stdout.write(`${budgetLine(t, config)}\n`);
+  for (const line of limitLines(t, config)) io.stdout.write(`${line}\n`);
   return EXIT.OK;
 }

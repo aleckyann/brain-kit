@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { constants as osConstants } from 'node:os';
-import { roundBudget, runCurate } from '../src/commands/curate.mjs';
+import { roundBudget, roundTimeoutMinutes, roundTurns, runCurate } from '../src/commands/curate.mjs';
 import { acquireLock } from '../src/guards/lock.mjs';
 import { createTranslator, SUPPORTED_LANGS } from '../src/lang.mjs';
 import { KIT_ROOT } from '../src/version.mjs';
@@ -761,6 +761,149 @@ test('a round that ends before the model records no cost cap in last-run.json', 
   const last = w.lastRun();
   assert.equal(last.reasonCode, 'up_to_date');
   assert.equal(Object.hasOwn(last, 'budgetUsd'), false);
+});
+
+// Phase 5a, ruling R-A3: curate.max_turns null is the owner asking for no
+// turn limit, and the round then passes no --max-turns; a key left out keeps
+// the default of 100. curate.timeout_minutes is the time limit: a number
+// kills the model after that many minutes, as the fixed hour did before;
+// null, or the key left out (both packs' own null), runs it with none. The
+// round, --check and --dry say both, and last-run.json records what the
+// model ran under.
+const TURN_CASES = Object.freeze([
+  { name: 'null', edit: (c) => { c.curate.max_turns = null; }, flag: null, recorded: null },
+  { name: 'absent', edit: (c) => { delete c.curate.max_turns; }, flag: '100', recorded: 100 },
+  { name: 'a number', edit: (c) => { c.curate.max_turns = 7; }, flag: '7', recorded: 7 },
+]);
+const TURN_LINES = Object.freeze({
+  en: {
+    null: 'Turn limit: none, brain-kit.config.json curate.max_turns is null (no --max-turns)',
+    absent: 'Turn limit: 100 turns per round, the default, since brain-kit.config.json curate.max_turns is not set (null runs with no turn limit)',
+    'a number': 'Turn limit: 7 turns per round (brain-kit.config.json curate.max_turns)',
+  },
+  'pt-BR': {
+    null: 'Limite de turnos: nenhum, brain-kit.config.json curate.max_turns é null (sem --max-turns)',
+    absent: 'Limite de turnos: 100 turnos por rodada, o padrão, porque brain-kit.config.json curate.max_turns não está definido (null roda sem limite de turnos)',
+    'a number': 'Limite de turnos: 7 turnos por rodada (brain-kit.config.json curate.max_turns)',
+  },
+});
+const TIME_CASES = Object.freeze([
+  { name: 'null', edit: (c) => { c.curate.timeout_minutes = null; }, recorded: null },
+  { name: 'absent', edit: (c) => { delete c.curate.timeout_minutes; }, recorded: null },
+  { name: 'a number', edit: (c) => { c.curate.timeout_minutes = 45; }, recorded: 45 },
+]);
+const TIME_LINES = Object.freeze({
+  en: {
+    null: 'Time limit: none, brain-kit.config.json curate.timeout_minutes is null or not set (the model runs until it ends)',
+    absent: 'Time limit: none, brain-kit.config.json curate.timeout_minutes is null or not set (the model runs until it ends)',
+    'a number': 'Time limit: the model is killed after 45 minute(s) (brain-kit.config.json curate.timeout_minutes)',
+  },
+  'pt-BR': {
+    null: 'Limite de tempo: nenhum, brain-kit.config.json curate.timeout_minutes é null ou não está definido (o modelo roda até terminar)',
+    absent: 'Limite de tempo: nenhum, brain-kit.config.json curate.timeout_minutes é null ou não está definido (o modelo roda até terminar)',
+    'a number': 'Limite de tempo: o modelo é encerrado depois de 45 minuto(s) (brain-kit.config.json curate.timeout_minutes)',
+  },
+});
+
+// Every value that follows --max-turns in an argument vector.
+function turnFlags(argv) {
+  return argv.flatMap((arg, i) => (arg === '--max-turns' ? [argv[i + 1]] : []));
+}
+
+test('roundTurns and roundTimeoutMinutes: the configured value, null when it is null, and each pack\'s own default when the key is left out', () => {
+  assert.equal(roundTurns({ curate: { max_turns: 7 } }), 7);
+  assert.equal(roundTurns({ curate: { max_turns: null } }), null);
+  assert.equal(roundTimeoutMinutes({ curate: { timeout_minutes: 45 } }), 45);
+  assert.equal(roundTimeoutMinutes({ curate: { timeout_minutes: null } }), null);
+  for (const lang of SUPPORTED_LANGS) {
+    const pack = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', lang, 'config.defaults.json'), 'utf8'));
+    assert.equal(pack.curate.max_turns, 100, `${lang}: the approved plan's default`);
+    assert.equal(roundTurns({ curate: {} }), pack.curate.max_turns, `${lang}: a key left out gets the pack's own default`);
+    assert.ok(Object.hasOwn(pack.curate, 'timeout_minutes'), `${lang}: the pack names the time limit`);
+    assert.equal(pack.curate.timeout_minutes, null, `${lang}: no time limit unless the owner sets one`);
+    assert.equal(roundTimeoutMinutes({ curate: {} }), pack.curate.timeout_minutes, lang);
+  }
+  assert.equal(roundTurns({}), 100);
+  assert.equal(roundTimeoutMinutes({}), null);
+});
+
+test('curate.max_turns: null runs the model with no --max-turns, a key left out passes 100, a number passes itself; the round says which and last-run records it', () => {
+  for (const { name, edit, flag, recorded } of TURN_CASES) {
+    const w = makeCurateWorld({ config: edit });
+    const r = w.curate();
+    assert.equal(r.status, EXIT.OK, `${name}: ${r.stderr}`);
+    const argv = JSON.parse(readFileSync(w.files.argvFile, 'utf8'));
+    assert.deepEqual(turnFlags(argv), flag === null ? [] : [flag], name);
+    assert.ok(r.stdout.split('\n').includes(TURN_LINES.en[name]), `${name}: ${r.stdout}`);
+    const last = w.lastRun();
+    assert.ok(Object.hasOwn(last, 'maxTurns'), name);
+    assert.equal(last.maxTurns, recorded, name);
+  }
+});
+
+test('curate.timeout_minutes: null or left out runs the model with no time limit, a number is its limit; the round says which and last-run records it', () => {
+  for (const { name, edit, recorded } of TIME_CASES) {
+    const w = makeCurateWorld({ config: edit });
+    const r = w.curate();
+    assert.equal(r.status, EXIT.OK, `${name}: ${r.stderr}`);
+    assert.ok(r.stdout.split('\n').includes(TIME_LINES.en[name]), `${name}: ${r.stdout}`);
+    const last = w.lastRun();
+    assert.ok(Object.hasOwn(last, 'timeoutMinutes'), name);
+    assert.equal(last.timeoutMinutes, recorded, name);
+  }
+});
+
+test('a model that outlives curate.timeout_minutes is killed, and the round exits 1 as timed_out naming the minutes', async () => {
+  const w = makeCurateWorld({ config: (c) => { c.curate.timeout_minutes = 0.02; } });
+  w.scenario({ delayMs: 30000 });
+  const r = await curateInProcess(w, [], { killGraceMs: 500 });
+  assert.equal(r.status, EXIT.FAILURE, r.stderr);
+  const last = w.lastRun();
+  assert.equal(last.reasonCode, 'timed_out');
+  assert.equal(last.timeoutMinutes, 0.02);
+  assert.equal(last.reason, 'brain-kit curate: the model ran longer than 1 minutes and was killed.');
+  assert.equal(w.watermark(), null);
+  assert.deepEqual(w.roundFiles(), []);
+});
+
+test('--check and --dry say the turn and time limits in the vault\'s language, and their command line carries --max-turns only when there is a turn limit', () => {
+  for (const lang of ['en', 'pt-BR']) {
+    for (const { name, edit, flag } of TURN_CASES) {
+      const w = makeCurateWorld({ config: (c) => { c.lang = lang; edit(c); c.curate.timeout_minutes = 45; } });
+      for (const mode of ['--dry', '--check']) {
+        const r = w.curate([mode]);
+        const label = `${lang}, ${name}, ${mode}`;
+        assert.equal(r.status, EXIT.OK, `${label}: ${r.stderr}`);
+        const lines = r.stdout.split('\n');
+        assert.ok(lines.includes(TURN_LINES[lang][name]), `${label}: ${r.stdout}`);
+        assert.ok(lines.includes(TIME_LINES[lang]['a number']), `${label}: ${r.stdout}`);
+        const command = lines.find((line) => line.startsWith(lang === 'en' ? 'Command: ' : 'Comando: '));
+        assert.ok(command, `${label}: ${r.stdout}`);
+        assert.deepEqual(turnFlags(JSON.parse(command.slice(command.indexOf('["')))), flag === null ? [] : [flag], label);
+      }
+      assert.equal(w.lastRun(), null, 'neither --dry nor --check writes last-run.json');
+    }
+  }
+  const w = makeCurateWorld({ config: (c) => { delete c.curate.timeout_minutes; } });
+  assert.ok(w.curate(['--dry']).stdout.split('\n').includes(TIME_LINES.en.absent));
+});
+
+test('a turn limit of 0 or a fraction, and a time limit of 0 or below, are refused as configuration before any round, naming the key', () => {
+  for (const [edit, key] of [
+    [(c) => { c.curate.max_turns = 0; }, '$.curate.max_turns: must be >= 1'],
+    [(c) => { c.curate.max_turns = 2.5; }, '$.curate.max_turns: expected integer or null, got number'],
+    [(c) => { c.curate.timeout_minutes = 0; }, '$.curate.timeout_minutes: must be > 0'],
+    [(c) => { c.curate.timeout_minutes = -5; }, '$.curate.timeout_minutes: must be > 0'],
+  ]) {
+    const w = makeCurateWorld({ config: edit });
+    const r = w.curate();
+    assert.equal(r.status, EXIT.USAGE, `${key}: ${r.stderr}`);
+    const last = w.lastRun();
+    assert.equal(last.reasonCode, 'config_invalid', key);
+    assert.ok(last.reason.includes(key), `${key}: ${last.reason}`);
+    assert.equal(Object.hasOwn(last, 'maxTurns') || Object.hasOwn(last, 'timeoutMinutes'), false, key);
+    assert.deepEqual(traces(w), { network: true, fetched: true, snapshot: false, cli: false, model: false }, `${key}: stopped at the configuration, step 6`);
+  }
 });
 
 // Phase 3, task 1: every round runs with the exact built-in tools, no

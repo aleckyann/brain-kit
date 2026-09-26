@@ -11,7 +11,7 @@
 > concluída: o briefing matinal (`preflight`, `questions`, a skill `briefing` e a tarefa dela
 > no aplicativo para desktop). A fase 5a traz o que um vault que sai de scripts próprios
 > precisa: o `watermark import`, uma ponte para uma trava `flock` legada e rodadas sem teto
-> de custo quando a configuração não pede nenhum. O pacote no npm ainda é o esqueleto da
+> de custo, de turnos ou de tempo quando a configuração não pede nenhum. O pacote no npm ainda é o esqueleto da
 > fase 0. Acompanhe o repositório para a primeira versão usável.
 
 Um segundo cérebro em markdown puro, no Open Knowledge Format (OKF) v0.2, mantido por um

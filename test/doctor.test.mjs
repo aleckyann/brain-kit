@@ -368,7 +368,7 @@ test('the check table is exactly the phase 1, 2, 3, 4 and 5a set, each named by 
   assert.deepEqual(CHECK_IDS, [
     'node-version', 'git-present', 'default-branch-known', 'hooks-path', 'brain-kit-on-path', 'config-valid', 'manifest-valid', 'machine-valid',
     'state-dir-resolves', 'state-dir-mode', 'legacy-lock', 'kit-version', 'gh-present', 'claude-present', 'gitignore-node-modules', 'privacy-keywords',
-    'claude-real', 'claude-isolation-flags', 'round-scope', 'cost-cap', 'include-projects', 'connectors', 'watermark', 'last-run', 'schedule', 'notify',
+    'claude-real', 'claude-isolation-flags', 'round-scope', 'cost-cap', 'turn-cap', 'time-cap', 'include-projects', 'connectors', 'watermark', 'last-run', 'schedule', 'notify',
     'briefing',
   ]);
 });
@@ -2396,6 +2396,96 @@ test('cost-cap: the Portuguese pack says each case, no cap for null, with nothin
   assert.ok((await said()).includes('sem teto de custo: curate.budget_usd é null em brain-kit.config.json, então uma rodada não passa --max-budget-usd'));
   editJson(file, (config) => { config.curate.budget_usd = 0; });
   assert.ok((await said()).includes('curate.budget_usd em brain-kit.config.json é 0, e nenhuma rodada roda com esse teto: ponha um número positivo de USD, ou null para rodar sem teto.'));
+});
+
+// --- turn-cap and time-cap (phase 5a, ruling R-A3) ------------------------------
+
+const TURNS_PARAMS = Object.freeze({ setting: 'curate.max_turns', file: 'brain-kit.config.json' });
+const TIME_PARAMS = Object.freeze({ setting: 'curate.timeout_minutes', file: 'brain-kit.config.json' });
+
+test('turn-cap: a whole number is the limit, a key left out is the default said as such, and null is no limit; each passes', async () => {
+  const fx = setup();
+  const file = join(fx.root, 'brain-kit.config.json');
+  let c = assertCheck((await doctor(fx, ['--only', 'turn-cap'])).report, 'turn-cap', 'ok', 'doctor.turn_cap.set');
+  assert.deepEqual(c.params, { turns: 100, ...TURNS_PARAMS });
+  assert.equal(c.message, 'each round stops after 100 turns (curate.max_turns in brain-kit.config.json)');
+  editJson(file, (config) => { delete config.curate.max_turns; });
+  c = assertCheck((await doctor(fx, ['--only', 'turn-cap'])).report, 'turn-cap', 'ok', 'doctor.turn_cap.default');
+  assert.deepEqual(c.params, { turns: 100, ...TURNS_PARAMS });
+  assert.equal(c.message, 'each round stops after 100 turns, the default: curate.max_turns is not set in brain-kit.config.json (null would run rounds with no turn limit)');
+  editJson(file, (config) => { config.curate.max_turns = null; });
+  const r = await doctor(fx, ['--only', 'turn-cap']);
+  c = assertCheck(r.report, 'turn-cap', 'ok', 'doctor.turn_cap.none');
+  assert.deepEqual(c.params, { ...TURNS_PARAMS });
+  assert.equal(c.message, 'no turn limit: curate.max_turns is null in brain-kit.config.json, so a round passes no --max-turns');
+  assert.equal(r.code, EXIT.OK);
+});
+
+test('turn-cap: a limit no round can run with fails, naming the value', async () => {
+  const fx = setup();
+  const file = join(fx.root, 'brain-kit.config.json');
+  for (const [value, shown] of [[0, '0'], [-3, '-3'], [2.5, '2.5'], ['100', '"100"']]) {
+    editJson(file, (config) => { config.curate.max_turns = value; });
+    const { report, code } = await doctor(fx, ['--only', 'turn-cap']);
+    const c = assertCheck(report, 'turn-cap', 'fail', 'doctor.turn_cap.unusable');
+    assert.deepEqual(c.params, { ...TURNS_PARAMS, value: shown });
+    assert.equal(code, EXIT.FAILURE);
+  }
+});
+
+test('time-cap: a number of minutes is the limit, and null or a key left out is no limit, the packs\' default; each passes', async () => {
+  const fx = setup();
+  const file = join(fx.root, 'brain-kit.config.json');
+  let c = assertCheck((await doctor(fx, ['--only', 'time-cap'])).report, 'time-cap', 'ok', 'doctor.time_cap.none');
+  assert.deepEqual(c.params, { ...TIME_PARAMS });
+  assert.equal(c.message, 'no time limit: curate.timeout_minutes is null or not set in brain-kit.config.json, so a round\'s model runs until it ends; one that hangs holds the vault lock until you stop it');
+  editJson(file, (config) => { delete config.curate.timeout_minutes; });
+  assertCheck((await doctor(fx, ['--only', 'time-cap'])).report, 'time-cap', 'ok', 'doctor.time_cap.none');
+  editJson(file, (config) => { config.curate.timeout_minutes = 45; });
+  const r = await doctor(fx, ['--only', 'time-cap']);
+  c = assertCheck(r.report, 'time-cap', 'ok', 'doctor.time_cap.set');
+  assert.deepEqual(c.params, { minutes: 45, ...TIME_PARAMS });
+  assert.equal(c.message, 'a round\'s model is killed after 45 minute(s) (curate.timeout_minutes in brain-kit.config.json)');
+  assert.equal(r.code, EXIT.OK);
+});
+
+test('time-cap: a limit no round can run with fails, naming the value; config-valid refuses 0 through the schema', async () => {
+  const fx = setup();
+  const file = join(fx.root, 'brain-kit.config.json');
+  for (const [value, shown] of [[0, '0'], [-1, '-1'], ['60', '"60"'], [true, 'true']]) {
+    editJson(file, (config) => { config.curate.timeout_minutes = value; });
+    const { report, code } = await doctor(fx, ['--only', 'time-cap']);
+    const c = assertCheck(report, 'time-cap', 'fail', 'doctor.time_cap.unusable');
+    assert.deepEqual(c.params, { ...TIME_PARAMS, value: shown });
+    assert.equal(code, EXIT.FAILURE);
+  }
+  editJson(file, (config) => { config.curate.timeout_minutes = 0; });
+  let c = assertCheck((await doctor(fx, ['--only', 'config-valid'])).report, 'config-valid', 'fail', 'doctor.config_valid.invalid');
+  assert.deepEqual(c.params.errors, ['$.curate.timeout_minutes: must be > 0']);
+  editJson(file, (config) => { config.curate.timeout_minutes = null; config.curate.max_turns = 0; });
+  c = assertCheck((await doctor(fx, ['--only', 'config-valid'])).report, 'config-valid', 'fail', 'doctor.config_valid.invalid');
+  assert.deepEqual(c.params.errors, ['$.curate.max_turns: must be >= 1']);
+});
+
+test('turn-cap and time-cap: curate.enabled false passes saying so; the Portuguese pack says each case with nothing left unfilled', async () => {
+  const off = setup({ config: configWith((c) => { c.curate.enabled = false; c.curate.max_turns = 0; c.curate.timeout_minutes = 0; }) });
+  assertCheck((await doctor(off, ['--only', 'turn-cap'])).report, 'turn-cap', 'ok', 'doctor.curate.disabled');
+  assertCheck((await doctor(off, ['--only', 'time-cap'])).report, 'time-cap', 'ok', 'doctor.curate.disabled');
+  const fx = setup();
+  const file = join(fx.root, 'brain-kit.config.json');
+  const said = async () => {
+    const f = fakeIo();
+    await runDoctor([fx.root, '--only', 'turn-cap,time-cap'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
+    assert.doesNotMatch(f.stdout(), /\{[a-z_]+\}|\[object Object\]/);
+    return f.stdout();
+  };
+  let text = await said();
+  assert.ok(text.includes('cada rodada para depois de 100 turnos (curate.max_turns em brain-kit.config.json)'), text);
+  assert.ok(text.includes('sem limite de tempo: curate.timeout_minutes é null ou não está definido em brain-kit.config.json'), text);
+  editJson(file, (config) => { config.curate.max_turns = null; config.curate.timeout_minutes = 30; });
+  text = await said();
+  assert.ok(text.includes('sem limite de turnos: curate.max_turns é null em brain-kit.config.json, então uma rodada não passa --max-turns'), text);
+  assert.ok(text.includes('o modelo de uma rodada é encerrado depois de 30 minuto(s) (curate.timeout_minutes em brain-kit.config.json)'), text);
 });
 
 test('connectors: no connector source listed in curate.sources is one ok line', async () => {

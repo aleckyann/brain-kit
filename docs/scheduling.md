@@ -98,10 +98,16 @@ once broke a real routine.
     `blocked_by_user_rules` and the round runs isolated, on the transcripts alone. Without
     one, the isolated mode ([security.md](security.md), [connectors.md](connectors.md)).
     **`--check` stops here.** It prints the plan, the mode, every rule that refused it,
-    the command line, the cost cap and the prompt's size.
-13. **The model.** The round says its cost cap: `curate.budget_usd`, the default of 5 USD
-    when the key is left out, or none when it is `null`, in which case the command line
-    carries no `--max-budget-usd` at all. The prompt goes on standard input. The first
+    the command line, the round's three limits and the prompt's size.
+13. **The model.** The round says its three limits. The cost cap: `curate.budget_usd`, the
+    default of 5 USD when the key is left out, or none when it is `null`, in which case the
+    command line carries no `--max-budget-usd` at all. The turn limit: `curate.max_turns`,
+    the default of 100 when the key is left out, or none when it is `null` (no
+    `--max-turns`). The time limit: `curate.timeout_minutes`, a number of minutes after
+    which the model is killed and the round exits 1 (`timed_out`), or none when it is
+    `null` or left out, the default: the model then runs until it ends by itself, and one
+    that hangs holds the vault lock until you stop it (every later round postpones with
+    exit 75, naming it, and notifies). The prompt goes on standard input. The first
     event the CLI prints says which permission mode, hooks, MCP servers, built-in tools and
     memory folders are in effect; if it is not exactly the isolation of the mode the round
     asked for, the model is stopped at once: exit 1. In connector mode the same event says
@@ -111,7 +117,7 @@ once broke a real routine.
     and forbidden to reach it any other way. There is never a second relaunch, and a
     connector still connecting (`pending`) stays in the round. When nothing is left for a
     model to read, no second launch happens at all. The model runs in a process group of
-    its own, and the whole group is killed on timeout (60 minutes) or when the round is
+    its own, and the whole group is killed at the time limit, when one is set, or when the round is
     interrupted (SIGINT, SIGTERM, SIGHUP, SIGQUIT, or a rarer signal that would end it:
     SIGUSR2, SIGALRM, SIGXCPU, SIGXFSZ, SIGVTALRM, SIGPROF, SIGPWR where the system has
     it), so no command it started outlives the round. A hook event later in the stream
@@ -384,6 +390,7 @@ otherwise `~/.local/state/brain-kit/<vault name>-<hash>/` (or under `$XDG_STATE_
 | `warnings`, `remainingDays` | everything said on the way, and the days still open |
 | `costUsd`, `numTurns` | what the model cost and how many turns it took |
 | `budgetUsd` | the cost cap the model ran under, in USD; `null` when `curate.budget_usd` is `null` and the round passed no cap; absent when no model was launched |
+| `maxTurns`, `timeoutMinutes` | the turn limit and the time limit (in minutes) the model ran under; `null` for none; absent when no model was launched |
 | `denials` | the names of the tools the model was denied, never their input |
 | `isolation` | whether the init event proved the isolation, and what was wrong if not |
 | `proposed` | every pull request the round opened: branch, paths, and whether it opened |
@@ -411,9 +418,10 @@ are removed at the end of each round.
 that exited 0 in seconds without a model turn, which is a dead round reported as a
 success), each source's mark and how far behind it is, each connector source's last state
 with the round's date, whether the timer is installed and when it fires next, whether
-failures reach you or only the log, and the cost cap the next round runs under (`cost-cap`:
+failures reach you or only the log, and the limits the next round runs under (`cost-cap`:
 the number, the default when `curate.budget_usd` is left out, or no cap when it is
-`null`). `brain-kit doctor --probe` asks the CLI for each connector's state now, without a
+`null`; `turn-cap`, the same for `curate.max_turns`; `time-cap`, a number of minutes or no
+time limit). `brain-kit doctor --probe` asks the CLI for each connector's state now, without a
 round.
 
 ## When rounds seem to do nothing

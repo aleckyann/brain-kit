@@ -9,8 +9,8 @@
 > meeting notes through the claude.ai connectors, once you turn them on. Phase 4 is
 > complete: the morning briefing (`preflight`, `questions`, the `briefing` skill and its
 > desktop task). Phase 5a adds what a vault moving from scripts of its own needs:
-> `watermark import`, a bridge to a legacy `flock` lock, and rounds with no cost cap when
-> the configuration asks for none. The package on npm is still the Phase 0 skeleton.
+> `watermark import`, a bridge to a legacy `flock` lock, and rounds with no cost, turn or
+> time limit when the configuration asks for none. The package on npm is still the Phase 0 skeleton.
 > Follow the repository for the first usable release.
 
 A second brain in plain markdown, in the Open Knowledge Format (OKF) v0.2, kept by an
