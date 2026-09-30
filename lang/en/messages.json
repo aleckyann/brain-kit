@@ -103,6 +103,7 @@
   "house.extension_fields.number": "{field} \"{value}\" must be a number",
   "house.extension_fields.date": "{field} \"{value}\" must be an ISO calendar date (YYYY-MM-DD)",
   "house.extension_fields.enum": "{field} \"{value}\" is not one of this vault's allowed values: {allowed}",
+  "house.extension_fields.dangling_items": "{field} has list items indented under it from line {line}, but its value is already on its key line, so the items hang under it and the note no longer reads. Move them to the end of the {list} list, before the next top-level key",
   "house.link_style.file_relative": "link {seen} starts with a slash, which resolves against the host, not the repository, and breaks where a human reviews the change; this vault requires file-relative links",
   "house.link_style.bundle_absolute": "link {seen} does not start with a slash; this vault requires bundle-absolute links",
   "house.link_target_exists.broken": "link target \"{target}\" does not resolve to anything in this vault (resolved to \"{resolved}\")",

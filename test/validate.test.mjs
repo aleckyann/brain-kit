@@ -1079,6 +1079,72 @@ test('validate.fail_on "must+should" fails on a guidance finding but not on a ho
   assert.equal(run([makeVault({ files: houseOnly, config })]).status, EXIT.OK);
 });
 
+// --- a list item dangling under a scalar field (26/09 and 30/09/2026) ------
+//
+// The specific finding replaces the generic "shape could not be read" for
+// this one shape, and nothing about the run changes with it: the same
+// house group, the same exit code under every validate.fail_on, and no
+// warning. The generic shape is run beside it under the same settings, so
+// "unchanged" is measured, not assumed.
+
+function personWith(...lines) {
+  return [
+    '---',
+    'type: person',
+    'description: an example person',
+    'generated: { by: human:ana, at: 2026-09-30T09:30:00Z }',
+    'sources:',
+    '  - resource: /memory/log.md',
+    ...lines,
+    '---',
+    '# Ana',
+    '',
+  ].join('\n');
+}
+
+const DANGLING_PERSON = personWith('confidential: true', '  - resource: /people/bruno.md');
+const GENERIC_UNREADABLE_PERSON = personWith('confidential: |', '  true');
+
+test('validate names a list item dangling under a scalar field by line, field and list, and exits exactly as it does for the generic unreadable finding', () => {
+  const files = (note) => ({ 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': note });
+  const dangling = makeVault({ files: files(DANGLING_PERSON), config: { lang: 'en' } });
+  const text = run([dangling]);
+  assert.equal(text.status, EXIT.FAILURE);
+  assert.ok(
+    text.stdout.includes('people/ana.md:8  extension-fields  confidential has list items indented under it from line 8, but its value is already on its key line, so the items hang under it and the note no longer reads. Move them to the end of the sources list, before the next top-level key\n'),
+    text.stdout,
+  );
+  assert.doesNotMatch(text.stdout, /could not be read/, 'the generic finding is replaced, not repeated');
+  assert.doesNotMatch(text.stdout, /\[warning\]/);
+
+  const json = JSON.parse(run([dangling, '--json']).stdout);
+  const ours = json.findings.filter((f) => f.id === 'extension-fields');
+  assert.deepEqual(ours.map((f) => [f.ruler, f.check, f.file, f.line, f.unreadable, f.absence, 'warning' in f, 'level' in f]), [
+    ['house', 'frontmatter-dangling-items', 'people/ana.md', 8, true, false, false, false],
+  ]);
+  assert.equal(json.blocking, true);
+  assert.equal(json.counts.house, 1);
+  assert.equal(json.counts.warnings, 0);
+
+  for (const failOn of ['any', 'must+should', 'must']) {
+    const config = { lang: 'en', validate: { fail_on: failOn } };
+    const specific = run([makeVault({ files: files(DANGLING_PERSON), config })]).status;
+    const generic = run([makeVault({ files: files(GENERIC_UNREADABLE_PERSON), config })]).status;
+    assert.equal(specific, failOn === 'any' ? EXIT.FAILURE : EXIT.OK, failOn);
+    assert.equal(specific, generic, `${failOn}: the same exit code as the generic unreadable finding`);
+  }
+});
+
+test('validate renders the dangling-items finding in the vault\x27s own language', () => {
+  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': DANGLING_PERSON }, config: { lang: 'pt-BR' } });
+  const result = run([root]);
+  assert.equal(result.status, EXIT.FAILURE);
+  assert.ok(
+    result.stdout.includes('people/ana.md:8  extension-fields  confidential tem itens de lista recuados embaixo dele a partir da linha 8, mas o valor dele já está na linha da chave, então os itens ficam pendurados nele e a nota deixa de ser lida. Mova os itens para o fim da lista sources, antes da próxima chave de primeiro nível\n'),
+    result.stdout,
+  );
+});
+
 // An unclassifiable finding is a statement about the TOOL, not about the
 // vault, so no vault setting gets to wave it through.
 test('an unclassifiable finding blocks under every fail_on setting, including "must"', () => {

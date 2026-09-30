@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### A list item written under the wrong key (incidents of 26/09 and 30/09/2026)
+
+- `validate` names a list item that hangs under another key. When the line of a declared
+  extension field already holds its value and list items are indented under it, below a
+  list they were written for (a new `sources` entry added after `confidential: true`, at
+  the end of the frontmatter), the `extension-fields` rule reports
+  `frontmatter-dangling-items` with the first item's line, the field it hangs under, the
+  nearest list above and the fix: move the items to the end of that list, before the next
+  top-level key. It used to report only that the field's shape could not be read. The
+  finding keeps the generic one's class and blocks exactly where it did; every other
+  unreadable shape, and the same shape with no list above, still gets the generic finding.
+  The reader accepts and declines the same shapes as before.
+
 ### Known gaps found while moving the reference vault onto the kit (26/09/2026)
 
 - `machine register` rebinds a vault that moved; it cannot create the state of an

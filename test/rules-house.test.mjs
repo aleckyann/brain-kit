@@ -42,6 +42,7 @@ import { walkVault } from '../src/vault.mjs';
 import { HOUSE_RULES, runHouseRules, applyTimestampDeviation } from '../src/rules/house.mjs';
 import { runSpecRules } from '../src/rules/spec.mjs';
 import { createTranslator } from '../src/lang.mjs';
+import { readEntries, splitFrontmatter } from '../src/frontmatter.mjs';
 import { makeVault } from './helpers/vault-fixture.mjs';
 
 // A finding carries a message KEY and PARAMS, never a formed sentence
@@ -674,6 +675,146 @@ test('extension-fields reports a present but unreadable field against PARSER_LIM
   assert.equal(findings.length, 1);
   assert.equal(findings[0].check, 'shape-readable');
   assert.match(renderedMessage(findings[0]), /PARSER_LIMITS/);
+});
+
+// --- extension-fields: list items dangling under a scalar field ---------------------
+//
+// Incidents of 26/09 and 30/09/2026: a curator added a `sources` entry
+// just before the closing "---", which fell after a boolean field's line,
+// so the entry hung under that field. The only finding was the generic
+// shape-readable one, and nobody could act on it. The specific finding
+// keeps that finding's class (same rule, `unreadable`, never an absence)
+// and names the item's line, the field it hangs under and the list above.
+
+function danglingNote(...lines) {
+  return ['---', 'type: person', 'description: an example person', 'sources:', '  - resource: /memory/log.md', ...lines, '---', '# Ana', ''].join('\n');
+}
+
+const DANGLING_CONFIG = {
+  frontmatter: {
+    required: [],
+    forbidden: [],
+    extensions: { confidential: { type: 'boolean' }, author: { type: 'string' }, review_date: { type: 'date' } },
+  },
+};
+
+function danglingFinding(file, field, line) {
+  return {
+    ruler: 'house',
+    id: 'extension-fields',
+    check: 'frontmatter-dangling-items',
+    file,
+    line,
+    absence: false,
+    unreadable: true,
+    messageKey: 'house.extension_fields.dangling_items',
+    params: { field, line, list: 'sources' },
+  };
+}
+
+test('extension-fields names list items dangling under a boolean, a string and a date field, with the item\x27s line and the list above, instead of the generic finding', () => {
+  const files = {
+    ...cleanVaultFiles(),
+    'people/after-boolean.md': danglingNote('confidential: true', '  - resource: /people/bruno.md'),
+    'people/after-string.md': danglingNote('author: "Ana" # quoted, with a comment', '  - resource: /people/bruno.md'),
+    'people/after-date.md': danglingNote('review_date: 2026-09-30', '  - resource: /people/bruno.md', '    last_modified: 2026-09-30T10:00:00Z'),
+  };
+  const findings = findingsFor({ files, config: DANGLING_CONFIG }).filter(isHouse('extension-fields'));
+  // Line 7 of each file: "---", type, description, sources, its item,
+  // the scalar field, then the first dangling item.
+  assert.deepEqual(
+    findings.filter((f) => f.file !== 'people/ana.md'),
+    [danglingFinding('people/after-boolean.md', 'confidential', 7), danglingFinding('people/after-date.md', 'review_date', 7), danglingFinding('people/after-string.md', 'author', 7)].sort((a, b) => (a.file < b.file ? -1 : 1)),
+  );
+  assert.equal(findings.filter((f) => f.check === 'shape-readable').length, 0, 'the specific finding replaces the generic one, never joins it');
+});
+
+test('two dangling groups in one note are two findings, each at its own first item and naming the nearest list above it', () => {
+  const note = [
+    '---', 'type: person', 'description: an example person',
+    'tags:', '  - example',
+    'author: Ana', '  - resource: /people/bruno.md',
+    'sources:', '  - resource: /memory/log.md',
+    'review_date: 2026-09-30', '  - resource: /people/ana.md',
+    'confidential: true', '  - resource: /people/bruno.md', '  - resource: /people/ana.md',
+    '---', '# Ana', '',
+  ].join('\n');
+  const findings = findingsFor({ files: { ...cleanVaultFiles(), 'people/two-groups.md': note }, config: DANGLING_CONFIG })
+    .filter((f) => isHouse('extension-fields')(f) && f.file === 'people/two-groups.md');
+  assert.deepEqual(
+    findings.map((f) => [f.check, f.params.field, f.line, f.params.list]),
+    [
+      ['frontmatter-dangling-items', 'confidential', 13, 'sources'],
+      ['frontmatter-dangling-items', 'author', 7, 'tags'],
+      ['frontmatter-dangling-items', 'review_date', 11, 'sources'],
+    ],
+  );
+});
+
+test('extension-fields keeps the generic finding for a field that is unreadable for any other reason, even with a list above it', () => {
+  const files = {
+    ...cleanVaultFiles(),
+    'people/block-scalar.md': danglingNote('author: |', '  - a line of text that starts with a dash'),
+    'people/nested-mapping.md': danglingNote('confidential: true', '  reason: set by hand'),
+    'people/folded.md': danglingNote('author: Ana', '  and Bruno'),
+    'people/unclosed-quote.md': danglingNote('author: "Ana', '  - and Bruno"'),
+    'people/own-list.md': danglingNote('author: # the owners', '  - Ana'),
+    'people/no-list-above.md': ['---', 'type: person', 'confidential: true', '  - resource: /people/bruno.md', '---', '# Ana', ''].join('\n'),
+  };
+  const findings = findingsFor({ files, config: DANGLING_CONFIG }).filter((f) => isHouse('extension-fields')(f) && f.file !== 'people/ana.md');
+  assert.deepEqual(
+    findings.map((f) => [f.file, f.check, f.messageKey, f.unreadable, f.absence]).sort(),
+    [
+      ['people/block-scalar.md', 'shape-readable', 'common.shape_unreadable', true, false],
+      ['people/folded.md', 'shape-readable', 'common.shape_unreadable', true, false],
+      ['people/nested-mapping.md', 'shape-readable', 'common.shape_unreadable', true, false],
+      ['people/no-list-above.md', 'shape-readable', 'common.shape_unreadable', true, false],
+      ['people/own-list.md', 'shape-readable', 'common.shape_unreadable', true, false],
+      ['people/unclosed-quote.md', 'shape-readable', 'common.shape_unreadable', true, false],
+    ],
+  );
+  for (const finding of findings) {
+    assert.equal(finding.line, finding.file === 'people/no-list-above.md' ? 3 : 6, `${finding.file}: the generic finding still points at the key`);
+  }
+});
+
+test('the same note with the items moved to the end of the list is clean, and reads every entry', () => {
+  const fixed = ['---', 'type: person', 'description: an example person', 'sources:', '  - resource: /memory/log.md', '  - resource: /people/bruno.md', 'confidential: true', '---', '# Ana', ''].join('\n');
+  const files = { ...cleanVaultFiles(), 'people/fixed.md': fixed };
+  const root = makeVault({ files, config: DANGLING_CONFIG });
+  const { files: mdFiles, context } = rulerArgsFor(root, loadConfig(root));
+  assert.deepEqual(runHouseRules(mdFiles, context).filter((f) => f.file === 'people/fixed.md'), []);
+  assert.deepEqual(runSpecRules(mdFiles, context).filter((f) => f.id === 'sources-resource' && f.file === 'people/fixed.md'), []);
+  assert.deepEqual(readEntries(splitFrontmatter(fixed).frontmatter, 'sources'), [{ resource: '/memory/log.md' }, { resource: '/people/bruno.md' }]);
+});
+
+test('the rule itself hands the runner the dangling finding with exactly the generic finding\x27s class: unreadable, no absence, no warning, no level', () => {
+  const files = { ...cleanVaultFiles(), 'people/after-boolean.md': danglingNote('confidential: true', '  - resource: /people/bruno.md') };
+  const root = makeVault({ files, config: DANGLING_CONFIG });
+  const { files: mdFiles, context } = rulerArgsFor(root, loadConfig(root));
+  const rule = HOUSE_RULES.find((r) => r.id === 'extension-fields');
+  assert.deepEqual(rule.check(mdFiles, context).filter((f) => f.file === 'people/after-boolean.md'), [
+    {
+      file: 'people/after-boolean.md',
+      line: 7,
+      check: 'frontmatter-dangling-items',
+      unreadable: true,
+      messageKey: 'house.extension_fields.dangling_items',
+      params: { field: 'confidential', line: 7, list: 'sources' },
+    },
+  ]);
+});
+
+test('the dangling finding reads in both language packs, naming the line, the field and the list, with the fix in one sentence', () => {
+  const finding = danglingFinding('people/after-boolean.md', 'confidential', 7);
+  assert.equal(
+    createTranslator('en')(finding.messageKey, finding.params),
+    'confidential has list items indented under it from line 7, but its value is already on its key line, so the items hang under it and the note no longer reads. Move them to the end of the sources list, before the next top-level key',
+  );
+  assert.equal(
+    createTranslator('pt-BR')(finding.messageKey, finding.params),
+    'confidential tem itens de lista recuados embaixo dele a partir da linha 7, mas o valor dele já está na linha da chave, então os itens ficam pendurados nele e a nota deixa de ser lida. Mova os itens para o fim da lista sources, antes da próxima chave de primeiro nível',
+  );
 });
 
 // --- the placeholder exemption: templates_dir only, and only there ---------------

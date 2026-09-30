@@ -636,6 +636,89 @@ export function frontmatterKeyLine(frontmatter, key) {
   return found ? found.index + 2 : null;
 }
 
+// --- danglingItems ------------------------------------------------------------
+
+// Why a reader declined one shape, named precisely enough to act on:
+// block list items indented under a key whose value is already on the
+// key's own line. It happens when a list item is written at the end of
+// the frontmatter, after another key's line, instead of at the end of its
+// own list: the item then hangs under that other key. It reached a real
+// vault twice in five days (26/09 and 30/09/2026), each time as a new
+// `sources` entry written after a boolean's line, and each time the only
+// finding was the generic "shape could not be read", which the curator
+// that wrote the item could not act on.
+//
+// This is a diagnosis, not a reader: it never changes what readScalar or
+// any reader above accepts or declines, and a rule calls it only after a
+// reader already declined the key. It returns null unless all of these
+// hold, and each clause is there so a shape YAML really allows is never
+// described as a misplaced item:
+//
+// - `key` is a top-level key whose own line carries a scalar value. A key
+//   line that is empty (or holds only a comment) is a block list or
+//   mapping header; a "|" or ">" header is a block scalar, whose content
+//   may well start with "- "; a "[" or "{" opens a flow collection that
+//   may continue below; an anchor or a tag with nothing after it belongs
+//   to the node written below it; a quote that does not close on the line
+//   continues on the next one. None of those is a scalar on the key line.
+// - The first line indented under it is a list item ("- ..." or "-").
+//   A nested mapping under a scalar ("  reason: x") is some other shape,
+//   and so is a plain value folded onto an indented line.
+// - A block list sits above it: a top-level key with nothing on its line
+//   and a list item as its first indented line. The nearest one is named,
+//   since that is the list the item was most likely written for, and the
+//   fix is to move the items to its end. With no list above there is no
+//   list to move them to, and the caller keeps its generic finding.
+//
+// Returns { line, list }: `line` is the 1-based line, in the WHOLE file, of
+// the first dangling item (frontmatterKeyLine's arithmetic, one line
+// further down), and `list` is the nearest list key's name.
+export function danglingItems(frontmatter, key) {
+  const lines = (frontmatter ?? '').split('\n');
+  const found = findKeyLine(lines, key);
+  if (!found || !holdsScalarOnKeyLine(found.head)) return null;
+  const block = collectBlock(lines, found.index);
+  if (block.length === 0 || !isEntryMarker(block[0].slice(indentOf(block[0])))) return null;
+  const list = nearestBlockListAbove(lines, found.index);
+  if (list === null) return null;
+  return { line: found.index + 3, list };
+}
+
+// What a key line holds once its trailing comment and any leading node
+// properties (an anchor "&name", a tag "!tag") are set aside. A line whose
+// only content is a comment ("key: # note") holds nothing: stripTrailingComment
+// leaves a comment that opens the value untouched, since a "#" right after
+// the colon has no whitespace before it inside the value itself.
+function keyLineValue(rawHead) {
+  const value = stripTrailingComment(rawHead).replace(/^(?:[&!]\S*(?:[ \t]+|$))+/, '');
+  return value.startsWith('#') ? '' : value;
+}
+
+function holdsScalarOnKeyLine(rawHead) {
+  const value = keyLineValue(rawHead);
+  if (value === '') return false;
+  if (/^[|>[{]/.test(value)) return false; // a block scalar header, or a flow collection
+  const quote = value[0];
+  if ((quote === '"' || quote === "'") && value.indexOf(quote, 1) === -1) return false; // a quoted scalar continued on the next line
+  return true;
+}
+
+// A top-level key line, generalised to an unknown key the way findKeyLine
+// matches a known one: at column 0, bare or quoted, then optional spaces
+// or tabs, then ":" followed by whitespace or the end of the line. A list
+// item at column 0 is never a key line here.
+const TOP_LEVEL_KEY = /^(?:"([^"]*)"|'([^']*)'|([^\s"'#-][^:]*?))[ \t]*:((?:[ \t].*)?)$/;
+
+function nearestBlockListAbove(lines, index) {
+  for (let i = index - 1; i >= 0; i--) {
+    const match = TOP_LEVEL_KEY.exec(lines[i]);
+    if (!match || keyLineValue(match[4]) !== '') continue;
+    const block = collectBlock(lines, i);
+    if (block.length > 0 && isEntryMarker(block[0].slice(indentOf(block[0])))) return match[1] ?? match[2] ?? match[3];
+  }
+  return null;
+}
+
 // --- PARSER_LIMITS -----------------------------------------------------------
 
 // What this reader cannot see, or what it can see but might still
