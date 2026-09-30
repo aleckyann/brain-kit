@@ -19,7 +19,9 @@
   gets the generic finding. The reader accepts and declines the same shapes as before.
 - The curate prompt tells the round, in both languages, to put a new item of a frontmatter
   list such as `sources` at the end of that list, before the next top-level key. No
-  contract marker was added, so an overlay that passes `prompt --check` still does.
+  contract marker was added, so an overlay that passes `prompt --check` still does. A vault
+  with its own curate overlay does not get the sentence: copy it by hand to the place where
+  the overlay tells the round to create or change notes.
 
 ### Known gaps found while moving the reference vault onto the kit (26/09/2026)
 
