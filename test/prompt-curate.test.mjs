@@ -277,6 +277,30 @@ for (const lang of LANGS) {
   });
 }
 
+// Incidents of 26/09 and 30/09/2026: a new `sources` item written at the
+// end of the frontmatter, after another key's line, hung under that key and
+// failed the vault's validate. One sentence in the Compile section, where
+// the round writes `sources`, and no new contract marker, so an overlay
+// that carries every marker today still does.
+const LIST_ITEM_PLACEMENT = {
+  en: "When you add an item to a frontmatter list such as `sources`, put it at the end of that list, before the next top-level key: an item written after another key's line hangs under that key and the note no longer reads.",
+  'pt-BR': 'Quando você acrescentar um item a uma lista do frontmatter, como `sources`, ponha o item no fim dessa lista, antes da próxima chave de primeiro nível: um item escrito depois da linha de outra chave fica pendurado nessa chave, e a nota deixa de ser lida.',
+};
+
+for (const lang of LANGS) {
+  test(`${lang}: the curate prompt tells the round where a new frontmatter list item goes, in the Compile section, outside every contract rule`, () => {
+    const text = readFileSync(join(KIT_ROOT, 'lang', lang, 'prompts', 'curate.md'), 'utf8');
+    const sentence = LIST_ITEM_PLACEMENT[lang];
+    assert.equal(text.split(sentence).length - 1, 1, `${lang}: the sentence, once`);
+    const at = text.indexOf(sentence);
+    const compile = text.lastIndexOf('\n## ', at);
+    assert.match(text.slice(compile, text.indexOf('\n', compile + 1)), lang === 'en' ? /## Compile$/ : /## Compilar$/, `${lang}: under the Compile heading`);
+    const paragraph = text.slice(text.lastIndexOf('\n\n', at) + 2, at);
+    assert.doesNotMatch(paragraph, /<!-- rule:/, `${lang}: not inside a contract rule's paragraph`);
+    assert.ok(rendered(lang).includes(sentence), `${lang}: rendered as written`);
+  });
+}
+
 test('the two packs\' curate prompts carry no em dash and no work vocabulary', () => {
   const banned = {
     en: /\b(company|companies|team|teams|calendar|meeting|meetings|CRM|sales|customer|customers|client|clients|colleague|colleagues|employee|manager|boss)\b/i,
