@@ -234,7 +234,7 @@
 // config.lang.
 import { posix } from 'node:path';
 import { isValidIsoDate } from '../dates.mjs';
-import { frontmatterKeyLine, readEntries, readList, readMapping, readScalar, splitFrontmatter } from '../frontmatter.mjs';
+import { danglingItems, frontmatterKeyLine, readEntries, readList, readMapping, readScalar, splitFrontmatter } from '../frontmatter.mjs';
 import { stripCode } from '../markdown.mjs';
 // Two helpers, no walk. src/vault.mjs owns what a vault path IS: whether
 // one lies under a directory, and whether one names something that exists.
@@ -457,6 +457,20 @@ function allowedEnumValues(spec, noteType) {
   return spec.values ?? null;
 }
 
+// True when every one-line value passes this extension field's own type
+// check: a string, or an enum with no list of values for the note's type.
+// Under such a field, "author: Ana" then "  - and Bruno" is one legal plain
+// value, "Ana - and Bruno", folded onto a line that happens to start with
+// "- ", and nothing in the note says it is a misplaced list item instead.
+// Any other type refuses the folded value ("true - person" is no boolean),
+// so there the line under it can only be an item written in the wrong place.
+function takesAnyText(spec, frontmatter) {
+  if (spec.type === 'string') return true;
+  if (spec.type !== 'enum') return false;
+  const noteType = readScalar(frontmatter, 'type');
+  return allowedEnumValues(spec, typeof noteType === 'string' ? noteType : null) === null;
+}
+
 // A malformed validate.placeholder_pattern (a vault owner's own typo in
 // a regular expression) must never crash this rule: RegExp construction
 // from config text is guarded here. (Fix round 1: this used to be the
@@ -495,6 +509,33 @@ const extensionFields = {
         if (value === null) continue; // this rule only applies when the field is present
         const line = frontmatterKeyLine(frontmatter, fieldName);
         if (value === undefined) {
+          // One unreadable shape is named, because the person (or the
+          // curator) who wrote it can fix it in one move: list items
+          // indented under this field's line, which already holds its
+          // value, below a list they were meant for. Written twice in five
+          // days by a curator adding a `sources` entry after a boolean
+          // field (26/09 and 30/09/2026), and each time reported only as
+          // the generic finding below, which nobody could act on. It keeps
+          // that finding's class: the same rule, `unreadable`, never an
+          // absence, and the same place in the house group, so it blocks
+          // exactly where the generic one does. Every other unreadable
+          // shape still gets the generic finding (see danglingItems in
+          // src/frontmatter.mjs for what counts as dangling and why).
+          // Under a field that takes any text, a group of scalar items is
+          // also a legal folded value, so only its type can tell them
+          // apart: those keep the generic finding.
+          const dangling = danglingItems(frontmatter, fieldName, { scalarItems: !takesAnyText(spec, frontmatter) });
+          if (dangling !== null) {
+            findings.push({
+              file,
+              line: dangling.line,
+              check: 'frontmatter-dangling-items',
+              unreadable: true,
+              messageKey: 'house.extension_fields.dangling_items',
+              params: { field: fieldName, line: dangling.line, list: dangling.list },
+            });
+            continue;
+          }
           findings.push({
             file,
             line,

@@ -36,7 +36,7 @@ A document a source offers (a note, a set of minutes, a record someone kept) is 
 
 ## Compile
 
-Turn the captures into notes: a new note from the right template, or a change to one that already exists. Every note you create or change carries `generated: { by: {{agent}}, at: {{now_iso}} }`, with `<model>` replaced by the model you are running as and `at` exactly as written here, the same for every note of this round (never guess a time, and never try to look one up), and a `sources` entry whose `resource` is `/{{log}}` (a path from the vault's root, with the leading slash). When a note draws on more than one source, give each `sources` entry an id and put a footnote with that id on every claim, including the claims not yet confirmed.
+Turn the captures into notes: a new note from the right template, or a change to one that already exists. Every note you create or change carries `generated: { by: {{agent}}, at: {{now_iso}} }`, with `<model>` replaced by the model you are running as and `at` exactly as written here, the same for every note of this round (never guess a time, and never try to look one up), and a `sources` entry whose `resource` is `/{{log}}` (a path from the vault's root, with the leading slash). When a note draws on more than one source, give each `sources` entry an id and put a footnote with that id on every claim, including the claims not yet confirmed. When you add an item to a frontmatter list such as `sources`, put it at the end of that list, before the next top-level key: an item written after another key's line hangs under that key and the note no longer reads.
 
 <!-- rule:never-verified -->
 Never write `verified` in any note, and never mark your own work as confirmed in any other way. The owner's merge is the confirmation.

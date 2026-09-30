@@ -101,6 +101,7 @@
   "house.extension_fields.number": "{field} \"{value}\" deve ser um número",
   "house.extension_fields.date": "{field} \"{value}\" deve ser uma data de calendário ISO (AAAA-MM-DD)",
   "house.extension_fields.enum": "{field} \"{value}\" não é um dos valores permitidos por este vault: {allowed}",
+  "house.extension_fields.dangling_items": "{field} tem itens de lista recuados embaixo dele a partir da linha {line}, mas o valor dele já está na linha da chave, então os itens ficam pendurados nele e a nota deixa de ser lida. Mova os itens para o fim da lista {list}, antes da próxima chave de primeiro nível",
   "house.link_style.file_relative": "o link {seen} começa com uma barra, que resolve contra o host, não o repositório, e quebra onde um humano revisa a mudança; este vault exige links relativos ao arquivo",
   "house.link_style.bundle_absolute": "o link {seen} não começa com uma barra; este vault exige links absolutos ao pacote",
   "house.link_target_exists.broken": "o destino do link \"{target}\" não resolve para nada neste vault (resolvido para \"{resolved}\")",

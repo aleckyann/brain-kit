@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.3 (tagged `v0.0.3`, not on npm)
 
 ### The SessionStart line says nothing about the legacy lock (28/09/2026)
 
@@ -15,6 +15,35 @@
   release line. The vault-lock sentence is unchanged. The two message keys only the
   removed sentence used (`hook.session_start.legacy_lock_held` and
   `hook.session_start.legacy_lock_unusable`) are gone from both language packs.
+
+### A list item written under the wrong key (incidents of 26/09 and 30/09/2026)
+
+- `validate` names a list item that hangs under another key. When the line of a declared
+  extension field already holds its value and list items are indented under it, below a
+  list they were written for (a new `sources` entry added after `confidential: true`, at
+  the end of the frontmatter), the `extension-fields` rule reports
+  `frontmatter-dangling-items` with the first item's line, the field it hangs under, the
+  list above that holds entries like the items, and the fix: move the items to the end of
+  that list, before the next top-level key. The list named is the one EVERY item of the
+  group belongs to, not merely the nearest one or the first item's: a source goes to
+  `sources` (the list whose first entry shares the most of the item's fields), never to a
+  `tags` list written in between, and a tag goes to a list of scalars. It used to report
+  only that the field's shape could not be read. The finding keeps the generic one's class
+  and blocks exactly where it did; every other unreadable shape still gets the generic
+  finding, and so does the same shape when no list above holds the items' kind, when the
+  items belong to different lists (a tag, then a source) or something that is no item sits
+  among them, when the items are plain values under a field that takes any text (a
+  `string`, or an `enum` with no values for the note's type), where `author: Ana` then
+  `  - and Bruno` is one legal folded value, and when the items are not indented where that
+  list's own markers are. Moved as they are, such items are no entry of the list: at the
+  depth of its entries' fields a source even reads as a field of the entry above, and the
+  note passed with the source unread. The reader accepts and declines the same shapes as
+  before.
+- The curate prompt tells the round, in both languages, to put a new item of a frontmatter
+  list such as `sources` at the end of that list, before the next top-level key. No
+  contract marker was added, so an overlay that passes `prompt --check` still does. A vault
+  with its own curate overlay does not get the sentence: copy it by hand to the place where
+  the overlay tells the round to create or change notes.
 
 ### Known gaps found while moving the reference vault onto the kit (26/09/2026)
 

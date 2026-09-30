@@ -944,7 +944,7 @@ read. Making the hook prove the session is not a descendant of the holder was tr
 dropped: too much surface tied to one environment for a sentence of little value.
 **Rule.** Text a SessionStart hook puts in a session's context reaches every session
 that loads the plugin, including rounds of other tools that hold the very lock the text
-talks about. The hook states only facts about its own snapshot. Locks are enforced by
+talks about. The hook states only facts about its own snapshot and the kit's own state, never a lock another tool holds. Locks are enforced by
 mechanism (every writer refuses while one is held, the Stop hook releases), not by telling
 a session about them, and they are reported where a person reads them.
 **Where it lives in brain-kit.** `brain-kit hook session-start`

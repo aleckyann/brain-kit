@@ -42,6 +42,7 @@ import { walkVault } from '../src/vault.mjs';
 import { HOUSE_RULES, runHouseRules, applyTimestampDeviation } from '../src/rules/house.mjs';
 import { runSpecRules } from '../src/rules/spec.mjs';
 import { createTranslator } from '../src/lang.mjs';
+import { readEntries, splitFrontmatter } from '../src/frontmatter.mjs';
 import { makeVault } from './helpers/vault-fixture.mjs';
 
 // A finding carries a message KEY and PARAMS, never a formed sentence
@@ -674,6 +675,218 @@ test('extension-fields reports a present but unreadable field against PARSER_LIM
   assert.equal(findings.length, 1);
   assert.equal(findings[0].check, 'shape-readable');
   assert.match(renderedMessage(findings[0]), /PARSER_LIMITS/);
+});
+
+// --- extension-fields: list items dangling under a scalar field ---------------------
+//
+// Incidents of 26/09 and 30/09/2026: a curator added a `sources` entry
+// just before the closing "---", which fell after a boolean field's line,
+// so the entry hung under that field. The only finding was the generic
+// shape-readable one, and nobody could act on it. The specific finding
+// keeps that finding's class (same rule, `unreadable`, never an absence)
+// and names the item's line, the field it hangs under and the list above.
+
+function danglingNote(...lines) {
+  return ['---', 'type: person', 'description: an example person', 'sources:', '  - resource: /memory/log.md', ...lines, '---', '# Ana', ''].join('\n');
+}
+
+const DANGLING_CONFIG = {
+  frontmatter: {
+    required: [],
+    forbidden: [],
+    extensions: {
+      confidential: { type: 'boolean' },
+      author: { type: 'string' },
+      review_date: { type: 'date' },
+      rating: { type: 'number' },
+      phase: { type: 'enum', values: ['open', 'closed'] },
+      mood: { type: 'enum', values_by_type: { project: ['calm'] } },
+    },
+  },
+};
+
+function danglingFinding(file, field, line) {
+  return {
+    ruler: 'house',
+    id: 'extension-fields',
+    check: 'frontmatter-dangling-items',
+    file,
+    line,
+    absence: false,
+    unreadable: true,
+    messageKey: 'house.extension_fields.dangling_items',
+    params: { field, line, list: 'sources' },
+  };
+}
+
+test('extension-fields names list items dangling under a boolean, a string and a date field, with the item\x27s line and the list above, instead of the generic finding', () => {
+  const files = {
+    ...cleanVaultFiles(),
+    'people/after-boolean.md': danglingNote('confidential: true', '  - resource: /people/bruno.md'),
+    'people/after-string.md': danglingNote('author: "Ana" # quoted, with a comment', '  - resource: /people/bruno.md'),
+    'people/after-date.md': danglingNote('review_date: 2026-09-30', '  - resource: /people/bruno.md', '    last_modified: 2026-09-30T10:00:00Z'),
+  };
+  const findings = findingsFor({ files, config: DANGLING_CONFIG }).filter(isHouse('extension-fields'));
+  // Line 7 of each file: "---", type, description, sources, its item,
+  // the scalar field, then the first dangling item.
+  assert.deepEqual(
+    findings.filter((f) => f.file !== 'people/ana.md'),
+    [danglingFinding('people/after-boolean.md', 'confidential', 7), danglingFinding('people/after-date.md', 'review_date', 7), danglingFinding('people/after-string.md', 'author', 7)].sort((a, b) => (a.file < b.file ? -1 : 1)),
+  );
+  assert.equal(findings.filter((f) => f.check === 'shape-readable').length, 0, 'the specific finding replaces the generic one, never joins it');
+});
+
+test('two dangling groups in one note are two findings, each at its own first item and naming the nearest list above it that holds its kind of entry', () => {
+  const note = [
+    '---', 'type: person', 'description: an example person',
+    'tags:', '  - example',
+    'review_date: 2026-09-30', '  - person',
+    'sources:', '  - resource: /memory/log.md',
+    'author: Ana', '  - resource: /people/ana.md',
+    'confidential: true', '  - resource: /people/bruno.md', '  - resource: /people/ana.md',
+    '---', '# Ana', '',
+  ].join('\n');
+  const findings = findingsFor({ files: { ...cleanVaultFiles(), 'people/two-groups.md': note }, config: DANGLING_CONFIG })
+    .filter((f) => isHouse('extension-fields')(f) && f.file === 'people/two-groups.md');
+  assert.deepEqual(
+    findings.map((f) => [f.check, f.params.field, f.line, f.params.list]),
+    [
+      ['frontmatter-dangling-items', 'confidential', 13, 'sources'],
+      ['frontmatter-dangling-items', 'author', 11, 'sources'],
+      ['frontmatter-dangling-items', 'review_date', 7, 'tags'],
+    ],
+  );
+});
+
+test('a source dangling below a list of tags is sent to sources, never to the nearer tags, and a tag in the same place is sent to tags', () => {
+  // The review's reproduction: naming the nearest list sent the source to
+  // `tags`, and the note then passed with the source filed among the tags.
+  const files = {
+    ...cleanVaultFiles(),
+    'people/source-below-tags.md': danglingNote('tags:', '  - person', 'confidential: true', '  - resource: /memory/log.md', '    title: second'),
+    'people/tag-below-tags.md': danglingNote('tags:', '  - person', 'confidential: true', '  - example'),
+  };
+  const findings = findingsFor({ files, config: DANGLING_CONFIG }).filter((f) => isHouse('extension-fields')(f) && f.file !== 'people/ana.md');
+  assert.deepEqual(
+    findings.map((f) => [f.file, f.check, f.line, f.params.list]).sort(),
+    [
+      ['people/source-below-tags.md', 'frontmatter-dangling-items', 9, 'sources'],
+      ['people/tag-below-tags.md', 'frontmatter-dangling-items', 9, 'tags'],
+    ],
+  );
+});
+
+test('scalar items dangling under a field whose type refuses the folded value are named, and a source under a string field still is', () => {
+  // "true - person", "2026-09-30 - person", "5 - person" and "open - person"
+  // are no boolean, date, number or allowed enum value, so the line can
+  // only be a tag written in the wrong place. A mapping item is never a
+  // folded value, whatever the field's type.
+  const TAGS = ['tags:', '  - person'];
+  const files = {
+    ...cleanVaultFiles(),
+    'people/tag-under-boolean.md': danglingNote(...TAGS, 'confidential: true', '  - example', '  - person'),
+    'people/tag-under-date.md': danglingNote(...TAGS, 'review_date: 2026-09-30', '  - example'),
+    'people/tag-under-number.md': danglingNote(...TAGS, 'rating: 5', '  - example'),
+    'people/tag-under-listed-enum.md': danglingNote(...TAGS, 'phase: open', '  - example'),
+    'people/source-under-string.md': danglingNote(...TAGS, 'author: Ana', '  - resource: /people/bruno.md'),
+    'people/source-under-free-enum.md': danglingNote(...TAGS, 'mood: calm', '  - resource: /people/bruno.md'),
+    // The same enum has values for a project, so there it refuses the fold.
+    'projects/tag-under-typed-enum.md': danglingNote(...TAGS, 'mood: calm', '  - example').replace('type: person', 'type: project'),
+  };
+  const findings = findingsFor({ files, config: DANGLING_CONFIG }).filter((f) => isHouse('extension-fields')(f) && f.file !== 'people/ana.md');
+  assert.deepEqual(
+    findings.map((f) => [f.file, f.check, f.params.field, f.line, f.params.list]).sort(),
+    [
+      ['people/source-under-free-enum.md', 'frontmatter-dangling-items', 'mood', 9, 'sources'],
+      ['people/source-under-string.md', 'frontmatter-dangling-items', 'author', 9, 'sources'],
+      ['people/tag-under-boolean.md', 'frontmatter-dangling-items', 'confidential', 9, 'tags'],
+      ['people/tag-under-date.md', 'frontmatter-dangling-items', 'review_date', 9, 'tags'],
+      ['people/tag-under-listed-enum.md', 'frontmatter-dangling-items', 'phase', 9, 'tags'],
+      ['people/tag-under-number.md', 'frontmatter-dangling-items', 'rating', 9, 'tags'],
+      ['projects/tag-under-typed-enum.md', 'frontmatter-dangling-items', 'mood', 9, 'tags'],
+    ],
+  );
+});
+
+test('extension-fields keeps the generic finding for a field that is unreadable for any other reason, even with a list of each kind above it', () => {
+  // Every shape below sits under `sources` and `tags` (danglingNote plus
+  // TAGS), so a list of the items' kind is always there to be named, and
+  // the generic finding comes from the shape alone. The shapes are written
+  // under a date field, whose type refuses a folded value, so none is
+  // refused merely because its field takes any text (a string does); the
+  // two string cases at the end are that refusal itself.
+  const TAGS = ['tags:', '  - person'];
+  const cases = {
+    'people/block-scalar.md': [danglingNote(...TAGS, 'review_date: |', '  - a line of text that starts with a dash'), 8],
+    'people/nested-mapping.md': [danglingNote(...TAGS, 'confidential: true', '  reason: set by hand'), 8],
+    'people/mapping-then-item.md': [danglingNote(...TAGS, 'confidential: true', '  reason: x', '  - resource: /b.md'), 8],
+    'people/folded.md': [danglingNote(...TAGS, 'review_date: 2026-09-30', '  and later'), 8],
+    'people/folded-then-dash.md': [danglingNote(...TAGS, 'review_date: 2026-09-30', '  and later', '  - and later still'), 8],
+    'people/unclosed-quote.md': [danglingNote(...TAGS, 'review_date: "2026-09-30', '  - and later"'), 8],
+    'people/escaped-double-quote.md': [danglingNote(...TAGS, 'review_date: "2026-09-30 \\"', '  - and later"'), 8],
+    'people/doubled-single-quote.md': [danglingNote(...TAGS, "review_date: 'it''s", "  - notes'"), 8],
+    'people/own-list.md': [danglingNote(...TAGS, 'review_date: # the dates', '  - 2026-09-30'), 8],
+    'people/no-list-above.md': [['---', 'type: person', 'confidential: true', '  - resource: /people/bruno.md', '---', '# Ana', ''].join('\n'), 3],
+    'people/no-list-of-its-kind.md': [['---', 'type: person', ...TAGS, 'confidential: true', '  - resource: /people/bruno.md', '---', '# Ana', ''].join('\n'), 5],
+    // A group whose items do not all name one list, or with something
+    // among them that is no item: following "move the items" would file
+    // one of them where no rule reads it.
+    'people/tag-then-source.md': [danglingNote(...TAGS, 'confidential: true', '  - example', '  - resource: /people/bruno.md', '    title: second'), 8],
+    'people/source-then-tag.md': [danglingNote(...TAGS, 'confidential: true', '  - resource: /people/bruno.md', '  - example'), 8],
+    'people/item-then-mapping-line.md': [danglingNote(...TAGS, 'confidential: true', '  - resource: /people/bruno.md', '  reason: x'), 8],
+    // Scalar items under a field that takes any text are also a legal
+    // folded value: a string, and an enum with no values for this type.
+    'people/string-then-dash-line.md': [danglingNote(...TAGS, 'author: Ana', '  - and Bruno'), 8],
+    'people/free-enum-then-dash-line.md': [danglingNote(...TAGS, 'mood: calm', '  - person'), 8],
+  };
+  const files = { ...cleanVaultFiles(), ...Object.fromEntries(Object.entries(cases).map(([file, [note]]) => [file, note])) };
+  const findings = findingsFor({ files, config: DANGLING_CONFIG }).filter((f) => isHouse('extension-fields')(f) && f.file !== 'people/ana.md');
+  assert.deepEqual(
+    findings.map((f) => [f.file, f.check, f.messageKey, f.unreadable, f.absence]).sort(),
+    Object.keys(cases).sort().map((file) => [file, 'shape-readable', 'common.shape_unreadable', true, false]),
+  );
+  for (const finding of findings) {
+    assert.equal(finding.line, cases[finding.file][1], `${finding.file}: the generic finding still points at the key`);
+  }
+});
+
+test('the same note with the items moved to the end of the list is clean, and reads every entry', () => {
+  const fixed = ['---', 'type: person', 'description: an example person', 'sources:', '  - resource: /memory/log.md', '  - resource: /people/bruno.md', 'confidential: true', '---', '# Ana', ''].join('\n');
+  const files = { ...cleanVaultFiles(), 'people/fixed.md': fixed };
+  const root = makeVault({ files, config: DANGLING_CONFIG });
+  const { files: mdFiles, context } = rulerArgsFor(root, loadConfig(root));
+  assert.deepEqual(runHouseRules(mdFiles, context).filter((f) => f.file === 'people/fixed.md'), []);
+  assert.deepEqual(runSpecRules(mdFiles, context).filter((f) => f.id === 'sources-resource' && f.file === 'people/fixed.md'), []);
+  assert.deepEqual(readEntries(splitFrontmatter(fixed).frontmatter, 'sources'), [{ resource: '/memory/log.md' }, { resource: '/people/bruno.md' }]);
+});
+
+test('the rule itself hands the runner the dangling finding with exactly the generic finding\x27s class: unreadable, no absence, no warning, no level', () => {
+  const files = { ...cleanVaultFiles(), 'people/after-boolean.md': danglingNote('confidential: true', '  - resource: /people/bruno.md') };
+  const root = makeVault({ files, config: DANGLING_CONFIG });
+  const { files: mdFiles, context } = rulerArgsFor(root, loadConfig(root));
+  const rule = HOUSE_RULES.find((r) => r.id === 'extension-fields');
+  assert.deepEqual(rule.check(mdFiles, context).filter((f) => f.file === 'people/after-boolean.md'), [
+    {
+      file: 'people/after-boolean.md',
+      line: 7,
+      check: 'frontmatter-dangling-items',
+      unreadable: true,
+      messageKey: 'house.extension_fields.dangling_items',
+      params: { field: 'confidential', line: 7, list: 'sources' },
+    },
+  ]);
+});
+
+test('the dangling finding reads in both language packs, naming the line, the field and the list, with the fix in one sentence', () => {
+  const finding = danglingFinding('people/after-boolean.md', 'confidential', 7);
+  assert.equal(
+    createTranslator('en')(finding.messageKey, finding.params),
+    'confidential has list items indented under it from line 7, but its value is already on its key line, so the items hang under it and the note no longer reads. Move them to the end of the sources list, before the next top-level key',
+  );
+  assert.equal(
+    createTranslator('pt-BR')(finding.messageKey, finding.params),
+    'confidential tem itens de lista recuados embaixo dele a partir da linha 7, mas o valor dele já está na linha da chave, então os itens ficam pendurados nele e a nota deixa de ser lida. Mova os itens para o fim da lista sources, antes da próxima chave de primeiro nível',
+  );
 });
 
 // --- the placeholder exemption: templates_dir only, and only there ---------------
