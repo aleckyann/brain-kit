@@ -911,6 +911,27 @@ test('danglingItems refuses scalar items, and only those, when the caller says i
   assert.deepEqual(danglingItems(fm(...BOTH_ABOVE, 'author: Ana', '  - and Bruno'), 'author', {}), { line: 7, list: 'tags' }, 'scalar items are taken by default');
 });
 
+test('danglingItems finds a list key split at its own colon, however long the lines above it are', () => {
+  // A blank before the colon, a tab before the colon, a quoted key that
+  // holds a colon of its own.
+  assert.deepEqual(danglingItems(fm('sources :', '  - resource: /a.md', 'confidential: true', '  - resource: /b.md'), 'confidential'), { line: 5, list: 'sources' });
+  assert.deepEqual(danglingItems(fm('sources\t:', '  - resource: /a.md', 'confidential: true', '  - resource: /b.md'), 'confidential'), { line: 5, list: 'sources' });
+  assert.deepEqual(danglingItems(fm('"see: also":', '  - resource: /a.md', 'confidential: true', '  - resource: /b.md'), 'confidential'), { line: 5, list: 'see: also' });
+  assert.deepEqual(danglingItems(fm('"sources" :', '  - resource: /a.md', 'confidential: true', '  - resource: /b.md'), 'confidential'), { line: 5, list: 'sources' }, 'a quoted key with a blank before its colon');
+  assert.deepEqual(danglingItems(fm('::', '  - resource: /a.md', 'confidential: true', '  - resource: /b.md'), 'confidential'), { line: 5, list: ':' }, 'the first character is the key\x27s own, even a colon');
+  // A line with a colon but no blank after it is no key line, even when a
+  // "#" follows the colon, and a list under it is no list; nor is a
+  // comment or a list item written at column 0.
+  assert.equal(danglingItems(fm('sources:#x', '  - resource: /a.md', 'confidential: true', '  - resource: /b.md'), 'confidential'), null);
+  assert.equal(danglingItems(fm('# sources:', '  - resource: /a.md', 'confidential: true', '  - resource: /b.md'), 'confidential'), null);
+  assert.equal(danglingItems(fm('- sources:', '  - resource: /a.md', 'confidential: true', '  - resource: /b.md'), 'confidential'), null);
+  // A long run of blanks with no colon after it, on a line above: the
+  // review measured about a second for this line with the pattern the
+  // splitting replaced, and the answer is the same.
+  const blanks = 'x' + ' \t'.repeat(20000);
+  assert.deepEqual(danglingItems(fm(...SOURCES_ABOVE, blanks, 'confidential: true', '  - resource: /b.md'), 'confidential'), { line: 6, list: 'sources' });
+});
+
 test('danglingItems returns null for an absent key and for a missing or empty frontmatter, never throwing', () => {
   assert.equal(danglingItems(fm(...SOURCES_ABOVE, 'confidential: true', '  - resource: /b.md'), 'author'), null);
   assert.equal(danglingItems(null, 'confidential'), null);

@@ -785,8 +785,37 @@ function closingQuoteIndex(text) {
 // A top-level key line, generalised to an unknown key the way findKeyLine
 // matches a known one: at column 0, bare or quoted, then optional spaces
 // or tabs, then ":" followed by whitespace or the end of the line. A list
-// item at column 0 is never a key line here.
-const TOP_LEVEL_KEY = /^(?:"([^"]*)"|'([^']*)'|([^\s"'#-][^:]*?))[ \t]*:((?:[ \t].*)?)$/;
+// item at column 0 is never a key line here. Returns { name, rest }, where
+// `rest` is everything after the colon, or null.
+//
+// Split by hand at the colon rather than matched as one pattern: a bare
+// key written as a lazy run up to the colon, followed by optional blanks,
+// overlaps with those blanks, and a long run of blanks with no colon after
+// it took time growing with the square of its length, on every line above
+// the dangling key. A bare key runs to the line's first colon, as before;
+// a quoted one to its closing quote, so it may hold a colon.
+function topLevelKey(line) {
+  let name;
+  let colon;
+  const quote = line[0];
+  if (quote === '"' || quote === "'") {
+    const close = line.indexOf(quote, 1);
+    if (close === -1) return null;
+    name = line.slice(1, close);
+    colon = close + 1;
+    while (line[colon] === ' ' || line[colon] === '\t') colon++;
+    if (line[colon] !== ':') return null;
+  } else {
+    if (!/^[^\s"'#-]/.test(line)) return null;
+    colon = line.indexOf(':', 1); // the first character is the key's own, even a colon
+    if (colon === -1) return null;
+    let end = colon;
+    while (line[end - 1] === ' ' || line[end - 1] === '\t') end--;
+    name = line.slice(0, end);
+  }
+  const rest = line.slice(colon + 1);
+  return /^(?:[ \t].*)?$/.test(rest) ? { name, rest } : null;
+}
 
 // An inline mapping entry's first field ("{ resource: /a.md }"), bare or
 // quoted, followed by ":" and whitespace or the end of the text.
@@ -833,12 +862,12 @@ function unquoteFieldName(name) {
 function blockListsAbove(lines, index) {
   const lists = [];
   for (let i = index - 1; i >= 0; i--) {
-    const match = TOP_LEVEL_KEY.exec(lines[i]);
-    if (!match || keyLineValue(match[4]) !== '') continue;
+    const key = topLevelKey(lines[i]);
+    if (key === null || keyLineValue(key.rest) !== '') continue;
     const block = collectBlock(lines, i);
     if (block.length === 0 || !isEntryMarker(block[0].slice(indentOf(block[0])))) continue;
     const entry = firstEntryShape(block);
-    if (entry !== null) lists.push({ name: match[1] ?? match[2] ?? match[3], entry });
+    if (entry !== null) lists.push({ name: key.name, entry });
   }
   return lists;
 }
