@@ -15,8 +15,12 @@
 // killed and runWatched throws, so the test fails instead. The watch polls
 // with no deadline: waiting is recognised by what the kernel says, never by
 // how long something took.
+//
+// runUnderHolder runs a program as the child of the holder itself, the
+// shape of a legacy job that starts `claude -p` while it holds its lock
+// (docs/incidents.md, 28/09/2026), watched the same way.
 import { spawn, spawnSync } from 'node:child_process';
-import { readFileSync, statSync } from 'node:fs';
+import { closeSync, openSync, readFileSync, statSync } from 'node:fs';
 
 export const HOLDER_SCRIPT = 'exec 9>>"$1" || exit 3; flock -n 9 || exit 4; echo ready; read -r _';
 
@@ -80,9 +84,19 @@ export function waitsOn(ino, pgid) {
   });
 }
 
+function killGroup(pgid) {
+  try {
+    process.kill(-pgid, 'SIGKILL');
+  } catch {
+    // Already gone.
+  }
+}
+
 // Runs `program args` in a process group of its own, to its end, with
 // `input` on its standard input; throws if any process of that group waits
-// on `file` while it runs (see the header). `file` must exist.
+// on `file` while it runs (see the header). `file` must exist. Should the
+// watch itself fail (/proc/locks unreadable), the group is killed before
+// the error goes up, so no process of it outlives the test.
 export async function runWatched(program, args, { file, env, cwd, input = '' }) {
   const { ino } = statSync(file);
   const child = spawn(program, args, { env, cwd, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
@@ -97,21 +111,42 @@ export async function runWatched(program, args, { file, env, cwd, input = '' }) 
     resolve({ status, signal });
   }));
   let waited = false;
-  while (!done) {
-    if (waitsOn(ino, child.pid)) {
-      waited = true;
-      try {
-        process.kill(-child.pid, 'SIGKILL');
-      } catch {
-        // Already gone.
+  try {
+    while (!done) {
+      if (waitsOn(ino, child.pid)) {
+        waited = true;
+        killGroup(child.pid);
+        break;
       }
-      break;
+      await new Promise((resolve) => { setTimeout(resolve, 5); });
     }
-    await new Promise((resolve) => { setTimeout(resolve, 5); });
+  } catch (error) {
+    killGroup(child.pid);
+    await closed;
+    throw error;
   }
   const { status, signal } = await closed;
   if (waited) throw new Error(`${args.join(' ')} waited for the legacy lock ${file} instead of refusing at once`);
   return { status, signal, stdout, stderr };
+}
+
+// The shape of the incident of 28/09/2026 (docs/incidents.md): a legacy job
+// that holds its lock (`exec 9>>file; flock -n 9`) and, while it holds it,
+// starts a program as its own child, as it starts `claude -p`. Before the
+// child starts, the script proves the lock is held (a second `flock -n` on
+// the file must fail); it exits 3, 4 or 5 when it could not open the file,
+// could not lock it, or found it free. The child's status is the script's.
+export const PARENT_HOLDER_SCRIPT = 'exec 9>>"$1" || exit 3; flock -n 9 || exit 4; if flock -n "$1" true; then exit 5; fi; shift; "$@"';
+
+// Runs `program args` as the child of a bash holding `file` as above,
+// watched like runWatched (a waiter in the group fails the test). The file
+// is created first when missing, as the job's `>>` would create it, so the
+// watch has an inode to look for. The holder is the child's parent and
+// exits with it; runWatched's own close and its kill on failure leave no
+// process of the group running.
+export function runUnderHolder(file, program, args, { env, cwd, input = '' }) {
+  closeSync(openSync(file, 'a'));
+  return runWatched('bash', ['-c', PARENT_HOLDER_SCRIPT, 'bash', file, program, ...args], { file, env, cwd, input });
 }
 
 // flock(1) itself asked whether `file` can be locked right now, without

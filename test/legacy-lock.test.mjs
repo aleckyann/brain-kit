@@ -492,7 +492,7 @@ test('the Stop hook with the bridge on and the file not there yet: free, and the
   assert.equal(existsSync(fx.file), false);
 });
 
-// --- the facts: preflight, the briefing, SessionStart ---------------------------------
+// --- the facts: preflight and the briefing (never SessionStart) ----------------------
 
 test('preflight and the briefing say the legacy lock is held while another process holds it, never free; free once it is not; unusable with the writers\' refusal; nothing with the bridge off', NEEDS_FLOCK, async () => {
   const fx = bridgedVault();
@@ -528,30 +528,34 @@ test('preflight and the briefing say the legacy lock is held while another proce
   assert.doesNotMatch(r.stdout, /Legacy lock/, 'with the bridge off, no line');
 });
 
-test('the SessionStart line says the legacy lock is held, or that it cannot be used, and nothing while it is free', NEEDS_FLOCK, async () => {
+// docs/incidents.md, 28/09/2026: what SessionStart says reaches every
+// session that loads the plugin, the legacy job's own round included, so it
+// says nothing about the legacy lock. The line of a bridged vault is, word
+// for word, the line of the same vault with the bridge off.
+test('the SessionStart line says nothing about the legacy lock: held, free or unusable, it is the line of the bridge off', NEEDS_FLOCK, async () => {
   const fx = bridgedVault();
   const payload = JSON.stringify({ session_id: 's1', source: 'startup', cwd: fx.root });
   const contextOf = (r) => {
     assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stderr, '');
     return JSON.parse(r.stdout).hookSpecificOutput.additionalContext;
   };
+  const start = () => contextOf(runHookProcess('session-start', payload, { env: fx.env, cwd: join(fx.base, 'elsewhere') }));
+  setLegacy(fx, null);
+  const off = start();
+  setLegacy(fx, fx.file);
   const holder = startHolder(fx.file);
   try {
     await holder.ready;
     const r = await runWatched(process.execPath, [BIN, 'hook', 'session-start'], { file: fx.file, env: fx.env, cwd: join(fx.base, 'elsewhere'), input: payload });
-    const context = contextOf(r);
-    assert.ok(context.includes(T.en('hook.session_start.legacy_lock_held', { lock: fx.file })), context);
-    assert.doesNotMatch(context, /\n/, 'still one line');
+    assert.equal(contextOf(r), off, 'held');
   } finally {
     await holder.stop();
   }
-  const freeContext = contextOf(runHookProcess('session-start', payload, { env: fx.env, cwd: join(fx.base, 'elsewhere') }));
-  assert.doesNotMatch(freeContext, /legacy lock/i);
-  const gone = join(fx.base, 'gone');
-  setLegacy(fx, join(gone, 'legacy.lock'));
-  const refusal = T.en('lock.legacy_dir_missing', { lock: join(gone, 'legacy.lock'), dir: gone });
-  const unusableContext = contextOf(runHookProcess('session-start', payload, { env: fx.env, cwd: join(fx.base, 'elsewhere') }));
-  assert.ok(unusableContext.includes(T.en('hook.session_start.legacy_lock_unusable', { refusal })), unusableContext);
+  assert.equal(start(), off, 'free');
+  setLegacy(fx, join(fx.base, 'gone', 'legacy.lock'));
+  assert.equal(start(), off, 'unusable');
+  assert.doesNotMatch(off, /legacy/i);
 });
 
 test('a Stop hook that releases a clean session still names a legacy lock bridge that cannot be used', NEEDS_FLOCK, () => {

@@ -22,8 +22,6 @@
   "hook.session_start.lock_held": "A trava do vault está com {command} (pid {pid}): outro processo está escrevendo neste vault.",
   "hook.session_start.lock_stale": "A trava do vault foi deixada por {command} (pid {pid}), que não está mais rodando: ninguém está escrevendo, e o brain-kit doctor diz o que fazer com a trava velha.",
   "hook.session_start.lock_unreadable": "A trava do vault existe, mas não pode ser lida, então não se sabe quem a detém.",
-  "hook.session_start.legacy_lock_held": "A trava legada {lock} está com outro processo (o job legado, ou outro processo que escreve no vault): quem começar a escrever agora é adiado.",
-  "hook.session_start.legacy_lock_unusable": "A trava legada não pode ser usada, então todo processo que escreve se recusa: {refusal}",
   "hook.session_start.connectors": "Fontes por conector não conectadas na última rodada: {sources}; veja o brain-kit doctor.",
   "hook.session_start.failed": "brain-kit hook: não foi possível registrar o retrato da sessão: {detail}",
   "hook.stop.release_unregistered": "brain-kit, hook de Stop: liberado, esta cópia do vault não está registrada nesta máquina ({file} não existe). Rode brain-kit machine register para registrá-la.",

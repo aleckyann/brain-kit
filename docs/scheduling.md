@@ -341,6 +341,16 @@ and never writes or deletes it. The `propose` a round's model runs joins the rou
 does not take the lock a second time. The kit's Stop hook stands down while another
 process holds it.
 
+The text the plugin puts at the start of a session says nothing about the legacy lock,
+held, free or unusable. That text reaches every session that loads the plugin, including
+the legacy job's own round when the job starts Claude Code without isolating the person's
+settings; that round is a child of the lock's holder, and a sentence saying another
+process holds the lock reads to it as a competing writer
+([incidents.md](incidents.md), 28/09/2026). The lock is enforced by mechanism instead:
+every writer refuses while it is held, and the Stop hook stands down. It is reported where
+a person reads it: `brain-kit doctor` (the `legacy-lock` check), `brain-kit preflight` and
+so the morning briefing's facts, and the Stop hook's release line.
+
 The bridge needs Linux and util-linux `flock` on the `PATH` the command runs with. One
 that cannot be used (not Linux, no `flock`, the file's directory missing) refuses every
 writer with exit 1 until you fix it or turn it off, and `brain-kit doctor` says which.
@@ -367,12 +377,11 @@ What the bridge does not cover, by design:
   repository. A linked worktree, or a copy of the vault with a state directory of its
   own, reads its own `machine.json`: it has no bridge unless one is set there, and its
   writers run beside the legacy job, in a different working tree.
-- **The probe's side effect.** The Stop hook (at every session end), the SessionStart
-  line (at every session start), `brain-kit preflight` and so the morning briefing's
-  facts, and `doctor` ask whether another process holds the file with a shared lock,
-  taken without waiting and dropped at once. A legacy job that starts in that very
-  instant finds the file locked and skips that run, and a kit writer that starts then is
-  postponed with exit 75.
+- **The probe's side effect.** The Stop hook (at every session end), `brain-kit
+  preflight` and so the morning briefing's facts, and `doctor` ask whether another
+  process holds the file with a shared lock, taken without waiting and dropped at once.
+  A legacy job that starts in that very instant finds the file locked and skips that
+  run, and a kit writer that starts then is postponed with exit 75.
 
 ## Exit codes, and what to do for each
 

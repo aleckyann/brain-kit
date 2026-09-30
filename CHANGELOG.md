@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### The SessionStart line says nothing about the legacy lock (28/09/2026)
+
+- The SessionStart line no longer mentions the legacy lock, whether it is held, free or
+  cannot be used ([docs/incidents.md](docs/incidents.md), 28/09/2026). What that hook
+  writes reaches every session that loads the plugin, including a legacy job's own round
+  when the job starts Claude Code without isolating the person's settings; that round, a
+  child of the lock's holder, read "held by another process" as a competing writer and
+  ended without reading its sources. The hook no longer probes the file at all. The lock
+  is still enforced by every writer and by the Stop hook's release, and still reported by
+  `doctor` (`legacy-lock`), `preflight` and so the briefing's facts, and the Stop hook's
+  release line. The vault-lock sentence is unchanged. The two message keys only the
+  removed sentence used (`hook.session_start.legacy_lock_held` and
+  `hook.session_start.legacy_lock_unusable`) are gone from both language packs.
+
 ### Known gaps found while moving the reference vault onto the kit (26/09/2026)
 
 - `machine register` rebinds a vault that moved; it cannot create the state of an

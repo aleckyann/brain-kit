@@ -69,10 +69,11 @@
 // directory, a FIFO, a device) is refused. A symbolic link is followed, as
 // the legacy job follows it, so both lock the same file.
 //
-// THE PROBE, for the Stop hook (every session end), the SessionStart line
-// (every session start), preflight and so the briefing's facts, and doctor:
-// a shared lock on the file opened read-only, taken without waiting and
-// released at once. It never creates
+// THE PROBE, for the Stop hook (every session end), preflight and so the
+// briefing's facts, and doctor (never the SessionStart line, which says
+// nothing about this lock: docs/incidents.md, 28/09/2026): a shared lock
+// on the file opened read-only, taken without waiting and released at
+// once. It never creates
 // the file: a file that is not there cannot be locked by anyone, so it is
 // free. A declared side effect, the same as `flock -n -s <file> true`: a
 // legacy job that starts in the very instant the probe holds its shared

@@ -24,10 +24,20 @@
 // `additionalContext` line Claude Code hands the model, and a warning for
 // the person goes to stderr.
 //
-// THE LEGACY LOCK. When machine.json sets `paths.legacy_lock`, the line
-// also says that another process holds it (a writer started now is
-// postponed), or that the bridge cannot be used and every writer refuses,
-// with the refusal itself.
+// NOTHING ABOUT THE LEGACY LOCK. The line never mentions machine.json's
+// `paths.legacy_lock`, held, free or unusable (docs/incidents.md,
+// 28/09/2026). What this hook says reaches every session that loads the
+// plugin, including the round of a legacy job run without isolated
+// settings: that job holds the legacy lock for its whole run, and its own
+// round, told the lock was held by another process, took its parent for a
+// competing writer, read nothing and exited 0. So the line says nothing
+// about a lock another tool's round may be the holder of: the legacy lock
+// is enforced by mechanism (every writer refuses while it is held, the
+// Stop hook releases) and reported where a person reads it (doctor,
+// preflight and so the briefing's facts, the Stop hook's release line).
+// The vault-lock sentence stays: a round of the kit runs with no settings
+// file loaded, or in connector mode with every hook disabled
+// (src/harness/claude-code.mjs), so no hook of this plugin runs inside it.
 //
 // THE LAST ROUND'S CONNECTORS. The line also names each configured
 // connector source (calendar, meeting notes) whose state in the last
@@ -40,7 +50,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describeLock, isLockHolderStale } from '../guards/lock.mjs';
-import { legacyLockSetting, probeLegacyLock } from '../guards/legacy-lock.mjs';
 import { locateRepository } from '../guards/location.mjs';
 import { readSnapshot, takeSnapshot } from '../guards/snapshot.mjs';
 import { localDay } from '../guards/watermark.mjs';
@@ -128,20 +137,6 @@ function lockSentence(root, env, t) {
   return ` ${t('hook.session_start.lock_held', { command: String(holder.command), pid: holder.pid })}`;
 }
 
-// When the vault's machine.json sets a legacy lock (src/guards/legacy-lock.mjs):
-// one sentence while another process holds it, or while it cannot be used
-// (the writers' own refusal); nothing when it is free or off. Probed as the
-// Stop hook probes it, without waiting, never creating the file.
-function legacySentence(root, env, t) {
-  const setting = legacyLockSetting(stateDirFor(root, env));
-  if (setting.state === 'off') return '';
-  if (setting.state === 'invalid') return ` ${t('hook.session_start.legacy_lock_unusable', { refusal: t(setting.messageKey, setting.params) })}`;
-  const probed = probeLegacyLock(setting.file, { env });
-  if (probed.state === 'held') return ` ${t('hook.session_start.legacy_lock_held', { lock: setting.file })}`;
-  if (probed.state === 'unusable') return ` ${t('hook.session_start.legacy_lock_unusable', { refusal: t(probed.messageKey, probed.params) })}`;
-  return '';
-}
-
 export function runSessionStart(stdinText, env = process.env, now = new Date()) {
   const parsed = parseHookPayload(stdinText);
   if (!parsed.ok) {
@@ -182,7 +177,7 @@ export function runSessionStart(stdinText, env = process.env, now = new Date()) 
       const count = takeSnapshot(root, { env, now, ...(session === null ? {} : { session }) }).paths.length;
       status = replaced ? t('hook.session_start.replaced', { title, count }) : t('hook.session_start.taken', { title, count });
     }
-    const line = `${status}${lockSentence(root, env, t)}${legacySentence(root, env, t)}${connectorSentence(root, config, env, t)}`;
+    const line = `${status}${lockSentence(root, env, t)}${connectorSentence(root, config, env, t)}`;
     return { stdout: output(line), stderr: '' };
   } catch (error) {
     const detail = error.messageKey === undefined ? String(error.message) : t(error.messageKey, error.params);

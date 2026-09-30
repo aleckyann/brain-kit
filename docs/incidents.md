@@ -7,12 +7,13 @@ Names of people, companies and tools were removed on purpose.
 
 Seventy three lessons were extracted from the original vault, written up as seventy
 two entries: the four day curation outage of September 2026 produced two lessons about
-the same incident and is written up once, under 13/09/2026. Three entries were added
+the same incident and is written up once, under 13/09/2026. Four entries were added
 since, each dated: the leak gate that blocked its own release tag (18/09/2026), the
-selection of transcripts by modification time (24/09/2026), and the settings a headless
-run inherits (24/09/2026), which the kit's own build produced. Seventy five entries
-follow. Where a lesson carries no date of its own, the entry says "Undated" and explains
-why.
+selection of transcripts by modification time (24/09/2026), the settings a headless
+run inherits (24/09/2026), which the kit's own build produced, and the round that took
+its own parent for a competing curator (28/09/2026), found while moving a vault onto the
+kit. Seventy six entries follow. Where a lesson carries no date of its own, the entry
+says "Undated" and explains why.
 
 ## Format and links
 
@@ -929,6 +930,28 @@ reading the code, so no incident date.
 dependency is missing, the hook says so; it does not disappear quietly.
 **Where it lives in brain-kit.** `brain-kit hook stop` rewritten in Node, with no
 external command line dependency (Phase 1).
+
+### 28/09/2026: the round took its own parent for a competing curator
+**What happened.** A vault moving off a legacy scheduled job had the kit's plugin
+installed, and its `machine.json` pointed `paths.legacy_lock` at the legacy job's lock
+file. The legacy job holds that lock for its whole run and starts the model headless
+without isolating the person's settings, so the round's session loaded the plugin and ran
+its SessionStart hook. The hook put into the session's context that the legacy lock was
+held by another process and that a writer started now would be postponed. The round's
+model, a child of that very holder, took its parent script for a competing curator, read
+no source and exited 0, and the legacy job advanced its watermark over a day nobody
+read. Making the hook prove the session is not a descendant of the holder was tried and
+dropped: too much surface tied to one environment for a sentence of little value.
+**Rule.** Text a SessionStart hook puts in a session's context reaches every session
+that loads the plugin, including rounds of other tools that hold the very lock the text
+talks about. The hook states only facts about its own snapshot. Locks are enforced by
+mechanism (every writer refuses while one is held, the Stop hook releases), not by telling
+a session about them, and they are reported where a person reads them.
+**Where it lives in brain-kit.** `brain-kit hook session-start`
+(`src/hooks/session-start.mjs`, whose line says nothing about the legacy lock), the Stop
+hook's release line, `brain-kit doctor` check `legacy-lock`, `brain-kit preflight` and so
+the briefing's facts, [scheduling.md](scheduling.md) ("Moving from a legacy lock"),
+`test/incidents/2026-09-28-session-start-legacy-lock-abdication.test.mjs` (Phase 5a).
 
 ## Output folders and orphaned deliverables
 
