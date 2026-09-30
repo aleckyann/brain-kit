@@ -1196,6 +1196,25 @@ test('validate names no list for a source dangling at the depth of the list\x27s
   assert.match(JSON.stringify(moved.findings), /sources\[1\]\.last_modified/);
 });
 
+test('validate passes by an empty key above a dangling item: its report is printed, and its exit code follows fail_on as before', () => {
+  // An empty top-level key (`aliases:`, nothing on its line and nothing
+  // under it) between the list and the dangling key. The scan for lists
+  // above guards against its empty block, and no test passed one: without
+  // the guard, validate printed an error instead of its report, and exited
+  // 1 under a fail_on that does not block on the house group.
+  const files = { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': personWith('aliases:', 'confidential: true', '  - resource: /people/bruno.md') };
+  const text = run([makeVault({ files, config: { lang: 'en' } })]);
+  assert.equal(text.status, EXIT.FAILURE);
+  assert.ok(
+    text.stdout.includes('people/ana.md:9  extension-fields  confidential has list items indented under it from line 9, but its value is already on its key line, so the items hang under it and the note no longer reads. Move them to the end of the sources list, before the next top-level key\n'),
+    text.stdout,
+  );
+  assert.equal(text.stderr, '');
+  const must = run([makeVault({ files, config: { lang: 'en', validate: { fail_on: 'must' } } })]);
+  assert.equal(must.status, EXIT.OK, must.stdout + must.stderr);
+  assert.equal(must.stderr, '');
+});
+
 // An unclassifiable finding is a statement about the TOOL, not about the
 // vault, so no vault setting gets to wave it through.
 test('an unclassifiable finding blocks under every fail_on setting, including "must"', () => {

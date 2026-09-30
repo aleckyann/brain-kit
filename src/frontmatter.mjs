@@ -868,7 +868,8 @@ function unquoteFieldName(name) {
 
 // Every block list above `index`, nearest first, each with the shape of
 // its first entry and the indentation of its markers. A list whose first
-// entry holds nothing is left out.
+// entry holds nothing is left out, and so is a key with nothing on its
+// line and nothing under it (an empty `tags:`), which is no list at all.
 function blockListsAbove(lines, index) {
   const lists = [];
   for (let i = index - 1; i >= 0; i--) {

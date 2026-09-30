@@ -762,6 +762,13 @@ test('danglingItems names the NEAREST list above, skipping keys that are not lis
   const twoGroups = fm(...SOURCES_ABOVE, 'author: Ana', '  - resource: /b.md', 'confidential: true', '  - resource: /c.md');
   assert.deepEqual(danglingItems(twoGroups, 'author'), { line: 5, list: 'sources' });
   assert.deepEqual(danglingItems(twoGroups, 'confidential'), { line: 7, list: 'sources' });
+  // A key with nothing on its line and nothing under it (an empty
+  // `aliases:` or `tags:`) is no list, and the scan passes it by, between
+  // the list and the dangling key or above the list, and never takes it
+  // for the nearest list.
+  assert.deepEqual(danglingItems(fm(...SOURCES_ABOVE, 'aliases:', 'confidential: true', '  - resource: /b.md'), 'confidential'), { line: 6, list: 'sources' });
+  assert.deepEqual(danglingItems(fm('tags:', 'type: person', ...SOURCES_ABOVE, 'confidential: true', '  - resource: /b.md'), 'confidential'), { line: 7, list: 'sources' });
+  assert.deepEqual(danglingItems(fm('tags:', '  - example', 'aliases:', 'confidential: true', '  - person'), 'confidential'), { line: 6, list: 'tags' });
 });
 
 test('danglingItems names the list whose entries look like the dangling item, not merely the nearest list: a source is never sent to the tags', () => {
@@ -905,6 +912,20 @@ test('danglingItems ranks lists of mappings by the fields their first entry shar
   assert.deepEqual(danglingItems(repeated, 'confidential'), { line: 9, list: 'sources' });
   const repeatedNearer = fm('sources:', '  - resource: /a.md', 'links:', '  - title: a', '    title: b', 'confidential: true', '  - title: new', '    url: https://example.com/new');
   assert.deepEqual(danglingItems(repeatedNearer, 'confidential'), { line: 8, list: 'links' });
+  // A first entry's fields are the lines at ITS first field's indentation,
+  // wherever the marker puts it: "-   resource:" sets it at six, so
+  // `sources` shares both fields with the item and `links` one.
+  const wideMarker = fm('sources:', '  -   resource: /a.md', '      title: the log', ...LINKS, ...item);
+  assert.deepEqual(danglingItems(wideMarker, 'confidential'), { line: 9, list: 'sources' });
+  // A comment at the fields' indentation is no field, even when the item
+  // carries the same comment: the two lists stay tied, and the nearer wins.
+  const commented = fm('sources:', '  - resource: /a.md', '    # the log', 'related:', '  - resource: /b.md', 'confidential: true', '  - resource: /c.md', '    # the log');
+  assert.deepEqual(danglingItems(commented, 'confidential'), { line: 8, list: 'related' });
+  // An entry is a mapping only when its first line is a field: a scalar
+  // entry with a field-looking line under it keeps its list a list of
+  // scalars, which never takes a source, nearer or not.
+  const scalarFirst = fm(...SOURCES_ABOVE, 'notes:', '  - example', '    resource: /a.md', 'confidential: true', '  - resource: /b.md');
+  assert.deepEqual(danglingItems(scalarFirst, 'confidential'), { line: 8, list: 'sources' });
 });
 
 // Follows the fix as a curator would: the dangling lines, exactly as they
