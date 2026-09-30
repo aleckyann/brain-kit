@@ -835,6 +835,16 @@ test('danglingItems returns null for every shape YAML allows under a key line, s
     'a source under only a list of mappings with none of its fields': fm('links:', '  - url: https://example.com', 'confidential: true', '  - resource: /b.md'),
     'a source under a list holding its field only nested deeper': fm('links:', '  - title: x', '    note:', '      resource: /a.md', 'confidential: true', '  - resource: /b.md'),
     'a list above whose first entry holds nothing': fm('sources:', '  -', 'confidential: true', '  - resource: /b.md'),
+    // Every item of the group, not only the first, must be one the named
+    // list can take, and nothing else may sit among them.
+    'a scalar item, then a source (the review\x27s reproduction)': fm(...SOURCES_ABOVE, ...TAGS_ABOVE, 'confidential: true', '  - example', '  - resource: /b.md'),
+    'a scalar item, then a source written over two lines': fm(...BOTH_ABOVE, 'confidential: true', '  - example', '  - resource: /b.md', '    title: second'),
+    'a source, then a scalar item': fm(...BOTH_ABOVE, 'confidential: true', '  - resource: /b.md', '  - example'),
+    'a source, then a mapping item no list above holds': fm(...BOTH_ABOVE, 'confidential: true', '  - resource: /b.md', '  - url: https://example.com'),
+    'a source, then an item with nothing in it': fm(...BOTH_ABOVE, 'confidential: true', '  - resource: /b.md', '  -'),
+    'a source, then a mapping line at its indentation': fm(...BOTH_ABOVE, 'confidential: true', '  - resource: /b.md', '  reason: x'),
+    'a scalar item, then a plain line at its indentation': fm(...BOTH_ABOVE, 'confidential: true', '  - example', '  and more'),
+    'an item, then a shallower one': fm(...BOTH_ABOVE, 'confidential: true', '    - resource: /b.md', '  - resource: /c.md'),
   };
   for (const [name, frontmatter] of Object.entries(cases)) {
     const key = frontmatter.includes('author:') ? 'author' : 'confidential';
@@ -844,7 +854,61 @@ test('danglingItems returns null for every shape YAML allows under a key line, s
   // item under it and a list of its kind above IS the shape.
   assert.deepEqual(danglingItems(fm(...BOTH_ABOVE, 'author: Ana', '  - and Bruno'), 'author'), { line: 7, list: 'tags' });
   assert.deepEqual(danglingItems(fm(...BOTH_ABOVE, 'author: "Ana"', '  - and Bruno'), 'author'), { line: 7, list: 'tags' });
-  assert.deepEqual(danglingItems(fm(...BOTH_ABOVE, 'confidential: true', '  - resource: /b.md', '  reason: x'), 'confidential'), { line: 7, list: 'sources' });
+  assert.deepEqual(danglingItems(fm(...BOTH_ABOVE, 'confidential: true', '  - resource: /b.md', '    reason: x'), 'confidential'), { line: 7, list: 'sources' }, 'a field of the item, deeper than its marker');
+  assert.deepEqual(danglingItems(fm(...BOTH_ABOVE, 'confidential: true', '  - example', '  - person'), 'confidential'), { line: 7, list: 'tags' }, 'two scalar items');
+  assert.deepEqual(danglingItems(fm(...BOTH_ABOVE, 'confidential: true', '  - resource: /b.md', '  - resource: /c.md', '    title: c'), 'confidential'), { line: 7, list: 'sources' }, 'two sources');
+});
+
+test('danglingItems names a list only when every item of the group names it: two items of one kind are the shape, two kinds are not', () => {
+  // Two sources, one on a single line and one over two lines, and a third
+  // written as a bare marker with its fields under it.
+  const threeSources = fm(...SOURCES_ABOVE, ...TAGS_ABOVE, 'confidential: true', '  - resource: /b.md', '  - resource: /c.md', '    title: c', '  -', '    resource: /d.md');
+  assert.deepEqual(danglingItems(threeSources, 'confidential'), { line: 7, list: 'sources' });
+  assert.deepEqual(danglingItems(fm(...SOURCES_ABOVE, ...TAGS_ABOVE, 'confidential: true', '  - example', '  - person'), 'confidential'), { line: 7, list: 'tags' });
+  // Two mapping items that each name a different list of mappings: the
+  // first is a link, the second a source.
+  const linksAndSources = fm('links:', '  - title: a', '    url: https://example.com', ...SOURCES_ABOVE, 'confidential: true', '  - title: b', '    url: https://example.com/b', '  - resource: /b.md');
+  assert.equal(danglingItems(linksAndSources, 'confidential'), null, 'a link then a source');
+  // Each item alone, in the same layout, is the shape and names its own list.
+  assert.deepEqual(danglingItems(fm('links:', '  - title: a', '    url: https://example.com', ...SOURCES_ABOVE, 'confidential: true', '  - title: b', '    url: https://example.com/b'), 'confidential'), { line: 8, list: 'links' });
+  assert.deepEqual(danglingItems(fm('links:', '  - title: a', '    url: https://example.com', ...SOURCES_ABOVE, 'confidential: true', '  - resource: /b.md'), 'confidential'), { line: 8, list: 'sources' });
+});
+
+test('danglingItems ranks lists of mappings by the fields their first entry shares with the item before its first field, and a tie goes to the nearest', () => {
+  // The review's layout: a source written `title` first matches a `links`
+  // list on its first field, but shares both of its fields with `sources`.
+  const LINKS = ['links:', '  - title: a', '    url: https://example.com'];
+  const SOURCES_WITH_TITLE = ['sources:', '  - resource: /a.md', '    title: the log'];
+  const item = ['confidential: true', '  - title: new', '    resource: /b.md'];
+  assert.deepEqual(danglingItems(fm(...LINKS, ...SOURCES_WITH_TITLE, ...item), 'confidential'), { line: 9, list: 'sources' }, 'sources nearer');
+  assert.deepEqual(danglingItems(fm(...SOURCES_WITH_TITLE, ...LINKS, ...item), 'confidential'), { line: 9, list: 'sources' }, 'links nearer');
+  // Two lists of mappings whose first entries both start with the item's
+  // first field: the nearer one.
+  const bothStartAlike = fm('sources:', '  - resource: /a.md', 'related:', '  - resource: /b.md', 'confidential: true', '  - resource: /c.md');
+  assert.deepEqual(danglingItems(bothStartAlike, 'confidential'), { line: 7, list: 'related' });
+  const bothStartAlikeReversed = fm('related:', '  - resource: /b.md', 'sources:', '  - resource: /a.md', 'confidential: true', '  - resource: /c.md');
+  assert.deepEqual(danglingItems(bothStartAlikeReversed, 'confidential'), { line: 7, list: 'sources' });
+  // Two lists that share the item's field without starting with it: the
+  // nearer one.
+  const bothShareLater = fm('sources:', '  - title: a', '    resource: /a.md', 'related:', '  - url: https://example.com', '    resource: /b.md', 'confidential: true', '  - resource: /c.md');
+  assert.deepEqual(danglingItems(bothShareLater, 'confidential'), { line: 9, list: 'related' });
+  const bothShareLaterReversed = fm('related:', '  - url: https://example.com', '    resource: /b.md', 'sources:', '  - title: a', '    resource: /a.md', 'confidential: true', '  - resource: /c.md');
+  assert.deepEqual(danglingItems(bothShareLaterReversed, 'confidential'), { line: 9, list: 'sources' });
+  // A field repeated in a list's first entry counts once.
+  const repeated = fm('links:', '  - title: a', '    title: b', 'sources:', '  - resource: /a.md', '    title: c', 'confidential: true', '  - title: new', '    resource: /b.md');
+  assert.deepEqual(danglingItems(repeated, 'confidential'), { line: 9, list: 'sources' });
+  const repeatedNearer = fm('sources:', '  - resource: /a.md', 'links:', '  - title: a', '    title: b', 'confidential: true', '  - title: new', '    url: https://example.com/new');
+  assert.deepEqual(danglingItems(repeatedNearer, 'confidential'), { line: 8, list: 'links' });
+});
+
+test('danglingItems refuses scalar items, and only those, when the caller says its field takes any text', () => {
+  // Under a string field, `author: Ana` then `  - and Bruno` is the one
+  // legal value "Ana - and Bruno"; a mapping item never is.
+  assert.equal(danglingItems(fm(...BOTH_ABOVE, 'author: Ana', '  - and Bruno'), 'author', { scalarItems: false }), null);
+  assert.equal(danglingItems(fm(...BOTH_ABOVE, 'author: Ana', '  - and Bruno', '  - and Carla'), 'author', { scalarItems: false }), null);
+  assert.deepEqual(danglingItems(fm(...BOTH_ABOVE, 'author: Ana', '  - resource: /b.md'), 'author', { scalarItems: false }), { line: 7, list: 'sources' });
+  assert.deepEqual(danglingItems(fm(...BOTH_ABOVE, 'author: Ana', '  - and Bruno'), 'author', { scalarItems: true }), { line: 7, list: 'tags' });
+  assert.deepEqual(danglingItems(fm(...BOTH_ABOVE, 'author: Ana', '  - and Bruno'), 'author', {}), { line: 7, list: 'tags' }, 'scalar items are taken by default');
 });
 
 test('danglingItems returns null for an absent key and for a missing or empty frontmatter, never throwing', () => {

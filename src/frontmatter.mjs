@@ -664,38 +664,74 @@ export function frontmatterKeyLine(frontmatter, key) {
 //   continues on the next one (an escaped quote, a backslash one inside
 //   double quotes or a doubled one inside single quotes, does not close
 //   it). None of those is a scalar on the key line.
-// - The first line indented under it is a list item ("- ..." or "-"),
-//   and that item holds something. A nested mapping under a scalar
-//   ("  reason: x") is some other shape, and so is a plain value folded
-//   onto an indented line, even when a later line of it starts with "- ".
-// - A block list above it holds entries of the same kind as that first
-//   item: a top-level key with nothing on its line and a list item as its
-//   first indented line, whose first entry is a mapping when the item is
-//   one, and a scalar when the item is a scalar. For a mapping item, the
-//   nearest list whose first entry starts with the item's first field
-//   (`resource` for a source) is named; failing that, the nearest one
-//   whose first entry shares any field with the item. For a scalar item,
-//   the nearest list of scalars. The nearest list of ANY kind is not
+// - Everything indented under it is list items: the first indented line
+//   is a list item ("- ..." or "-"), every line back at that item's
+//   indentation is another one, the lines deeper than a marker belong to
+//   its item, and every item holds something. A nested mapping under a
+//   scalar ("  reason: x") is some other shape, and so is a plain value
+//   folded onto an indented line, even when a later line of it starts
+//   with "- ". A line at the items' indentation that is not an item, or
+//   one shallower than the first item, is left for the generic finding
+//   too: "move the items" would leave it behind, or carry it into a list
+//   where no rule reads it.
+// - One block list above it is the list for EVERY item: a top-level key
+//   with nothing on its line and a list item as its first indented line,
+//   whose first entry is of the item's kind (a mapping when the item is
+//   one, a scalar when the item is a scalar). For a mapping item, the
+//   list named is the one whose first entry shares the most fields with
+//   the item (a source, `resource` and `title`, goes to `sources` over a
+//   `links` list sharing only `title`), then the one whose first entry
+//   starts with the item's first field, then the nearest. For a scalar
+//   item, the nearest list of scalars. The nearest list of ANY kind is not
 //   enough: with `tags` written between `sources` and the dangling key, a
 //   fix naming `tags` files a source among the tags, where no rule reads
-//   it, and the note passes. With no such list above there is no list the
-//   items can be moved to with confidence, and the caller keeps its
-//   generic finding.
+//   it, and the note passes. Nor is the list of the first item alone: in
+//   a group holding a tag and then a source, it would send the source to
+//   `tags` the same way. When the items do not all name the same list, or
+//   no list above holds their kind, there is no list the items can be
+//   moved to with confidence, and the caller keeps its generic finding.
+//
+// `scalarItems: false` refuses a group of scalar items outright. A caller
+// whose field takes any text passes it: under such a field, a scalar item
+// is also a legal plain value folded onto a line that starts with "- "
+// (`author: Ana` then `  - and Bruno` is the one value "Ana - and Bruno"),
+// which the reader declines for the fold alone, and moving it into a list
+// would cut the value short and invent a list entry. A mapping item is
+// never such a fold: a plain value cannot hold ": ".
 //
 // Returns { line, list }: `line` is the 1-based line, in the WHOLE file, of
 // the first dangling item (frontmatterKeyLine's arithmetic, one line
 // further down), and `list` is the matching list key's name.
-export function danglingItems(frontmatter, key) {
+export function danglingItems(frontmatter, key, { scalarItems = true } = {}) {
   const lines = (frontmatter ?? '').split('\n');
   const found = findKeyLine(lines, key);
   if (!found || !holdsScalarOnKeyLine(found.head)) return null;
   const block = collectBlock(lines, found.index);
   if (block.length === 0 || !isEntryMarker(block[0].slice(indentOf(block[0])))) return null;
-  const item = firstEntryShape(block);
-  if (item === null) return null;
-  const list = matchingBlockListAbove(lines, found.index, item);
-  if (list === null) return null;
-  return { line: found.index + 3, list };
+  const items = groupItems(block);
+  if (items === null || (!scalarItems && !items[0].mapping)) return null;
+  const lists = blockListsAbove(lines, found.index);
+  const list = listForItem(lists, items[0]);
+  if (list === null || !items.every((item) => listForItem(lists, item) === list)) return null;
+  return { line: found.index + 3, list: list.name };
+}
+
+// The shape of every item of a dangling group (`block`, whose first line
+// is a marker), in order, or null when the block is not only items that
+// hold something: a line shallower than the first marker, a line at the
+// markers' indentation that is not a marker, or an item with nothing in it.
+function groupItems(block) {
+  const markerIndent = indentOf(block[0]);
+  const items = [];
+  for (let i = 0; i < block.length; i++) {
+    const indent = indentOf(block[i]);
+    if (indent > markerIndent) continue; // a line of the item above
+    if (indent < markerIndent || !isEntryMarker(block[i].slice(indent))) return null;
+    const shape = firstEntryShape(block.slice(i));
+    if (shape === null) return null;
+    items.push(shape);
+  }
+  return items;
 }
 
 // A node's properties, an anchor "&name" or a tag "!tag", written before
@@ -756,9 +792,10 @@ const TOP_LEVEL_KEY = /^(?:"([^"]*)"|'([^']*)'|([^\s"'#-][^:]*?))[ \t]*:((?:[ \t
 // quoted, followed by ":" and whitespace or the end of the text.
 const INLINE_FIRST_FIELD = /^\{[ \t]*([^\s:,{}]+)[ \t]*:(?:[ \t]|$)/;
 
-// The kind of the first entry of a block list (its marker line, block[0],
-// and the lines indented deeper than that marker under it), just enough to
-// tell which list a dangling item was written for. null for an entry that
+// The kind of the first entry of a block list, or of one dangling item
+// (its marker line, block[0], and the lines indented deeper than that
+// marker under it), just enough to tell which list a dangling item was
+// written for. null for an entry that
 // holds nothing (a bare "-", or one followed only by a comment, with no
 // line under it). Otherwise { mapping, fields }: a mapping entry is
 // written as fields, the first on the marker's line or on the line under
@@ -791,11 +828,10 @@ function unquoteFieldName(name) {
   return quoted ? quoted[2] : name;
 }
 
-// The list above `index` that the dangling `item` was most likely written
-// for, by the order danglingItems states, or null when no list above
-// holds entries of the item's kind.
-function matchingBlockListAbove(lines, index, item) {
-  const lists = []; // nearest first
+// Every block list above `index`, nearest first, each with the shape of
+// its first entry. A list whose first entry holds nothing is left out.
+function blockListsAbove(lines, index) {
+  const lists = [];
   for (let i = index - 1; i >= 0; i--) {
     const match = TOP_LEVEL_KEY.exec(lines[i]);
     if (!match || keyLineValue(match[4]) !== '') continue;
@@ -804,11 +840,28 @@ function matchingBlockListAbove(lines, index, item) {
     const entry = firstEntryShape(block);
     if (entry !== null) lists.push({ name: match[1] ?? match[2] ?? match[3], entry });
   }
-  const found = item.mapping
-    ? (lists.find(({ entry }) => entry.mapping && entry.fields[0] === item.fields[0]) ??
-      lists.find(({ entry }) => entry.mapping && entry.fields.some((field) => item.fields.includes(field))))
-    : lists.find(({ entry }) => !entry.mapping);
-  return found ? found.name : null;
+  return lists;
+}
+
+// The list, of `lists` (nearest first), that one dangling `item` was most
+// likely written for, by the order danglingItems states, or null when
+// none holds entries of the item's kind. Scanning nearest first and
+// replacing the choice only on a strictly better score is what hands a
+// tie to the nearer list.
+function listForItem(lists, item) {
+  if (!item.mapping) return lists.find(({ entry }) => !entry.mapping) ?? null;
+  const itemFields = new Set(item.fields);
+  let best = null;
+  for (const list of lists) {
+    if (!list.entry.mapping) continue;
+    const shared = new Set(list.entry.fields.filter((field) => itemFields.has(field))).size;
+    if (shared === 0) continue;
+    const startsAlike = list.entry.fields[0] === item.fields[0] ? 1 : 0;
+    if (best === null || shared > best.shared || (shared === best.shared && startsAlike > best.startsAlike)) {
+      best = { list, shared, startsAlike };
+    }
+  }
+  return best === null ? null : best.list;
 }
 
 // --- PARSER_LIMITS -----------------------------------------------------------

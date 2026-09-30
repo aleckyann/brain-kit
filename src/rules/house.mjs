@@ -457,6 +457,20 @@ function allowedEnumValues(spec, noteType) {
   return spec.values ?? null;
 }
 
+// True when every one-line value passes this extension field's own type
+// check: a string, or an enum with no list of values for the note's type.
+// Under such a field, "author: Ana" then "  - and Bruno" is one legal plain
+// value, "Ana - and Bruno", folded onto a line that happens to start with
+// "- ", and nothing in the note says it is a misplaced list item instead.
+// Any other type refuses the folded value ("true - person" is no boolean),
+// so there the line under it can only be an item written in the wrong place.
+function takesAnyText(spec, frontmatter) {
+  if (spec.type === 'string') return true;
+  if (spec.type !== 'enum') return false;
+  const noteType = readScalar(frontmatter, 'type');
+  return allowedEnumValues(spec, typeof noteType === 'string' ? noteType : null) === null;
+}
+
 // A malformed validate.placeholder_pattern (a vault owner's own typo in
 // a regular expression) must never crash this rule: RegExp construction
 // from config text is guarded here. (Fix round 1: this used to be the
@@ -507,7 +521,10 @@ const extensionFields = {
           // exactly where the generic one does. Every other unreadable
           // shape still gets the generic finding (see danglingItems in
           // src/frontmatter.mjs for what counts as dangling and why).
-          const dangling = danglingItems(frontmatter, fieldName);
+          // Under a field that takes any text, a group of scalar items is
+          // also a legal folded value, so only its type can tell them
+          // apart: those keep the generic finding.
+          const dangling = danglingItems(frontmatter, fieldName, { scalarItems: !takesAnyText(spec, frontmatter) });
           if (dangling !== null) {
             findings.push({
               file,

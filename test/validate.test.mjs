@@ -1160,6 +1160,20 @@ test('validate sends a source dangling below a list of tags to sources, not to t
   assert.doesNotMatch(result.stdout, /end of the tags list/);
 });
 
+test('validate keeps the generic finding for a group holding a tag and then a source, so no fix sends the source to the tags', () => {
+  // The review's second reproduction: only the first item was classified,
+  // so this group was sent to `tags`, and after the move the note passed
+  // with the source filed among the tags.
+  const note = personWith('tags:', '  - person', 'confidential: true', '  - example', '  - resource: /memory/log.md', '    title: second');
+  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': note }, config: { lang: 'en' } });
+  const result = run([root]);
+  assert.equal(result.status, EXIT.FAILURE);
+  assert.match(result.stdout, /people\/ana\.md:9 {2}extension-fields {2}[^\n]*confidential[^\n]*could not be read/);
+  assert.doesNotMatch(result.stdout, /Move them/);
+  const json = JSON.parse(run([root, '--json']).stdout);
+  assert.deepEqual(json.findings.filter((f) => f.id === 'extension-fields').map((f) => [f.check, f.line]), [['shape-readable', 9]]);
+});
+
 // An unclassifiable finding is a statement about the TOOL, not about the
 // vault, so no vault setting gets to wave it through.
 test('an unclassifiable finding blocks under every fail_on setting, including "must"', () => {

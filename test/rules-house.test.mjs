@@ -694,7 +694,14 @@ const DANGLING_CONFIG = {
   frontmatter: {
     required: [],
     forbidden: [],
-    extensions: { confidential: { type: 'boolean' }, author: { type: 'string' }, review_date: { type: 'date' } },
+    extensions: {
+      confidential: { type: 'boolean' },
+      author: { type: 'string' },
+      review_date: { type: 'date' },
+      rating: { type: 'number' },
+      phase: { type: 'enum', values: ['open', 'closed'] },
+      mood: { type: 'enum', values_by_type: { project: ['calm'] } },
+    },
   },
 };
 
@@ -733,9 +740,9 @@ test('two dangling groups in one note are two findings, each at its own first it
   const note = [
     '---', 'type: person', 'description: an example person',
     'tags:', '  - example',
-    'author: Ana', '  - person',
+    'review_date: 2026-09-30', '  - person',
     'sources:', '  - resource: /memory/log.md',
-    'review_date: 2026-09-30', '  - resource: /people/ana.md',
+    'author: Ana', '  - resource: /people/ana.md',
     'confidential: true', '  - resource: /people/bruno.md', '  - resource: /people/ana.md',
     '---', '# Ana', '',
   ].join('\n');
@@ -745,8 +752,8 @@ test('two dangling groups in one note are two findings, each at its own first it
     findings.map((f) => [f.check, f.params.field, f.line, f.params.list]),
     [
       ['frontmatter-dangling-items', 'confidential', 13, 'sources'],
-      ['frontmatter-dangling-items', 'author', 7, 'tags'],
-      ['frontmatter-dangling-items', 'review_date', 11, 'sources'],
+      ['frontmatter-dangling-items', 'author', 11, 'sources'],
+      ['frontmatter-dangling-items', 'review_date', 7, 'tags'],
     ],
   );
 });
@@ -769,6 +776,35 @@ test('a source dangling below a list of tags is sent to sources, never to the ne
   );
 });
 
+test('scalar items dangling under a field whose type refuses the folded value are named, and a source under a string field still is', () => {
+  // "true - person", "2026-09-30 - person", "5 - person" and "open - person"
+  // are no boolean, date, number or allowed enum value, so the line can
+  // only be a tag written in the wrong place. A mapping item is never a
+  // folded value, whatever the field's type.
+  const TAGS = ['tags:', '  - person'];
+  const files = {
+    ...cleanVaultFiles(),
+    'people/tag-under-boolean.md': danglingNote(...TAGS, 'confidential: true', '  - example', '  - person'),
+    'people/tag-under-date.md': danglingNote(...TAGS, 'review_date: 2026-09-30', '  - example'),
+    'people/tag-under-number.md': danglingNote(...TAGS, 'rating: 5', '  - example'),
+    'people/tag-under-listed-enum.md': danglingNote(...TAGS, 'phase: open', '  - example'),
+    'people/source-under-string.md': danglingNote(...TAGS, 'author: Ana', '  - resource: /people/bruno.md'),
+    'people/source-under-free-enum.md': danglingNote(...TAGS, 'mood: calm', '  - resource: /people/bruno.md'),
+  };
+  const findings = findingsFor({ files, config: DANGLING_CONFIG }).filter((f) => isHouse('extension-fields')(f) && f.file !== 'people/ana.md');
+  assert.deepEqual(
+    findings.map((f) => [f.file, f.check, f.params.field, f.line, f.params.list]).sort(),
+    [
+      ['people/source-under-free-enum.md', 'frontmatter-dangling-items', 'mood', 9, 'sources'],
+      ['people/source-under-string.md', 'frontmatter-dangling-items', 'author', 9, 'sources'],
+      ['people/tag-under-boolean.md', 'frontmatter-dangling-items', 'confidential', 9, 'tags'],
+      ['people/tag-under-date.md', 'frontmatter-dangling-items', 'review_date', 9, 'tags'],
+      ['people/tag-under-listed-enum.md', 'frontmatter-dangling-items', 'phase', 9, 'tags'],
+      ['people/tag-under-number.md', 'frontmatter-dangling-items', 'rating', 9, 'tags'],
+    ],
+  );
+});
+
 test('extension-fields keeps the generic finding for a field that is unreadable for any other reason, even with a list of each kind above it', () => {
   // Every shape below sits under `sources` and `tags` (danglingNote plus
   // TAGS), so a list of the items' kind is always there to be named, and
@@ -786,6 +822,16 @@ test('extension-fields keeps the generic finding for a field that is unreadable 
     'people/own-list.md': [danglingNote(...TAGS, 'author: # the owners', '  - Ana'), 8],
     'people/no-list-above.md': [['---', 'type: person', 'confidential: true', '  - resource: /people/bruno.md', '---', '# Ana', ''].join('\n'), 3],
     'people/no-list-of-its-kind.md': [['---', 'type: person', ...TAGS, 'confidential: true', '  - resource: /people/bruno.md', '---', '# Ana', ''].join('\n'), 5],
+    // A group whose items do not all name one list, or with something
+    // among them that is no item: following "move the items" would file
+    // one of them where no rule reads it.
+    'people/tag-then-source.md': [danglingNote(...TAGS, 'confidential: true', '  - example', '  - resource: /people/bruno.md', '    title: second'), 8],
+    'people/source-then-tag.md': [danglingNote(...TAGS, 'confidential: true', '  - resource: /people/bruno.md', '  - example'), 8],
+    'people/item-then-mapping-line.md': [danglingNote(...TAGS, 'confidential: true', '  - resource: /people/bruno.md', '  reason: x'), 8],
+    // Scalar items under a field that takes any text are also a legal
+    // folded value: a string, and an enum with no values for this type.
+    'people/string-then-dash-line.md': [danglingNote(...TAGS, 'author: Ana', '  - and Bruno'), 8],
+    'people/free-enum-then-dash-line.md': [danglingNote(...TAGS, 'mood: calm', '  - person'), 8],
   };
   const files = { ...cleanVaultFiles(), ...Object.fromEntries(Object.entries(cases).map(([file, [note]]) => [file, note])) };
   const findings = findingsFor({ files, config: DANGLING_CONFIG }).filter((f) => isHouse('extension-fields')(f) && f.file !== 'people/ana.md');
