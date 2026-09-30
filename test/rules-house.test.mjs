@@ -811,18 +811,21 @@ test('scalar items dangling under a field whose type refuses the folded value ar
 test('extension-fields keeps the generic finding for a field that is unreadable for any other reason, even with a list of each kind above it', () => {
   // Every shape below sits under `sources` and `tags` (danglingNote plus
   // TAGS), so a list of the items' kind is always there to be named, and
-  // the generic finding comes from the shape alone.
+  // the generic finding comes from the shape alone. The shapes are written
+  // under a date field, whose type refuses a folded value, so none is
+  // refused merely because its field takes any text (a string does); the
+  // two string cases at the end are that refusal itself.
   const TAGS = ['tags:', '  - person'];
   const cases = {
-    'people/block-scalar.md': [danglingNote(...TAGS, 'author: |', '  - a line of text that starts with a dash'), 8],
+    'people/block-scalar.md': [danglingNote(...TAGS, 'review_date: |', '  - a line of text that starts with a dash'), 8],
     'people/nested-mapping.md': [danglingNote(...TAGS, 'confidential: true', '  reason: set by hand'), 8],
     'people/mapping-then-item.md': [danglingNote(...TAGS, 'confidential: true', '  reason: x', '  - resource: /b.md'), 8],
-    'people/folded.md': [danglingNote(...TAGS, 'author: Ana', '  and Bruno'), 8],
-    'people/folded-then-dash.md': [danglingNote(...TAGS, 'author: Ana', '  and Bruno', '  - and Carla'), 8],
-    'people/unclosed-quote.md': [danglingNote(...TAGS, 'author: "Ana', '  - and Bruno"'), 8],
-    'people/escaped-double-quote.md': [danglingNote(...TAGS, 'author: "Ana \\"', '  - and Bruno"'), 8],
-    'people/doubled-single-quote.md': [danglingNote(...TAGS, "author: 'it''s", "  - notes'"), 8],
-    'people/own-list.md': [danglingNote(...TAGS, 'author: # the owners', '  - Ana'), 8],
+    'people/folded.md': [danglingNote(...TAGS, 'review_date: 2026-09-30', '  and later'), 8],
+    'people/folded-then-dash.md': [danglingNote(...TAGS, 'review_date: 2026-09-30', '  and later', '  - and later still'), 8],
+    'people/unclosed-quote.md': [danglingNote(...TAGS, 'review_date: "2026-09-30', '  - and later"'), 8],
+    'people/escaped-double-quote.md': [danglingNote(...TAGS, 'review_date: "2026-09-30 \\"', '  - and later"'), 8],
+    'people/doubled-single-quote.md': [danglingNote(...TAGS, "review_date: 'it''s", "  - notes'"), 8],
+    'people/own-list.md': [danglingNote(...TAGS, 'review_date: # the dates', '  - 2026-09-30'), 8],
     'people/no-list-above.md': [['---', 'type: person', 'confidential: true', '  - resource: /people/bruno.md', '---', '# Ana', ''].join('\n'), 3],
     'people/no-list-of-its-kind.md': [['---', 'type: person', ...TAGS, 'confidential: true', '  - resource: /people/bruno.md', '---', '# Ana', ''].join('\n'), 5],
     // A group whose items do not all name one list, or with something

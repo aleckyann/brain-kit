@@ -707,7 +707,7 @@ export function danglingItems(frontmatter, key, { scalarItems = true } = {}) {
   const found = findKeyLine(lines, key);
   if (!found || !holdsScalarOnKeyLine(found.head)) return null;
   const block = collectBlock(lines, found.index);
-  if (block.length === 0 || !isEntryMarker(block[0].slice(indentOf(block[0])))) return null;
+  if (block.length === 0) return null;
   const items = groupItems(block);
   if (items === null || (!scalarItems && !items[0].mapping)) return null;
   const lists = blockListsAbove(lines, found.index);
@@ -716,10 +716,11 @@ export function danglingItems(frontmatter, key, { scalarItems = true } = {}) {
   return { line: found.index + 3, list: list.name };
 }
 
-// The shape of every item of a dangling group (`block`, whose first line
-// is a marker), in order, or null when the block is not only items that
-// hold something: a line shallower than the first marker, a line at the
-// markers' indentation that is not a marker, or an item with nothing in it.
+// The shape of every item of a dangling group (`block`, the lines indented
+// under the key), in order, or null when the block is not only items that
+// hold something: a first line that is no marker, a line shallower than
+// the first one, a line at the first one's indentation that is no marker,
+// or an item with nothing in it.
 function groupItems(block) {
   const markerIndent = indentOf(block[0]);
   const items = [];

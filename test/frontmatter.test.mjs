@@ -822,6 +822,7 @@ test('danglingItems returns null for every shape YAML allows under a key line, s
     'a scalar with nothing under it': fm(...BOTH_ABOVE, 'confidential: true'),
     'a bare marker with nothing in it': fm(...BOTH_ABOVE, 'confidential: true', '  -'),
     'a bare marker with nothing in it, then a source': fm(...BOTH_ABOVE, 'confidential: true', '  -', '  - resource: /b.md'),
+    'a bare marker with nothing in it, then a tag': fm(...BOTH_ABOVE, 'confidential: true', '  -', '  - example'),
     'items after a blank line': fm(...BOTH_ABOVE, 'confidential: true', '', '  - resource: /b.md'),
     'no list above': fm('type: person', 'confidential: true', '  - resource: /b.md'),
     'only a flow list above': fm('sources: [a, b]', 'confidential: true', '  - resource: /b.md'),
@@ -835,6 +836,7 @@ test('danglingItems returns null for every shape YAML allows under a key line, s
     'a source under only a list of mappings with none of its fields': fm('links:', '  - url: https://example.com', 'confidential: true', '  - resource: /b.md'),
     'a source under a list holding its field only nested deeper': fm('links:', '  - title: x', '    note:', '      resource: /a.md', 'confidential: true', '  - resource: /b.md'),
     'a list above whose first entry holds nothing': fm('sources:', '  -', 'confidential: true', '  - resource: /b.md'),
+    'a scalar under a list whose first entry holds nothing, then a source': fm('sources:', '  -', '  - resource: /a.md', 'confidential: true', '  - example'),
     // Every item of the group, not only the first, must be one the named
     // list can take, and nothing else may sit among them.
     'a scalar item, then a source (the review\x27s reproduction)': fm(...SOURCES_ABOVE, ...TAGS_ABOVE, 'confidential: true', '  - example', '  - resource: /b.md'),
