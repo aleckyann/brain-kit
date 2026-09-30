@@ -745,6 +745,7 @@ test('danglingItems reads an escaped quote as data: a quoted value that really c
   assert.deepEqual(danglingItems(fm(...TAGS_ABOVE, "author: 'it''s'", '  - notes'), 'author'), { line: 5, list: 'tags' });
   assert.deepEqual(danglingItems(fm(...TAGS_ABOVE, "author: 'a\\'", '  - notes'), 'author'), { line: 5, list: 'tags' });
   assert.deepEqual(danglingItems(fm(...TAGS_ABOVE, 'author: "a \\" # b"', '  - notes'), 'author'), { line: 5, list: 'tags' });
+  assert.deepEqual(danglingItems(fm(...TAGS_ABOVE, 'author: &a "Ana"', '  - notes'), 'author'), { line: 5, list: 'tags' }, 'an anchor before the quote');
 });
 
 test('danglingItems names the NEAREST list above, skipping keys that are not lists, and finds a list on the first frontmatter line', () => {
@@ -813,16 +814,19 @@ test('danglingItems returns null for every shape YAML allows under a key line, s
     'a single-quoted scalar continued below': fm(...BOTH_ABOVE, "author: 'Ana", "  - and Bruno'"),
     'a double-quoted scalar with an escaped quote, continued below': fm(...BOTH_ABOVE, 'author: "Ana \\"', '  - and Bruno"'),
     'a single-quoted scalar with a doubled quote, continued below': fm(...BOTH_ABOVE, "author: 'it''s", "  - notes'"),
+    'an anchor then a double-quoted scalar continued below': fm(...BOTH_ABOVE, 'author: &a "Ana', '  - and Bruno"'),
     'a mapping indented under a scalar': fm(...BOTH_ABOVE, 'confidential: true', '  reason: - not a list item'),
     'a mapping line under a scalar, then an item': fm(...BOTH_ABOVE, 'confidential: true', '  reason: x', '  - resource: /b.md'),
     'a plain value folded onto an indented line': fm(...BOTH_ABOVE, 'author: Ana', '  and Bruno'),
     'a plain value folded onto a line, then one starting with a dash': fm(...BOTH_ABOVE, 'author: Ana', '  and Bruno', '  - and Carla'),
     'a scalar with nothing under it': fm(...BOTH_ABOVE, 'confidential: true'),
     'a bare marker with nothing in it': fm(...BOTH_ABOVE, 'confidential: true', '  -'),
+    'a bare marker with nothing in it, then a source': fm(...BOTH_ABOVE, 'confidential: true', '  -', '  - resource: /b.md'),
     'items after a blank line': fm(...BOTH_ABOVE, 'confidential: true', '', '  - resource: /b.md'),
     'no list above': fm('type: person', 'confidential: true', '  - resource: /b.md'),
     'only a flow list above': fm('sources: [a, b]', 'confidential: true', '  - resource: /b.md'),
     'only a mapping above': fm('generated:', '  by: human:ana', 'confidential: true', '  - resource: /b.md'),
+    'only a plain value folded under an empty key line above': fm('description:', '  an example person,', '  on two lines', 'confidential: true', '  - example'),
     'a list below, never above': fm('confidential: true', '  - resource: /b.md', ...SOURCES_ABOVE),
     // A list above whose entries are of another kind is no place for the
     // items either.
