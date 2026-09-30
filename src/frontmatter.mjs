@@ -690,6 +690,13 @@ export function frontmatterKeyLine(frontmatter, key) {
 //   `tags` the same way. When the items do not all name the same list, or
 //   no list above holds their kind, there is no list the items can be
 //   moved to with confidence, and the caller keeps its generic finding.
+// - The items sit at the indentation of that list's own markers. The fix
+//   says to move the lines, and readEntries splits a list into entries at
+//   its first marker's indentation, so an item moved as it is at any other
+//   depth would be no entry of the list, and the generic finding stays.
+//   At the depth of the entries' fields (markers at two spaces, the item
+//   at four), the moved item even reads as a field named "- resource" of
+//   the entry above: no rule reads the moved source, and the note passes.
 //
 // `scalarItems: false` refuses a group of scalar items outright. A caller
 // whose field takes any text passes it: under such a field, a scalar item
@@ -713,6 +720,7 @@ export function danglingItems(frontmatter, key, { scalarItems = true } = {}) {
   const lists = blockListsAbove(lines, found.index);
   const list = listForItem(lists, items[0]);
   if (list === null || !items.every((item) => listForItem(lists, item) === list)) return null;
+  if (indentOf(block[0]) !== list.markerIndent) return null;
   return { line: found.index + 3, list: list.name };
 }
 
@@ -859,7 +867,8 @@ function unquoteFieldName(name) {
 }
 
 // Every block list above `index`, nearest first, each with the shape of
-// its first entry. A list whose first entry holds nothing is left out.
+// its first entry and the indentation of its markers. A list whose first
+// entry holds nothing is left out.
 function blockListsAbove(lines, index) {
   const lists = [];
   for (let i = index - 1; i >= 0; i--) {
@@ -868,7 +877,7 @@ function blockListsAbove(lines, index) {
     const block = collectBlock(lines, i);
     if (block.length === 0 || !isEntryMarker(block[0].slice(indentOf(block[0])))) continue;
     const entry = firstEntryShape(block);
-    if (entry !== null) lists.push({ name: key.name, entry });
+    if (entry !== null) lists.push({ name: key.name, entry, markerIndent: indentOf(block[0]) });
   }
   return lists;
 }

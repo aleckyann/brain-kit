@@ -1174,6 +1174,28 @@ test('validate keeps the generic finding for a group holding a tag and then a so
   assert.deepEqual(json.findings.filter((f) => f.id === 'extension-fields').map((f) => [f.check, f.line]), [['shape-readable', 9]]);
 });
 
+test('validate names no list for a source dangling at the depth of the list\x27s fields, and a source moved as a named fix says is read', () => {
+  // The round-4 review's reproduction through the real binary: the markers
+  // of `sources` at two spaces, their fields at four, and the dangling
+  // source at four. The fix used to name `sources`, and the lines moved as
+  // they are read as a field of the entry above: the note then passed with
+  // the source unread. It keeps the generic finding now, and stays refused.
+  const vault = (note) => makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': note }, config: { lang: 'en' } });
+  const deep = run([vault(personWith('confidential: true', '    - resource: /memory/log.md', '      title: log of 30/09'))]);
+  assert.equal(deep.status, EXIT.FAILURE);
+  assert.match(deep.stdout, /people\/ana\.md:7 {2}extension-fields {2}[^\n]*confidential[^\n]*could not be read/);
+  assert.doesNotMatch(deep.stdout, /Move them/);
+  // Its pair, at the markers' own depth, is named. Moved as it is, it is
+  // the list's second entry, and the binary reads it: its last_modified,
+  // which is no timestamp, is reported as `sources[1]`'s.
+  const level = run([vault(personWith('confidential: true', '  - resource: /memory/log.md', '    last_modified: 30/09/2026'))]);
+  assert.equal(level.status, EXIT.FAILURE);
+  assert.match(level.stdout, /people\/ana\.md:8 {2}extension-fields {2}[^\n]*Move them to the end of the sources list/);
+  const moved = JSON.parse(run([vault(personWith('  - resource: /memory/log.md', '    last_modified: 30/09/2026', 'confidential: true')), '--json']).stdout);
+  assert.deepEqual(moved.findings.map((f) => [f.id, f.check, f.line]), [['sources-resource', 'entry-timestamp-form', 5]]);
+  assert.match(JSON.stringify(moved.findings), /sources\[1\]\.last_modified/);
+});
+
 // An unclassifiable finding is a statement about the TOOL, not about the
 // vault, so no vault setting gets to wave it through.
 test('an unclassifiable finding blocks under every fail_on setting, including "must"', () => {

@@ -733,7 +733,7 @@ test('danglingItems finds the same shape after a quoted string, after a value wi
   assert.deepEqual(danglingItems(fm(...SOURCES_ABOVE, 'confidential: true # set by hand', '  - resource: /a.md'), 'confidential'), { line: 5, list: 'sources' });
   assert.deepEqual(danglingItems(fm(...SOURCES_ABOVE, 'review_date: 2026-09-30', '  - resource: /a.md'), 'review_date'), { line: 5, list: 'sources' });
   assert.deepEqual(danglingItems(fm(...SOURCES_ABOVE, 'confidential: true', '  -', '    resource: /a.md'), 'confidential'), { line: 5, list: 'sources' }, 'a bare marker with its fields under it is an item too');
-  assert.deepEqual(danglingItems(fm(...SOURCES_ABOVE, 'confidential: true', '\t- resource: /a.md'), 'confidential'), { line: 5, list: 'sources' }, 'tab indentation, as collectBlock reads it');
+  assert.deepEqual(danglingItems(fm('sources:', '\t- resource: /memory/log.md', 'confidential: true', '\t- resource: /a.md'), 'confidential'), { line: 5, list: 'sources' }, 'tab indentation, as collectBlock reads it, under a list indented the same way');
 });
 
 test('danglingItems reads an escaped quote as data: a quoted value that really closes on its key line is a scalar, however it is escaped', () => {
@@ -847,6 +847,10 @@ test('danglingItems returns null for every shape YAML allows under a key line, s
     'a source, then a mapping line at its indentation': fm(...BOTH_ABOVE, 'confidential: true', '  - resource: /b.md', '  reason: x'),
     'a scalar item, then a plain line at its indentation': fm(...BOTH_ABOVE, 'confidential: true', '  - example', '  and more'),
     'an item, then a shallower one': fm(...BOTH_ABOVE, 'confidential: true', '    - resource: /b.md', '  - resource: /c.md'),
+    // The items must sit where the named list's own markers sit (see the
+    // indentation test below).
+    'a tab-indented item under lists indented with two spaces': fm(...BOTH_ABOVE, 'confidential: true', '\t- resource: /b.md'),
+    'a source at the depth of the list\x27s fields': fm(...BOTH_ABOVE, 'confidential: true', '    - resource: /b.md'),
   };
   for (const [name, frontmatter] of Object.entries(cases)) {
     const key = frontmatter.includes('author:') ? 'author' : 'confidential';
@@ -901,6 +905,60 @@ test('danglingItems ranks lists of mappings by the fields their first entry shar
   assert.deepEqual(danglingItems(repeated, 'confidential'), { line: 9, list: 'sources' });
   const repeatedNearer = fm('sources:', '  - resource: /a.md', 'links:', '  - title: a', '    title: b', 'confidential: true', '  - title: new', '    url: https://example.com/new');
   assert.deepEqual(danglingItems(repeatedNearer, 'confidential'), { line: 8, list: 'links' });
+});
+
+// Follows the fix as a curator would: the dangling lines, exactly as they
+// are, cut from under `key` and pasted at the end of `list`, before the
+// next top-level key.
+function moveAsAdvised(frontmatter, key, list) {
+  const lines = frontmatter.split('\n');
+  const blockEnd = (start) => {
+    let end = start + 1;
+    while (end < lines.length && /^[ \t]/.test(lines[end])) end++;
+    return end;
+  };
+  const keyIndex = lines.findIndex((line) => line.startsWith(`${key}:`));
+  const moved = lines.splice(keyIndex + 1, blockEnd(keyIndex) - keyIndex - 1);
+  lines.splice(blockEnd(lines.findIndex((line) => line.startsWith(`${list}:`))), 0, ...moved);
+  return lines.join('\n');
+}
+
+test('danglingItems names a list only for items at the indentation of its own markers, where the lines moved as they are become its entries', () => {
+  // The round-4 review's reproduction: the markers of `sources` at two
+  // spaces, their fields at four, and the dangling source at four. Moved
+  // as it is to the end of `sources`, as the fix said, it read as a field
+  // named "- resource" of the entry above, and the note passed with the
+  // source unread. No list is named for it now.
+  const deep = fm('sources:', '  - resource: /memory/log.md', 'confidential: true', '    - resource: /memory/log.md', '      title: log of 30/09');
+  assert.equal(danglingItems(deep, 'confidential'), null);
+  // Its pair: at the markers' own depth the source is named, and moved as
+  // it is it becomes the list's second entry.
+  const level = fm('sources:', '  - resource: /memory/log.md', 'confidential: true', '  - resource: /memory/log.md', '    title: log of 30/09');
+  assert.deepEqual(danglingItems(level, 'confidential'), { line: 5, list: 'sources' });
+  assert.deepEqual(readEntries(moveAsAdvised(level, 'confidential', 'sources'), 'sources'), [
+    { resource: '/memory/log.md' },
+    { resource: '/memory/log.md', title: 'log of 30/09' },
+  ]);
+  // Every depth from one to eight, under markers at two and at four: a
+  // list is named at the markers' depth only, and there the move files
+  // the item as an entry. A scalar item under a list of scalars too.
+  for (const markers of [2, 4]) {
+    for (let depth = 1; depth <= 8; depth++) {
+      const at = (n, text) => `${' '.repeat(n)}${text}`;
+      const source = fm('sources:', at(markers, '- resource: /a.md'), 'confidential: true', at(depth, '- resource: /b.md'), at(depth + 2, 'title: b'));
+      const tag = fm('tags:', at(markers, '- person'), 'confidential: true', at(depth, '- example'));
+      const where = `markers at ${markers}, item at ${depth}`;
+      if (depth !== markers) {
+        assert.equal(danglingItems(source, 'confidential'), null, where);
+        assert.equal(danglingItems(tag, 'confidential'), null, where);
+        continue;
+      }
+      assert.deepEqual(danglingItems(source, 'confidential'), { line: 5, list: 'sources' }, where);
+      assert.deepEqual(readEntries(moveAsAdvised(source, 'confidential', 'sources'), 'sources'), [{ resource: '/a.md' }, { resource: '/b.md', title: 'b' }], where);
+      assert.deepEqual(danglingItems(tag, 'confidential'), { line: 5, list: 'tags' }, where);
+      assert.deepEqual(readList(moveAsAdvised(tag, 'confidential', 'tags'), 'tags'), ['person', 'example'], where);
+    }
+  }
 });
 
 test('danglingItems refuses scalar items, and only those, when the caller says its field takes any text', () => {

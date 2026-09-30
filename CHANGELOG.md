@@ -18,10 +18,13 @@
   and blocks exactly where it did; every other unreadable shape still gets the generic
   finding, and so does the same shape when no list above holds the items' kind, when the
   items belong to different lists (a tag, then a source) or something that is no item sits
-  among them, and when the items are plain values under a field that takes any text (a
+  among them, when the items are plain values under a field that takes any text (a
   `string`, or an `enum` with no values for the note's type), where `author: Ana` then
-  `  - and Bruno` is one legal folded value. The reader accepts and declines the same shapes
-  as before.
+  `  - and Bruno` is one legal folded value, and when the items are not indented where that
+  list's own markers are. Moved as they are, such items are no entry of the list: at the
+  depth of its entries' fields a source even reads as a field of the entry above, and the
+  note passed with the source unread. The reader accepts and declines the same shapes as
+  before.
 - The curate prompt tells the round, in both languages, to put a new item of a frontmatter
   list such as `sources` at the end of that list, before the next top-level key. No
   contract marker was added, so an overlay that passes `prompt --check` still does. A vault
