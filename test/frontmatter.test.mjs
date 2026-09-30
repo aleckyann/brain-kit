@@ -711,6 +711,8 @@ test('frontmatterKeyLine returns null for null or empty frontmatter, never throw
 // file: frontmatter line 0 is the file's line 2.
 
 const SOURCES_ABOVE = ['sources:', '  - resource: /memory/log.md'];
+const TAGS_ABOVE = ['tags:', '  - person'];
+const BOTH_ABOVE = [...SOURCES_ABOVE, ...TAGS_ABOVE];
 
 function fm(...lines) {
   return lines.join('\n');
@@ -730,15 +732,26 @@ test('danglingItems finds the same shape after a quoted string, after a value wi
   assert.deepEqual(danglingItems(fm(...SOURCES_ABOVE, "author: 'Ana' # the owner", '  - resource: /a.md'), 'author'), { line: 5, list: 'sources' });
   assert.deepEqual(danglingItems(fm(...SOURCES_ABOVE, 'confidential: true # set by hand', '  - resource: /a.md'), 'confidential'), { line: 5, list: 'sources' });
   assert.deepEqual(danglingItems(fm(...SOURCES_ABOVE, 'review_date: 2026-09-30', '  - resource: /a.md'), 'review_date'), { line: 5, list: 'sources' });
-  assert.deepEqual(danglingItems(fm(...SOURCES_ABOVE, 'confidential: true', '  -'), 'confidential'), { line: 5, list: 'sources' }, 'a bare marker is an item too');
+  assert.deepEqual(danglingItems(fm(...SOURCES_ABOVE, 'confidential: true', '  -', '    resource: /a.md'), 'confidential'), { line: 5, list: 'sources' }, 'a bare marker with its fields under it is an item too');
   assert.deepEqual(danglingItems(fm(...SOURCES_ABOVE, 'confidential: true', '\t- resource: /a.md'), 'confidential'), { line: 5, list: 'sources' }, 'tab indentation, as collectBlock reads it');
+});
+
+test('danglingItems reads an escaped quote as data: a quoted value that really closes on its key line is a scalar, however it is escaped', () => {
+  // Inside double quotes a backslash escapes the next character, so an
+  // escaped backslash leaves the closing quote a real close; inside single
+  // quotes a doubled quote is one literal quote and a backslash is only a
+  // backslash. A " #" after an escaped quote is still inside the span.
+  assert.deepEqual(danglingItems(fm(...TAGS_ABOVE, 'author: "Ana \\\\"', '  - and Bruno'), 'author'), { line: 5, list: 'tags' });
+  assert.deepEqual(danglingItems(fm(...TAGS_ABOVE, "author: 'it''s'", '  - notes'), 'author'), { line: 5, list: 'tags' });
+  assert.deepEqual(danglingItems(fm(...TAGS_ABOVE, "author: 'a\\'", '  - notes'), 'author'), { line: 5, list: 'tags' });
+  assert.deepEqual(danglingItems(fm(...TAGS_ABOVE, 'author: "a \\" # b"', '  - notes'), 'author'), { line: 5, list: 'tags' });
 });
 
 test('danglingItems names the NEAREST list above, skipping keys that are not lists, and finds a list on the first frontmatter line', () => {
   const twoLists = fm('tags:', '  - example', 'sources:', '  - resource: /a.md', 'status: stable', 'confidential: true', '  - resource: /b.md');
   assert.deepEqual(danglingItems(twoLists, 'confidential'), { line: 8, list: 'sources' });
-  const nearestIsFirst = fm('sources:', '  - resource: /a.md', 'tags:', '  - example', 'confidential: true', '  - resource: /b.md');
-  assert.deepEqual(danglingItems(nearestIsFirst, 'confidential'), { line: 7, list: 'tags' });
+  const nearestIsFirst = fm('tags:', '  - example', 'aliases:', '  - Ana', 'confidential: true', '  - person');
+  assert.deepEqual(danglingItems(nearestIsFirst, 'confidential'), { line: 7, list: 'aliases' });
   const onlyOnLineZero = fm('sources:', '  - resource: /a.md', 'type: person', 'confidential: true', '  - resource: /b.md');
   assert.deepEqual(danglingItems(onlyOnLineZero, 'confidential'), { line: 6, list: 'sources' });
   // A list key written quoted or with an anchor is still a list key, and
@@ -750,37 +763,84 @@ test('danglingItems names the NEAREST list above, skipping keys that are not lis
   assert.deepEqual(danglingItems(twoGroups, 'confidential'), { line: 7, list: 'sources' });
 });
 
+test('danglingItems names the list whose entries look like the dangling item, not merely the nearest list: a source is never sent to the tags', () => {
+  // The review's reproduction: `tags` written between `sources` and the
+  // dangling key. Naming the nearest list sent the source to `tags`,
+  // where it passed validate unread.
+  const tagsBetween = fm(...SOURCES_ABOVE, 'tags:', '  - person', 'confidential: true', '  - resource: /memory/log.md', '    title: second');
+  assert.deepEqual(danglingItems(tagsBetween, 'confidential'), { line: 7, list: 'sources' });
+  const aliasesBetween = fm(...SOURCES_ABOVE, 'aliases:', '  - Ana', 'confidential: true', '  - resource: /memory/log.md');
+  assert.deepEqual(danglingItems(aliasesBetween, 'confidential'), { line: 7, list: 'sources' });
+  // Its pair: a scalar item in the same layout belongs to the scalar list.
+  assert.deepEqual(danglingItems(fm(...SOURCES_ABOVE, 'tags:', '  - person', 'confidential: true', '  - example'), 'confidential'), { line: 7, list: 'tags' });
+  assert.deepEqual(danglingItems(fm('tags:', '  - person', ...SOURCES_ABOVE, 'confidential: true', '  - example'), 'confidential'), { line: 7, list: 'tags' });
+
+  // For a mapping item, the list whose first entry starts with the same
+  // field wins over a nearer one that only shares a later field...
+  const firstFieldWins = fm(...SOURCES_ABOVE, 'links:', '  - url: https://example.com', '    resource: /a.md', 'confidential: true', '  - resource: /b.md');
+  assert.deepEqual(danglingItems(firstFieldWins, 'confidential'), { line: 8, list: 'sources' });
+  // ...and a list sharing any field is named when none starts with it, in
+  // either direction.
+  const listStartsElsewhere = fm('sources:', '  - title: the log', '    resource: /a.md', ...TAGS_ABOVE, 'confidential: true', '  - resource: /b.md');
+  assert.deepEqual(danglingItems(listStartsElsewhere, 'confidential'), { line: 8, list: 'sources' });
+  const itemStartsElsewhere = fm(...SOURCES_ABOVE, ...TAGS_ABOVE, 'confidential: true', '  - title: second', '    resource: /b.md');
+  assert.deepEqual(danglingItems(itemStartsElsewhere, 'confidential'), { line: 7, list: 'sources' });
+
+  // An inline mapping entry is a mapping, above or dangling, and so is a
+  // bare marker whose fields follow a comment; a quoted field name is the
+  // same field.
+  assert.deepEqual(danglingItems(fm('sources:', '  - { resource: /a.md }', ...TAGS_ABOVE, 'confidential: true', '  - resource: /b.md'), 'confidential'), { line: 7, list: 'sources' });
+  assert.deepEqual(danglingItems(fm(...SOURCES_ABOVE, ...TAGS_ABOVE, 'confidential: true', '  - { resource: /b.md }'), 'confidential'), { line: 7, list: 'sources' });
+  assert.deepEqual(danglingItems(fm(...SOURCES_ABOVE, ...TAGS_ABOVE, 'confidential: true', '  - # the log', '    resource: /b.md'), 'confidential'), { line: 7, list: 'sources' });
+  assert.deepEqual(danglingItems(fm(...SOURCES_ABOVE, ...TAGS_ABOVE, 'confidential: true', '  - "resource": /b.md'), 'confidential'), { line: 7, list: 'sources' });
+});
+
 test('danglingItems returns null for every shape YAML allows under a key line, so the caller keeps its generic finding', () => {
+  // Both kinds of list sit above every shape here, so each one is null
+  // for its own reason and never because no list matched its items.
   const cases = {
-    'a block list header': fm(...SOURCES_ABOVE, 'author:', '  - Ana'),
-    'a header holding only a comment': fm(...SOURCES_ABOVE, 'author: # the owners', '  - Ana'),
-    'a literal block scalar': fm(...SOURCES_ABOVE, 'author: |', '  - Ana'),
-    'a folded block scalar with a chomping indicator': fm(...SOURCES_ABOVE, 'author: >-', '  - Ana'),
-    'a block scalar with an indentation digit first': fm(...SOURCES_ABOVE, 'author: |2-', '  - Ana'),
-    'an anchor alone': fm(...SOURCES_ABOVE, 'author: &owners', '  - Ana'),
-    'an anchor then a block scalar header': fm(...SOURCES_ABOVE, 'author: &owners |', '  - Ana'),
-    'a tag alone': fm(...SOURCES_ABOVE, 'author: !!seq', '  - Ana'),
-    'a flow list continued below': fm(...SOURCES_ABOVE, 'author: [Ana,', '  - Bruno]'),
-    'a flow mapping continued below': fm(...SOURCES_ABOVE, 'author: { name: Ana,', '  - x }'),
-    'a double-quoted scalar continued below': fm(...SOURCES_ABOVE, 'author: "Ana', '  - and Bruno"'),
-    'a single-quoted scalar continued below': fm(...SOURCES_ABOVE, "author: 'Ana", "  - and Bruno'"),
-    'a mapping indented under a scalar': fm(...SOURCES_ABOVE, 'confidential: true', '  reason: - not a list item'),
-    'a plain value folded onto an indented line': fm(...SOURCES_ABOVE, 'author: Ana', '  and Bruno'),
-    'a scalar with nothing under it': fm(...SOURCES_ABOVE, 'confidential: true'),
-    'items after a blank line': fm(...SOURCES_ABOVE, 'confidential: true', '', '  - resource: /b.md'),
+    'a block list header': fm(...BOTH_ABOVE, 'author:', '  - Ana'),
+    'a header holding only a comment': fm(...BOTH_ABOVE, 'author: # the owners', '  - Ana'),
+    'a literal block scalar': fm(...BOTH_ABOVE, 'author: |', '  - Ana'),
+    'a folded block scalar with a chomping indicator': fm(...BOTH_ABOVE, 'author: >-', '  - Ana'),
+    'a block scalar with an indentation digit first': fm(...BOTH_ABOVE, 'author: |2-', '  - Ana'),
+    'an anchor alone': fm(...BOTH_ABOVE, 'author: &owners', '  - Ana'),
+    'an anchor then a block scalar header': fm(...BOTH_ABOVE, 'author: &owners |', '  - Ana'),
+    'a tag alone': fm(...BOTH_ABOVE, 'author: !!seq', '  - Ana'),
+    'a flow list continued below': fm(...BOTH_ABOVE, 'author: [Ana,', '  - Bruno]'),
+    'a flow mapping continued below': fm(...BOTH_ABOVE, 'author: { name: Ana,', '  - x }'),
+    'a double-quoted scalar continued below': fm(...BOTH_ABOVE, 'author: "Ana', '  - and Bruno"'),
+    'a single-quoted scalar continued below': fm(...BOTH_ABOVE, "author: 'Ana", "  - and Bruno'"),
+    'a double-quoted scalar with an escaped quote, continued below': fm(...BOTH_ABOVE, 'author: "Ana \\"', '  - and Bruno"'),
+    'a single-quoted scalar with a doubled quote, continued below': fm(...BOTH_ABOVE, "author: 'it''s", "  - notes'"),
+    'a mapping indented under a scalar': fm(...BOTH_ABOVE, 'confidential: true', '  reason: - not a list item'),
+    'a mapping line under a scalar, then an item': fm(...BOTH_ABOVE, 'confidential: true', '  reason: x', '  - resource: /b.md'),
+    'a plain value folded onto an indented line': fm(...BOTH_ABOVE, 'author: Ana', '  and Bruno'),
+    'a plain value folded onto a line, then one starting with a dash': fm(...BOTH_ABOVE, 'author: Ana', '  and Bruno', '  - and Carla'),
+    'a scalar with nothing under it': fm(...BOTH_ABOVE, 'confidential: true'),
+    'a bare marker with nothing in it': fm(...BOTH_ABOVE, 'confidential: true', '  -'),
+    'items after a blank line': fm(...BOTH_ABOVE, 'confidential: true', '', '  - resource: /b.md'),
     'no list above': fm('type: person', 'confidential: true', '  - resource: /b.md'),
     'only a flow list above': fm('sources: [a, b]', 'confidential: true', '  - resource: /b.md'),
     'only a mapping above': fm('generated:', '  by: human:ana', 'confidential: true', '  - resource: /b.md'),
     'a list below, never above': fm('confidential: true', '  - resource: /b.md', ...SOURCES_ABOVE),
+    // A list above whose entries are of another kind is no place for the
+    // items either.
+    'a source under only a list of scalars': fm(...TAGS_ABOVE, 'confidential: true', '  - resource: /b.md'),
+    'a scalar under only a list of mappings': fm(...SOURCES_ABOVE, 'confidential: true', '  - example'),
+    'a source under only a list of mappings with none of its fields': fm('links:', '  - url: https://example.com', 'confidential: true', '  - resource: /b.md'),
+    'a source under a list holding its field only nested deeper': fm('links:', '  - title: x', '    note:', '      resource: /a.md', 'confidential: true', '  - resource: /b.md'),
+    'a list above whose first entry holds nothing': fm('sources:', '  -', 'confidential: true', '  - resource: /b.md'),
   };
   for (const [name, frontmatter] of Object.entries(cases)) {
     const key = frontmatter.includes('author:') ? 'author' : 'confidential';
     assert.equal(danglingItems(frontmatter, key), null, name);
   }
   // Each refusal beside its nearest positive: the same scalar with a list
-  // item under it and a list above IS the shape.
-  assert.notEqual(danglingItems(fm(...SOURCES_ABOVE, 'author: Ana', '  - and Bruno'), 'author'), null);
-  assert.notEqual(danglingItems(fm(...SOURCES_ABOVE, 'author: "Ana"', '  - and Bruno'), 'author'), null);
+  // item under it and a list of its kind above IS the shape.
+  assert.deepEqual(danglingItems(fm(...BOTH_ABOVE, 'author: Ana', '  - and Bruno'), 'author'), { line: 7, list: 'tags' });
+  assert.deepEqual(danglingItems(fm(...BOTH_ABOVE, 'author: "Ana"', '  - and Bruno'), 'author'), { line: 7, list: 'tags' });
+  assert.deepEqual(danglingItems(fm(...BOTH_ABOVE, 'confidential: true', '  - resource: /b.md', '  reason: x'), 'confidential'), { line: 7, list: 'sources' });
 });
 
 test('danglingItems returns null for an absent key and for a missing or empty frontmatter, never throwing', () => {

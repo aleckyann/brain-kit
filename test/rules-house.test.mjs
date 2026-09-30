@@ -729,11 +729,11 @@ test('extension-fields names list items dangling under a boolean, a string and a
   assert.equal(findings.filter((f) => f.check === 'shape-readable').length, 0, 'the specific finding replaces the generic one, never joins it');
 });
 
-test('two dangling groups in one note are two findings, each at its own first item and naming the nearest list above it', () => {
+test('two dangling groups in one note are two findings, each at its own first item and naming the nearest list above it that holds its kind of entry', () => {
   const note = [
     '---', 'type: person', 'description: an example person',
     'tags:', '  - example',
-    'author: Ana', '  - resource: /people/bruno.md',
+    'author: Ana', '  - person',
     'sources:', '  - resource: /memory/log.md',
     'review_date: 2026-09-30', '  - resource: /people/ana.md',
     'confidential: true', '  - resource: /people/bruno.md', '  - resource: /people/ana.md',
@@ -751,30 +751,50 @@ test('two dangling groups in one note are two findings, each at its own first it
   );
 });
 
-test('extension-fields keeps the generic finding for a field that is unreadable for any other reason, even with a list above it', () => {
+test('a source dangling below a list of tags is sent to sources, never to the nearer tags, and a tag in the same place is sent to tags', () => {
+  // The review's reproduction: naming the nearest list sent the source to
+  // `tags`, and the note then passed with the source filed among the tags.
   const files = {
     ...cleanVaultFiles(),
-    'people/block-scalar.md': danglingNote('author: |', '  - a line of text that starts with a dash'),
-    'people/nested-mapping.md': danglingNote('confidential: true', '  reason: set by hand'),
-    'people/folded.md': danglingNote('author: Ana', '  and Bruno'),
-    'people/unclosed-quote.md': danglingNote('author: "Ana', '  - and Bruno"'),
-    'people/own-list.md': danglingNote('author: # the owners', '  - Ana'),
-    'people/no-list-above.md': ['---', 'type: person', 'confidential: true', '  - resource: /people/bruno.md', '---', '# Ana', ''].join('\n'),
+    'people/source-below-tags.md': danglingNote('tags:', '  - person', 'confidential: true', '  - resource: /memory/log.md', '    title: second'),
+    'people/tag-below-tags.md': danglingNote('tags:', '  - person', 'confidential: true', '  - example'),
   };
   const findings = findingsFor({ files, config: DANGLING_CONFIG }).filter((f) => isHouse('extension-fields')(f) && f.file !== 'people/ana.md');
   assert.deepEqual(
-    findings.map((f) => [f.file, f.check, f.messageKey, f.unreadable, f.absence]).sort(),
+    findings.map((f) => [f.file, f.check, f.line, f.params.list]).sort(),
     [
-      ['people/block-scalar.md', 'shape-readable', 'common.shape_unreadable', true, false],
-      ['people/folded.md', 'shape-readable', 'common.shape_unreadable', true, false],
-      ['people/nested-mapping.md', 'shape-readable', 'common.shape_unreadable', true, false],
-      ['people/no-list-above.md', 'shape-readable', 'common.shape_unreadable', true, false],
-      ['people/own-list.md', 'shape-readable', 'common.shape_unreadable', true, false],
-      ['people/unclosed-quote.md', 'shape-readable', 'common.shape_unreadable', true, false],
+      ['people/source-below-tags.md', 'frontmatter-dangling-items', 9, 'sources'],
+      ['people/tag-below-tags.md', 'frontmatter-dangling-items', 9, 'tags'],
     ],
   );
+});
+
+test('extension-fields keeps the generic finding for a field that is unreadable for any other reason, even with a list of each kind above it', () => {
+  // Every shape below sits under `sources` and `tags` (danglingNote plus
+  // TAGS), so a list of the items' kind is always there to be named, and
+  // the generic finding comes from the shape alone.
+  const TAGS = ['tags:', '  - person'];
+  const cases = {
+    'people/block-scalar.md': [danglingNote(...TAGS, 'author: |', '  - a line of text that starts with a dash'), 8],
+    'people/nested-mapping.md': [danglingNote(...TAGS, 'confidential: true', '  reason: set by hand'), 8],
+    'people/mapping-then-item.md': [danglingNote(...TAGS, 'confidential: true', '  reason: x', '  - resource: /b.md'), 8],
+    'people/folded.md': [danglingNote(...TAGS, 'author: Ana', '  and Bruno'), 8],
+    'people/folded-then-dash.md': [danglingNote(...TAGS, 'author: Ana', '  and Bruno', '  - and Carla'), 8],
+    'people/unclosed-quote.md': [danglingNote(...TAGS, 'author: "Ana', '  - and Bruno"'), 8],
+    'people/escaped-double-quote.md': [danglingNote(...TAGS, 'author: "Ana \\"', '  - and Bruno"'), 8],
+    'people/doubled-single-quote.md': [danglingNote(...TAGS, "author: 'it''s", "  - notes'"), 8],
+    'people/own-list.md': [danglingNote(...TAGS, 'author: # the owners', '  - Ana'), 8],
+    'people/no-list-above.md': [['---', 'type: person', 'confidential: true', '  - resource: /people/bruno.md', '---', '# Ana', ''].join('\n'), 3],
+    'people/no-list-of-its-kind.md': [['---', 'type: person', ...TAGS, 'confidential: true', '  - resource: /people/bruno.md', '---', '# Ana', ''].join('\n'), 5],
+  };
+  const files = { ...cleanVaultFiles(), ...Object.fromEntries(Object.entries(cases).map(([file, [note]]) => [file, note])) };
+  const findings = findingsFor({ files, config: DANGLING_CONFIG }).filter((f) => isHouse('extension-fields')(f) && f.file !== 'people/ana.md');
+  assert.deepEqual(
+    findings.map((f) => [f.file, f.check, f.messageKey, f.unreadable, f.absence]).sort(),
+    Object.keys(cases).sort().map((file) => [file, 'shape-readable', 'common.shape_unreadable', true, false]),
+  );
   for (const finding of findings) {
-    assert.equal(finding.line, finding.file === 'people/no-list-above.md' ? 3 : 6, `${finding.file}: the generic finding still points at the key`);
+    assert.equal(finding.line, cases[finding.file][1], `${finding.file}: the generic finding still points at the key`);
   }
 });
 

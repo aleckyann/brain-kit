@@ -9,11 +9,14 @@
   list they were written for (a new `sources` entry added after `confidential: true`, at
   the end of the frontmatter), the `extension-fields` rule reports
   `frontmatter-dangling-items` with the first item's line, the field it hangs under, the
-  nearest list above and the fix: move the items to the end of that list, before the next
-  top-level key. It used to report only that the field's shape could not be read. The
-  finding keeps the generic one's class and blocks exactly where it did; every other
-  unreadable shape, and the same shape with no list above, still gets the generic finding.
-  The reader accepts and declines the same shapes as before.
+  list above that holds entries like the items, and the fix: move the items to the end of
+  that list, before the next top-level key. The list named is the nearest one of the items'
+  kind, not merely the nearest one: a source goes to `sources` (the list whose entries start
+  with, or share, the item's fields), never to a `tags` list written in between, and a tag
+  goes to a list of scalars. It used to report only that the field's shape could not be
+  read. The finding keeps the generic one's class and blocks exactly where it did; every
+  other unreadable shape, and the same shape with no list of the items' kind above, still
+  gets the generic finding. The reader accepts and declines the same shapes as before.
 - The curate prompt tells the round, in both languages, to put a new item of a frontmatter
   list such as `sources` at the end of that list, before the next top-level key. No
   contract marker was added, so an overlay that passes `prompt --check` still does.

@@ -1145,6 +1145,21 @@ test('validate renders the dangling-items finding in the vault\x27s own language
   );
 });
 
+test('validate sends a source dangling below a list of tags to sources, not to the nearer tags', () => {
+  // The review's reproduction through the real binary: the nearest list
+  // above was `tags`, and following a fix that named it left the source
+  // filed among the tags with nothing to report.
+  const note = personWith('tags:', '  - person', 'confidential: true', '  - resource: /memory/log.md', '    title: second');
+  const root = makeVault({ files: { 'index.md': INDEX, 'memory/log.md': CLEAN_LOG, 'people/ana.md': note }, config: { lang: 'en' } });
+  const result = run([root]);
+  assert.equal(result.status, EXIT.FAILURE);
+  assert.ok(
+    result.stdout.includes('people/ana.md:10  extension-fields  confidential has list items indented under it from line 10, but its value is already on its key line, so the items hang under it and the note no longer reads. Move them to the end of the sources list, before the next top-level key\n'),
+    result.stdout,
+  );
+  assert.doesNotMatch(result.stdout, /end of the tags list/);
+});
+
 // An unclassifiable finding is a statement about the TOOL, not about the
 // vault, so no vault setting gets to wave it through.
 test('an unclassifiable finding blocks under every fail_on setting, including "must"', () => {

@@ -652,7 +652,8 @@ export function frontmatterKeyLine(frontmatter, key) {
 // any reader above accepts or declines, and a rule calls it only after a
 // reader already declined the key. It returns null unless all of these
 // hold, and each clause is there so a shape YAML really allows is never
-// described as a misplaced item:
+// described as a misplaced item, and so the list the fix names is one the
+// items can really go to:
 //
 // - `key` is a top-level key whose own line carries a scalar value. A key
 //   line that is empty (or holds only a comment) is a block list or
@@ -660,37 +661,54 @@ export function frontmatterKeyLine(frontmatter, key) {
 //   may well start with "- "; a "[" or "{" opens a flow collection that
 //   may continue below; an anchor or a tag with nothing after it belongs
 //   to the node written below it; a quote that does not close on the line
-//   continues on the next one. None of those is a scalar on the key line.
-// - The first line indented under it is a list item ("- ..." or "-").
-//   A nested mapping under a scalar ("  reason: x") is some other shape,
-//   and so is a plain value folded onto an indented line.
-// - A block list sits above it: a top-level key with nothing on its line
-//   and a list item as its first indented line. The nearest one is named,
-//   since that is the list the item was most likely written for, and the
-//   fix is to move the items to its end. With no list above there is no
-//   list to move them to, and the caller keeps its generic finding.
+//   continues on the next one (an escaped quote, a backslash one inside
+//   double quotes or a doubled one inside single quotes, does not close
+//   it). None of those is a scalar on the key line.
+// - The first line indented under it is a list item ("- ..." or "-"),
+//   and that item holds something. A nested mapping under a scalar
+//   ("  reason: x") is some other shape, and so is a plain value folded
+//   onto an indented line, even when a later line of it starts with "- ".
+// - A block list above it holds entries of the same kind as that first
+//   item: a top-level key with nothing on its line and a list item as its
+//   first indented line, whose first entry is a mapping when the item is
+//   one, and a scalar when the item is a scalar. For a mapping item, the
+//   nearest list whose first entry starts with the item's first field
+//   (`resource` for a source) is named; failing that, the nearest one
+//   whose first entry shares any field with the item. For a scalar item,
+//   the nearest list of scalars. The nearest list of ANY kind is not
+//   enough: with `tags` written between `sources` and the dangling key, a
+//   fix naming `tags` files a source among the tags, where no rule reads
+//   it, and the note passes. With no such list above there is no list the
+//   items can be moved to with confidence, and the caller keeps its
+//   generic finding.
 //
 // Returns { line, list }: `line` is the 1-based line, in the WHOLE file, of
 // the first dangling item (frontmatterKeyLine's arithmetic, one line
-// further down), and `list` is the nearest list key's name.
+// further down), and `list` is the matching list key's name.
 export function danglingItems(frontmatter, key) {
   const lines = (frontmatter ?? '').split('\n');
   const found = findKeyLine(lines, key);
   if (!found || !holdsScalarOnKeyLine(found.head)) return null;
   const block = collectBlock(lines, found.index);
   if (block.length === 0 || !isEntryMarker(block[0].slice(indentOf(block[0])))) return null;
-  const list = nearestBlockListAbove(lines, found.index);
+  const item = firstEntryShape(block);
+  if (item === null) return null;
+  const list = matchingBlockListAbove(lines, found.index, item);
   if (list === null) return null;
   return { line: found.index + 3, list };
 }
 
+// A node's properties, an anchor "&name" or a tag "!tag", written before
+// its value on the key line.
+const NODE_PROPERTIES = /^(?:[&!]\S*(?:[ \t]+|$))+/;
+
 // What a key line holds once its trailing comment and any leading node
-// properties (an anchor "&name", a tag "!tag") are set aside. A line whose
-// only content is a comment ("key: # note") holds nothing: stripTrailingComment
-// leaves a comment that opens the value untouched, since a "#" right after
-// the colon has no whitespace before it inside the value itself.
+// properties are set aside. A line whose only content is a comment
+// ("key: # note") holds nothing: stripTrailingComment leaves a comment
+// that opens the value untouched, since a "#" right after the colon has
+// no whitespace before it inside the value itself.
 function keyLineValue(rawHead) {
-  const value = stripTrailingComment(rawHead).replace(/^(?:[&!]\S*(?:[ \t]+|$))+/, '');
+  const value = stripTrailingComment(rawHead).replace(NODE_PROPERTIES, '');
   return value.startsWith('#') ? '' : value;
 }
 
@@ -698,9 +716,34 @@ function holdsScalarOnKeyLine(rawHead) {
   const value = keyLineValue(rawHead);
   if (value === '') return false;
   if (/^[|>[{]/.test(value)) return false; // a block scalar header, or a flow collection
-  const quote = value[0];
-  if ((quote === '"' || quote === "'") && value.indexOf(quote, 1) === -1) return false; // a quoted scalar continued on the next line
+  // The quote is judged on the raw line, not on keyLineValue's output:
+  // stripTrailingComment ends a quoted span at the next quote character,
+  // escaped or not, so a " #" after an escaped quote would already have
+  // been cut off as a comment.
+  const raw = rawHead.replace(/^[ \t]+/, '').replace(NODE_PROPERTIES, '');
+  if ((raw[0] === '"' || raw[0] === "'") && closingQuoteIndex(raw) === -1) return false; // a quoted scalar continued on the next line
   return true;
+}
+
+// Where the quoted span that opens `text` closes, or -1 when it stays
+// open to the end of the line. Inside double quotes a backslash escapes
+// the character after it; inside single quotes a doubled quote is one
+// literal quote. Either way the escaped quote is data, not the close.
+function closingQuoteIndex(text) {
+  const quote = text[0];
+  for (let i = 1; i < text.length; i++) {
+    if (quote === '"' && text[i] === '\\') {
+      i++;
+      continue;
+    }
+    if (text[i] !== quote) continue;
+    if (quote === "'" && text[i + 1] === "'") {
+      i++;
+      continue;
+    }
+    return i;
+  }
+  return -1;
 }
 
 // A top-level key line, generalised to an unknown key the way findKeyLine
@@ -709,14 +752,63 @@ function holdsScalarOnKeyLine(rawHead) {
 // item at column 0 is never a key line here.
 const TOP_LEVEL_KEY = /^(?:"([^"]*)"|'([^']*)'|([^\s"'#-][^:]*?))[ \t]*:((?:[ \t].*)?)$/;
 
-function nearestBlockListAbove(lines, index) {
+// An inline mapping entry's first field ("{ resource: /a.md }"), bare or
+// quoted, followed by ":" and whitespace or the end of the text.
+const INLINE_FIRST_FIELD = /^\{[ \t]*([^\s:,{}]+)[ \t]*:(?:[ \t]|$)/;
+
+// The kind of the first entry of a block list (its marker line, block[0],
+// and the lines indented deeper than that marker under it), just enough to
+// tell which list a dangling item was written for. null for an entry that
+// holds nothing (a bare "-", or one followed only by a comment, with no
+// line under it). Otherwise { mapping, fields }: a mapping entry is
+// written as fields, the first on the marker's line or on the line under
+// a bare marker, and `fields` holds the names of the fields at that first
+// field's indentation, in order; or it is one inline mapping, and
+// `fields` holds its first field only. Any other entry, a scalar in
+// practice, is { mapping: false, fields: [] }.
+function firstEntryShape(block) {
+  const markerIndent = indentOf(block[0]);
+  const trimmed = block[0].slice(markerIndent);
+  const head = afterMarker(trimmed);
+  const content = [];
+  if (head !== '' && !head.startsWith('#')) content.push({ indent: markerIndent + trimmed.length - head.length, text: head });
+  for (let i = 1; i < block.length && indentOf(block[i]) > markerIndent; i++) {
+    content.push({ indent: indentOf(block[i]), text: block[i].slice(indentOf(block[i])) });
+  }
+  if (content.length === 0) return null;
+  const inline = INLINE_FIRST_FIELD.exec(content[0].text);
+  if (inline) return { mapping: true, fields: [unquoteFieldName(inline[1])] };
+  if (!looksLikeMappingField(content[0].text)) return { mapping: false, fields: [] };
+  const fieldIndent = content[0].indent;
+  const fields = content
+    .filter(({ indent, text }) => indent === fieldIndent && looksLikeMappingField(text))
+    .map(({ text }) => unquoteFieldName(text.slice(0, text.indexOf(':'))));
+  return { mapping: true, fields };
+}
+
+function unquoteFieldName(name) {
+  const quoted = /^(["'])(.*)\1$/.exec(name);
+  return quoted ? quoted[2] : name;
+}
+
+// The list above `index` that the dangling `item` was most likely written
+// for, by the order danglingItems states, or null when no list above
+// holds entries of the item's kind.
+function matchingBlockListAbove(lines, index, item) {
+  const lists = []; // nearest first
   for (let i = index - 1; i >= 0; i--) {
     const match = TOP_LEVEL_KEY.exec(lines[i]);
     if (!match || keyLineValue(match[4]) !== '') continue;
     const block = collectBlock(lines, i);
-    if (block.length > 0 && isEntryMarker(block[0].slice(indentOf(block[0])))) return match[1] ?? match[2] ?? match[3];
+    if (block.length === 0 || !isEntryMarker(block[0].slice(indentOf(block[0])))) continue;
+    const entry = firstEntryShape(block);
+    if (entry !== null) lists.push({ name: match[1] ?? match[2] ?? match[3], entry });
   }
-  return null;
+  const found = item.mapping
+    ? (lists.find(({ entry }) => entry.mapping && entry.fields[0] === item.fields[0]) ??
+      lists.find(({ entry }) => entry.mapping && entry.fields.some((field) => item.fields.includes(field))))
+    : lists.find(({ entry }) => !entry.mapping);
+  return found ? found.name : null;
 }
 
 // --- PARSER_LIMITS -----------------------------------------------------------
