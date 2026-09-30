@@ -790,6 +790,8 @@ test('scalar items dangling under a field whose type refuses the folded value ar
     'people/tag-under-listed-enum.md': danglingNote(...TAGS, 'phase: open', '  - example'),
     'people/source-under-string.md': danglingNote(...TAGS, 'author: Ana', '  - resource: /people/bruno.md'),
     'people/source-under-free-enum.md': danglingNote(...TAGS, 'mood: calm', '  - resource: /people/bruno.md'),
+    // The same enum has values for a project, so there it refuses the fold.
+    'projects/tag-under-typed-enum.md': danglingNote(...TAGS, 'mood: calm', '  - example').replace('type: person', 'type: project'),
   };
   const findings = findingsFor({ files, config: DANGLING_CONFIG }).filter((f) => isHouse('extension-fields')(f) && f.file !== 'people/ana.md');
   assert.deepEqual(
@@ -801,6 +803,7 @@ test('scalar items dangling under a field whose type refuses the folded value ar
       ['people/tag-under-date.md', 'frontmatter-dangling-items', 'review_date', 9, 'tags'],
       ['people/tag-under-listed-enum.md', 'frontmatter-dangling-items', 'phase', 9, 'tags'],
       ['people/tag-under-number.md', 'frontmatter-dangling-items', 'rating', 9, 'tags'],
+      ['projects/tag-under-typed-enum.md', 'frontmatter-dangling-items', 'mood', 9, 'tags'],
     ],
   );
 });
