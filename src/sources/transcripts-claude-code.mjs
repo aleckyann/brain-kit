@@ -1126,6 +1126,9 @@ function collect({ window, config, machine, home = homedir(), digestDir, io = fs
     digestLimitedBy,
     overCap,
     problems,
+    // The same problems in words, in the vault's language: what `curate
+    // --dry` says instead of the codes.
+    problemLines: problems.map((problem) => problemLine(t, problem, root)),
     misconfigured,
   };
   if (digestRead !== null) attachDigests(plan, { dir: digestDir, t, tz, read: digestRead });

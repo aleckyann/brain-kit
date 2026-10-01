@@ -1060,6 +1060,7 @@
   "curate.time_cap_none": "Limite de tempo: nenhum, {setting} é null ou não está definido (o modelo roda até terminar)",
   "curate.check_done": "brain-kit curate: checagem concluída, o modelo não foi chamado.",
   "curate.dry_header": "Simulação: nenhuma trava, nenhum sync, nada gravado. A configuração é lida da árvore de trabalho como está agora, e uma rodada de verdade sincroniza antes.",
+  "curate.dry_would_refuse": "Simulação: uma rodada real se recusaria a rodar agora (saída {code}). {reason}",
   "curate.model_start": "brain-kit curate: curando {days}.",
   "curate.cleanup_restored": "brain-kit curate: devolvidos ao conteúdo do branch padrão, iguais ao que foi enviado: {paths}",
   "curate.cleanup_changed": "brain-kit curate: alterados depois do envio, deixados como estão: {paths}",

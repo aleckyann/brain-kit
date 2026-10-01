@@ -1060,6 +1060,7 @@
   "curate.time_cap_none": "Time limit: none, {setting} is null or not set (the model runs until it ends)",
   "curate.check_done": "brain-kit curate: check done, the model was not called.",
   "curate.dry_header": "Dry run: no lock taken, nothing synced, nothing written. The configuration is read from the working tree as it is now, which a real round would sync first.",
+  "curate.dry_would_refuse": "Dry run: a real round would refuse to run now (exit {code}). {reason}",
   "curate.model_start": "brain-kit curate: curating {days}.",
   "curate.cleanup_restored": "brain-kit curate: brought back to the default branch, as pushed: {paths}",
   "curate.cleanup_changed": "brain-kit curate: changed after the push, left as they are: {paths}",

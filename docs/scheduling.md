@@ -36,8 +36,9 @@ each. The vault at `/home/ana/brain` is `-home-ana-brain`, one at `/home/ana/My 
 is `-home-ana-My-Notes-brain`, and an accented letter or a dot is a dash too. `brain-kit init`
 writes the vault's own project into the list for you. Claude Code makes that directory the
 first time a session runs in the vault, so until then `doctor` says the project has no
-sessions yet, which is no fault; a name that is not the vault's own and is not there is
-reported as missing.
+sessions yet, which is no fault, and a round has nothing to read: with the transcripts
+required it refuses (exit 1), and `curate --dry` says the same without running one. A name
+that is not the vault's own and is not there is reported as missing.
 
 To feed the vault from every project instead, write the string `"all"` in place of the list:
 `"include_projects": "all"`. Nothing reads every project unless the configuration says so in

@@ -52,6 +52,13 @@ kit's own output. These are the fixes in the code and the messages (both languag
 - `schedule install --job briefing --dry` is accepted (the usage line lists `--dry`) and says
   that for the briefing job nothing is written anyway; the run is the normal run of that job,
   exit 3 included. `status` still takes no `--dry`.
+- `curate --dry` no longer exits 0 over a round that would refuse. For a required source that
+  is unknown, off, or has nothing to read (no project listed, none of the listed ones there),
+  it says "a real round would refuse to run now (exit 1)" with the round's own sentence, the
+  problem in words instead of the code `no_projects`, and exits 1. The same words replace the
+  codes in the warning it prints for a source that is only best effort. The other refusals of
+  a round (an over-cap first day, a file it cannot read: exit 4) are still previewed with exit
+  0, as before.
 - `propose` in a repository with no remote of the name it reads the default branch from no
   longer says "the default branch is published to remote origin" as if something had set it
   up. It says the repository has no remote called that, and how to create one:
