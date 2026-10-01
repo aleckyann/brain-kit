@@ -46,6 +46,9 @@ kit's own output. These are the fixes in the code and the messages (both languag
   vault's folder name, as the default name) and `claude` in the vault. Printed only over a
   vault whose checks passed and, when init committed, whose commit was made; not for an
   adopted vault, which has a repository of its own.
+- Outside a vault, `doctor`, `validate`, `lint`, `propose` and `curate` end their "no vault
+  found" message with "To create one: brain-kit init <dir>", and `curate` no longer says it
+  looked for the configuration "or" a root index when both are required.
 - `propose` in a repository with no remote of the name it reads the default branch from no
   longer says "the default branch is published to remote origin" as if something had set it
   up. It says the repository has no remote called that, and how to create one:
