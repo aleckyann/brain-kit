@@ -8,7 +8,7 @@ o clique que aprova o pedido, é a aprovação e a verificação.
 
 > **Comece aqui.** De uma máquina limpa até o seu primeiro pull request, o caminho leva cerca de 30
 > minutos na primeira vez (os tempos abaixo são estimativas). Antes de começar, tenha o Node.js 22
-> ou mais novo (o 24 é o recomendado), o git, o `gh` (o aplicativo do GitHub para o terminal), o
+> ou mais novo (o 24 LTS é o recomendado), o git, o `gh` (o aplicativo do GitHub para o terminal), o
 > Claude Code e uma conta no GitHub. Os detalhes estão em [Seu primeiro vault](#seu-primeiro-vault).
 >
 > 1. Instale o kit e o plugin colando o [trecho de instalação](#instalando-uma-versão-fixa) no terminal (2 min).
@@ -38,11 +38,11 @@ o clique que aprova o pedido, é a aprovação e a verificação.
 
 ## Requisitos
 
-Para chegar ao primeiro pull request você precisa de Node.js 22 ou mais novo (o 24, a versão
-LTS atual, é o recomendado), com o npm dele (`node --version` mostra qual você tem), git, o `gh`
-(o aplicativo do GitHub para o terminal) com o login feito (`gh auth login`), o Claude Code e
-uma conta no GitHub. As rodadas agendadas do curador, as fontes de agenda e de notas de
-reunião e o briefing com horário são opcionais e ficam para depois:
+Para chegar ao primeiro pull request você precisa de Node.js 22 ou mais novo (o 24 LTS é o
+recomendado), com o npm dele (`node --version` mostra qual você tem), git, o `gh` (o aplicativo
+do GitHub para o terminal) com o login feito (`gh auth login`), o Claude Code e uma conta no
+GitHub. As rodadas agendadas do curador, as fontes de agenda e de notas de reunião e o
+briefing com horário são opcionais e ficam para depois:
 [O curador agendado](#o-curador-agendado) e o [docs/scheduling.md](docs/scheduling.md) os
 apresentam, com o que cada um exige.
 

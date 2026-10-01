@@ -430,28 +430,30 @@ test('node-version: a Node below the minimum is told the minimum, what it has an
   const fail = check((await doctor(fx, ['--only', 'node-version'], { nodeVersion: '20.11.1' })).report, 'node-version');
   assert.match(fail.message, /Node 20\.11\.1/);
   assert.match(fail.message, /Node 22 or newer/);
-  assert.match(fail.message, /Install Node 24 \(the current LTS\) from https:\/\/nodejs\.org/);
+  assert.match(fail.message, /Install Node 24 \(LTS\) from https:\/\/nodejs\.org/);
   const failPt = renderMessage(pt, fail.messageKey, fail.params);
   assert.match(failPt, /Node 20\.11\.1/);
   assert.match(failPt, /Node 22 ou mais novo/);
-  assert.match(failPt, /Instale o Node 24 \(a vers\u00e3o LTS atual\) em https:\/\/nodejs\.org/);
+  assert.match(failPt, /Instale o Node 24 \(LTS\) em https:\/\/nodejs\.org/);
   for (const text of [fail.message, failPt]) {
     assert.doesNotMatch(text, /\{[a-z_]+\}/, 'no placeholder left in the sentence');
     assert.doesNotMatch(text, /Node 24 (or newer|ou mais novo)/, 'Node 24 is advice, not the minimum');
+    assert.doesNotMatch(text, /current|atual|latest|mais recente/i, 'and nothing about which release line is the LTS today');
   }
   // The node the push gate would run is judged by the same rule and says the same.
   const old = setup({ tools: { node: 'old' } });
   const path = check((await doctor(old, ['--only', 'node-version'])).report, 'node-version');
   assert.equal(path.messageKey, 'doctor.node_version.path_too_old');
   for (const [text, minimum, install] of [
-    [path.message, /Node 22 or newer/, /Node 24 \(the current LTS\) from https:\/\/nodejs\.org/],
-    [renderMessage(pt, path.messageKey, path.params), /Node 22 ou mais novo/, /Node 24 \(a vers\u00e3o LTS atual\) em https:\/\/nodejs\.org/],
+    [path.message, /Node 22 or newer/, /Node 24 \(LTS\) from https:\/\/nodejs\.org/],
+    [renderMessage(pt, path.messageKey, path.params), /Node 22 ou mais novo/, /Node 24 \(LTS\) em https:\/\/nodejs\.org/],
   ]) {
     assert.ok(text.includes(path.params.bin), 'it names the node it ran');
     assert.ok(text.includes('20.11.1'), 'and its version');
     assert.match(text, minimum);
     assert.match(text, install);
     assert.doesNotMatch(text, /\{[a-z_]+\}/);
+    assert.doesNotMatch(text.split(path.params.bin).join(''), /current|atual|latest|mais recente/i, 'nothing about which release line is the LTS today (the path of the node apart)');
   }
 });
 

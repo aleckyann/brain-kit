@@ -13,9 +13,11 @@
 // 22.22.1 and only the version policy itself failed (0.0.9). 22 is also the
 // oldest Node that still receives security fixes (it leaves Maintenance LTS in
 // April 2027, the date to raise this number). What a person who has to install a
-// Node is sent to is another number, RECOMMENDED_MAJOR: 24, the current LTS. CI
-// runs the suite on 22 and on 24, and test/node-minimum.test.mjs holds this
-// number to package.json's `engines`, the doctor, the documents and the CI matrix.
+// Node is sent to is another number, RECOMMENDED_NODE_MAJOR: 24, which every
+// sentence calls "LTS" and nothing more (a sentence that says which release line is
+// the LTS today goes stale the day the next one becomes it). CI runs the suite on 22
+// and on 24, and test/node-minimum.test.mjs holds each number to every place that
+// states it: package.json's `engines`, the doctor, the documents and the CI matrix.
 //
 // So this file has to run on a Node that cannot run the rest of the kit:
 // it imports nothing, and it uses only syntax every Node that can load an
@@ -34,7 +36,7 @@
 // The Portuguese is written with \u escapes where it has an accent, because
 // the engine's sources are ASCII (test/no-portuguese.test.mjs).
 export var MINIMUM_NODE_MAJOR = 22;
-var RECOMMENDED_MAJOR = 24;
+export var RECOMMENDED_NODE_MAJOR = 24;
 var REFUSED = 2;
 var HOOK_EXIT = 0;
 
@@ -73,7 +75,7 @@ export function checkNodeVersion(version, firstArgument, locale) {
   if (major === null || major >= MINIMUM_NODE_MAJOR) return null;
   var shown = String(version).replace(/^v/, '');
   var message = inPortuguese(locale)
-    ? 'brain-kit precisa do Node ' + MINIMUM_NODE_MAJOR + ' ou mais novo; esta m\u00e1quina tem o Node ' + shown + '. Instale o Node ' + RECOMMENDED_MAJOR + ' (a vers\u00e3o LTS atual) em https://nodejs.org e rode de novo.'
-    : 'brain-kit needs Node ' + MINIMUM_NODE_MAJOR + ' or newer; this machine has Node ' + shown + '. Install Node ' + RECOMMENDED_MAJOR + ' (the current LTS) from https://nodejs.org and run it again.';
+    ? 'brain-kit precisa do Node ' + MINIMUM_NODE_MAJOR + ' ou mais novo; esta m\u00e1quina tem o Node ' + shown + '. Instale o Node ' + RECOMMENDED_NODE_MAJOR + ' (LTS) em https://nodejs.org e rode de novo.'
+    : 'brain-kit needs Node ' + MINIMUM_NODE_MAJOR + ' or newer; this machine has Node ' + shown + '. Install Node ' + RECOMMENDED_NODE_MAJOR + ' (LTS) from https://nodejs.org and run it again.';
   return { message: message, exitCode: firstArgument === 'hook' ? HOOK_EXIT : REFUSED };
 }

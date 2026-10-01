@@ -7,7 +7,7 @@ Você está ajudando a pessoa a começar um segundo cérebro com o brain-kit, ou
 
 ## Conferir a máquina
 
-1. Rode `node --version`. Precisa ser 22 ou mais novo. Se for mais antigo, pare e avise, e oriente a pessoa a instalar o Node 24 (a versão LTS atual) em https://nodejs.org.
+1. Rode `node --version`. Precisa ser 22 ou mais novo. Se for mais antigo, pare e avise, e oriente a pessoa a instalar o Node 24 (LTS) em https://nodejs.org.
 2. Rode `git --version` e `gh auth status`. Se o gh não estiver logado, peça para a pessoa rodar `gh auth login` no terminal dela. Nunca rode por ela, e nunca digite senha, token ou qualquer outra credencial no lugar dela.
 3. Rode `claude --version`. O Claude Code precisa estar instalado: o plugin e as sessões do vault rodam nele. Não rode o `{{kit}} doctor` ainda: ele confere um vault e recusa rodar fora de um vault, então ele roda depois do `init`, no passo 9.
 

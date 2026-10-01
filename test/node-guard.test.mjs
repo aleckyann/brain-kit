@@ -30,8 +30,8 @@ import { makeTempDir } from './helpers/tmp.mjs';
 
 const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
 const GUARD = join(KIT_ROOT, 'src', 'node-guard.mjs');
-const EN = (version) => `brain-kit needs Node 22 or newer; this machine has Node ${version}. Install Node 24 (the current LTS) from https://nodejs.org and run it again.`;
-const PT = (version) => `brain-kit precisa do Node 22 ou mais novo; esta m${String.fromCharCode(0xe1)}quina tem o Node ${version}. Instale o Node 24 (a vers${String.fromCharCode(0xe3)}o LTS atual) em https://nodejs.org e rode de novo.`;
+const EN = (version) => `brain-kit needs Node 22 or newer; this machine has Node ${version}. Install Node 24 (LTS) from https://nodejs.org and run it again.`;
+const PT = (version) => `brain-kit precisa do Node 22 ou mais novo; esta m${String.fromCharCode(0xe1)}quina tem o Node ${version}. Instale o Node 24 (LTS) em https://nodejs.org e rode de novo.`;
 
 // --- the decision -------------------------------------------------------------
 
@@ -101,15 +101,18 @@ test('the message is in Portuguese when the person\'s language is, with the acce
 });
 
 // The Node it asks for and the Node it sends a person to install are two numbers
-// on purpose: 22 is what runs the kit, 24 is the one worth installing today.
-test('the message asks for the minimum, 22, but sends the person to Node 24, the current LTS', () => {
+// on purpose: 22 is what runs the kit, 24 is the one a person who has to install
+// something is sent to. The sentence calls it "LTS" and nothing else: no word in it
+// goes stale when the next release line becomes the LTS.
+test('the message asks for the minimum, 22, but sends the person to Node 24 (LTS), and says nothing that goes stale', () => {
   for (const [locale, text] of [[{}, EN('20.11.1')], [{ LANG: 'pt_BR.UTF-8' }, PT('20.11.1')]]) {
     const message = checkNodeVersion('20.11.1', 'doctor', locale).message;
     assert.equal(message, text);
     assert.match(message, /Node 22 (or newer|ou mais novo)/);
-    assert.match(message, /Instale o Node 24 \(a vers\u00e3o LTS atual\)|Install Node 24 \(the current LTS\)/);
+    assert.match(message, /Instale o Node 24 \(LTS\)|Install Node 24 \(LTS\)/);
     assert.match(message, /https:\/\/nodejs\.org/);
     assert.doesNotMatch(message, /Node 24 (or newer|ou mais novo)/, 'Node 24 is advice, no longer the minimum');
+    assert.doesNotMatch(message, /current|atual|latest|mais recente/i, 'nothing about which release line is the LTS today');
   }
 });
 

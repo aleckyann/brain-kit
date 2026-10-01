@@ -7,9 +7,9 @@ brain through a pull request, a change request that you read on GitHub, and your
 click that approves the request, is the approval and the verification.
 
 > **Start here.** From a clean machine to your first pull request, the path takes about 30 minutes
-> the first time (the times below are estimates). Before you start, have Node.js 22 or newer (24,
-> the current LTS, is recommended), git, `gh` (the GitHub app for the terminal), Claude Code and a
-> GitHub account. The detail of each step is in [Your first vault](#your-first-vault).
+> the first time (the times below are estimates). Before you start, have Node.js 22 or newer (24 LTS
+> is recommended), git, `gh` (the GitHub app for the terminal), Claude Code and a GitHub account.
+> The detail of each step is in [Your first vault](#your-first-vault).
 >
 > 1. Install the kit and the plugin by pasting the [install snippet](#installing-a-fixed-version) into the terminal (2 min).
 > 2. Log in to GitHub with `gh auth login` ([step 2](#step-2), 3 min).
@@ -38,11 +38,11 @@ click that approves the request, is the approval and the verification.
 
 ## Requirements
 
-To reach the first pull request you need Node.js 22 or newer (24, the current LTS, is
-recommended) with its npm (`node --version` shows which one you have), git, `gh` (the GitHub
-app for the terminal) logged in (`gh auth login`), Claude Code and a GitHub account. The
-scheduled curator rounds, the calendar and meeting-notes sources and the briefing on a
-schedule are optional and can wait: [The scheduled curator](#the-scheduled-curator) and
+To reach the first pull request you need Node.js 22 or newer (24 LTS is recommended) with
+its npm (`node --version` shows which one you have), git, `gh` (the GitHub app for the
+terminal) logged in (`gh auth login`), Claude Code and a GitHub account. The scheduled
+curator rounds, the calendar and meeting-notes sources and the briefing on a schedule are
+optional and can wait: [The scheduled curator](#the-scheduled-curator) and
 [docs/scheduling.md](docs/scheduling.md) introduce them, with what each one needs.
 
 ## Installing a fixed version

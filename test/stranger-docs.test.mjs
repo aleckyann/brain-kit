@@ -59,8 +59,8 @@ const FIRST_RUN = {
     estimates: 'estimates',
     glossary: '**Words you will see**',
     terms: ['terminal', 'PATH', 'repository', 'branch', 'commit', 'pull request', 'merge', 'vault', 'push gate', 'hook', 'skill', 'plugin', 'marketplace'],
-    needs: [/Node\.js 22 or newer \(24, the current LTS, is recommended\)/, /\bgit\b/, /`gh`/, /Claude Code/, /GitHub account/],
-    node: { requirements: /Node\.js 22 or newer \(24, the current LTS, is recommended\)/, engine: /runs on Node\.js 22 and 24/, tested: /both are tested/ },
+    needs: [/Node\.js 22 or newer \(24 LTS is recommended\)/, /\bgit\b/, /`gh`/, /Claude Code/, /GitHub account/],
+    node: { requirements: /Node\.js 22 or newer \(24 LTS is recommended\)/, engine: /runs on Node\.js 22 and 24/, tested: /both are tested/ },
     optional: /optional/,
     curator: '## The scheduled curator',
     curatorAnchor: '(#the-scheduled-curator)',
@@ -100,8 +100,8 @@ const FIRST_RUN = {
     estimates: 'estimativas',
     glossary: '**Palavras que você vai ver**',
     terms: ['terminal', 'PATH', 'repositório', 'branch', 'commit', 'pull request', 'merge', 'vault', 'trava de push', 'hook', 'skill', 'plugin', 'marketplace'],
-    needs: [/Node\.js 22 ou mais novo \(o 24 é o recomendado\)/, /\bgit\b/, /`gh`/, /Claude Code/, /conta no GitHub/],
-    node: { requirements: /Node\.js 22 ou mais novo \(o 24, a versão LTS atual, é o recomendado\)/, engine: /roda no Node\.js 22 e no 24/, tested: /os dois são testados/ },
+    needs: [/Node\.js 22 ou mais novo \(o 24 LTS é o recomendado\)/, /\bgit\b/, /`gh`/, /Claude Code/, /conta no GitHub/],
+    node: { requirements: /Node\.js 22 ou mais novo \(o 24 LTS é o recomendado\)/, engine: /roda no Node\.js 22 e no 24/, tested: /os dois são testados/ },
     optional: /opcionais/,
     curator: '## O curador agendado',
     curatorAnchor: '(#o-curador-agendado)',
@@ -477,6 +477,9 @@ for (const [lang, spec] of Object.entries(READMES)) {
     assert.match(repo, run.node.engine);
     assert.match(repo, run.node.tested);
     assert.doesNotMatch(norm(text), /Node\.js 24 (or newer|ou mais novo)|The engine is Node\.js 24|O motor é Node\.js 24/);
+    // The recommendation says "LTS" and nothing about which release line is the LTS today: that
+    // goes stale the day the next line becomes one.
+    assert.doesNotMatch(norm(text), /\bcurrent LTS\b|\bLTS atual\b|\bLTS mais recente\b|\blatest LTS\b/i);
   });
 
   test(`${spec.file}: the install snippet removes the tarball it made, and says which folder can go and which must stay`, () => {

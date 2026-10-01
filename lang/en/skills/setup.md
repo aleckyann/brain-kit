@@ -7,7 +7,7 @@ You are helping the person start a second brain with brain-kit, or bring an exis
 
 ## Check the machine
 
-1. Run `node --version`. It must be 22 or newer. If it is older, stop and say so, and send the person to install Node 24 (the current LTS) from https://nodejs.org.
+1. Run `node --version`. It must be 22 or newer. If it is older, stop and say so, and send the person to install Node 24 (LTS) from https://nodejs.org.
 2. Run `git --version` and `gh auth status`. If gh is not logged in, tell the person to run `gh auth login` in their own terminal. Never run it for them, and never type a password, token or any other credential on their behalf.
 3. Run `claude --version`. Claude Code must be installed: the plugin and the vault's sessions run on it. Do not run `{{kit}} doctor` yet: it checks a vault and refuses to run outside a vault, so it runs after `init`, in step 9.
 
