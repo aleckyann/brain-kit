@@ -362,8 +362,13 @@ function promptStarts(text, end) {
 // or the task prompt inside starts with one of `signatures`. A blank
 // signature never counts. `schedule status --job briefing` and doctor's
 // `briefing` check call this same function on the desktop task's prompt,
-// which the application keeps unwrapped in the task's file, so "the task is
-// signed" and "the curator drops its sessions" can never disagree.
+// which the application keeps unwrapped in the task's file, so on that prompt
+// they agree with the curator: signed means the curator drops the task's
+// sessions. The converse does not hold. A task named with the kit's prefix
+// whose prompt lacks the signature is `unsigned` for them, which stays strict
+// on purpose (the signature is what keeps working if the application changes
+// or drops its envelope), while the curator drops that task's sessions by its
+// name.
 export function startsWithSignature(text, signatures) {
   if (typeof text !== 'string') return false;
   const trimmed = text.trim();

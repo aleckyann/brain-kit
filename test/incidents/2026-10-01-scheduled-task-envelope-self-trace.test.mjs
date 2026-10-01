@@ -20,9 +20,9 @@
 //
 // Replayed with the measured envelope, built by hand with example names
 // (Ana, example.com, /home/ana), in a vault of the shipped pt-BR pack, as
-// the real run was: through the transcripts plan, and through `curate
-// --dry`, the command the docs tell the person to run after the first
-// scheduled run.
+// the real run was: through the transcripts plan, and through the dry run
+// of a round (`curate --dry`), which plans the same files the round would
+// hand the model.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';

@@ -905,15 +905,20 @@ function kitVersionAt(kit) {
 // The registered task, read back: { state, signed, taskId, file, ... }
 // where state is 'absent', 'unreadable' (detail), 'bad_signature' (the
 // configured signature itself is refused by signatureProblem: problem),
-// 'unsigned' (its prompt does not start with the signature: its sessions
-// would reach the curator), 'no_command' (no line runs the kit's
+// 'unsigned' (its prompt does not start with the signature: the signature
+// no longer marks its sessions, which the curator then skips only by the
+// task's name in the application's envelope), 'no_command' (no line runs the kit's
 // briefing), 'kit_missing' (kit: the path its line names, which no longer
 // exists), 'vault_differs' (vault: the vault its line names), 'kit_other'
 // (kit and current: it runs an existing kit that is not this one, with
 // version and currentVersion) or 'ok' (kit). `signed` is the transcripts
 // source's own predicate (startsWithSignature, ruling R-T12) applied to the
-// task's prompt: exactly whether the curator would drop the session the
-// task starts. 'ok' and 'kit_other' are the task working.
+// task's prompt, which the application keeps unwrapped: whether the
+// signature alone makes the curator drop the session the task starts. It is
+// strict on purpose: a task named with the kit's prefix is also dropped by
+// name while the application wraps its prompt, and `signed` stays false
+// without the signature, which is what keeps working if the envelope
+// changes. 'ok' and 'kit_other' are the task working.
 export function readBriefingTask({ root, config, vaultId, env = process.env, currentKit = kitCommand().slice(1, -1) }) {
   const taskId = briefingTaskId(vaultId);
   const file = briefingTaskFile(env, taskId);

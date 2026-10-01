@@ -35,23 +35,24 @@ const SIGNATURE = 'Second brain morning briefing';
 const CURATOR = 'Second brain curator';
 const SIGNATURES = [CURATOR, SIGNATURE];
 const KIT_NAME = 'brain-kit-briefing-ana-vault-1a2b3c4d';
-const OTHER_NAME = 'rtk-auto-update';
+const OTHER_NAME = 'ana-weekly-report';
 const LATER = '2026-09-23T15:00:00.000Z';
 
 const BOILERPLATE = 'This is an automated run of a scheduled task. The user is not present to answer questions. For implementation details, execute autonomously without asking clarifying questions \u2014 make reasonable choices and note them in your output. "write" actions (e.g. MCP tools that send, post, create, update, or delete), only take them if the task file asks for that specific action. When in doubt, producing a report of what you found is the correct output.';
 const COMMAND = 'Run exactly this command with Bash and follow everything it prints as this session\'s instructions: node "/home/ana/.claude/plugins/cache/example.com/brain-kit/bin/brain-kit.mjs" prompt briefing --vault "/home/ana/vault"';
 const PROMPT = `${SIGNATURE}\n${COMMAND}`;
-const OWN_PROMPT = 'Update the rtk tool and report which version it is now.';
+const OWN_PROMPT = 'Compile the weekly report and list the open items.';
 
 // The envelope as the application writes it, in the variations the brief
 // and the finding allow for: the quote character, the order of the
-// attributes, the boilerplate (`null` for none), the closing tag, the line
-// ends, what comes before the open tag.
-function envelope({ name = KIT_NAME, prompt = PROMPT, boilerplate = BOILERPLATE, close = true, quote = '"', swap = false, eol = '\n', lead = '' } = {}) {
+// attributes, the boilerplate (`null` for none), what the blank line after it
+// holds (`gap`: nothing, or spaces or a tab), the closing tag, the line ends,
+// what comes before the open tag.
+function envelope({ name = KIT_NAME, prompt = PROMPT, boilerplate = BOILERPLATE, gap = '', close = true, quote = '"', swap = false, eol = '\n', lead = '' } = {}) {
   const file = `/home/ana/.claude/scheduled-tasks/${name}/SKILL.md`;
   const attributes = swap ? [['file', file], ['name', name]] : [['name', name], ['file', file]];
   const open = `<scheduled-task ${attributes.map(([key, value]) => `${key}=${quote}${value}${quote}`).join(' ')}>`;
-  const lines = [open, ...(boilerplate === null ? [] : [boilerplate, '']), prompt];
+  const lines = [open, ...(boilerplate === null ? [] : [boilerplate, gap]), prompt];
   if (close) lines.push('</scheduled-task>');
   return lead + lines.join('\n').replace(/\n/g, eol);
 }
@@ -71,6 +72,10 @@ const SHAPES = {
   'leading whitespace and blank lines': { lead: '\n\n  \t\n' },
   'several blank lines between the paragraph and the prompt': { boilerplate: `${BOILERPLATE}\n\n  ` },
   'several blank lines, CRLF': { boilerplate: `${BOILERPLATE}\n\n  `, eol: '\r\n' },
+  'a blank line of spaces between the paragraph and the prompt': { gap: '   ' },
+  'a blank line of one tab between the paragraph and the prompt': { gap: '\t' },
+  'a blank line of spaces and a tab, CRLF': { gap: ' \t ', eol: '\r\n' },
+  'a blank line of one tab, CRLF': { gap: '\t', eol: '\r\n' },
   'single quotes, CRLF, no closing tag and leading newlines together': { quote: '\'', swap: true, eol: '\r\n', close: false, lead: '\r\n\r\n' },
 };
 
@@ -163,6 +168,23 @@ test('the tag mentioned in the middle of a message, or after other text, is noth
   ]) {
     assert.equal(startsWithSignature(text, SIGNATURES), false, text.slice(0, 40));
   }
+});
+
+// A DOCUMENTED LIMIT (docs/briefing.md, "Which sessions the curator skips"),
+// not a goal: the name clause looks at the tag's name only, so a session of
+// Ana's whose FIRST message is the kit's own envelope, pasted whole or just
+// its opening tag, with a question after it, is read as the kit's own and
+// left out. A guard on what follows the closing tag was weighed and refused
+// (11/08/2026: a loose filter lost three work sessions, and the application's
+// envelope ends at the closing tag today); starting the message with a word
+// of her own keeps the session in, which the test above pins. This test fixes
+// the behaviour the docs describe, so that a change to it is a decision.
+test('the kit\'s own envelope pasted as the first message, with a question after it, is dropped (a documented limit)', () => {
+  const question = 'Why is this session kept by the curator? Ana';
+  assert.equal(startsWithSignature(`${envelope()}\n\n${question}`, SIGNATURES), true);
+  assert.equal(startsWithSignature(`<scheduled-task name="${KIT_NAME}">\n${question}`, SIGNATURES), true);
+  // One word of her own in front is all it takes to keep the session.
+  assert.equal(startsWithSignature(`Ana asks:\n${envelope()}\n\n${question}`, SIGNATURES), false);
 });
 
 test('a signature after the first paragraph of ordinary text, with no envelope, is not a signature', () => {
@@ -361,7 +383,7 @@ test('the briefing of another vault on the same machine is dropped by the task\'
 
 test('the person\'s own scheduled task, unsigned and not the kit\'s, is read like any session of theirs', () => {
   const world = makeWorld({ extraSignatures: [] });
-  const own = sessionWithFirstMessage(world, 'rtk.jsonl', envelope({ name: OTHER_NAME, prompt: OWN_PROMPT }));
+  const own = sessionWithFirstMessage(world, 'weekly.jsonl', envelope({ name: OTHER_NAME, prompt: OWN_PROMPT }));
   const sibling = sessionWithFirstMessage(world, 'ana.jsonl', 'Ana asks about the budget');
   const plan = world.collect();
   assert.deepEqual(paths(plan).sort(), [own, sibling].sort());
@@ -394,7 +416,7 @@ test('the plan of the sessions that stay is what it was: the same plan with or w
   const build = (withEnvelope) => {
     const world = makeWorld({ extraSignatures: [] });
     sessionWithFirstMessage(world, 'ana.jsonl', 'Ana asks about the budget');
-    sessionWithFirstMessage(world, 'rtk.jsonl', envelope({ name: OTHER_NAME, prompt: OWN_PROMPT }));
+    sessionWithFirstMessage(world, 'weekly.jsonl', envelope({ name: OTHER_NAME, prompt: OWN_PROMPT }));
     if (withEnvelope) sessionWithFirstMessage(world, 'briefing.jsonl', envelope());
     // The plan with the world's scratch directory made the same in both.
     return JSON.parse(JSON.stringify(world.collect()).replaceAll(world.tmp, '<tmp>'));
@@ -411,6 +433,14 @@ test('the plan of the sessions that stay is what it was: the same plan with or w
   wrapped.dropped.selfTrace = 0;
   wrapped.promptBlock = wrapped.promptBlock.split('\n').filter((line) => !sayings(line).length).join('\n');
   assert.deepEqual(wrapped, plain);
+});
+
+test('the line that counts the sessions left out says, in both languages, that an envelope counts too', () => {
+  for (const lang of ['en', 'pt-BR']) {
+    const said = createTranslator(lang)('sources.transcripts.dropped_self_trace', { count: 3 });
+    assert.ok(said.startsWith('3 '), said);
+    assert.match(said, /envelope/, lang);
+  }
 });
 
 // ------------------------------------------------- the one literal, and the task `status` reads

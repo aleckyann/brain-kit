@@ -1724,8 +1724,9 @@ export async function probeConnectors(ctx, { prompt }) {
 // never a failure: registering it is the person's step, in the desktop
 // application, and a briefing asked for by hand still works. A task that is
 // there but unsigned, pointing at a kit that is gone, or at another vault
-// is a failure: it runs every morning and either fails or hands the curator
-// the briefing's own sessions.
+// is a failure: it runs every morning and either fails or leaves the curator
+// to tell the briefing's own sessions apart without the signature (by the
+// task's name in the application's envelope, which may change).
 const SCHEDULE_BRIEFING_COMMAND = 'brain-kit schedule install --job briefing';
 
 // A translator that makes a message instead of a sentence, so a problem
