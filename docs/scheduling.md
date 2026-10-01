@@ -55,8 +55,9 @@ so the entry stands for nothing there, `doctor` and the round say so, and the pr
 be listed by its name (or with `"all"`).
 
 Claude Code makes the vault's project directory the first time a session runs in the vault,
-so until then the project has no sessions yet, which is no fault: `doctor` says so and is
-`ok`, and a round treats it as a project with no sessions, an empty window (`curate --dry`
+so until then the project has no sessions yet, which is no fault: `doctor` is `ok` and says so
+(the line shows with `brain-kit doctor --verbose`; the default report leaves the `ok` lines
+out), and a round treats it as a project with no sessions, an empty window (`curate --dry`
 says so in a line; the round exits 0 with nothing to curate, and the day closes empty). That
 holds for `"{vault}"` and for the vault's own name written out. A name that is not the
 vault's own and is not there is reported as missing. And it holds while the kit looks where
