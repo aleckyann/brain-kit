@@ -28,21 +28,53 @@ brain-kit doctor
 `sources.transcripts.include_projects` in `brain-kit.config.json` lists the Claude Code
 project directories (the names under `~/.claude/projects`) whose sessions feed the vault.
 Nothing outside that list is ever offered to the model. An empty list makes every round
-refuse to run, and `doctor` says so.
+refuse to run, and `doctor` says so. An entry of the list is one of two things:
+
+- `"{vault}"`: the project of this vault, on whatever machine it is opened. It is what
+  `brain-kit init` writes for you, and what to write when the list is empty.
+- The name of a project directory, written out, as the next paragraph explains.
+
+The string `"all"` takes the place of the whole list (below).
 
 Claude Code names a project's directory after the folder its sessions ran in: the absolute
 path with every character that is not a letter or a digit replaced by a dash, one dash for
 each. The vault at `/home/ana/brain` is `-home-ana-brain`, one at `/home/ana/My Notes/brain`
-is `-home-ana-My-Notes-brain`, and an accented letter or a dot is a dash too. `brain-kit init`
-writes the vault's own project into the list for you. Claude Code makes that directory the
-first time a session runs in the vault, so until then the project has no sessions yet,
-which is no fault: `doctor` says so and is `ok`, and a round treats it as a project with no
-sessions, an empty window (`curate --dry` says so in a line; the round exits 0 with nothing
-to curate, and the day closes empty). A name that is not the vault's own and is not there
-is reported as missing. That holds while the kit looks where Claude Code keeps its
-projects: with `CLAUDE_CONFIG_DIR` set, name that folder with `brain-kit machine set
-transcripts_dir`, or the vault's own project missing from `~/.claude/projects` is a missing
-name like any other.
+is `-home-ana-My-Notes-brain`, and an accented letter or a dot is a dash too. The name comes
+from the real path of the folder, so a link or a trailing slash is followed first.
+
+That name depends on the path of the clone, and `brain-kit.config.json` is versioned: it
+travels to every machine that clones the vault. A name written out is right on the machine
+that wrote it, and on a clone at another path (`/Users/ana/my-brain` against
+`/home/ana/my-brain`) it names a project that is not there. `"{vault}"` is the entry that is
+right on both: on each machine it means the project Claude Code names for that clone's
+folder, by the rule above. It is the only entry of its kind, so any other string between
+braces is a project name that will not be found, and `doctor` says so. It can stand beside
+names (`["{vault}", "-home-ana-code"]`). A vault whose path is longer than 200 characters has
+no `{vault}`: Claude Code shortens the name of such a path in a way the kit cannot predict,
+so the entry stands for nothing there, `doctor` and the round say so, and the project has to
+be listed by its name (or with `"all"`).
+
+Claude Code makes the vault's project directory the first time a session runs in the vault,
+so until then the project has no sessions yet, which is no fault: `doctor` says so and is
+`ok`, and a round treats it as a project with no sessions, an empty window (`curate --dry`
+says so in a line; the round exits 0 with nothing to curate, and the day closes empty). That
+holds for `"{vault}"` and for the vault's own name written out. A name that is not the
+vault's own and is not there is reported as missing. And it holds while the kit looks where
+Claude Code keeps its projects: with `CLAUDE_CONFIG_DIR` set, name that folder with
+`brain-kit machine set transcripts_dir`, or the vault's own project missing from
+`~/.claude/projects` is a missing project like any other (for `"{vault}"`, `doctor` and the
+round then point at `machine.json`, not at the configuration, since the entry is right and
+the folder it is looked for in is this machine's).
+
+A vault that an earlier `brain-kit init` made lists its project by the name it had on the
+machine that created it. That keeps working there, unchanged: nothing rewrites a
+configuration for you. On a second machine, where the clone is at another path, that name is
+a project that is not there, and `doctor` fails `include-projects`: first because the
+projects folder does not exist (Claude Code never ran on this machine), then because the name
+is not in it, and both messages say the way out. To switch, replace that entry in
+`brain-kit.config.json` with `"{vault}"` and commit it like any other change to the file. Do
+not repair the failure by writing the second machine's name there: the file is shared, and
+the first machine's rounds would stop reading their own sessions.
 
 To feed the vault from every project instead, write the string `"all"` in place of the list:
 `"include_projects": "all"`. Nothing reads every project unless the configuration says so in
@@ -414,7 +446,9 @@ directory outside the vault and are never versioned. Until the machine has its o
 3. `git config core.hooksPath .githooks`: git does not version its own configuration, so a
    clone has no push gate until you point it at the vault's, and `doctor` fails `hooks-path`
    for it.
-4. `brain-kit doctor`.
+4. `brain-kit doctor`. A vault that an earlier `init` made lists its project by the
+   name it had on the first machine, and `include-projects` fails here until that entry is
+   `"{vault}"`: see "Before the first round".
 5. `brain-kit schedule install`, only on the machine that runs the rounds (below).
 
 Set no mark (`brain-kit watermark set`) and ask no question (`brain-kit questions add`) before

@@ -181,10 +181,11 @@ Within that, what limits how much the model reads is not the permission system:
 
 - **`include_projects`.** Only the Claude Code projects your configuration lists are ever
   offered to the model, and only the sessions whose messages fall inside the round's
-  window. The plan in the prompt names each session by its digest. `"all"` in place of the
-  list is the one way to offer every project, and only because the configuration says so
-  ([scheduling.md](scheduling.md)); the sessions a round reads are still only those of the
-  window, each named in the plan.
+  window. The plan in the prompt names each session by its digest. The entry `"{vault}"`
+  stands for this vault's own project and for no other, on whatever machine the vault is
+  opened. `"all"` in place of the list is the one way to offer every project, and only
+  because the configuration says so ([scheduling.md](scheduling.md)); the sessions a round
+  reads are still only those of the window, each named in the plan.
 - **The digest.** The kit, not the model, decides how much of a session the model sees:
   only the messages of the window, only the person's and the assistant's own text, each
   message within 1 800 characters, and the whole under 24 000 bytes as Read prints it,
