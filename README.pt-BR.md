@@ -36,28 +36,6 @@ o clique que aprova o pedido, é a aprovação e a verificação.
 | skill | uma instrução pronta que o Claude Code segue quando você a pede, como a `capture` |
 | plugin, marketplace | o plugin acrescenta skills e hooks ao Claude Code; o marketplace é a lista de onde ele os instala |
 
-O brain-kit é um repositório que pretende ser, ao mesmo tempo:
-
-- um pacote npm (o formato em que o Node distribui programas), `second-brain-kit`, com um
-  único executável, `brain-kit`. Hoje ele cria um vault ou adota um existente, instala a trava
-  de push dele, mantém atualizados os arquivos do próprio kit, confere a máquina com o
-  `doctor`, valida e confere a saúde (o `lint`) de um vault, roda o ciclo de pull request
-  (`sync`, `propose`, `verify`) e roda o curador agendado (`curate`, `watermark`, `schedule`)
-  e os fatos e a fila de perguntas do briefing matinal (`preflight`, `questions`);
-- um plugin do Claude Code (nove skills, os hooks Stop e SessionStart, um subagente
-  somente leitura) que chama o mesmo motor;
-- um marketplace de um plugin só, para que `claude plugin marketplace add aleckyann/brain-kit`
-  seguido de `claude plugin install brain-kit@brain-kit` o instale.
-
-O registro do npm recusou o nome `brain-kit`: já existe lá um pacote sem relação chamado
-`brainkit`, e os dois foram considerados parecidos demais. Por isso o pacote é publicado
-como `second-brain-kit`, enquanto o repositório, o plugin, o marketplace e o comando que
-você digita depois se chamam todos `brain-kit`.
-
-O motor é Node.js 24 sem nenhuma dependência, de runtime ou de desenvolvimento. O vault
-que ele gera é seu: arquivos markdown, com um cabeçalho (o frontmatter, em YAML) em cada
-nota, e um arquivo de configuração só com dados, nada mais.
-
 ## Requisitos
 
 Para chegar ao primeiro pull request você precisa de Node.js 24 ou mais novo (com o npm
@@ -319,6 +297,30 @@ máquinas. Um vault novo registra o próprio projeto como `{vault}` em `include_
 vale o caminho de cada máquina; por isso um clone em outra pasta não precisa de edição nenhuma.
 O [docs/scheduling.md](docs/scheduling.md#the-same-vault-on-a-second-machine) (em inglês) traz
 os detalhes, inclusive como mover as rodadas de uma máquina para a outra.
+
+## O que há no repositório
+
+O brain-kit é um repositório que pretende ser, ao mesmo tempo:
+
+- um pacote npm (o formato em que o Node distribui programas), `second-brain-kit`, com um
+  único executável, `brain-kit`. Hoje ele cria um vault ou adota um existente, instala a trava
+  de push dele, mantém atualizados os arquivos do próprio kit, confere a máquina com o
+  `doctor`, valida e confere a saúde (o `lint`) de um vault, roda o ciclo de pull request
+  (`sync`, `propose`, `verify`) e roda o curador agendado (`curate`, `watermark`, `schedule`)
+  e os fatos e a fila de perguntas do briefing matinal (`preflight`, `questions`);
+- um plugin do Claude Code (nove skills, os hooks Stop e SessionStart, um subagente
+  somente leitura) que chama o mesmo motor;
+- um marketplace de um plugin só, para que `claude plugin marketplace add aleckyann/brain-kit`
+  seguido de `claude plugin install brain-kit@brain-kit` o instale.
+
+O registro do npm recusou o nome `brain-kit`: já existe lá um pacote sem relação chamado
+`brainkit`, e os dois foram considerados parecidos demais. Por isso o pacote é publicado
+como `second-brain-kit`, enquanto o repositório, o plugin, o marketplace e o comando que
+você digita depois se chamam todos `brain-kit`.
+
+O motor é Node.js 24 sem nenhuma dependência, de runtime ou de desenvolvimento. O vault
+que ele gera é seu: arquivos markdown, com um cabeçalho (o frontmatter, em YAML) em cada
+nota, e um arquivo de configuração só com dados, nada mais.
 
 ## O que funciona hoje
 

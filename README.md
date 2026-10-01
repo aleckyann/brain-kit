@@ -36,28 +36,6 @@ click that approves the request, is the approval and the verification.
 | skill | a ready-made instruction Claude Code follows when you ask for it, such as `capture` |
 | plugin, marketplace | a plugin adds skills and hooks to Claude Code; the marketplace is the list it installs them from |
 
-brain-kit is one repository that is meant to be, at the same time:
-
-- an npm package (the format Node uses to ship programs), `second-brain-kit`, with a single
-  executable, `brain-kit`. Today it creates a vault or adopts an existing one, installs its
-  push gate, keeps the kit's own files current, checks the machine with `doctor`, validates a
-  vault and checks its health (`lint`), runs the pull request loop (`sync`, `propose`,
-  `verify`), and runs the scheduled curator (`curate`, `watermark`, `schedule`) and the
-  morning briefing's facts and question queue (`preflight`, `questions`);
-- a Claude Code plugin (nine skills, the Stop and SessionStart hooks, a read-only
-  subagent) that calls the same engine;
-- a plugin marketplace of one, so that `claude plugin marketplace add aleckyann/brain-kit`
-  followed by `claude plugin install brain-kit@brain-kit` installs it.
-
-The npm registry refused the name `brain-kit`: an unrelated package named `brainkit`
-already exists there, and the two were judged too similar. So the package is published
-as `second-brain-kit`, while the repository, the plugin, the marketplace and the command
-you type afterwards are all `brain-kit`.
-
-The engine is Node.js 24 with zero dependencies, runtime and development. The vault it
-generates is yours: markdown files, each note with a header (the frontmatter, in YAML), and a
-configuration file that holds only data, nothing else.
-
 ## Requirements
 
 To reach the first pull request you need Node.js 24 or newer (with its npm; `node --version`
@@ -319,6 +297,30 @@ new vault records its own project as `{vault}` in `include_projects`, which stan
 on each machine; so a clone in another folder needs no edit at all.
 [docs/scheduling.md](docs/scheduling.md#the-same-vault-on-a-second-machine) has the details,
 including how to move the rounds from one machine to the other.
+
+## What is in the repository
+
+brain-kit is one repository that is meant to be, at the same time:
+
+- an npm package (the format Node uses to ship programs), `second-brain-kit`, with a single
+  executable, `brain-kit`. Today it creates a vault or adopts an existing one, installs its
+  push gate, keeps the kit's own files current, checks the machine with `doctor`, validates a
+  vault and checks its health (`lint`), runs the pull request loop (`sync`, `propose`,
+  `verify`), and runs the scheduled curator (`curate`, `watermark`, `schedule`) and the
+  morning briefing's facts and question queue (`preflight`, `questions`);
+- a Claude Code plugin (nine skills, the Stop and SessionStart hooks, a read-only
+  subagent) that calls the same engine;
+- a plugin marketplace of one, so that `claude plugin marketplace add aleckyann/brain-kit`
+  followed by `claude plugin install brain-kit@brain-kit` installs it.
+
+The npm registry refused the name `brain-kit`: an unrelated package named `brainkit`
+already exists there, and the two were judged too similar. So the package is published
+as `second-brain-kit`, while the repository, the plugin, the marketplace and the command
+you type afterwards are all `brain-kit`.
+
+The engine is Node.js 24 with zero dependencies, runtime and development. The vault it
+generates is yours: markdown files, each note with a header (the frontmatter, in YAML), and a
+configuration file that holds only data, nothing else.
 
 ## What works today
 

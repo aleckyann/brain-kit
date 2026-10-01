@@ -85,6 +85,7 @@ const FIRST_RUN = {
     doctorWords: { used: ['`fail`', '`warn`'], unused: ['`falha`', '`aviso`'] },
     compact: /only the warnings and the failures, with a count of the `ok` lines/,
     second: '## The same vault on a second machine',
+    repo: '## What is in the repository',
     oneMachine: /Let only one machine run the curator's rounds/,
     noEdit: 'Do not edit `brain-kit.config.json` to silence the `doctor`',
     toolOrder: /prints these steps too, but with `doctor` before `git config`/,
@@ -124,6 +125,7 @@ const FIRST_RUN = {
     doctorWords: { used: ['`falha`', '`aviso`'], unused: ['`fail`', '`warn`'] },
     compact: /só os avisos e as falhas, com a contagem das linhas `ok`/,
     second: '## O mesmo vault em uma segunda máquina',
+    repo: '## O que há no repositório',
     oneMachine: /Deixe só uma máquina rodar as rodadas do curador/,
     noEdit: 'Não edite o `brain-kit.config.json` para fazer o `doctor` calar',
     toolOrder: /imprime estes passos também, mas com o `doctor` antes do `git config`/,
@@ -547,6 +549,18 @@ for (const [lang, spec] of Object.entries(READMES)) {
     const part = doc.slice(doc.indexOf('## The same vault on a second machine'), doc.indexOf('## Moving from a legacy lock'));
     const docCommands = part.split('\n').filter((line) => /^\d+\. `/.test(line)).map((line) => /`([^`]+)`/.exec(line)[1]);
     assert.deepEqual(docCommands, SECOND_MACHINE.slice(2), 'the README and docs/scheduling.md give the same commands in the same order');
+  });
+
+  test(`${spec.file}: what the repository holds is described after the first-run path, with every fact it had`, () => {
+    // A linear reader goes from the glossary to the requirements, not through the npm naming story.
+    const at = (heading) => text.split('\n').indexOf(heading);
+    const order = [spec.requirements, spec.install, spec.first, run.second, run.repo, spec.works].map(at);
+    assert.ok(order.every((index) => index !== -1), `a section is missing: ${order}`);
+    assert.deepEqual([...order].sort((a, b) => a - b), order, 'the sections are out of order');
+    const opening = text.slice(0, text.indexOf('\n## '));
+    assert.doesNotMatch(opening, /npm package|pacote npm/, 'the opening no longer carries the long description');
+    const body = norm(section(text, run.repo));
+    for (const fact of ['`second-brain-kit`', '`brainkit`', 'SessionStart', 'claude plugin marketplace add aleckyann/brain-kit', '`preflight`']) assert.ok(body.includes(fact), `the moved text lost: ${fact}`);
   });
 
   test(`${spec.file}: "${run.stuck}" closes the first vault: the five likeliest traps and one secrets line, in at most 8 lines`, () => {

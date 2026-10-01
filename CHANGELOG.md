@@ -13,6 +13,12 @@
   Portuguese README, reached the first pull request but estimated 30 to 40 minutes for a person
   who is not a developer, ten to fifteen of them spent reading a dense page full of technical
   terms.
+- The long description of what the repository holds (the npm package, the plugin, the
+  marketplace, the story of the npm name, the engine) moved from the top of both READMEs to a
+  section of its own, "O que há no repositório" ("What is in the repository"), after the
+  first-run path and before "O que funciona hoje". Nothing in it changed. A reader who goes
+  from the top to the bottom now crosses the glossary and the requirements before it, instead
+  of a screenful of npm and plugin vocabulary.
 - The requirements are cut to what the first pull request needs (Node.js 24, git, a logged-in
   `gh`, Claude Code and a GitHub account), with one line saying the scheduled rounds are
   optional. The systemd, `loginctl enable-linger`, launchd, cron and Windows note moved to "The
