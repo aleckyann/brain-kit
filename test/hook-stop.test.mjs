@@ -140,10 +140,10 @@ test('rung 3: a vault with some other configuration error is still a vault and s
   reasonOf(stop(fx));
 });
 
-test('rung 4: no machine.json releases, naming brain-kit machine register, even with session dirt', () => {
+test('rung 4: no machine.json releases, naming brain-kit machine register --from for a moved vault and --new for a machine that never had it, even with session dirt', () => {
   const fx = sessionWithWork();
   unlinkSync(machineFile(fx));
-  assertReleased(stop(fx), /not registered on this machine .*brain-kit machine register/);
+  assertReleased(stop(fx), /not registered on this machine .*brain-kit machine register --from .*brain-kit machine register --new/);
 });
 
 test('rung 5: a machine.json that is unreadable or invalid blocks, naming the file and brain-kit doctor, even on a clean tree', () => {

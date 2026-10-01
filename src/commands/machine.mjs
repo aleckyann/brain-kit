@@ -4,14 +4,16 @@
 //
 //   brain-kit machine show [dir]
 //   brain-kit machine set <key> <value> [dir]
-//   brain-kit machine register [dir] [--from <previous vault path>]
+//   brain-kit machine register [dir] [--from <previous vault path> | --new]
 //
 // Exit 0 when the file was shown, written, or already right; 1 when the
 // file is missing, unreadable, or would not pass validateMachine, and when
 // register refuses to touch state it cannot prove is this vault's; 2 on a
-// usage error, a key the schema does not declare or a value that does not
-// parse as the key's type, a state directory inside the vault, and when no
-// vault is found; 75 when another writer holds the vault lock.
+// usage error (`--new` together with `--from` included), a key the schema
+// does not declare or a value that does not parse as the key's type, a state
+// directory inside the vault, when no vault is found, and when `--new` is
+// asked of a folder that is not a configured vault; 75 when another writer
+// holds the vault lock.
 //
 // WHY THE FILE IS NEVER WRITTEN IN PLACE. machine.json names the binary the
 // scheduled curator runs and the command it notifies through. A write cut
@@ -70,29 +72,77 @@
 // apart; a dead vault's record at this vault's path is then taken as this
 // vault's (the same limit as a state directory pinned for two vaults).
 //
+// WHY `register --new` EXISTS, AND WHAT KEEPS IT FROM UNDOING THE ABOVE. A
+// vault that already has its configuration, opened on a machine whose state
+// directory holds no machine.json for it (a clone on a laptop, a curator
+// machine rebuilt after an incident), had no way to get one: `init --adopt`
+// refuses a vault that is already adopted, and `register` refuses to guess,
+// on purpose. `--new` is the person's own statement that this machine has
+// never had state for the vault, which is the one thing `register` cannot
+// tell by itself, and it writes machine.json the way `init` writes it (the
+// same function, src/init/machine.mjs) and nothing else: no watermark, so the
+// first round reads only yesterday. It refuses, never overwriting or
+// merging, when: the vault is not configured (config and manifest valid);
+// a machine.json is already in the state directory, whatever it holds; the
+// state directory holds anything but the trace a round leaves when it stops
+// for lack of machine.json (last-run.json and logs/), because that is
+// evidence the claim "never had state" is false; and, unless the state
+// directory is pinned by BRAIN_KIT_STATE_DIR, when the state root holds the
+// state of a vault of this vault's folder name that is no longer where its
+// record says, or whose recorded path now leads here: that is this vault
+// before it moved, and `--new` would start a second, empty state beside its
+// marks. It is combined with `--from` never: `--from` says moved, `--new`
+// says never had.
+//
+// A DECLARED LIMIT OF THAT SEARCH, AND WHAT IS DONE ABOUT IT. The folder name
+// is the only sign, so a vault moved AND renamed is not recognised and
+// `--new` goes ahead. It then prints the records it could not tie to this
+// vault (the same ones plain `register` lists as candidates), with the undo:
+// delete the machine.json it wrote and run `register --from <that path>`.
+// `register --from` accepts a target holding only the trace of a refused
+// round (the same two entries `--new` accepts), setting it aside while the
+// state moves and deleting it once the register has worked; a failed register
+// puts it back.
+//
 // `deps` is the seam the tests use to hand in the environment, the working
 // directory, a rename that fails, and a validator that rejects what the
 // real one accepts. Production passes nothing.
 import {
-  closeSync, existsSync, fchmodSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync,
+  closeSync, existsSync, fchmodSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync,
   statSync, unlinkSync, writeSync, chmodSync,
 } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { EXIT } from '../exit-codes.mjs';
 import {
-  CONFIG_FILENAME, MACHINE_FILENAME, canonicalPathMatches, machineSchema, validateMachine, withoutRetiredPaths,
+  CONFIG_FILENAME, ConfigError, MACHINE_FILENAME, canonicalPathMatches, loadConfig, machineSchema, validateMachine, withoutRetiredPaths,
 } from '../config.mjs';
 import { findVaultRoot, isVaultRoot } from '../vault.mjs';
-import { ensureStateDir, physicalPathOf, stateDirFor, stateDirForPath, stateRootFor } from '../state.mjs';
+import { ManifestError, readManifest } from '../manifest.mjs';
+import { STATE_FILES, ensureStateDir, physicalPathOf, stateDirFor, stateDirForPath, stateRootFor } from '../state.mjs';
 import { decodeBytes } from '../io.mjs';
-import { isInside } from '../init/skeleton.mjs';
+import { buildMachine, writeMachineFile } from '../init/machine.mjs';
+import { isInside, rollback } from '../init/skeleton.mjs';
+import { DEFAULT_HOST, DEFAULT_PORT } from '../guards/network.mjs';
 import { acquireLock } from '../guards/lock.mjs';
 import { GuardError } from '../guards/location.mjs';
 
 const ROOT_INDEX = 'index.md';
 const MACHINE_FILE_MODE = 0o600;
 const MANAGED_KEYS = Object.freeze(['vault_id', 'canonical_path', 'state_dir']);
+
+// What a round that stopped for lack of machine.json leaves in the state
+// directory: its log and last-run.json (src/commands/curate.mjs writes both
+// before it reads the machine file). Nothing else counts as "no state", for
+// `register --new` and for `register --from` alike: a target holding exactly
+// this is not another vault's state, it is the mark of a command run too
+// early, and refusing it would send the person from `curate` to a `--from`
+// that refuses.
+const TRACE_OF_A_REFUSED_ROUND = Object.freeze([STATE_FILES.LAST_RUN, STATE_FILES.LOG_DIR]);
+
+function beyondTrace(names) {
+  return names.filter((name) => !TRACE_OF_A_REFUSED_ROUND.includes(name));
+}
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -120,11 +170,13 @@ function parseArgs(argv) {
     return { sub, key: rest[0], value: rest[1], dir: rest[2] };
   }
   if (sub === 'register') {
-    const result = { sub, dir: undefined, from: undefined };
+    const result = { sub, dir: undefined, from: undefined, fresh: false };
     for (let i = 0; i < rest.length; i++) {
       const arg = rest[i];
       if (arg === '--help' || arg === '-h') return { help: true };
-      if (arg === '--from') {
+      if (arg === '--new') {
+        result.fresh = true;
+      } else if (arg === '--from') {
         if (i + 1 >= rest.length || rest[i + 1] === '') return { error: arg };
         result.from = rest[i + 1];
         i++;
@@ -136,6 +188,9 @@ function parseArgs(argv) {
       else if (result.dir === undefined) result.dir = arg;
       else return { error: arg };
     }
+    // `--from` says the vault moved and `--new` that this machine never had
+    // state for it: both cannot be true.
+    if (result.fresh && result.from !== undefined) return { conflict: true };
     return result;
   }
   return { error: sub ?? '', missing: sub === undefined };
@@ -148,7 +203,7 @@ function usageError(io, t, parsed) {
 }
 
 // The same refusal to climb from a path that is not real as doctor's.
-function locateVault(io, t, dirArg, cwd) {
+function locateVault(io, t, dirArg, cwd, noVaultKey = 'machine.no_vault') {
   let startDir = cwd;
   if (dirArg !== undefined) {
     startDir = resolve(cwd, dirArg);
@@ -162,7 +217,7 @@ function locateVault(io, t, dirArg, cwd) {
     }
   }
   const root = findVaultRoot(startDir);
-  if (!root) io.stderr.write(`${t('machine.no_vault', { dir: startDir, config: CONFIG_FILENAME, index: ROOT_INDEX })}\n`);
+  if (!root) io.stderr.write(`${t(noVaultKey, { dir: startDir, config: CONFIG_FILENAME, index: ROOT_INDEX })}\n`);
   return root;
 }
 
@@ -452,9 +507,9 @@ function rebase(value, oldDir, newDir) {
 
 // State directories under the state root whose machine.json names a vault
 // that is no longer there, or names a path that now leads to this vault (a
-// move that left a symbolic link behind). Only listed for a person to
-// choose from, never chosen.
-function orphanedStates(env, except, realRoot) {
+// move that left a symbolic link behind), each as { recorded, dir,
+// leadsHere }. Only listed for a person to choose from, never chosen.
+function orphanRecords(env, except, realRoot) {
   const rootDir = stateRootFor(env);
   let names;
   try {
@@ -475,9 +530,13 @@ function orphanedStates(env, except, realRoot) {
     const recorded = isPlainObject(read.value) ? read.value.canonical_path : undefined;
     if (typeof recorded !== 'string') continue;
     const live = liveVaultAt(recorded);
-    if (live === null || live === realRoot) found.push(`  ${recorded}  (${dir})`);
+    if (live === null || live === realRoot) found.push({ recorded, dir, leadsHere: live === realRoot });
   }
   return found;
+}
+
+function orphanedStates(env, except, realRoot) {
+  return orphanRecords(env, except, realRoot).map(({ recorded, dir }) => `  ${recorded}  (${dir})`);
 }
 
 // The state directory --from names: the old path's derivation through its
@@ -583,9 +642,12 @@ function registerLocked(io, t, { realRoot, target, env, from, deps }) {
       source = target;
       sourceFile = targetFile;
       read = there;
-    } else if (existsSync(target) && readdirSync(target).length > 0) {
-      io.stderr.write(`${t('machine.register_target_not_empty', { dir: target })}\n`);
-      return EXIT.FAILURE;
+    } else if (existsSync(target)) {
+      const stray = beyondTrace(readdirSync(target));
+      if (stray.length > 0) {
+        io.stderr.write(`${t('machine.register_target_not_empty', { dir: target, names: stray })}\n`);
+        return EXIT.FAILURE;
+      }
     }
   }
 
@@ -614,10 +676,33 @@ function registerLocked(io, t, { realRoot, target, env, from, deps }) {
   }
 
   const rename = deps.rename ?? renameSync;
+  // What a refused round left at the target is set aside, not deleted, until
+  // the register has worked: a failed register leaves it where it was.
+  let aside = null;
+  const putTraceBack = () => {
+    if (aside === null) return;
+    try {
+      rename(aside, target);
+    } catch {
+      io.stderr.write(`${t('machine.register_trace_stranded', { from: aside, to: target })}\n`);
+    }
+  };
   if (source !== target) {
     mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-    if (existsSync(target)) rmdirSync(target);
-    rename(source, target);
+    try {
+      if (existsSync(target)) {
+        if (readdirSync(target).length === 0) {
+          rmdirSync(target);
+        } else {
+          aside = join(dirname(target), `.${basename(target)}.trace-${process.pid}-${randomBytes(4).toString('hex')}`);
+          rename(target, aside);
+        }
+      }
+      rename(source, target);
+    } catch (error) {
+      putTraceBack();
+      throw error;
+    }
     fsyncDir(dirname(target));
     fsyncDir(dirname(source));
   }
@@ -630,14 +715,137 @@ function registerLocked(io, t, { realRoot, target, env, from, deps }) {
     if (source !== target) {
       try {
         rename(target, source);
+        putTraceBack();
       } catch {
         io.stderr.write(`${t('machine.register_stranded', { from: source, to: target })}\n`);
       }
     }
     throw error;
   }
+  if (aside !== null) {
+    try {
+      rmSync(aside, { recursive: true, force: true });
+    } catch {
+      // A hidden folder beside the state directory that could not be removed
+      // is litter, not a failed register.
+    }
+  }
   if (source === target) io.stdout.write(`${t('machine.register_updated', { dir: realRoot, file: targetFile })}\n`);
   else io.stdout.write(`${t('machine.register_done', { dir: realRoot, from: source, to: target })}\n`);
+  return EXIT.OK;
+}
+
+// --- register --new -------------------------------------------------------------
+
+// Why this folder is not a configured vault, or null when it is: its
+// configuration must pass the schema and its manifest must read.
+function notConfiguredDetail(root) {
+  try {
+    loadConfig(root);
+    readManifest(root);
+    return null;
+  } catch (error) {
+    if (error instanceof ConfigError || error instanceof ManifestError) return error.message;
+    throw error;
+  }
+}
+
+// What the machine.json already in the state directory is, said by what it
+// holds, never by what a command would make of it.
+function refuseExisting(io, t, file, read) {
+  if (read.error === undefined && isPlainObject(read.value) && typeof read.value.vault_id === 'string' && typeof read.value.canonical_path === 'string') {
+    io.stderr.write(`${t('machine.register_new_exists', { file, id: read.value.vault_id, recorded: read.value.canonical_path })}\n`);
+  } else {
+    io.stderr.write(`${t('machine.register_new_exists_unreadable', { file, error: read.error ?? '$: not a machine.json' })}\n`);
+  }
+  return EXIT.FAILURE;
+}
+
+// The state on this machine whose vault is gone, split in two: `moved`, what
+// looks like this vault before it moved (a record naming a path that is gone
+// and the same folder name, or a path that now leads here), which stops --new;
+// and `unrelated`, the rest, which --new cannot tie to this vault (a vault
+// moved AND renamed is among them) and says so after it has written. Nothing
+// is searched when BRAIN_KIT_STATE_DIR pins the directory.
+function goneStates(env, target, realRoot) {
+  if (env.BRAIN_KIT_STATE_DIR) return { moved: [], unrelated: [] };
+  const name = basename(realRoot);
+  const looksLikeThis = (state) => state.leadsHere || basename(state.recorded) === name;
+  const records = orphanRecords(env, target, realRoot);
+  return { moved: records.filter(looksLikeThis), unrelated: records.filter((state) => !looksLikeThis(state)) };
+}
+
+function listOf(states) {
+  return states.map(({ recorded, dir }) => `  ${recorded}  (${dir})`).join('\n');
+}
+
+function runRegisterNew(io, t, parsed, env, cwd) {
+  const root = locateVault(io, t, parsed.dir, cwd, 'machine.register_new_no_vault');
+  if (!root) return EXIT.USAGE;
+  const realRoot = realpathSync(root);
+  const detail = notConfiguredDetail(root);
+  if (detail !== null) {
+    io.stderr.write(`${t('machine.register_new_not_configured', { dir: realRoot, detail })}\n`);
+    return EXIT.USAGE;
+  }
+  // The same place init would write it, spelt the way init records it.
+  const derived = stateDirFor(root, env);
+  const stateDir = physicalPathOf(resolve(cwd, derived));
+  const inside = refuseStateInsideVault(io, t, stateDir, root, realRoot);
+  if (inside !== null) return inside;
+  return withVaultLock(io, t, root, env, 'machine register', () => registerNewLocked(io, t, { realRoot, derived, stateDir, env }));
+}
+
+function registerNewLocked(io, t, { realRoot, derived, stateDir, env }) {
+  const file = join(stateDir, MACHINE_FILENAME);
+  let read;
+  let names = [];
+  try {
+    read = readMachineFile(file);
+    if (read.missing && existsSync(stateDir)) names = readdirSync(stateDir);
+  } catch (error) {
+    io.stderr.write(`${t('machine.register_new_unreadable', { dir: stateDir, detail: error.code ?? error.message })}\n`);
+    return EXIT.FAILURE;
+  }
+  if (!read.missing) return refuseExisting(io, t, file, read);
+
+  const stray = beyondTrace(names);
+  if (stray.length > 0) {
+    io.stderr.write(`${t('machine.register_new_state_not_empty', { dir: stateDir, names: stray })}\n`);
+    return EXIT.FAILURE;
+  }
+  const { moved, unrelated } = goneStates(env, derived, realRoot);
+  if (moved.length > 0) {
+    io.stderr.write(`${t('machine.register_new_moved', { name: basename(realRoot), list: listOf(moved) })}\n`);
+    return EXIT.FAILURE;
+  }
+
+  const machine = buildMachine(realRoot, stateDir, env);
+  const errors = validateMachine(machine);
+  if (errors.length > 0) {
+    io.stderr.write(`${t('machine.invalid', { file, errors })}\n`);
+    return EXIT.FAILURE;
+  }
+  const ledger = [];
+  let priorMode;
+  try {
+    priorMode = writeMachineFile(ledger, { stateDir, machine });
+  } catch (error) {
+    rollback(ledger);
+    io.stderr.write(`${t('machine.register_new_unwritable', { state: stateDir, detail: error.code ?? error.message })}\n`);
+    return EXIT.FAILURE;
+  }
+
+  io.stdout.write(`${t('machine.register_new_done', { dir: realRoot, file })}\n`);
+  if (priorMode !== null && priorMode !== 0o700) {
+    io.stdout.write(`${t('machine.register_new_tightened', { state: stateDir, mode: priorMode.toString(8) })}\n`);
+  }
+  if (isAbsolute(machine.claude_bin)) io.stdout.write(`${t('machine.register_new_claude_found', { bin: machine.claude_bin })}\n`);
+  else io.stdout.write(`${t('machine.register_new_claude_missing', { bin: machine.claude_bin })}\n`);
+  io.stdout.write(`${t('machine.register_new_defaults', { host: `${DEFAULT_HOST}:${DEFAULT_PORT}` })}\n`);
+  io.stdout.write(`${t('machine.register_new_no_watermark')}\n`);
+  if (unrelated.length > 0) io.stdout.write(`${t('machine.register_new_orphans', { list: listOf(unrelated), file })}\n`);
+  io.stdout.write(`${t('machine.register_new_next')}\n`);
   return EXIT.OK;
 }
 
@@ -651,7 +859,12 @@ export async function runMachine(argv, io, t, deps = {}) {
     io.stdout.write(`${t('machine.usage')}\n`);
     return EXIT.OK;
   }
+  if (parsed.conflict) {
+    io.stderr.write(`${t('machine.register_new_with_from')}\n`);
+    return EXIT.USAGE;
+  }
   if (parsed.error !== undefined) return usageError(io, t, parsed);
+  if (parsed.sub === 'register' && parsed.fresh) return runRegisterNew(io, t, parsed, env, cwd);
   const root = locateVault(io, t, parsed.dir, cwd);
   if (!root) return EXIT.USAGE;
   if (parsed.sub === 'show') return runShow(io, t, root, env);

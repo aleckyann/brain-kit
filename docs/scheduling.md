@@ -395,6 +395,70 @@ What counts as read has limits, by design:
   track: a file the model wrote into a path the vault's `.gitignore` ignores is not
   reported.
 
+## The same vault on a second machine
+
+A vault you have already set up (it has `brain-kit.config.json` and `.brain-kit/manifest.json`,
+both committed) opens on another machine with a plain `git clone`. What the clone does not
+have is that machine's own state: `machine.json`, the marks and the logs live in a state
+directory outside the vault and are never versioned. Until the machine has its own,
+`brain-kit doctor` fails `machine-valid` and `state-dir-resolves`, and
+`brain-kit machine show` says there is no `machine.json`.
+
+1. Clone the vault where you want it, and run the rest from inside it.
+2. `brain-kit machine register --new`. It writes `machine.json` the way `init` does (the vault's
+   identity and path, the `claude` it finds on PATH, where the state lives; the state
+   directory at mode 0700, the file at 0600) and nothing else: no watermark, so the first
+   round reads only yesterday, and no file of the vault is touched. It prints what it found
+   and the defaults that apply until you set them with `brain-kit machine set` (the model,
+   the network check, the notify command, the transcripts directory).
+3. `git config core.hooksPath .githooks`: git does not version its own configuration, so a
+   clone has no push gate until you point it at the vault's, and `doctor` fails `hooks-path`
+   for it.
+4. `brain-kit doctor`.
+5. `brain-kit schedule install`, only on the machine that runs the rounds (below).
+
+Set no mark (`brain-kit watermark set`) and ask no question (`brain-kit questions add`) before
+step 2: both write into the state directory without a `machine.json`, and `--new` then
+refuses what it finds there. Set them after it.
+
+`--new` is your statement that this machine has never had state for this vault, which is
+the one thing `machine register` cannot tell by itself. So it refuses, writing nothing, when
+the vault is not a configured one; when the state directory already holds a `machine.json`
+(whatever is in it) or anything else that is not the trace of a round that stopped for lack
+of one (`last-run.json` and the logs); and when it finds, beside the state directory, the
+state of a vault of the same folder name that is no longer where its record says, which is
+this vault before it moved. That last one is the case for `--from`, not `--new`: a vault
+that moved on the same machine keeps its marks with
+`brain-kit machine register --from <its previous path>`, and `--new` would start a second,
+empty state next to them. The two flags cannot be combined: `--from` says the vault moved,
+`--new` says it never had state here. A state directory pinned with `BRAIN_KIT_STATE_DIR` is
+not searched for that sign, because the pin is your statement.
+
+The folder name is the only sign `--new` has, so a vault that was **moved and renamed** on
+this machine looks like any other: `--new` goes ahead and starts a second, empty state beside
+the old one. It does say so. When it succeeds it lists every state on the machine whose vault
+is no longer where its record says, with the old path, and the undo: delete the
+`machine.json` it just wrote, then run `brain-kit machine register --from <that path>`. A
+refused round that left its trace (`last-run.json` and the logs) does not get in the way of
+that `--from`: `register` sets the trace aside and removes it once the state is registered.
+
+**One machine runs the rounds.** State is per machine and not in the vault, so each machine
+has its own watermark, and the vault lock sits in each clone's `.git`, where it cannot keep
+two machines apart. Two machines with `schedule install` would each read yesterday and each
+open a pull request for it (the same calendar entries in both, when the calendar is on).
+Install the schedule on one machine; on the other, use the vault by hand. The transcripts a
+round reads are the Claude Code sessions on its own machine, so sessions held on the other
+one are not read by it: capture them with the `curate-session` skill at the end of a
+session there.
+
+If the rounds are moving from one machine to the other, the new machine knows nothing of the
+old one's marks. Read them on the old machine with `brain-kit watermark show`, stop its
+schedule with `brain-kit schedule uninstall`, and set each on the new one with
+`brain-kit watermark set <source> <YYYY-MM-DD>`, after `brain-kit machine register --new`
+and before its first round; otherwise the days in between are never read. If you set a mark
+first, `--new` refuses the `watermark.json` it finds: move that file to another folder, run
+`--new`, and move it back.
+
 ## Moving from a legacy lock
 
 A vault that already runs scripts of its own often has a scheduled job that holds an

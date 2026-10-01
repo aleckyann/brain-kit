@@ -66,7 +66,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, wr
 import { homedir } from 'node:os';
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { EXIT } from '../exit-codes.mjs';
-import { CONFIG_FILENAME, canonicalPathMatches, loadConfig, loadMachine } from '../config.mjs';
+import { CONFIG_FILENAME, ConfigError, MACHINE_FILENAME, canonicalPathMatches, loadConfig, loadMachine } from '../config.mjs';
 import { findVaultRoot } from '../vault.mjs';
 import { STATE_FILES, stateDirFor } from '../state.mjs';
 import { KIT_ROOT } from '../version.mjs';
@@ -366,7 +366,14 @@ export function runScheduleSync(argv, io, t, deps = {}) {
   const root = realpathSync(found);
   const config = loadConfig(root);
   const stateDir = stateDirFor(root, env);
-  const machine = loadMachine(stateDir);
+  let machine;
+  try {
+    machine = loadMachine(stateDir);
+  } catch (error) {
+    if (!(error instanceof ConfigError) || error.code !== 'machine_missing') throw error;
+    complain(t('schedule.machine_missing', { file: join(stateDir, MACHINE_FILENAME) }));
+    return EXIT.USAGE;
+  }
   // A machine file that records another path belongs to a vault that moved:
   // an entry installed from it would run a round against the wrong place.
   if (!canonicalPathMatches(machine.canonical_path, root)) {

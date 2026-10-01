@@ -1,26 +1,25 @@
-import { chmodSync, existsSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { constants as osConstants } from 'node:os';
 import { dirname, join, resolve, basename } from 'node:path';
 import { EXIT } from '../exit-codes.mjs';
 import { kitVersion } from '../version.mjs';
 import { createTranslator, SUPPORTED_LANGS } from '../lang.mjs';
 import { CONFIG_FILENAME, MACHINE_FILENAME, validateConfig, validateMachine } from '../config.mjs';
-import { STATE_FILES, ensureStateDir, stateDirFor, vaultIdFor } from '../state.mjs';
+import { stateDirFor } from '../state.mjs';
 import { run } from '../exec.mjs';
 import { localGitVarNames, withoutLocalGitVars } from '../git-env.mjs';
 import { INSTALL_HOOK_COMMAND, installGate } from '../init/gate.mjs';
 import { completeDefaults, transcriptsAreRead } from '../init/config.mjs';
+import { buildMachine, writeMachineFile } from '../init/machine.mjs';
 import {
   adoptRepositoryState, adoptionPaths, buildAdoptionManifest, inferConfig, inspectAdoptTarget, readDefaults, writeAdoption,
 } from '../init/adopt.mjs';
 import {
-  ANSWER_KEYS, QUESTIONS, askInteractively, defaultAnswers, defaultLang, describeAnswer, invalidAnswer, readAnswersFile, resolveClaudeBin,
-  suggestedRepoName,
+  ANSWER_KEYS, QUESTIONS, askInteractively, defaultAnswers, defaultLang, describeAnswer, invalidAnswer, readAnswersFile, suggestedRepoName,
 } from '../init/answers.mjs';
 import { claudeProjectName } from '../sources/transcripts-claude-code.mjs';
 import {
-  GITIGNORE_PATH, gitignoreText, inspectTarget, isInside, isoStamp, makeDirs, makeOwnTree, nearestExisting, recordMode, rollback, writeNew,
-  writeVault,
+  GITIGNORE_PATH, gitignoreText, inspectTarget, isInside, isoStamp, makeOwnTree, nearestExisting, rollback, writeVault,
 } from '../init/skeleton.mjs';
 import { runValidate } from './validate.mjs';
 import { runLint } from './lint.mjs';
@@ -183,6 +182,7 @@ function refuseTarget(io, t, refusal, { adopt, machinePath }) {
     case 'inside_vault': line = t('init.inside_vault', { dir, vault }); break;
     case 'already_vault':
       if (adopt) line = t('init.adopt_already_vault', { dir, machine: machinePath });
+      else if (!existsSync(machinePath)) line = t('init.already_vault_clone', { dir });
       else line = t('init.already_vault', { dir });
       break;
     case 'already_repository': line = t('init.already_repository', { dir }); break;
@@ -218,21 +218,6 @@ function refuseAnswer(io, t, key, value) {
   const expected = expectation(t, key);
   io.stderr.write(`${t('init.invalid_answer', { answer: key, value: JSON.stringify(value), expected })}\n`);
   return EXIT.USAGE;
-}
-
-function buildMachine(canonical, stateDir, env) {
-  return {
-    vault_id: vaultIdFor(canonical),
-    canonical_path: canonical,
-    claude_bin: resolveClaudeBin(env),
-    state_dir: stateDir,
-    paths: {
-      watermark: join(stateDir, STATE_FILES.WATERMARK),
-      last_run: join(stateDir, STATE_FILES.LAST_RUN),
-      log_dir: join(stateDir, STATE_FILES.LOG_DIR),
-      questions_log: join(stateDir, STATE_FILES.QUESTIONS_LOG),
-    },
-  };
 }
 
 // Every check on the two places init writes, in one function, so the
@@ -448,14 +433,9 @@ export async function runInit(argv, io, t, {
   }
 
   // A state directory that already exists keeps its mode if this run
-  // fails, and is named on success if init tightened it.
+  // fails, and is named on success if init tightened it (writeMachineFile
+  // records it in the ledger and returns it).
   let priorMode = null;
-  try {
-    const st = statSync(stateDir);
-    if (st.isDirectory()) priorMode = st.mode & 0o7777;
-  } catch {
-    // Absent: init creates it.
-  }
 
   // --- from here on, init writes ---------------------------------------------
   //
@@ -482,11 +462,7 @@ export async function runInit(argv, io, t, {
   let manifest;
   try {
     try {
-      makeDirs(ledger, stateDir);
-      if (priorMode !== null && priorMode !== 0o700) recordMode(ledger, stateDir, priorMode);
-      ensureStateDir(stateDir);
-      writeNew(ledger, machinePath, `${JSON.stringify(machine, null, 2)}\n`, 0o600);
-      chmodSync(machinePath, 0o600);
+      priorMode = writeMachineFile(ledger, { stateDir, machine });
     } catch (error) {
       failure = t('init.state_unwritable', { state: stateDir, detail: error.message });
     }

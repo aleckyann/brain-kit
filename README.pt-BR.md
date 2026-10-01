@@ -170,6 +170,14 @@ A partir daqui, [O curador agendado](#o-curador-agendado) alimenta o vault com a
 sessões do Claude Code sem você pedir, e [O briefing matinal](#o-briefing-matinal) diz
 toda manhã onde ele está.
 
+Um vault que você já configurou abre em outra máquina com um `git clone`, e essa máquina
+precisa de um `machine.json` próprio, que fica fora do vault:
+`brain-kit machine register --new` o escreve, o `git config core.hooksPath .githooks` dá ao
+clone a trava de push dele, e o `brain-kit doctor` confere os dois. Deixe só uma máquina rodar
+as rodadas do curador; o
+[docs/scheduling.md](docs/scheduling.md#the-same-vault-on-a-second-machine) traz os passos e
+explica por quê.
+
 ## O que funciona hoje
 
 Um vault é um diretório com um `brain-kit.config.json` e um `index.md` na raiz; os comandos
