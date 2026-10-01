@@ -612,7 +612,7 @@
   "update.would_bump": "kit_version da configuração seria ajustado de {from} para {to}.",
   "update.accept_outside": "brain-kit update: \"{path}\" não é um arquivo dentro do vault.",
   "update.accept_not_managed": "brain-kit update: {file} não é um arquivo que o kit gerencia, então não há nada a aceitar.",
-  "update.accept_not_executable": "brain-kit update: {file} não é executável, e o git pula um hook que não consegue executar, então aceitá-lo deixaria o vault sem gate. Nada foi escrito. Rode {command} e aceite de novo.",
+  "update.accept_not_executable": "brain-kit update: {file} não é executável, e o git pula um hook que não consegue executar, então aceitá-lo deixaria o vault sem a trava de push. Nada foi escrito. Rode {command} e aceite de novo.",
   "update.accept_recorded": "Versão deste kit de {file} registrada: ela não será oferecida de novo até o kit mudá-la. Seu arquivo não foi tocado.",
   "update.accept_dropped": "{file} não é mais acompanhado pelo update.",
   "update.accept_removed_new": "{new} removido.",

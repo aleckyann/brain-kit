@@ -73,6 +73,28 @@ test('the sibling line for a snapshot kept across a compaction no longer says it
   assert.equal(text, 'brain-kit: vault "Caderno da Ana". O retrato desta sessão foi mantido na compactação ou retomada: 3 caminho(s) já estavam alterados quando a sessão começou, e propô-los não é papel dela.');
 });
 
+// A fourth one, from the final review of 0.0.9 (N6): the READMEs and the tool call what a push
+// meets "trava de push", and the message that refuses to accept a hook that is not executable
+// still ended "deixaria o vault sem gate", the English word. `push-gate` is a command name
+// (hyphen-joined) and stays; the bare noun is in no key.
+test('the push check is "trava de push" in the Portuguese pack: the bare noun "gate" is in no key', () => {
+  const offenders = [];
+  for (const [key, value] of Object.entries(loadMessages('pt-BR'))) {
+    if (typeof value === 'string' && /(?<![-\w])gates?(?![-\w])/i.test(value)) offenders.push(key);
+  }
+  assert.deepEqual(offenders, []);
+  const file = '.githooks/pre-push';
+  assert.equal(
+    pt('update.accept_not_executable', { file, command: `chmod +x ${file}` }),
+    'brain-kit update: .githooks/pre-push não é executável, e o git pula um hook que não consegue executar, então aceitá-lo deixaria o vault sem a trava de push. Nada foi escrito. Rode chmod +x .githooks/pre-push e aceite de novo.',
+  );
+  // The English pack, which says "gate" everywhere, is as it was.
+  assert.equal(
+    createTranslator('en')('update.accept_not_executable', { file, command: `chmod +x ${file}` }),
+    'brain-kit update: .githooks/pre-push is not executable, and git skips a hook it cannot execute, so accepting it would leave the vault with no gate. Nothing was written. Run chmod +x .githooks/pre-push, then accept it again.',
+  );
+});
+
 test('the English pack, which read fine, is as it was', () => {
   const en = createTranslator('en');
   assert.equal(en('hook.session_start.taken', { title: 'Notes', count: 2 }), 'brain-kit: vault "Notes". Session snapshot taken: 2 path(s) were already there before this session and are not its to propose.');
