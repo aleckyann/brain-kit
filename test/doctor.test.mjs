@@ -103,7 +103,10 @@ const SCRIPTS = {
   },
   node: {
     newer: 'echo v25.0.0',
-    old: 'echo v22.11.0',
+    // The oldest Node the kit supports, exactly, and the one just under it.
+    floor: 'echo v22.0.0',
+    justBelow: 'echo v21.99.99',
+    old: 'echo v20.11.1',
     silent: 'exit 0',
     broken: 'echo "node: cannot start" >&2\nexit 1',
   },
@@ -382,19 +385,32 @@ test('the check table is exactly the phase 1, 2, 3, 4, 5a and 6 set, each named 
 
 // --- node-version ------------------------------------------------------------
 
-test('node-version: fails below 24, passes at 24.0.0 exactly, and fails on a version it cannot read', async () => {
+// The oldest Node the kit supports is 22 (0.0.9, task G4): the whole suite ran on a
+// real 22.22.1, and the guard in front of the launcher refuses the same versions
+// (test/node-guard.test.mjs). test/node-minimum.test.mjs holds this number to the
+// guard, package.json, the documents and CI.
+const OK_KEYS = ['doctor.node_version.ok', 'doctor.node_version.ok_path_differs'];
+
+test('node-version: fails below 22, passes at 22.0.0 exactly, and fails on a version it cannot read', async () => {
   const fx = setup();
-  let r = await doctor(fx, ['--only', 'node-version'], { nodeVersion: '22.11.0' });
-  assertCheck(r.report, 'node-version', 'fail', 'doctor.node_version.too_old');
-  assert.equal(r.code, EXIT.FAILURE);
-  r = await doctor(fx, ['--only', 'node-version'], { nodeVersion: '23.99.99' });
-  assertCheck(r.report, 'node-version', 'fail', 'doctor.node_version.too_old');
-  r = await doctor(fx, ['--only', 'node-version'], { nodeVersion: '24.0.0' });
-  // The node on PATH is the same binary but reports another version than
-  // the one injected here, so it is named.
-  assertCheck(r.report, 'node-version', 'ok', 'doctor.node_version.ok_path_differs');
-  assert.equal(r.code, EXIT.OK);
-  r = await doctor(fx, ['--only', 'node-version'], { nodeVersion: '' });
+  for (const version of ['21.99.99', '21.7.3', '20.11.1', '18.19.0']) {
+    const r = await doctor(fx, ['--only', 'node-version'], { nodeVersion: version });
+    const c = assertCheck(r.report, 'node-version', 'fail', 'doctor.node_version.too_old');
+    assert.deepEqual(c.params, { version, minimum: 22 }, version);
+    assert.equal(r.code, EXIT.FAILURE, version);
+  }
+  // The floor, the Node it was measured on, the one between and the one above: all
+  // supported, and supported means ok, never a warning. The node on PATH is the same
+  // binary but reports another version than the one injected here, so it is named
+  // (or, when this very Node is the one injected, reported plainly).
+  for (const version of ['22.0.0', '22.12.0', '22.22.1', '23.99.99', '24.0.0']) {
+    const r = await doctor(fx, ['--only', 'node-version'], { nodeVersion: version });
+    const c = assertCheck(r.report, 'node-version', 'ok');
+    assert.ok(OK_KEYS.includes(c.messageKey), `${version}: ${c.messageKey}`);
+    assert.equal(r.code, EXIT.OK, version);
+    assert.deepEqual(r.report.counts, { ok: 1, warn: 0, fail: 0 }, `${version} is supported: no warning either`);
+  }
+  let r = await doctor(fx, ['--only', 'node-version'], { nodeVersion: '' });
   assertCheck(r.report, 'node-version', 'fail', 'doctor.node_version.unreadable');
   r = await doctor(fx, ['--only', 'node-version'], { nodeVersion: 'banana' });
   assertCheck(r.report, 'node-version', 'fail', 'doctor.node_version.unreadable');
@@ -402,6 +418,53 @@ test('node-version: fails below 24, passes at 24.0.0 exactly, and fails on a ver
   // something else.
   r = await doctor(fx, ['--only', 'node-version'], { nodeVersion: 'x24.0.0' });
   assertCheck(r.report, 'node-version', 'fail', 'doctor.node_version.unreadable');
+  r = await doctor(fx, ['--only', 'node-version'], { nodeVersion: 'x20.11.1' });
+  assertCheck(r.report, 'node-version', 'fail', 'doctor.node_version.unreadable');
+});
+
+// What a person reads. Each sentence is rendered from the parameters the check
+// itself passed, so a number the check gets wrong shows here too.
+test('node-version: a Node below the minimum is told the minimum, what it has and which Node to install, in both languages', async () => {
+  const fx = setup();
+  const pt = createTranslator('pt-BR');
+  const fail = check((await doctor(fx, ['--only', 'node-version'], { nodeVersion: '20.11.1' })).report, 'node-version');
+  assert.match(fail.message, /Node 20\.11\.1/);
+  assert.match(fail.message, /Node 22 or newer/);
+  assert.match(fail.message, /Install Node 24 \(the current LTS\) from https:\/\/nodejs\.org/);
+  const failPt = renderMessage(pt, fail.messageKey, fail.params);
+  assert.match(failPt, /Node 20\.11\.1/);
+  assert.match(failPt, /Node 22 ou mais novo/);
+  assert.match(failPt, /Instale o Node 24 \(a vers\u00e3o LTS atual\) em https:\/\/nodejs\.org/);
+  for (const text of [fail.message, failPt]) {
+    assert.doesNotMatch(text, /\{[a-z_]+\}/, 'no placeholder left in the sentence');
+    assert.doesNotMatch(text, /Node 24 (or newer|ou mais novo)/, 'Node 24 is advice, not the minimum');
+  }
+  // The node the push gate would run is judged by the same rule and says the same.
+  const old = setup({ tools: { node: 'old' } });
+  const path = check((await doctor(old, ['--only', 'node-version'])).report, 'node-version');
+  assert.equal(path.messageKey, 'doctor.node_version.path_too_old');
+  for (const [text, minimum, install] of [
+    [path.message, /Node 22 or newer/, /Node 24 \(the current LTS\) from https:\/\/nodejs\.org/],
+    [renderMessage(pt, path.messageKey, path.params), /Node 22 ou mais novo/, /Node 24 \(a vers\u00e3o LTS atual\) em https:\/\/nodejs\.org/],
+  ]) {
+    assert.ok(text.includes(path.params.bin), 'it names the node it ran');
+    assert.ok(text.includes('20.11.1'), 'and its version');
+    assert.match(text, minimum);
+    assert.match(text, install);
+    assert.doesNotMatch(text, /\{[a-z_]+\}/);
+  }
+});
+
+test('node-version: a supported Node 22 or 23 says nothing alarming, only its version', async () => {
+  const fx = setup();
+  for (const version of ['22.0.0', '22.22.1', '23.99.99']) {
+    const c = check((await doctor(fx, ['--only', 'node-version'], { nodeVersion: version })).report, 'node-version');
+    assert.equal(c.status, 'ok', version);
+    assert.ok(c.message.startsWith(`Node ${version}`), c.message);
+    // The words, not the path of the node it names: a temporary directory can be called anything.
+    const words = c.params.bin === undefined ? c.message : c.message.split(c.params.bin).join('');
+    assert.doesNotMatch(words, /\b(old|older|below|recommend|upgrade|update|deprecated|unsupported|end of life|install)\b/i, `${version}: ${c.message}`);
+  }
 });
 
 test('node-version: the node on PATH is the running one, reported plainly', async () => {
@@ -430,12 +493,26 @@ test('node-version: the same version at another path is still named', async () =
   assert.equal(c.params.bin, join(elsewhere, 'node'));
 });
 
-test('node-version: fails when the node on PATH is below 24, even if the running one is not', async () => {
+test('node-version: fails when the node on PATH is below 22, even if the running one is not', async () => {
   const fx = setup({ tools: { node: 'old' } });
   const { report, code } = await doctor(fx, ['--only', 'node-version']);
   const c = assertCheck(report, 'node-version', 'fail', 'doctor.node_version.path_too_old');
-  assert.equal(c.params.pathVersion, '22.11.0');
+  assert.equal(c.params.pathVersion, '20.11.1');
+  assert.equal(c.params.minimum, 22);
   assert.equal(code, EXIT.FAILURE);
+  // One release under the floor is still under it.
+  const near = await doctor(setup({ tools: { node: 'justBelow' } }), ['--only', 'node-version']);
+  assert.equal(check(near.report, 'node-version').params.pathVersion, '21.99.99');
+  assertCheck(near.report, 'node-version', 'fail', 'doctor.node_version.path_too_old');
+});
+
+test('node-version: a node on PATH at exactly the minimum is supported, named but not a warning', async () => {
+  const fx = setup({ tools: { node: 'floor' } });
+  const { report, code } = await doctor(fx, ['--only', 'node-version']);
+  const c = assertCheck(report, 'node-version', 'ok');
+  assert.ok(OK_KEYS.includes(c.messageKey), c.messageKey);
+  assert.deepEqual(report.counts, { ok: 1, warn: 0, fail: 0 });
+  assert.equal(code, EXIT.OK);
 });
 
 test('node-version: a node on PATH whose answer only contains a version somewhere is not proof', async () => {
@@ -2253,7 +2330,7 @@ test('outside any vault, gh-auth asks about github.com, even from inside a repos
 
 test('outside any vault, an injected Node version and gh timeout reach the checks, as they do inside one', async () => {
   const m = bareMachine();
-  const old = await bareJson(m, ['--only', 'node-version'], { nodeVersion: '22.11.0' });
+  const old = await bareJson(m, ['--only', 'node-version'], { nodeVersion: '21.7.3' });
   assertCheck(old.report, 'node-version', 'fail', 'doctor.node_version.too_old');
   assert.equal(old.code, EXIT.FAILURE);
   writeScript(join(m.toolsDir, 'gh'), 'case "$1" in\n  auth) exec node -e "setTimeout(() => {}, 5000)" ;;\nesac\necho "gh version 2.40.1 (2026-01-01)"');

@@ -25,7 +25,7 @@
     "brain-kit": "bin/brain-kit.mjs"
   },
   "engines": {
-    "node": ">=24"
+    "node": ">=22"
   },
   "files": [
     "bin/",

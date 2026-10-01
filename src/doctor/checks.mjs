@@ -42,6 +42,10 @@ import { decodeBytes } from '../io.mjs';
 import { CONFIG_FILENAME, ConfigError, MACHINE_FILENAME, canonicalPathMatches, findMachineOnlyKeys, loadConfig, validateConfig, validateMachine } from '../config.mjs';
 import { STATE_FILES, physicalPathOf, stateDirFor, vaultIdFor } from '../state.mjs';
 import { KIT_ROOT, kitVersion } from '../version.mjs';
+// The oldest Node the kit supports is decided once, in the guard that stands in
+// front of the launcher (src/node-guard.mjs), and this check judges the Node
+// running it, and the node on PATH, by that same number.
+import { MINIMUM_NODE_MAJOR } from '../node-guard.mjs';
 import { localGitVarNames, withoutLocalGitVars } from '../git-env.mjs';
 import { loadPatterns } from '../leak.mjs';
 import { SUPPORTED_LANGS } from '../lang.mjs';
@@ -78,7 +82,6 @@ import { authorizationWhy, calendarsListedTwice } from '../sources/calendar-goog
 // the round cannot disagree.
 import { BLOCKED_BY_USER_RULES, chooseMode, MAX_TIMEOUT_MINUTES, offOnPurpose, offProblems, problemText, roundBudget, roundTimeoutMinutes, roundTurns, SECOND_DOOR, WAITING_FOR_CALENDAR } from '../commands/curate.mjs';
 
-export const MINIMUM_NODE_MAJOR = 24;
 export const HOOKS_DIR = '.githooks';
 export const HOOK_FILE = 'pre-push';
 export const SET_HOOKS_PATH_COMMAND = `git config core.hooksPath ${HOOKS_DIR}`;

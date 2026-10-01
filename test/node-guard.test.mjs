@@ -1,10 +1,15 @@
-// The Node guard (the first stranger's m13, 01/10/2026). `engines` says Node
-// 24, but nothing said so to a person on an older one: bin/brain-kit.mjs
-// imported the whole CLI statically, so a Node 20 or 22 died with a
-// SyntaxError or a TypeError and a stack trace from somewhere inside src/,
-// before a single word of the kit. The launcher now imports ONLY the guard
-// (src/node-guard.mjs: no imports, and no syntax an old Node cannot parse),
-// asks it, and loads the CLI with a dynamic import() only when it passes.
+// The Node guard (the first stranger's m13, 01/10/2026). `engines` names the oldest
+// Node the kit supports, but nothing said so to a person on an older one:
+// bin/brain-kit.mjs imported the whole CLI statically, so a Node too old for
+// some syntax or built-in in src/ would die with a SyntaxError or a TypeError and a
+// stack trace from somewhere inside src/, before a single word of the kit. The
+// launcher now imports ONLY the guard (src/node-guard.mjs: no imports, and no
+// syntax an old Node cannot parse), asks it, and loads the CLI with a dynamic
+// import() only when it passes.
+//
+// The minimum is 22 (0.0.9, task G4): the whole suite was run on a real Node
+// 22.22.1 and only the version policy itself failed. test/node-minimum.test.mjs
+// holds that number to every other place that states it.
 //
 // An old Node cannot be run here, so what is proved is: the decision (a
 // table of versions), the message in both languages, the `hook` exception
@@ -20,63 +25,67 @@ import { join } from 'node:path';
 import { KIT_ROOT, kitVersion } from '../src/version.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
 import { resolveLang } from '../src/lang.mjs';
-import { MINIMUM_NODE_MAJOR } from '../src/doctor/checks.mjs';
-import { checkNodeVersion } from '../src/node-guard.mjs';
+import { MINIMUM_NODE_MAJOR, checkNodeVersion } from '../src/node-guard.mjs';
 import { makeTempDir } from './helpers/tmp.mjs';
 
 const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
 const GUARD = join(KIT_ROOT, 'src', 'node-guard.mjs');
-const EN = (version) => `brain-kit needs Node 24 or newer; this machine has Node ${version}. Install Node 24 from https://nodejs.org and run it again.`;
-const PT = (version) => `brain-kit precisa do Node 24 ou mais novo; esta m${String.fromCharCode(0xe1)}quina tem o Node ${version}. Instale o Node 24 em https://nodejs.org e rode de novo.`;
+const EN = (version) => `brain-kit needs Node 22 or newer; this machine has Node ${version}. Install Node 24 (the current LTS) from https://nodejs.org and run it again.`;
+const PT = (version) => `brain-kit precisa do Node 22 ou mais novo; esta m${String.fromCharCode(0xe1)}quina tem o Node ${version}. Instale o Node 24 (a vers${String.fromCharCode(0xe3)}o LTS atual) em https://nodejs.org e rode de novo.`;
 
 // --- the decision -------------------------------------------------------------
 
-test('a Node of 24 or newer is let through, whatever shape its version string has', () => {
-  for (const version of ['24.0.0', '24.18.0', '25.1.0', '30.2.1', '100.0.0', 'v24.0.0', '24.0.0-nightly20260101abcdef', '24.0.0-rc.1', 'v25.0.0-pre', '24', 'v24', '24.1']) {
+// The minimum is 22 and it was measured, not planned: a real Node 22.22.1 ran
+// the whole suite. The floor itself and the versions around it are listed by
+// hand, so that a guard comparing against another number fails here by name.
+test('a Node of 22 or newer is let through, whatever shape its version string has', () => {
+  for (const version of ['22.0.0', '22.12.0', '22.22.1', '23.0.0', '23.11.0', '24.0.0', '24.18.0', '25.1.0', '30.2.1', '100.0.0', 'v22.0.0', 'v24.0.0', '22.0.0-nightly20260101abcdef', '22.0.0-rc.1', 'v25.0.0-pre', '22', 'v22', '22.1']) {
     assert.equal(checkNodeVersion(version, 'doctor', {}), null, version);
   }
 });
 
-test('a Node older than 24 is refused, the major compared as a number and never as text', () => {
-  for (const version of ['23.9.0', '23.99.99', '22.12.0', '20.11.1', '18.19.0', '16.20.2', '12.22.12', '9.11.2', '8.0.0', '4.9.1', '0.12.18', 'v22.11.0', '22.0.0-nightly20240101abc', '22', 'v22', '22.12']) {
+test('a Node older than 22 is refused, the major compared as a number and never as text', () => {
+  for (const version of ['21.7.3', '21.99.99', '20.11.1', '18.19.0', '16.20.2', '12.22.12', '9.11.2', '8.0.0', '4.9.1', '0.12.18', 'v21.0.0', 'v20.11.1', '21.0.0-nightly20240101abc', '21', 'v21', '21.7']) {
     const refusal = checkNodeVersion(version, 'doctor', {});
     assert.notEqual(refusal, null, version);
     assert.equal(refusal.exitCode, EXIT.USAGE, version);
   }
 });
 
-test('a version it cannot read is never a reason to refuse: only a version it can read below 24 blocks', () => {
+test('a version it cannot read is never a reason to refuse: only a version it can read below 22 blocks', () => {
   // A major followed by a dot, or by the end of the text, is a version it can read.
-  for (const version of ['garbage', '', ' ', ' 22.12.0', 'x24.0.0', 'node', '--', '2x.0.0', 'v', '.', '-22.0.0', undefined, null, {}, [], true]) {
+  for (const version of ['garbage', '', ' ', ' 20.11.1', 'x20.0.0', 'x24.0.0', 'node', '--', '2x.0.0', 'v', '.', '-20.0.0', undefined, null, {}, [], true]) {
     assert.equal(checkNodeVersion(version, 'doctor', {}), null, String(version));
   }
 });
 
 test('the exit code is the kit\'s usage error code, 2', () => {
   assert.equal(EXIT.USAGE, 2);
-  assert.equal(checkNodeVersion('22.12.0', 'validate', {}).exitCode, EXIT.USAGE);
+  assert.equal(checkNodeVersion('21.7.3', 'validate', {}).exitCode, EXIT.USAGE);
   // Every command is refused alike, --version and --help included.
   for (const first of ['init', 'doctor', 'validate', 'propose', 'push-gate', '--version', '--help', '-C', '', undefined]) {
     assert.equal(checkNodeVersion('20.11.1', first, {}).exitCode, 2, String(first));
   }
 });
 
-// The guard repeats a number three other places state: package.json's `engines`,
-// and the Node check of `doctor`. Raise one without the others and a Node that
-// the guard lets through is one doctor fails, or the other way round.
-test('the guard\'s minimum is the one in package.json engines and in the doctor\'s node-version check', () => {
+// The guard's number is the one package.json's `engines` states and the one the
+// refusal names; the doctor and the documents are held to it by
+// test/node-minimum.test.mjs. Raise it here without package.json and a Node that
+// npm accepts is one the launcher refuses, or the other way round.
+test('the guard\'s minimum is a whole major, the one in package.json engines, and the floor of its own decision', () => {
   const engines = JSON.parse(readFileSync(join(KIT_ROOT, 'package.json'), 'utf8')).engines.node;
+  assert.ok(Number.isInteger(MINIMUM_NODE_MAJOR), 'a major, not a version string');
   assert.equal(engines, `>=${MINIMUM_NODE_MAJOR}`);
   assert.equal(checkNodeVersion(`${MINIMUM_NODE_MAJOR}.0.0`, 'doctor', {}), null);
   assert.notEqual(checkNodeVersion(`${MINIMUM_NODE_MAJOR - 1}.99.99`, 'doctor', {}), null);
-  assert.ok(checkNodeVersion(`${MINIMUM_NODE_MAJOR - 1}.0.0`, 'doctor', {}).message.includes(`Node ${MINIMUM_NODE_MAJOR} `), 'and the message names that number');
+  assert.ok(checkNodeVersion(`${MINIMUM_NODE_MAJOR - 1}.0.0`, 'doctor', {}).message.includes(`Node ${MINIMUM_NODE_MAJOR} or newer`), 'and the message names that number');
 });
 
 // --- the message ---------------------------------------------------------------
 
-test('the message is one line of two sentences naming the Node found and where to get Node 24, in English by default', () => {
-  const refusal = checkNodeVersion('22.12.0', 'doctor', {});
-  assert.equal(refusal.message, EN('22.12.0'));
+test('the message is one line of two sentences naming the minimum, the Node found and the Node to install, in English by default', () => {
+  const refusal = checkNodeVersion('20.11.1', 'doctor', {});
+  assert.equal(refusal.message, EN('20.11.1'));
   assert.equal(refusal.message.includes('\n'), false);
   assert.equal(refusal.message.split('. ').length, 2, 'two sentences');
   assert.deepEqual(Object.keys(refusal).sort(), ['exitCode', 'message']);
@@ -86,9 +95,22 @@ test('the message is one line of two sentences naming the Node found and where t
 });
 
 test('the message is in Portuguese when the person\'s language is, with the accent a Brazilian writes', () => {
-  assert.equal(checkNodeVersion('22.12.0', 'doctor', { LANG: 'pt_BR.UTF-8' }).message, PT('22.12.0'));
-  assert.equal(checkNodeVersion('20.11.1', 'doctor', { BRAIN_KIT_LANG: 'pt-BR', LC_ALL: 'C' }).message, PT('20.11.1'));
+  assert.equal(checkNodeVersion('20.11.1', 'doctor', { LANG: 'pt_BR.UTF-8' }).message, PT('20.11.1'));
+  assert.equal(checkNodeVersion('18.19.0', 'doctor', { BRAIN_KIT_LANG: 'pt-BR', LC_ALL: 'C' }).message, PT('18.19.0'));
   assert.ok(checkNodeVersion('1.2.3', 'doctor', { LANG: 'pt_BR' }).message.includes(`m${String.fromCharCode(0xe1)}quina`), 'the accent is in the message itself');
+});
+
+// The Node it asks for and the Node it sends a person to install are two numbers
+// on purpose: 22 is what runs the kit, 24 is the one worth installing today.
+test('the message asks for the minimum, 22, but sends the person to Node 24, the current LTS', () => {
+  for (const [locale, text] of [[{}, EN('20.11.1')], [{ LANG: 'pt_BR.UTF-8' }, PT('20.11.1')]]) {
+    const message = checkNodeVersion('20.11.1', 'doctor', locale).message;
+    assert.equal(message, text);
+    assert.match(message, /Node 22 (or newer|ou mais novo)/);
+    assert.match(message, /Instale o Node 24 \(a vers\u00e3o LTS atual\)|Install Node 24 \(the current LTS\)/);
+    assert.match(message, /https:\/\/nodejs\.org/);
+    assert.doesNotMatch(message, /Node 24 (or newer|ou mais novo)/, 'Node 24 is advice, no longer the minimum');
+  }
 });
 
 // The guard cannot import the kit's language resolver (it would defeat its
@@ -116,21 +138,21 @@ test('the language is chosen as resolveLang chooses it: BRAIN_KIT_LANG, then LC_
     {},
   ];
   for (const env of cases) {
-    const expected = resolveLang(env) === 'pt-BR' ? PT('22.12.0') : EN('22.12.0');
-    assert.equal(checkNodeVersion('22.12.0', 'doctor', env).message, expected, JSON.stringify(env));
+    const expected = resolveLang(env) === 'pt-BR' ? PT('20.11.1') : EN('20.11.1');
+    assert.equal(checkNodeVersion('20.11.1', 'doctor', env).message, expected, JSON.stringify(env));
   }
 });
 
 // --- the hook exception ----------------------------------------------------------
 
 test('a hook is never refused: the same one line, and exit code 0, so a session is never broken', () => {
-  for (const [env, message] of [[{}, EN('22.12.0')], [{ LANG: 'pt_BR.UTF-8' }, PT('22.12.0')]]) {
-    assert.deepEqual(checkNodeVersion('22.12.0', 'hook', env), { message, exitCode: 0 });
+  for (const [env, message] of [[{}, EN('20.11.1')], [{ LANG: 'pt_BR.UTF-8' }, PT('20.11.1')]]) {
+    assert.deepEqual(checkNodeVersion('20.11.1', 'hook', env), { message, exitCode: 0 });
   }
-  assert.equal(checkNodeVersion('24.0.0', 'hook', {}), null, 'a Node that is new enough has nothing to say to a hook either');
+  assert.equal(checkNodeVersion('22.0.0', 'hook', {}), null, 'a Node that is new enough has nothing to say to a hook either');
   // Only the exact word, as the hooks file spells it; anything else is an ordinary command.
   for (const first of ['hooks', 'Hook', 'HOOK', ' hook', 'hook ', 'hook\n', '-C', 'stop', 'session-start']) {
-    assert.equal(checkNodeVersion('22.12.0', first, {}).exitCode, 2, JSON.stringify(first));
+    assert.equal(checkNodeVersion('20.11.1', first, {}).exitCode, 2, JSON.stringify(first));
   }
 });
 
@@ -210,8 +232,8 @@ test('the real launcher still works on the Node that runs this suite: --version 
   assert.equal(r.stderr, '');
 });
 
-test('the real launcher, on a Node below 24, prints the one line to stderr, exits 2, and loads nothing of the CLI', () => {
-  for (const version of ['22.11.0', '20.11.1', '23.99.0']) {
+test('the real launcher, on a Node below 22, prints the one line to stderr, exits 2, and loads nothing of the CLI', () => {
+  for (const version of ['21.7.3', '20.11.1', '18.19.0']) {
     const en = launch(['--version'], { version, env: { LC_ALL: 'C' } });
     assert.equal(en.status, EXIT.USAGE, en.stdout + en.stderr);
     assert.equal(en.stdout, '', 'the CLI did not run: --version printed nothing');
@@ -223,12 +245,12 @@ test('the real launcher, on a Node below 24, prints the one line to stderr, exit
   }
 });
 
-test('the real launcher, on a Node below 24, lets a hook finish with exit 0 and the same line on stderr', () => {
+test('the real launcher, on a Node below 22, lets a hook finish with exit 0 and the same line on stderr', () => {
   for (const event of ['stop', 'session-start']) {
-    const r = launch(['hook', event], { version: '22.11.0', env: { LANG: 'C' }, input: JSON.stringify({ cwd: KIT_ROOT }) });
+    const r = launch(['hook', event], { version: '20.11.1', env: { LANG: 'C' }, input: JSON.stringify({ cwd: KIT_ROOT }) });
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.equal(r.stdout, '', 'nothing a session could read as the hook\'s answer');
-    assert.equal(r.stderr, `${EN('22.11.0')}\n`);
+    assert.equal(r.stderr, `${EN('20.11.1')}\n`);
   }
 });
 
@@ -255,11 +277,16 @@ test('a CLI that cannot be parsed is never reached when the guard refuses, and i
   assert.match(reached.stderr, /SyntaxError/, 'on a Node the guard lets through, the broken CLI is what runs');
 });
 
-test('the real launcher, on exactly Node 24.0.0, runs the CLI as usual', () => {
-  const r = launch(['--version'], { version: '24.0.0' });
-  assert.equal(r.status, 0, r.stderr);
-  assert.equal(r.stdout, `${kitVersion()}\n`);
-  const hook = launch(['hook', 'nope'], { version: '24.0.0', input: '{}' });
-  assert.equal(hook.status, EXIT.USAGE, 'a hook on a good Node is the CLI\'s own, unknown event and all');
-  assert.match(hook.stderr, /nope/);
+// The floor itself, and the Node 22 the suite was measured on: neither is a
+// reason to refuse, and neither prints a word before the CLI's own output.
+test('the real launcher, on exactly Node 22.0.0 and on 22.22.1, runs the CLI as usual', () => {
+  for (const version of ['22.0.0', '22.22.1']) {
+    const r = launch(['--version'], { version });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout, `${kitVersion()}\n`);
+    assert.equal(r.stderr, '', version);
+    const hook = launch(['hook', 'nope'], { version, input: '{}' });
+    assert.equal(hook.status, EXIT.USAGE, 'a hook on a good Node is the CLI\'s own, unknown event and all');
+    assert.match(hook.stderr, /nope/);
+  }
 });

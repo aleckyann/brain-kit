@@ -1,11 +1,21 @@
 // The Node guard: the one module bin/brain-kit.mjs loads before anything else.
 //
-// package.json says `"node": ">=24"`, and nothing said it to a person on an
-// older Node: the launcher used to import the whole CLI at once, and a Node 20
-// or 22 died inside src/ with a SyntaxError or a TypeError and a stack trace,
-// before a word of the kit (the first stranger's m13, 01/10/2026). The
-// launcher now imports only this file, asks it, and loads the CLI with a
-// dynamic import() once the answer is "go on".
+// package.json says `"node": ">=22"`, and nothing said it to a person on an
+// older Node: the launcher used to import the whole CLI at once, so a Node too
+// old for some syntax or built-in in src/ would die with a SyntaxError or a
+// TypeError and a stack trace, before a word of the kit (the first stranger's
+// m13, 01/10/2026). The launcher now imports only this file, asks it, and loads
+// the CLI with a dynamic import() once the answer is "go on".
+//
+// THE NUMBER. MINIMUM_NODE_MAJOR is the one place the kit decides the oldest
+// Node it supports: src/doctor/checks.mjs imports it instead of keeping a copy.
+// It is 22, and it was measured, not planned: the whole suite ran on a real Node
+// 22.22.1 and only the version policy itself failed (0.0.9). 22 is also the
+// oldest Node that still receives security fixes (it leaves Maintenance LTS in
+// April 2027, the date to raise this number). What a person who has to install a
+// Node is sent to is another number, RECOMMENDED_MAJOR: 24, the current LTS. CI
+// runs the suite on 22 and on 24, and test/node-minimum.test.mjs holds this
+// number to package.json's `engines`, the doctor, the documents and the CI matrix.
 //
 // So this file has to run on a Node that cannot run the rest of the kit:
 // it imports nothing, and it uses only syntax every Node that can load an
@@ -23,7 +33,8 @@
 //
 // The Portuguese is written with \u escapes where it has an accent, because
 // the engine's sources are ASCII (test/no-portuguese.test.mjs).
-var MINIMUM_MAJOR = 24;
+export var MINIMUM_NODE_MAJOR = 22;
+var RECOMMENDED_MAJOR = 24;
 var REFUSED = 2;
 var HOOK_EXIT = 0;
 
@@ -59,10 +70,10 @@ function majorOf(version) {
 // `locale` is the environment (process.env, or anything with the same names).
 export function checkNodeVersion(version, firstArgument, locale) {
   var major = majorOf(version);
-  if (major === null || major >= MINIMUM_MAJOR) return null;
+  if (major === null || major >= MINIMUM_NODE_MAJOR) return null;
   var shown = String(version).replace(/^v/, '');
   var message = inPortuguese(locale)
-    ? 'brain-kit precisa do Node ' + MINIMUM_MAJOR + ' ou mais novo; esta m\u00e1quina tem o Node ' + shown + '. Instale o Node ' + MINIMUM_MAJOR + ' em https://nodejs.org e rode de novo.'
-    : 'brain-kit needs Node ' + MINIMUM_MAJOR + ' or newer; this machine has Node ' + shown + '. Install Node ' + MINIMUM_MAJOR + ' from https://nodejs.org and run it again.';
+    ? 'brain-kit precisa do Node ' + MINIMUM_NODE_MAJOR + ' ou mais novo; esta m\u00e1quina tem o Node ' + shown + '. Instale o Node ' + RECOMMENDED_MAJOR + ' (a vers\u00e3o LTS atual) em https://nodejs.org e rode de novo.'
+    : 'brain-kit needs Node ' + MINIMUM_NODE_MAJOR + ' or newer; this machine has Node ' + shown + '. Install Node ' + RECOMMENDED_MAJOR + ' (the current LTS) from https://nodejs.org and run it again.';
   return { message: message, exitCode: firstArgument === 'hook' ? HOOK_EXIT : REFUSED };
 }
