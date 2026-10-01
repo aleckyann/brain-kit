@@ -199,7 +199,7 @@ vez, o que exige um terminal; `--yes` (todos os padrões, listados) ou
 faz o primeiro commit a menos que isso seja pedido.
 
 Um vault fala o idioma escolhido para ele no `init`, com a primeira pergunta ou com
-`init --lang en|pt-BR`: o `validate`, o `lint`, as skills e os hooks o usam. Todo o resto
+`init --lang en|pt-BR`: o `validate`, o `lint`, o `doctor`, as skills e os hooks o usam. Todo o resto
 que o kit imprime, e todo comando fora de um vault, tira o idioma de `BRAIN_KIT_LANG` (`en`
 ou `pt-BR`) quando ela está definida, senão da primeira entre `LC_ALL`, `LC_MESSAGES` e
 `LANG` que estiver: um valor que começa com `pt` é português, qualquer outro é inglês.

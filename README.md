@@ -195,7 +195,7 @@ object) answer for you where there is none, and it never makes the first commit 
 told to.
 
 A vault speaks the language chosen for it at `init`, with its first question or with
-`init --lang en|pt-BR`: `validate`, `lint`, the skills and the hooks use it. Everything else the
+`init --lang en|pt-BR`: `validate`, `lint`, `doctor`, the skills and the hooks use it. Everything else the
 kit prints, and every command outside a vault, takes its language from `BRAIN_KIT_LANG`
 (`en` or `pt-BR`) when that is set, else from the first of `LC_ALL`, `LC_MESSAGES` and `LANG`
 that is: a value starting with `pt` is Portuguese, anything else English.
