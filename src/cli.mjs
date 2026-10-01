@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { EXIT } from './exit-codes.mjs';
 import { kitVersion } from './version.mjs';
 import { createTranslator, resolveLangDetailed, SUPPORTED_LANGS } from './lang.mjs';
+import { closestNames } from './suggest.mjs';
 import { runHook } from './commands/hook.mjs';
 import { runValidate } from './commands/validate.mjs';
 import { runLint } from './commands/lint.mjs';
@@ -53,7 +54,7 @@ import { ConfigError } from './config.mjs';
 // as one unit is a later, named item; until then BRAIN_KIT_LANG does not
 // reach this command.
 const GATE_LANG = 'en';
-const BUILTIN_COMMANDS = new Map([
+export const BUILTIN_COMMANDS = new Map([
   ['hook', runHook],
   ['init', (argv, io, t) => runInit(argv, io, t, { walkVault })],
   ['update', (argv, io, t) => runUpdate(argv, io, t)],
@@ -75,6 +76,13 @@ const BUILTIN_COMMANDS = new Map([
     warn: (message) => io.stderr.write(`${message}\n`),
   }))],
 ]);
+
+// The commands above that cli.usage leaves out (see the two paragraphs
+// before the table): they run when asked for by name and are never offered
+// to a person who mistyped something else, since a typo of "push" is not a
+// wish for the push gate. test/did-you-mean.test.mjs fails when this set and
+// the usage disagree about which commands are listed.
+export const UNLISTED_COMMANDS = new Set(['scan-blobs', 'push-gate']);
 
 // `-C <dir>` before the command, as git's: the command runs exactly as if
 // brain-kit had been started in <dir> (the working directory is changed for
@@ -144,8 +152,14 @@ async function dispatch(argv, io, t, commands) {
   }
   const handler = commands.get(command);
   if (!handler) {
+    // The sentence, a name when one is close, and the way to the full usage:
+    // thirty lines of usage after a typo hid the one line that mattered. The
+    // names come from the table this run was given. A suggestion is only a
+    // sentence; nothing it names is run.
     io.stderr.write(`${t('cli.unknown_command', { command })}\n`);
-    io.stderr.write(`${t('cli.usage', { version: kitVersion() })}\n`);
+    const near = closestNames(command, [...commands.keys()].filter((name) => !UNLISTED_COMMANDS.has(name)));
+    if (near.length > 0) io.stderr.write(`${t('cli.did_you_mean', { suggestions: near })}\n`);
+    io.stderr.write(`${t('cli.see_help')}\n`);
     return EXIT.USAGE;
   }
   // Error boundary: a command that throws must still produce a clean exit
