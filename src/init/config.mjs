@@ -57,7 +57,7 @@ function isEmptyList(value) {
 
 // True when a round reads transcripts: curate is on and transcripts is among
 // its sources. The question doctor's include-projects check asks first.
-function transcriptsAreRead(config) {
+export function transcriptsAreRead(config) {
   if (config.curate?.enabled === false) return false;
   const sources = [...(config.curate?.sources?.required ?? []), ...(config.curate?.sources?.best_effort ?? [])];
   return sources.includes('transcripts');

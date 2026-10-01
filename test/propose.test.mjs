@@ -30,6 +30,9 @@ import { BRANCH, NOW, PR_URL, fingerprint, makeProposeWorld, note } from './help
 
 const t = createTranslator('en');
 const line = (key, params) => `${t(key, params)}\n`;
+// A clone address is not an e-mail address: the sign is joined at run time so the
+// scan of tracked files (test/no-leak.test.mjs) does not read it as one.
+const AT = '@';
 const IDENTITY = "Ana's Second Brain (curator) <curator@example.invalid>";
 
 function fakeIo() {
@@ -500,10 +503,10 @@ test('--dry changes no reference (remote-tracking ones included), no file and no
   const refs = world.remoteRefs();
   const run = await propose(world, ['Add A', '--only', 'notes/a.md', '--dry']);
   assert.equal(run.code, EXIT.OK, run.stderr);
-  assert.equal(run.stdout, line('propose.dry_run', { files: ['notes/a.md'], urls: [world.remote], base: 'main', branch: BRANCH, title: 'curate: Add A', origin: 'main', remote: 'origin', program: 'gh' }));
+  assert.equal(run.stdout, line('propose.dry_run', { files: ['notes/a.md'], urls: [world.remote], base: 'main', branch: BRANCH, title: 'curate: Add A', origin: 'main', remote: 'origin', program: 'gh', host: 'github.com' }));
   assert.deepEqual({ ...fingerprint(world.vault), all: repoState(world.vault) }, before);
   assert.equal(world.remoteRefs(), refs);
-  assert.deepEqual(world.ghCalls().map((call) => call.args), [['auth', 'status']], 'gh was asked only whether it is logged in');
+  assert.deepEqual(world.ghCalls().map((call) => call.args), [['auth', 'status', '--hostname', 'github.com']], 'gh was asked only whether it is logged in');
 });
 
 // The dry run promises what the real run will do, so every precondition
@@ -586,12 +589,62 @@ test('--dry: gh that is not logged in is refused naming gh auth login, exit 3, a
   const refs = world.remoteRefs();
   const run = await propose(world, ['A', '--only', 'notes/a.md', '--dry'], { env: { ...world.env, FAKE_GH_AUTH: 'out' } });
   assert.equal(run.code, EXIT.DEGRADED, run.stderr);
-  assert.equal(run.stderr, line('propose.dry_gh_logged_out', { program: 'gh', command: 'gh auth login', detail: 'You are not logged into any GitHub hosts. To log in, run: gh auth login' }));
+  assert.equal(run.stderr, line('propose.dry_gh_problem', { program: 'gh', host: 'github.com', status: 1, command: 'gh auth login --hostname github.com', detail: 'You are not logged into any GitHub hosts. To log in, run: gh auth login' }));
   assert.match(run.stderr, /gh auth login/);
   assert.equal(run.stdout, '');
-  assert.deepEqual(world.ghCalls().map((call) => call.args), [['auth', 'status']]);
+  assert.deepEqual(world.ghCalls().map((call) => call.args), [['auth', 'status', '--hostname', 'github.com']]);
   assert.deepEqual({ ...fingerprint(world.vault), all: repoState(world.vault) }, before);
   assert.equal(world.remoteRefs(), refs);
+});
+
+// `gh auth status` fails when ANY account on ANY host has a problem, and it
+// checks the token over the network, so asked about everything it refuses a
+// vault whose own host works, and a slow network reads as "logged out". The
+// dry run asks about the host the vault uses, and says only what gh said.
+test('--dry: a gh with a stale account elsewhere is not a gh that cannot open the pull request: only the vault\'s host is asked about', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  const run = await propose(world, ['A', '--only', 'notes/a.md', '--dry'], { env: { ...world.env, FAKE_GH_AUTH_OK_HOST: 'github.com' } });
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.deepEqual(world.ghCalls().map((call) => call.args), [['auth', 'status', '--hostname', 'github.com']]);
+});
+
+test('--dry: the host is the one the remote\'s url names (scp-like, here), and the refusal for a host gh has a problem with names that host and gh\'s own sentence', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8', env: world.env }).stdout.trim();
+  writeFileSync(join(world.base, 'fakebin', 'git'), `#!/bin/sh\nif [ "$1" = "remote" ] && [ "$2" = "get-url" ]; then echo 'git${AT}ghe.example.com:ana/brain.git'; exit 0; fi\nexec '${realGit}' "$@"\n`, { mode: 0o755 });
+  let run = await propose(world, ['A', '--only', 'notes/a.md', '--dry'], { env: { ...world.env, FAKE_GH_AUTH_OK_HOST: 'ghe.example.com' } });
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.deepEqual(world.ghCalls().map((call) => call.args), [['auth', 'status', '--hostname', 'ghe.example.com']]);
+  assert.match(run.stdout, /"gh auth status --hostname ghe\.example\.com" exited 0/);
+  run = await propose(world, ['A', '--only', 'notes/a.md', '--dry'], { env: { ...world.env, FAKE_GH_AUTH_OK_HOST: 'github.com' } });
+  assert.equal(run.code, EXIT.DEGRADED);
+  assert.equal(run.stderr, line('propose.dry_gh_problem', {
+    program: 'gh', host: 'ghe.example.com', status: 1, command: 'gh auth login --hostname ghe.example.com', detail: 'X Failed to log in to github.com account old (keyring)',
+  }));
+  assert.doesNotMatch(run.stderr, /is not logged in|cannot open/);
+});
+
+test('--dry: a gh that does not finish (a timeout) is "could not verify", exit 1, never "not logged in" and never "Would propose"', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  const run = await propose(world, ['A', '--only', 'notes/a.md', '--dry'], { env: { ...world.env, FAKE_GH_AUTH: 'hang' }, extra: { ghTimeoutMs: 300 } });
+  assert.equal(run.code, EXIT.FAILURE, run.stderr);
+  assert.equal(run.stderr, line('propose.dry_gh_unverified', { program: 'gh', host: 'github.com', error: 'ETIMEDOUT' }));
+  assert.equal(run.stdout, '');
+});
+
+test('--dry: a gh that cannot be started for a reason other than absence (here, not executable) is "could not verify" too', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  const dir = join(world.base, 'noexec');
+  mkdirSync(dir);
+  symlinkSync(spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8', env: world.env }).stdout.trim(), join(dir, 'git'));
+  writeFileSync(join(dir, 'gh'), '#!/bin/sh\nexit 0\n', { mode: 0o644 });
+  const run = await propose(world, ['A', '--only', 'notes/a.md', '--dry'], { env: { ...world.env, PATH: dir } });
+  assert.equal(run.code, EXIT.FAILURE, run.stderr);
+  assert.equal(run.stderr, line('propose.dry_gh_unverified', { program: 'gh', host: 'github.com', error: 'EACCES' }));
 });
 
 test('--dry: the remote is judged before gh, so a vault with both problems is told the one the real run would hit first', async () => {
@@ -609,7 +662,7 @@ test('--dry names the branch the real run would push to: the stamped name, with 
   git(world.elsewhere, ['push', '-q', 'origin', `HEAD:refs/heads/${BRANCH}`]);
   const run = await propose(world, ['A', '--only', 'notes/a.md', '--dry']);
   assert.equal(run.code, EXIT.OK, run.stderr);
-  assert.equal(run.stdout, line('propose.dry_run', { files: ['notes/a.md'], urls: [world.remote], base: 'main', branch: `${BRANCH}-2`, title: 'curate: A', origin: 'main', remote: 'origin', program: 'gh' }));
+  assert.equal(run.stdout, line('propose.dry_run', { files: ['notes/a.md'], urls: [world.remote], base: 'main', branch: `${BRANCH}-2`, title: 'curate: A', origin: 'main', remote: 'origin', program: 'gh', host: 'github.com' }));
   // And it is the one the real run uses.
   const real = await propose(world, ['A', '--only', 'notes/a.md']);
   assert.equal(real.code, EXIT.OK, real.stderr);
@@ -621,9 +674,9 @@ test('--dry: with everything the real run needs in place it prints the plan, hav
   world.write('notes/a.md', note('A'));
   const run = await propose(world, ['A', '--only', 'notes/a.md', '--dry']);
   assert.equal(run.code, EXIT.OK, run.stderr);
-  assert.equal(run.stdout, line('propose.dry_run', { files: ['notes/a.md'], urls: [world.remote], base: 'main', branch: BRANCH, title: 'curate: A', origin: 'main', remote: 'origin', program: 'gh' }));
-  assert.match(run.stdout, /Remote origin publishes the base and gh is logged in/);
-  assert.deepEqual(world.ghCalls().map((call) => call.args), [['auth', 'status']]);
+  assert.equal(run.stdout, line('propose.dry_run', { files: ['notes/a.md'], urls: [world.remote], base: 'main', branch: BRANCH, title: 'curate: A', origin: 'main', remote: 'origin', program: 'gh', host: 'github.com' }));
+  assert.match(run.stdout, /Remote origin publishes the base, and "gh auth status --hostname github.com" exited 0/);
+  assert.deepEqual(world.ghCalls().map((call) => call.args), [['auth', 'status', '--hostname', 'github.com']]);
 });
 
 test('behind the remote, with the path untouched there: the commit sits on the fetched tip, never on the stale local HEAD', async () => {
@@ -1252,8 +1305,8 @@ test('--dry never checks or reports an earlier unconfirmed proposal, and asks gh
   world.write('notes/a.md', note('A'));
   const run = await propose(world, ['A', '--only', 'notes/a.md', '--dry']);
   assert.equal(run.code, EXIT.OK, run.stderr);
-  assert.equal(run.stdout, line('propose.dry_run', { files: ['notes/a.md'], urls: [world.remote], base: 'main', branch: BRANCH, title: 'curate: A', origin: 'main', remote: 'origin', program: 'gh' }));
-  assert.deepEqual(world.ghCalls().map((call) => call.args), [['auth', 'status']], 'no pr view for the earlier proposal');
+  assert.equal(run.stdout, line('propose.dry_run', { files: ['notes/a.md'], urls: [world.remote], base: 'main', branch: BRANCH, title: 'curate: A', origin: 'main', remote: 'origin', program: 'gh', host: 'github.com' }));
+  assert.deepEqual(world.ghCalls().map((call) => call.args), [['auth', 'status', '--hostname', 'github.com']], 'no pr view for the earlier proposal');
   assert.ok(existsSync(join(dir, 'stale.json')), 'the stale record is left exactly as it was');
 });
 

@@ -198,6 +198,16 @@ function isDirectory(path) {
   }
 }
 
+// True when anything at all is at `path`, a link that leads nowhere included.
+function somethingAt(path) {
+  try {
+    fs.lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function listDir(path, options) {
   try {
     return fs.readdirSync(path, options);
@@ -225,15 +235,37 @@ export const MAX_PROJECT_NAME_CHARS = 200;
 // /home/ana/brain is -home-ana-brain. This is what a vault's own project is
 // called, which is what `init` lists in include_projects and what `doctor`
 // knows has no folder until a session has run in the vault. Null for a path
-// whose name is longer than MAX_PROJECT_NAME_CHARS. Observed behaviour of
-// Claude Code, not a specification: a name that disagrees with the folder
-// Claude Code really made shows as a project with no sessions.
+// the rule does not cover: one that does not start with a slash (a relative
+// path, a Windows one), and one whose name is longer than
+// MAX_PROJECT_NAME_CHARS. A caller leaves the name out then, and says so.
+// Observed behaviour of Claude Code, not a specification: a name that
+// disagrees with the folder Claude Code really made shows as a project with
+// no sessions. A value that is not a string is a defect of the caller and
+// throws.
 export function claudeProjectName(absolutePath) {
-  if (typeof absolutePath !== 'string' || !absolutePath.startsWith('/')) {
-    throw new TypeError(`claudeProjectName needs an absolute path (got ${JSON.stringify(absolutePath)})`);
-  }
+  if (typeof absolutePath !== 'string') throw new TypeError(`claudeProjectName needs a path (got ${JSON.stringify(absolutePath)})`);
+  if (!absolutePath.startsWith('/')) return null;
   const name = absolutePath.replace(/[^A-Za-z0-9]/g, '-');
   return name.length <= MAX_PROJECT_NAME_CHARS ? name : null;
+}
+
+// The listed project that is allowed to have no folder yet, or null: the
+// vault's own, whose folder Claude Code makes only when a session first runs
+// in the vault. `doctor` and the round read the same answer, so they cannot
+// disagree about a new vault. Null when the vault's own name cannot be told
+// (claudeProjectName), and when Claude Code keeps its projects somewhere this
+// kit was not told about: CLAUDE_CONFIG_DIR is set and no transcripts_dir is
+// named in machine.json, so a ~/.claude/projects without the vault's project
+// says nothing about where its sessions are.
+export function waitingProjectName({ vaultRoot, machine, env }) {
+  const named = typeof machine?.transcripts_dir === 'string' && machine.transcripts_dir !== '';
+  const moved = typeof env?.CLAUDE_CONFIG_DIR === 'string' && env.CLAUDE_CONFIG_DIR !== '';
+  if (moved && !named) return null;
+  try {
+    return claudeProjectName(fs.realpathSync(vaultRoot));
+  } catch {
+    return null;
+  }
 }
 
 // What a name under the transcripts root is (ruling R-A7, 26/09/2026):
@@ -850,6 +882,7 @@ function problemLine(t, problem, root) {
 function renderPromptBlock(t, plan) {
   const lines = [];
   for (const problem of plan.problems) lines.push(problemLine(t, problem, plan.root));
+  lines.push(...plan.waitingLines);
   if (plan.files.length) {
     lines.push(t('sources.transcripts.heading', { count: plan.files.length, from: plan.window.from, to: plan.window.to }));
     // Each file by its digest, never by its own path: the transcript is
@@ -938,10 +971,15 @@ function daysOf(window, config) {
 //           digest (attachDigests), built in memory: nothing is written
 //           here; writeDigests writes them. Without it the plan offers its
 //           files with no digest, which no round can read.
+//   waiting: the one listed project that may have no folder yet (the vault's
+//           own, waitingProjectName), or null. Such a project is a project
+//           with no sessions, not a misconfiguration: the plan names it in
+//           `waiting` and offers nothing from it. A name that is not it, an
+//           empty list, a root that cannot be listed stay what they were.
 //   io, limits: tests only. `io` replaces openSync/readSync/closeSync
 //           used by the scan (to inject a read error); `limits` replaces
 //           DEFAULT_LIMITS (small chunks to cross chunk boundaries).
-function collect({ window, config, machine, home = homedir(), digestDir, io = fs, limits = DEFAULT_LIMITS }) {
+function collect({ window, config, machine, home = homedir(), digestDir, waiting = null, io = fs, limits = DEFAULT_LIMITS }) {
   const settings = config?.sources?.transcripts ?? {};
   const root = expandHome(machine?.transcripts_dir ?? join('~', '.claude', 'projects'), home);
   const all = settings.include_projects === ALL_PROJECTS;
@@ -959,9 +997,17 @@ function collect({ window, config, machine, home = homedir(), digestDir, io = fs
 
   const rootExists = isDirectory(root);
   const names = (all || named.length > 0) && rootExists ? listDir(root) : null;
+  // The projects that have no sessions yet, which is not a problem: see `waiting`.
+  const waitingNames = [];
   if (!all && named.length === 0) problems.push({ code: 'no_projects', detail: '' });
-  else if (!rootExists) problems.push({ code: 'root_missing', detail: root });
-  else if (names === null) problems.push({ code: 'root_unreadable', detail: root });
+  else if (!rootExists) {
+    // The default folder is absent on a machine where Claude Code never ran a
+    // session, and only the vault's own project is listed: nothing to read yet.
+    // A folder named on purpose, a broken link or a file there is not that.
+    const neverUsed = waiting !== null && machine?.transcripts_dir == null && !somethingAt(root) && named.every((project) => project === waiting);
+    if (neverUsed) waitingNames.push(waiting);
+    else problems.push({ code: 'root_missing', detail: root });
+  } else if (names === null) problems.push({ code: 'root_unreadable', detail: root });
   // "all" is resolved here, at the time of the round.
   const projects = all && names !== null ? allProjects(root, names, patterns) : named;
   if (all && names !== null && projects.length === 0) problems.push({ code: 'all_empty', detail: root });
@@ -976,14 +1022,19 @@ function collect({ window, config, machine, home = homedir(), digestDir, io = fs
       if (kind === 'unreachable' || entries === null) {
         problems.push({ code: 'project_unreadable', detail: project });
         unreadable.push({ path: dir, project, bytes: 0, directory: true });
-      } else if (entries === undefined) problems.push({ code: 'project_missing', detail: project });
+      } else if (entries === undefined && project === waiting && !all && kind === 'gone') waitingNames.push(project);
+      else if (entries === undefined) problems.push({ code: 'project_missing', detail: project });
       else present.push({ project, entries });
     }
   }
   // Nothing to read because nothing is there; a directory that is there but
   // cannot be listed is a source not read (exit 4), never a configuration
   // to fix (exit 1).
-  const misconfigured = present.length === 0 && !unreadable.some((entry) => entry.directory === true);
+  // A project with no sessions yet is an empty window, as one that is there
+  // with no session in it; it stops being so only beside a real problem (a
+  // typo, a root that is not there) with nothing found.
+  const misconfigured = present.length === 0 && !unreadable.some((entry) => entry.directory === true)
+    && !(waitingNames.length > 0 && problems.length === 0);
 
   const openBefore = window.from.getTime() - MTIME_SLACK_MS;
   for (const { project, entries } of present) {
@@ -1129,6 +1180,9 @@ function collect({ window, config, machine, home = homedir(), digestDir, io = fs
     // The same problems in words, in the vault's language: what `curate
     // --dry` says instead of the codes.
     problemLines: problems.map((problem) => problemLine(t, problem, root)),
+    // The listed projects with no sessions yet, and that said in words.
+    waiting: waitingNames,
+    waitingLines: waitingNames.map((project) => t('sources.transcripts.no_sessions_yet', { project, root })),
     misconfigured,
   };
   if (digestRead !== null) attachDigests(plan, { dir: digestDir, t, tz, read: digestRead });

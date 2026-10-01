@@ -11,9 +11,12 @@
 //     reports a base other than the one requested); `otherhead` (`pr view`
 //     reports another head branch); `viewfail` (`pr view` exits 1);
 //     `killparent` (`pr create` kills the process that called it). `pr view`
-//     answers only for a head a successful `pr create` named. `auth status`
-//     (what the dry run asks, offline) answers as logged in unless
-//     FAKE_GH_AUTH is `out`, when it exits 1 with what gh prints for that.
+//     answers only for a head a successful `pr create` named. `auth status
+//     --hostname <host>` (what the dry run asks) answers as logged in unless
+//     FAKE_GH_AUTH is `out` (exit 1 with what gh prints for a gh with no
+//     login) or `hang` (it does not finish in time); FAKE_GH_AUTH_OK_HOST
+//     names the one host it answers for, and it exits 1 for any other, as a
+//     gh holding a stale account does.
 //     Each call also
 //     records its working directory and the git and prompt variables it saw. `absentPath()` is a PATH with the real git and no gh at
 //     all, so a gh installed on this machine can never answer a test.
@@ -53,6 +56,12 @@ if (isCreate) {
 const before = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\\n').filter(Boolean).map((line) => JSON.parse(line)) : [];
 fs.appendFileSync(log, JSON.stringify(entry) + '\\n');
 if (isAuth) {
+  const at = args.indexOf('--hostname');
+  const host = at === -1 ? null : args[at + 1];
+  // A gh holding several accounts, one of them stale: asked about every host
+  // it fails, asked about the one that works it does not.
+  if (process.env.FAKE_GH_AUTH_OK_HOST && host !== process.env.FAKE_GH_AUTH_OK_HOST) { process.stderr.write('github.com\\n  X Failed to log in to github.com account old (keyring)\\n'); process.exit(1); }
+  if (process.env.FAKE_GH_AUTH === 'hang') { setTimeout(() => process.exit(0), 5000); return; }
   if (process.env.FAKE_GH_AUTH === 'out') { process.stderr.write('You are not logged into any GitHub hosts. To log in, run: gh auth login\\n'); process.exit(1); }
   process.stdout.write('github.com\\n  Logged in to github.com account ana (keyring)\\n');
   process.exit(0);

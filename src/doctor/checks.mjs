@@ -36,7 +36,7 @@ import { accessSync, constants as fsConstants, lstatSync, readdirSync, readFileS
 import { homedir } from 'node:os';
 import { basename, delimiter, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { run } from '../exec.mjs';
-import { AUTH_STATUS_ARGS, authVerdict, loginCommand } from '../gh.mjs';
+import { authArgs, authVerdict, hostOfRemote, loginCommand } from '../gh.mjs';
 import { EXIT } from '../exit-codes.mjs';
 import { decodeBytes } from '../io.mjs';
 import { CONFIG_FILENAME, ConfigError, MACHINE_FILENAME, canonicalPathMatches, findMachineOnlyKeys, loadConfig, validateConfig, validateMachine } from '../config.mjs';
@@ -70,7 +70,7 @@ import { installedRoundPath, readBriefingTask, ROUND_COMMANDS, roundPath, runSch
 // asks: its reading of briefing.blocks and of the question queue.
 import { blockProblemLine, briefingSetting, validateBriefingBlocks } from '../briefing/blocks.mjs';
 import { queueFile, readQueue } from '../briefing/questions.mjs';
-import { ALL_PROJECTS, allProjects, claudeProjectName, exclusionPatterns, projectEntryKind, signatureProblems } from '../sources/transcripts-claude-code.mjs';
+import { ALL_PROJECTS, allProjects, claudeProjectName, exclusionPatterns, projectEntryKind, signatureProblems, waitingProjectName } from '../sources/transcripts-claude-code.mjs';
 import { authorizationWhy, calendarsListedTwice } from '../sources/calendar-google.mjs';
 // The same kind of cycle with curate.mjs, which imports expandHome from
 // here: the connectors check asks the round's own choice of launch mode
@@ -91,12 +91,12 @@ export const MACHINE_FILE_MODE = 0o600;
 // every check below already reads as "no answer".
 const PROBE_TIMEOUT_MS = 15000;
 
-function probe(ctx, command, args, cwd, input) {
+function probe(ctx, command, args, cwd, input, timeout = PROBE_TIMEOUT_MS) {
   return run(command, args, {
     cwd: cwd ?? ctx.root,
     input: input ?? '',
     env: { ...withoutLocalGitVars(ctx.env, ctx.localGitVars()), LC_ALL: 'C' },
-    timeout: PROBE_TIMEOUT_MS,
+    timeout,
     maxBuffer: 16 * 1024 * 1024,
   });
 }
@@ -209,14 +209,14 @@ function readJsonFile(file) {
 // command before the checks run; null when it was not asked for.
 export function buildContext({
   root, env = process.env, nodeVersion = process.versions.node, execPath = process.execPath, engineVersion = kitVersion(), now = new Date(),
-  probeTimeoutMs = PROBE_INIT_TIMEOUT_MS,
+  probeTimeoutMs = PROBE_INIT_TIMEOUT_MS, ghTimeoutMs = PROBE_TIMEOUT_MS,
 }) {
   const memo = new Map();
   const once = (key, compute) => () => {
     if (!memo.has(key)) memo.set(key, compute());
     return memo.get(key);
   };
-  const ctx = { root, env, nodeVersion, execPath, engineVersion, now, probeTimeoutMs, probe: null };
+  const ctx = { root, env, nodeVersion, execPath, engineVersion, now, probeTimeoutMs, ghTimeoutMs, probe: null };
   ctx.localGitVars = once('localGitVars', () => localGitVarNames(env));
   ctx.realRoot = once('realRoot', () => realpathSync(root));
   ctx.configFile = join(root, CONFIG_FILENAME);
@@ -702,23 +702,33 @@ function ghPresent(ctx) {
   return { id, status: 'ok', messageKey: 'doctor.gh_present.ok', params: { version: match[1] } };
 }
 
-// gh-present says a gh is there; only `gh auth status` says it can open a
-// pull request, which is all propose uses it for. A gh with no login used to
-// read `ok` here and then end the first propose with exit 3. A gh that
-// exits 0 is trusted for the login: that it is a real gh is gh-present's
-// question (it reads the shape of `gh --version`), and this one is not asked
-// twice. With no gh at all the check is skipped (`ok`, saying so), because
-// gh-present already reports that absence and a second finding for one cause
-// would count it twice.
+// gh-present says a gh is there; `gh auth status` says what gh holds for the
+// host the vault uses (the host of its origin, github.com while there is no
+// origin), which is all propose uses it for. A gh with no login used to read
+// `ok` here and then end the first propose with exit 3. The question is about
+// that one host (src/gh.mjs says why), and the answer is reported as what it
+// was: exit 0 is `ok`; a non-zero exit is `fail`, in gh's own sentence, with
+// the command that starts a login for the host; a run that did not finish (a
+// timeout, a gh that cannot be started) is `warn`, since the login was not
+// found wanting, only not verified. A gh that exits 0 is trusted: that it is
+// a real gh is gh-present's question (it reads the shape of `gh --version`),
+// and this one is not asked twice. With no gh at all the check is skipped
+// (`ok`, saying so), because gh-present already reports that absence and a
+// second finding for one cause would count it twice.
 function ghAuth(ctx) {
   const id = 'gh-auth';
   const skipped = { id, status: 'ok', messageKey: 'doctor.gh_auth.skipped', params: {} };
   const bin = findExecutable('gh', pathDirs(ctx.env));
   if (!bin) return skipped;
-  const verdict = authVerdict(probe(ctx, bin, [...AUTH_STATUS_ARGS]));
-  if (verdict.state === 'absent') return skipped;
-  if (verdict.state === 'logged_in') return { id, status: 'ok', messageKey: 'doctor.gh_auth.ok', params: {} };
-  return { id, status: 'fail', messageKey: 'doctor.gh_auth.logged_out', params: { status: verdict.status, detail: verdict.detail, command: loginCommand('gh') } };
+  const host = hostOfRemote((args) => git(ctx, args), 'origin');
+  const verdict = authVerdict(probe(ctx, bin, authArgs(host), undefined, undefined, ctx.ghTimeoutMs));
+  if (verdict.state === 'logged_in') return { id, status: 'ok', messageKey: 'doctor.gh_auth.ok', params: { host } };
+  // 'absent' here means the file found on PATH could not be started (a
+  // script whose interpreter is gone): not verified, like any other.
+  if (verdict.state === 'absent' || verdict.state === 'unverified') {
+    return { id, status: 'warn', messageKey: 'doctor.gh_auth.unverified', params: { host, error: verdict.error ?? 'ENOENT' } };
+  }
+  return { id, status: 'fail', messageKey: 'doctor.gh_auth.problem', params: { host, status: verdict.status, detail: verdict.detail, command: loginCommand('gh', host) } };
 }
 
 // The machine's path_extra comes first, because that is what it is for:
@@ -1052,15 +1062,17 @@ function includeProjects(ctx) {
   const named = typeof configured === 'string' && configured !== '';
   const root = expandHome(named ? configured : DEFAULT_TRANSCRIPTS_DIR, ctx.env);
   const own = vaultsOwnProject(ctx);
+  // The one listed project that may have no folder yet, from the function the
+  // round reads too: null when Claude Code keeps its projects elsewhere.
+  const waitable = waitingProjectName({ vaultRoot: ctx.root, machine: machineObject(ctx), env: ctx.env });
   if (!all && projects.length === 0) {
     return { id, status: 'fail', messageKey: 'doctor.include_projects.empty', params: { file, key, root, project: own ?? '<project>', doc: INCLUDE_PROJECTS_DOC } };
   }
-  const waitingOnly = !all && own !== null && projects.every((project) => project === own);
+  const waitingOnly = !all && waitable !== null && projects.every((project) => project === waitable);
   if (!isDirectory(root)) {
     // Nothing has ever run under the default folder, and the only project
     // listed is the one that is waiting for its first session.
-    const moved = typeof ctx.env.CLAUDE_CONFIG_DIR === 'string' && ctx.env.CLAUDE_CONFIG_DIR !== '';
-    if (waitingOnly && !named && !moved && !somethingAt(root)) {
+    if (waitingOnly && !named && !somethingAt(root)) {
       return { id, status: 'ok', messageKey: 'doctor.include_projects.no_sessions_yet', params: { projects, root } };
     }
     return { id, status: 'fail', messageKey: 'doctor.include_projects.root_missing', params: { root, command: SET_TRANSCRIPTS_COMMAND } };
@@ -1103,7 +1115,7 @@ function includeProjects(ctx) {
   }
   // The vault's own project, absent, waits for its first session; it is not
   // lost. Only a name that is not it is.
-  const waiting = missing.filter((project) => project === own && !all);
+  const waiting = missing.filter((project) => project === waitable && !all);
   const lost = missing.filter((project) => !waiting.includes(project));
   const found = projects.length - missing.length;
   if (lost.length > 0 && found === 0) {

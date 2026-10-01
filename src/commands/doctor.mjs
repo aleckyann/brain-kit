@@ -33,7 +33,8 @@
 // the rendered `message`.
 //
 // `deps` is the seam the tests use to hand in the environment (PATH,
-// HOME, the state directory), the working directory and the Node version.
+// HOME, the state directory), the working directory, the Node version and
+// the time `gh auth status` is given.
 // Production passes nothing.
 import { existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -163,6 +164,7 @@ export async function runDoctor(argv, io, t, deps = {}) {
   const ctx = buildContext({
     root, env, ...(deps.nodeVersion !== undefined ? { nodeVersion: deps.nodeVersion } : {}), ...(deps.now !== undefined ? { now: deps.now } : {}),
     ...(deps.probeTimeoutMs !== undefined ? { probeTimeoutMs: deps.probeTimeoutMs } : {}),
+    ...(deps.ghTimeoutMs !== undefined ? { ghTimeoutMs: deps.ghTimeoutMs } : {}),
   });
   const reportT = reportTranslator(ctx, t, io);
   if (parsed.probe) ctx.probe = await probeConnectors(ctx, { prompt: reportT('doctor.connectors.probe_prompt') });

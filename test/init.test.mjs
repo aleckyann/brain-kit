@@ -332,6 +332,28 @@ test('init writes the vault\'s own project whichever way it is run, and the proj
   void vault;
 });
 
+test('a vault whose path cannot be named as a Claude Code project leaves include_projects empty and says so, instead of failing', () => {
+  const { base, state } = freshTarget();
+  const vault = join(base, 'v'.repeat(210));
+  const file = writeAnswers(base, ANSWERS.en);
+  const r = brainKit(['init', vault, '--from-answers', file], { env: testEnv(state) });
+  assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
+  assert.deepEqual(readConfig(vault).sources.transcripts.include_projects, []);
+  assert.ok(r.stdout.includes(createTranslator('en')('init.project_unnamed', { dir: realpathSync(vault), key: 'sources.transcripts.include_projects' })), r.stdout);
+  assert.equal(r.stderr, '');
+  // Said in Portuguese too, with the same placeholders filled.
+  const pt = freshTarget();
+  const ptVault = join(pt.base, 'v'.repeat(210));
+  const ptFile = writeAnswers(pt.base, ANSWERS['pt-BR']);
+  const p = brainKit(['init', ptVault, '--from-answers', ptFile], { env: testEnv(pt.state) });
+  assert.equal(p.status, EXIT.OK, p.stdout + p.stderr);
+  assert.ok(p.stdout.includes(createTranslator('pt-BR')('init.project_unnamed', { dir: realpathSync(ptVault), key: 'sources.transcripts.include_projects' })), p.stdout);
+  // A vault that can be named says nothing of the kind.
+  const ok = freshTarget();
+  const q = brainKit(['init', ok.vault, '--from-answers', writeAnswers(ok.base, ANSWERS.en)], { env: testEnv(ok.state) });
+  assert.doesNotMatch(q.stdout, /could not be named/);
+});
+
 test('completeDefaults writes the project only into an empty list, and only while transcripts are read', () => {
   const defaults = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', 'en', 'config.defaults.json'), 'utf8'));
   const answers = ANSWERS.en;

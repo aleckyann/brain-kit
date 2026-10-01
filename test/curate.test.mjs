@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { constants as osConstants } from 'node:os';
 import { roundBudget, roundTimeoutMinutes, roundTurns, runCurate } from '../src/commands/curate.mjs';
@@ -20,6 +20,7 @@ import {
   PROJECT, searchNotes, STREAMS, utcDay, withConnectors,
 } from './helpers/curate-world.mjs';
 import { user } from './helpers/transcripts-world.mjs';
+import { claudeProjectName } from '../src/sources/transcripts-claude-code.mjs';
 
 const t = createTranslator('en');
 
@@ -729,6 +730,107 @@ test('--dry with the transcripts as a best-effort source and no project listed s
   assert.match(dry.stdout, /No project is listed in sources\.transcripts\.include_projects, so no transcript was read/);
   assert.doesNotMatch(dry.stdout, /\bno_projects\b/);
   assert.equal(w.curate().status, EXIT.OK, 'and the real round goes on');
+});
+
+// A brand-new vault lists its own project (init wrote it), and Claude Code
+// makes that project's folder only when a session first runs in the vault.
+// Until then the doctor says "no sessions yet", and the round must say the
+// same, as a project with zero sessions (an empty window, a day closed as
+// empty, exit 0), never "fix include_projects" for the very entry init wrote
+// (the reviewer's S2, 01/10/2026). A real misconfiguration still refuses.
+function ownProjectOf(w) {
+  return claudeProjectName(realpathSync(w.vault));
+}
+
+function listProjects(w, names) {
+  const file = join(w.vault, 'brain-kit.config.json');
+  const config = JSON.parse(readFileSync(file, 'utf8'));
+  config.sources.transcripts.include_projects = names(ownProjectOf(w));
+  writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
+  git(w.vault, ['add', '-A']);
+  git(w.vault, ['commit', '-q', '-m', 'list projects']);
+  git(w.vault, ['push', '-q', 'origin', 'main']);
+}
+
+const NO_SESSIONS = (w, root = w.projects) => createTranslator('en')('sources.transcripts.no_sessions_yet', { project: ownProjectOf(w), root });
+
+test('a new vault: its own project, whose folder does not exist yet, is a project with no sessions: --dry and the round say so plainly, exit 0, the day closes empty, and nothing says to fix the configuration', () => {
+  const w = makeCurateWorld();
+  listProjects(w, (own) => [own]);
+  assert.ok(!existsSync(join(w.projects, ownProjectOf(w))));
+  const dry = w.curate(['--dry']);
+  assert.equal(dry.status, EXIT.OK, dry.stderr);
+  assert.ok(dry.stdout.includes(NO_SESSIONS(w)), dry.stdout);
+  assert.doesNotMatch(dry.stdout + dry.stderr, /not set up|fix |no_projects|project_missing|would refuse/);
+  const r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.ok(r.stderr.includes(NO_SESSIONS(w)), r.stderr);
+  assert.doesNotMatch(r.stdout + r.stderr, /not set up|fix machine\.json|fix brain-kit\.config\.json/);
+  assert.equal(w.lastRun().reasonCode, 'nothing_to_curate');
+  assert.equal(traces(w).model, false);
+  assert.deepEqual(w.watermark(), { transcripts: utcDay(-1) }, 'no session, so the day closes empty');
+});
+
+test('a new vault on a machine where Claude Code never ran: the default projects folder is not there either, and the round says the same (a warning-free exit 0)', () => {
+  const w = makeCurateWorld();
+  listProjects(w, (own) => [own]);
+  w.setMachine({ transcripts_dir: undefined });
+  const env = { CLAUDE_CONFIG_DIR: '' };
+  const home = join(w.env.HOME, '.claude', 'projects');
+  assert.ok(!existsSync(home));
+  const dry = w.curate(['--dry'], env);
+  assert.equal(dry.status, EXIT.OK, dry.stderr);
+  assert.ok(dry.stdout.includes(NO_SESSIONS(w, home)), dry.stdout);
+  const r = w.curate([], env);
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.equal(w.lastRun().reasonCode, 'nothing_to_curate');
+});
+
+test('the vault\'s own project waiting beside a project that has sessions: the round reads those, and says the other has none yet', () => {
+  const w = makeCurateWorld();
+  listProjects(w, (own) => [own, PROJECT]);
+  const r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.ok(r.stderr.includes(NO_SESSIONS(w)), r.stderr);
+  assert.equal(traces(w).model, true);
+});
+
+test('what stays a real misconfiguration still refuses, exit 1, dry and real alike: a name that is not the vault\'s own, its own beside such a name, a named projects folder that is not there, and a moved one', () => {
+  const cases = [
+    ['a typo alone', (w) => listProjects(w, () => ['-home-ana-typo'])],
+    ['its own beside a typo, nothing found', (w) => listProjects(w, (own) => [own, '-home-ana-typo'])],
+    ['its own under a named projects folder that is not there', (w) => { listProjects(w, (own) => [own]); w.setMachine({ transcripts_dir: join(w.base, 'nowhere') }); }],
+    ['its own, the default folder present without it, CLAUDE_CONFIG_DIR set and no folder named', (w) => {
+      listProjects(w, (own) => [own]);
+      w.setMachine({ transcripts_dir: undefined });
+      mkdirSync(join(w.env.HOME, '.claude', 'projects'), { recursive: true });
+    }],
+    // CLAUDE_CONFIG_DIR blank (no setting), the default folder not there: its own alone would wait, a typo beside it is a mistake.
+    ['its own beside a typo with the default projects folder not there', (w) => {
+      listProjects(w, (own) => [own, '-home-ana-typo']);
+      w.setMachine({ transcripts_dir: undefined });
+    }, { CLAUDE_CONFIG_DIR: '' }],
+  ];
+  for (const [label, prepare, extraEnv = {}] of cases) {
+    const w = makeCurateWorld();
+    prepare(w);
+    const dry = w.curate(['--dry'], extraEnv);
+    assert.equal(dry.status, EXIT.FAILURE, `${label}: ${dry.stdout}${dry.stderr}`);
+    assert.match(dry.stderr, /Dry run: a real round would refuse to run now \(exit 1\)\./, label);
+    const real = w.curate([], extraEnv);
+    assert.equal(real.status, EXIT.FAILURE, `${label}: ${real.stderr}`);
+    assert.equal(w.watermark(), null, label);
+  }
+});
+
+test('a broken link or a file where the default projects folder should be is no "never used" folder: the round refuses', () => {
+  const w = makeCurateWorld();
+  listProjects(w, (own) => [own]);
+  w.setMachine({ transcripts_dir: undefined });
+  mkdirSync(join(w.env.HOME, '.claude'), { recursive: true });
+  writeFileSync(join(w.env.HOME, '.claude', 'projects'), 'not a folder');
+  const r = w.curate([], { CLAUDE_CONFIG_DIR: '' });
+  assert.equal(r.status, EXIT.FAILURE, r.stderr);
 });
 
 test('--check runs the steps up to the model and stops: no model, no last-run, no mark', () => {

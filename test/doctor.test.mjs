@@ -41,6 +41,9 @@ import { ROUND_TOOLS } from '../src/harness/claude-code.mjs';
 import { claudeProjectName } from '../src/sources/transcripts-claude-code.mjs';
 
 const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
+// A clone address is not an e-mail address: the sign is joined at run time so the
+// scan of tracked files (test/no-leak.test.mjs) does not read it as one.
+const AT = '@';
 const PACK_KEYWORDS = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', 'en', 'config.defaults.json'), 'utf8')).privacy.third_party_keywords;
 const TEMPLATE_HOOK = join(KIT_ROOT, 'templates', 'githooks', 'pre-push');
 const A_ACUTE = String.fromCodePoint(0xc1);
@@ -329,10 +332,11 @@ function fakeIo() {
 
 const t = createTranslator('en');
 
-async function doctor(fixture, argv = [], { nodeVersion = process.versions.node, env = fixture.env, cwd = fixture.root, now, probeTimeoutMs } = {}) {
+async function doctor(fixture, argv = [], { nodeVersion = process.versions.node, env = fixture.env, cwd = fixture.root, now, probeTimeoutMs, ghTimeoutMs } = {}) {
   const f = fakeIo();
   const code = await runDoctor(['--json', ...argv, fixture.root], f.io, t, {
     env, cwd, nodeVersion, ...(now ? { now } : {}), ...(probeTimeoutMs !== undefined ? { probeTimeoutMs } : {}),
+    ...(ghTimeoutMs !== undefined ? { ghTimeoutMs } : {}),
   });
   let report = null;
   if (f.stdout()) report = JSON.parse(f.stdout());
@@ -1098,25 +1102,94 @@ function recordingGh(fx, exitCode) {
   return log;
 }
 
-test('gh-auth: a gh that is logged in is ok, and the question asked is exactly "auth status"', async () => {
+test('gh-auth: a gh that exits 0 for the vault\'s host is ok, and the question asked is exactly "auth status --hostname <host>"', async () => {
   const fx = setup();
   const log = recordingGh(fx, 0);
   const { report, code } = await doctor(fx, ['--only', 'gh-auth']);
   assertCheck(report, 'gh-auth', 'ok', 'doctor.gh_auth.ok');
   assert.equal(code, EXIT.OK);
-  assert.deepEqual(readFileSync(log, 'utf8').trim().split('\n'), ['auth status']);
+  assert.deepEqual(readFileSync(log, 'utf8').trim().split('\n'), ['auth status --hostname github.com']);
 });
 
-test('gh-auth: a gh that is logged out fails, naming gh auth login and gh\'s own sentence, so the doctor no longer reads ready', async () => {
+test('gh-auth: a gh that exits non-zero for the host fails, quoting gh\'s own sentence and naming gh auth login for that host', async () => {
   const fx = setup({ tools: { gh: 'loggedOut' } });
   const { report, code } = await doctor(fx, ['--only', 'gh-present,gh-auth']);
   assertCheck(report, 'gh-present', 'ok', 'doctor.gh_present.ok');
-  const c = assertCheck(report, 'gh-auth', 'fail', 'doctor.gh_auth.logged_out');
+  const c = assertCheck(report, 'gh-auth', 'fail', 'doctor.gh_auth.problem');
   assert.equal(c.params.status, 1);
-  assert.equal(c.params.command, 'gh auth login');
-  assert.match(c.message, /gh auth login/);
+  assert.equal(c.params.host, 'github.com');
+  assert.equal(c.params.command, 'gh auth login --hostname github.com');
+  assert.match(c.message, /gh auth login --hostname github\.com/);
   assert.match(c.message, /You are not logged into any GitHub hosts/);
+  assert.doesNotMatch(c.message, /cannot open a pull request|is logged out/, 'it claims only what gh said');
   assert.equal(code, EXIT.FAILURE);
+});
+
+// A gh holding two accounts, one stale, exits 1 for `gh auth status` asked
+// about everything, and the vault's own host may be perfectly fine. The
+// question is asked about the host the vault uses, read from its origin.
+function hostAwareGh(fx, okHost) {
+  const log = join(fx.base, 'gh-calls.txt');
+  writeScript(join(fx.toolsDir, 'gh'), `echo "$*" >> "${log}"\ncase "$*" in\n  "auth status --hostname ${okHost}") echo "${okHost}"; echo "  Logged in to ${okHost} account ana (keyring)"; exit 0 ;;\n  auth*) echo "github.com" >&2; echo "  X Failed to log in to github.com account old (keyring)" >&2; exit 1 ;;\nesac\necho "gh version 2.40.1 (2026-01-01)"`);
+  return log;
+}
+
+function addOrigin(fx, url) {
+  fixtureGit(fx.gitTop, ['remote', 'add', 'origin', url], fx.home);
+}
+
+test('gh-auth: a stale account elsewhere does not fail the vault\'s own host: only that host is asked about', async () => {
+  const fx = setup();
+  const log = hostAwareGh(fx, 'github.com');
+  const { report, code } = await doctor(fx, ['--only', 'gh-auth']);
+  assertCheck(report, 'gh-auth', 'ok', 'doctor.gh_auth.ok');
+  assert.equal(code, EXIT.OK);
+  assert.deepEqual(readFileSync(log, 'utf8').trim().split('\n'), ['auth status --hostname github.com']);
+});
+
+test('gh-auth: the host is read from the origin remote, in each form a url can have, and is github.com when there is no origin', async () => {
+  for (const [url, host] of [
+    ['https://ghe.example.com/ana/brain.git', 'ghe.example.com'],
+    [`ssh://git${AT}ghe.example.com:2222/ana/brain.git`, 'ghe.example.com'],
+    [`git${AT}ghe.example.com:ana/brain.git`, 'ghe.example.com'],
+    [`git${AT}github.com:ana/brain.git`, 'github.com'],
+    [null, 'github.com'],
+  ]) {
+    const fx = setup();
+    if (url !== null) addOrigin(fx, url);
+    const log = hostAwareGh(fx, host);
+    const { report } = await doctor(fx, ['--only', 'gh-auth']);
+    assertCheck(report, 'gh-auth', 'ok', 'doctor.gh_auth.ok');
+    assert.deepEqual(readFileSync(log, 'utf8').trim().split('\n'), [`auth status --hostname ${host}`], String(url));
+  }
+});
+
+test('gh-auth: a problem on the vault\'s own host fails, naming that host, quoting gh, and naming gh auth login for it', async () => {
+  const fx = setup();
+  addOrigin(fx, `git${AT}ghe.example.com:ana/brain.git`);
+  hostAwareGh(fx, 'github.com');
+  const { report, code } = await doctor(fx, ['--only', 'gh-auth']);
+  const c = assertCheck(report, 'gh-auth', 'fail', 'doctor.gh_auth.problem');
+  assert.equal(c.params.host, 'ghe.example.com');
+  assert.equal(c.params.detail, 'X Failed to log in to github.com account old (keyring)');
+  assert.match(c.message, /gh auth login --hostname ghe\.example\.com/);
+  assert.equal(code, EXIT.FAILURE);
+});
+
+test('gh-auth: a gh that does not finish (a timeout) is a warning that the login was not verified, never a failure of the login', async () => {
+  const fx = setup();
+  writeScript(join(fx.toolsDir, 'gh'), 'case "$1" in\n  auth) exec node -e "setTimeout(() => {}, 5000)" ;;\nesac\necho "gh version 2.40.1 (2026-01-01)"');
+  const { report, code } = await doctor(fx, ['--only', 'gh-auth'], { ghTimeoutMs: 300 });
+  const c = assertCheck(report, 'gh-auth', 'warn', 'doctor.gh_auth.unverified');
+  assert.equal(c.params.host, 'github.com');
+  assert.equal(c.params.error, 'ETIMEDOUT');
+  assert.match(c.message, /did not finish \(ETIMEDOUT\)/);
+  assert.doesNotMatch(c.message, /log in|logged/i, 'no claim about the login');
+  assert.equal(code, EXIT.OK);
+  const f = fakeIo();
+  setVaultLang(fx, 'pt-BR');
+  await runDoctor([fx.root, '--only', 'gh-auth'], f.io, t, { env: fx.env, cwd: fx.root, ghTimeoutMs: 300 });
+  assert.match(f.stdout(), /aviso\s+gh-auth\s+.*não terminou \(ETIMEDOUT\)/);
 });
 
 test('gh-auth: with the same gh, a full doctor run fails on gh-auth alone', async () => {
@@ -1147,7 +1220,7 @@ test('gh-auth: the Portuguese pack names gh auth login too', async () => {
   const f = fakeIo();
   setVaultLang(fx, 'pt-BR');
   await runDoctor([fx.root, '--only', 'gh-auth'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
-  assert.match(f.stdout(), /falha\s+gh-auth\s+.*saiu com 1.*Entre com: gh auth login/);
+  assert.match(f.stdout(), /falha\s+gh-auth\s+.*saiu com 1.*entre com: gh auth login --hostname github\.com/);
   assert.doesNotMatch(f.stdout(), /\{[a-z_]+\}/);
 });
 
@@ -1863,7 +1936,7 @@ test('the report follows the vault\'s language, not the locale\'s: a Portuguese 
   assert.doesNotMatch(out, /\bwarn\b|\bfail\b/);
   const json = await doctor(fx, ['--only', 'gh-auth']);
   assert.equal(json.report.checks[0].messageKey, 'doctor.gh_auth.ok');
-  assert.equal(json.report.checks[0].message, 'o gh está logado ("gh auth status" saiu com 0)');
+  assert.equal(json.report.checks[0].message, '"gh auth status --hostname github.com" saiu com 0');
 });
 
 test('the report follows the vault\'s language, not the locale\'s: an English vault read from a Portuguese locale', async () => {
@@ -2233,6 +2306,45 @@ test('include-projects: a projects folder that was named on purpose (machine tra
   const moved = listProjects(setup({ curator: false }), (own) => [own]);
   const { report } = await doctor(moved, ['--only', 'include-projects'], { env: { ...moved.env, CLAUDE_CONFIG_DIR: join(moved.home, 'elsewhere') } });
   assertCheck(report, 'include-projects', 'fail', 'doctor.include_projects.root_missing');
+});
+
+// Claude Code keeps its projects under CLAUDE_CONFIG_DIR when that is set, so
+// an old ~/.claude/projects that is still there says nothing about where this
+// vault's sessions are: the vault's own project missing from it is not
+// "waiting", it is wherever the sessions are not. The same list failed before
+// the vault's own project was excused (all_missing), and still does.
+test('include-projects: with CLAUDE_CONFIG_DIR set and the default folder present, the vault\'s own project missing from it still fails, as it did; naming the folder in machine.json says where to look', async () => {
+  const fx = listProjects(setup(), (own) => [own]);
+  assert.ok(existsSync(PROJECTS_DIR(fx)));
+  const moved = { ...fx.env, CLAUDE_CONFIG_DIR: join(fx.home, 'elsewhere') };
+  const r = await doctor(fx, ['--only', 'include-projects'], { env: moved });
+  const c = assertCheck(r.report, 'include-projects', 'fail', 'doctor.include_projects.all_missing');
+  assert.deepEqual(c.params.projects, [ownProject(fx)]);
+  // The same machine, the folder named on purpose: the person has said where it is, and the project is waiting there.
+  const named = listProjects(setup({ machine: { transcripts_dir: '~/sessions' } }), (own) => [own]);
+  mkdirSync(join(named.home, 'sessions'), { recursive: true });
+  const n = await doctor(named, ['--only', 'include-projects'], { env: { ...named.env, CLAUDE_CONFIG_DIR: join(named.home, 'elsewhere') } });
+  assertCheck(n.report, 'include-projects', 'ok', 'doctor.include_projects.no_sessions_yet');
+  // An empty CLAUDE_CONFIG_DIR is no setting.
+  const blank = await doctor(fx, ['--only', 'include-projects'], { env: { ...fx.env, CLAUDE_CONFIG_DIR: '' } });
+  assertCheck(blank.report, 'include-projects', 'ok', 'doctor.include_projects.no_sessions_yet');
+});
+
+test('include-projects: a projects folder that is a broken link, or a file, is not "never used": the vault\'s own project is not excused under it', async () => {
+  const link = listProjects(setup({ curator: false }), (own) => [own]);
+  mkdirSync(join(link.home, '.claude'), { recursive: true });
+  symlinkSync(join(link.base, 'unmounted', 'volume'), PROJECTS_DIR(link));
+  assertCheck((await doctor(link, ['--only', 'include-projects'])).report, 'include-projects', 'fail', 'doctor.include_projects.root_missing');
+  const file = listProjects(setup({ curator: false }), (own) => [own]);
+  mkdirSync(join(file.home, '.claude'), { recursive: true });
+  writeFileSync(PROJECTS_DIR(file), 'not a folder');
+  assertCheck((await doctor(file, ['--only', 'include-projects'])).report, 'include-projects', 'fail', 'doctor.include_projects.root_missing');
+});
+
+test('include-projects: with the default projects folder absent, the vault\'s own project is excused only when it is ALL that is listed: beside a typo it fails', async () => {
+  const fx = listProjects(setup({ curator: false }), (own) => [own, '-home-ana-typo']);
+  assert.ok(!existsSync(PROJECTS_DIR(fx)));
+  assertCheck((await doctor(fx, ['--only', 'include-projects'])).report, 'include-projects', 'fail', 'doctor.include_projects.root_missing');
 });
 
 test('include-projects: only the vault\'s own project is excused; a missing name that is not it fails as before, alone or beside the vault\'s own', async () => {

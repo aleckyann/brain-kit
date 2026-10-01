@@ -9,7 +9,7 @@ import { STATE_FILES, ensureStateDir, stateDirFor, vaultIdFor } from '../state.m
 import { run } from '../exec.mjs';
 import { localGitVarNames, withoutLocalGitVars } from '../git-env.mjs';
 import { INSTALL_HOOK_COMMAND, installGate } from '../init/gate.mjs';
-import { completeDefaults } from '../init/config.mjs';
+import { completeDefaults, transcriptsAreRead } from '../init/config.mjs';
 import {
   adoptRepositoryState, adoptionPaths, buildAdoptionManifest, inferConfig, inspectAdoptTarget, readDefaults, writeAdoption,
 } from '../init/adopt.mjs';
@@ -419,7 +419,8 @@ export async function runInit(argv, io, t, {
   // The vault's own project is the name Claude Code will give the sessions
   // run in it, from its canonical path; null when that path is too long to be
   // named as it is spelt, and then the list is left empty for doctor to say.
-  const config = completeDefaults(inferred?.config ?? readDefaults(answers.lang), answers, { kitVersion: kitVersion(), project: claudeProjectName(target) });
+  const project = claudeProjectName(target);
+  const config = completeDefaults(inferred?.config ?? readDefaults(answers.lang), answers, { kitVersion: kitVersion(), project });
   const configErrors = validateConfig(config);
   if (configErrors.length > 0) {
     io.stderr.write(`${t('init.config_invalid', { errors: configErrors })}\n`);
@@ -542,6 +543,12 @@ export async function runInit(argv, io, t, {
   }
   if (outerRoot !== '') io.stdout.write(`${t('init.nested_repository', { root: outerRoot })}\n`);
   io.stdout.write(`${t('init.state_written', { file: machinePath })}\n`);
+  // No name for this path (too long, or not a path the rule covers): the list
+  // stays as it was, and the person is told, since a round reads nothing
+  // until it is filled in.
+  if (project === null && transcriptsAreRead(config)) {
+    io.stdout.write(`${t('init.project_unnamed', { dir: target, key: 'sources.transcripts.include_projects' })}\n`);
+  }
   if (priorMode !== null && priorMode !== 0o700) {
     io.stdout.write(`${t('init.state_tightened', { state: stateDir, mode: priorMode.toString(8) })}\n`);
   }
