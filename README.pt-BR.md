@@ -6,10 +6,10 @@ próprio trabalho (as suas sessões do Claude Code, a agenda, as notas de reuni�
 altera o cérebro por pull request, um pedido de mudança que você lê no GitHub, e o seu merge,
 o clique que aprova o pedido, é a aprovação e a verificação.
 
-> **Comece aqui.** De uma máquina limpa até o seu primeiro pull request, o caminho leva cerca de
-> 30 minutos na primeira vez (os tempos abaixo são estimativas). Antes de começar, tenha o
-> Node.js 24 ou mais novo, o git, o `gh` (o aplicativo do GitHub para o terminal), o Claude Code
-> e uma conta no GitHub. O detalhe de cada passo está em [Seu primeiro vault](#seu-primeiro-vault).
+> **Comece aqui.** De uma máquina limpa até o seu primeiro pull request, o caminho leva cerca de 30
+> minutos na primeira vez (os tempos abaixo são estimativas). Antes de começar, tenha o Node.js 22
+> ou mais novo (o 24 é o recomendado), o git, o `gh` (o aplicativo do GitHub para o terminal), o
+> Claude Code e uma conta no GitHub. Os detalhes estão em [Seu primeiro vault](#seu-primeiro-vault).
 >
 > 1. Instale o kit e o plugin colando o [trecho de instalação](#instalando-uma-versão-fixa) no terminal (2 min).
 > 2. Entre no GitHub com `gh auth login` ([passo 2](#passo-2), 3 min).
@@ -38,12 +38,13 @@ o clique que aprova o pedido, é a aprovação e a verificação.
 
 ## Requisitos
 
-Para chegar ao primeiro pull request você precisa de Node.js 24 ou mais novo (com o npm
-dele; `node --version` mostra qual você tem), git, o `gh` (o aplicativo do GitHub para o
-terminal) com o login feito (`gh auth login`), o Claude Code e uma conta no GitHub. As rodadas
-agendadas do curador, as fontes de agenda e de notas de reunião e o briefing com horário são
-opcionais e ficam para depois: [O curador agendado](#o-curador-agendado) e o
-[docs/scheduling.md](docs/scheduling.md) os apresentam, com o que cada um exige.
+Para chegar ao primeiro pull request você precisa de Node.js 22 ou mais novo (o 24, a versão
+LTS atual, é o recomendado), com o npm dele (`node --version` mostra qual você tem), git, o `gh`
+(o aplicativo do GitHub para o terminal) com o login feito (`gh auth login`), o Claude Code e
+uma conta no GitHub. As rodadas agendadas do curador, as fontes de agenda e de notas de
+reunião e o briefing com horário são opcionais e ficam para depois:
+[O curador agendado](#o-curador-agendado) e o [docs/scheduling.md](docs/scheduling.md) os
+apresentam, com o que cada um exige.
 
 ## Instalando uma versão fixa
 
@@ -318,9 +319,10 @@ O registro do npm recusou o nome `brain-kit`: já existe lá um pacote sem rela�
 como `second-brain-kit`, enquanto o repositório, o plugin, o marketplace e o comando que
 você digita depois se chamam todos `brain-kit`.
 
-O motor é Node.js 24 sem nenhuma dependência, de runtime ou de desenvolvimento. O vault
-que ele gera é seu: arquivos markdown, com um cabeçalho (o frontmatter, em YAML) em cada
-nota, e um arquivo de configuração só com dados, nada mais.
+O motor é Node.js sem nenhuma dependência, de runtime ou de desenvolvimento, e roda no
+Node.js 22 e no 24 (os dois são testados a cada mudança). O vault que ele gera é seu:
+arquivos markdown, com um cabeçalho (o frontmatter, em YAML) em cada nota, e um arquivo de
+configuração só com dados, nada mais.
 
 ## O que funciona hoje
 

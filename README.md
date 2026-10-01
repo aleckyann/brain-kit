@@ -7,9 +7,9 @@ brain through a pull request, a change request that you read on GitHub, and your
 click that approves the request, is the approval and the verification.
 
 > **Start here.** From a clean machine to your first pull request, the path takes about 30 minutes
-> the first time (the times below are estimates). Before you start, have Node.js 24 or newer,
-> git, `gh` (the GitHub app for the terminal), Claude Code and a GitHub account. The detail of
-> each step is in [Your first vault](#your-first-vault).
+> the first time (the times below are estimates). Before you start, have Node.js 22 or newer (24,
+> the current LTS, is recommended), git, `gh` (the GitHub app for the terminal), Claude Code and a
+> GitHub account. The detail of each step is in [Your first vault](#your-first-vault).
 >
 > 1. Install the kit and the plugin by pasting the [install snippet](#installing-a-fixed-version) into the terminal (2 min).
 > 2. Log in to GitHub with `gh auth login` ([step 2](#step-2), 3 min).
@@ -38,12 +38,12 @@ click that approves the request, is the approval and the verification.
 
 ## Requirements
 
-To reach the first pull request you need Node.js 24 or newer (with its npm; `node --version`
-shows which one you have), git, `gh` (the GitHub app for the terminal) logged in
-(`gh auth login`), Claude Code and a GitHub account. The scheduled curator rounds, the
-calendar and meeting-notes sources and the briefing on a schedule are optional and can wait:
-[The scheduled curator](#the-scheduled-curator) and [docs/scheduling.md](docs/scheduling.md)
-introduce them, with what each one needs.
+To reach the first pull request you need Node.js 22 or newer (24, the current LTS, is
+recommended) with its npm (`node --version` shows which one you have), git, `gh` (the GitHub
+app for the terminal) logged in (`gh auth login`), Claude Code and a GitHub account. The
+scheduled curator rounds, the calendar and meeting-notes sources and the briefing on a
+schedule are optional and can wait: [The scheduled curator](#the-scheduled-curator) and
+[docs/scheduling.md](docs/scheduling.md) introduce them, with what each one needs.
 
 ## Installing a fixed version
 
@@ -318,9 +318,10 @@ already exists there, and the two were judged too similar. So the package is pub
 as `second-brain-kit`, while the repository, the plugin, the marketplace and the command
 you type afterwards are all `brain-kit`.
 
-The engine is Node.js 24 with zero dependencies, runtime and development. The vault it
-generates is yours: markdown files, each note with a header (the frontmatter, in YAML), and a
-configuration file that holds only data, nothing else.
+The engine is Node.js with zero dependencies, runtime and development, and it runs on
+Node.js 22 and 24 (both are tested on every change). The vault it generates is yours:
+markdown files, each note with a header (the frontmatter, in YAML), and a configuration file
+that holds only data, nothing else.
 
 ## What works today
 

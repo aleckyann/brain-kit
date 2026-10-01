@@ -1,6 +1,6 @@
 # Testing
 
-`node --test` runs the whole suite. It needs Node 24 and git, nothing else, and every test works in a scratch directory with its own state directory.
+`node --test` runs the whole suite. It needs Node 22 or newer and git, nothing else (CI runs it on 22 and on 24), and every test works in a scratch directory with its own state directory.
 
 ## Plugin evals
 

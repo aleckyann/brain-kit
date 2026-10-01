@@ -59,7 +59,8 @@ const FIRST_RUN = {
     estimates: 'estimates',
     glossary: '**Words you will see**',
     terms: ['terminal', 'PATH', 'repository', 'branch', 'commit', 'pull request', 'merge', 'vault', 'push gate', 'hook', 'skill', 'plugin', 'marketplace'],
-    needs: [/Node\.js 24/, /\bgit\b/, /`gh`/, /Claude Code/, /GitHub account/],
+    needs: [/Node\.js 22 or newer \(24, the current LTS, is recommended\)/, /\bgit\b/, /`gh`/, /Claude Code/, /GitHub account/],
+    node: { requirements: /Node\.js 22 or newer \(24, the current LTS, is recommended\)/, engine: /runs on Node\.js 22 and 24/, tested: /both are tested/ },
     optional: /optional/,
     curator: '## The scheduled curator',
     curatorAnchor: '(#the-scheduled-curator)',
@@ -99,7 +100,8 @@ const FIRST_RUN = {
     estimates: 'estimativas',
     glossary: '**Palavras que você vai ver**',
     terms: ['terminal', 'PATH', 'repositório', 'branch', 'commit', 'pull request', 'merge', 'vault', 'trava de push', 'hook', 'skill', 'plugin', 'marketplace'],
-    needs: [/Node\.js 24/, /\bgit\b/, /`gh`/, /Claude Code/, /conta no GitHub/],
+    needs: [/Node\.js 22 ou mais novo \(o 24 é o recomendado\)/, /\bgit\b/, /`gh`/, /Claude Code/, /conta no GitHub/],
+    node: { requirements: /Node\.js 22 ou mais novo \(o 24, a versão LTS atual, é o recomendado\)/, engine: /roda no Node\.js 22 e no 24/, tested: /os dois são testados/ },
     optional: /opcionais/,
     curator: '## O curador agendado',
     curatorAnchor: '(#o-curador-agendado)',
@@ -207,9 +209,9 @@ for (const [lang, spec] of Object.entries(READMES)) {
     assert.match(status, spec.history);
   });
 
-  test(`${spec.file}: the requirements name Node 24, git, a logged-in gh and Claude Code`, () => {
+  test(`${spec.file}: the requirements name Node 22 or newer (24 recommended), git, a logged-in gh and Claude Code`, () => {
     const requirements = section(text, spec.requirements);
-    assert.match(requirements, /Node\.js (>= 24|24)/);
+    assert.match(norm(requirements), FIRST_RUN[lang].node.requirements);
     assert.match(requirements, /\bgit\b/);
     assert.ok(requirements.includes('`gh`') && requirements.includes('gh auth login'), 'gh and how to log in');
     assert.ok(requirements.includes('Claude Code'));
@@ -465,6 +467,16 @@ for (const [lang, spec] of Object.entries(READMES)) {
     assert.ok(calendar.includes('Google Calendar') && calendar.includes('Google Drive'));
     assert.match(norm(calendar), run.connectorsEnabled);
     assert.match(norm(section(text, run.briefing)), run.desktop);
+  });
+
+  // The minimum is 22 and the recommended Node is 24 (0.0.9, task G4). The engine line is the
+  // one that used to say "The engine is Node.js 24": it now says both Nodes run it, and that
+  // both are tested (CI runs the suite on each). test/node-minimum.test.mjs holds the number.
+  test(`${spec.file}: the repository section says which Nodes the engine runs on and that both are tested, and no sentence still makes Node 24 the minimum`, () => {
+    const repo = norm(section(text, run.repo));
+    assert.match(repo, run.node.engine);
+    assert.match(repo, run.node.tested);
+    assert.doesNotMatch(norm(text), /Node\.js 24 (or newer|ou mais novo)|The engine is Node\.js 24|O motor é Node\.js 24/);
   });
 
   test(`${spec.file}: the install snippet removes the tarball it made, and says which folder can go and which must stay`, () => {

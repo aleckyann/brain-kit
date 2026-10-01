@@ -1,6 +1,9 @@
 # Contributing
 
-- Node.js >= 24, no runtime dependencies. If a change needs a package, open an issue first.
+- Node.js >= 22 (24, the current LTS, is the one to develop on; CI runs the suite on both), no
+  runtime dependencies. If a change needs a package, open an issue first. The minimum is one
+  number, `MINIMUM_NODE_MAJOR` in `src/node-guard.mjs`; `test/node-minimum.test.mjs` fails when a
+  place that states it (package.json, the READMEs, the docs, the CI matrix) says another.
 - Tests: `npm test` (node:test). Every guard gets a test named after the incident that
   created it, under `test/incidents/YYYY-MM-DD-<slug>.test.mjs`.
 - Code, identifiers and docs in English. Message packs: `lang/pt-BR` is the reference,
