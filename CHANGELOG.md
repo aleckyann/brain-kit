@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- On a Node older than 24, `brain-kit` now says so in one sentence, in your language, instead of
+  dying with a SyntaxError or a TypeError and a stack trace from inside `src/` (the first
+  reviewer's m13): "brain-kit needs Node 24 or newer; this machine has Node 22.12.0. Install
+  Node 24 from https://nodejs.org and run it again." The launcher, `bin/brain-kit.mjs`, now
+  imports only a small guard (`src/node-guard.mjs`: no imports, and no syntax an old Node cannot
+  parse), asks it, and loads the CLI with a dynamic `import()` only when the Node is 24 or newer;
+  otherwise the sentence goes to stderr and the exit code is 2. The language is chosen as every
+  other message of the kit is (`BRAIN_KIT_LANG`, then `LC_ALL`, `LC_MESSAGES` and `LANG`). A
+  version string it cannot read never blocks. The one exception is `brain-kit hook ...`: it prints
+  the same line and exits 0, because a Claude Code hook that fails breaks the session it runs in.
+  No old Node was at hand, so the tests make the real launcher believe it runs on Node 22 with a
+  preload, and scan the guard for syntax an old Node cannot parse.
+
 ## 0.0.8 (tagged `v0.0.8`, not on npm)
 
 A first-time user can now go from a clean machine to a first pull request with what the kit
