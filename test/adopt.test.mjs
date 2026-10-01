@@ -628,7 +628,7 @@ test('with stdin not a terminal and no answers, adopt names the first missing an
   const r = spawnSync(process.execPath, [BIN, 'init', '--adopt', copy.vault, '--lang', 'en'], {
     encoding: 'utf8', env: testEnv(copy.state), cwd: copy.cwd, input: '', timeout: 10000,
   });
-  assertRefused(r, copy, before, /no answer for "name"/);
+  assertRefused(r, copy, before, /no answer for "First name"/);
 });
 
 test('a .brain-kit directory the vault already has keeps what is in it, recorded as the person\'s', () => {

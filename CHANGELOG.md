@@ -36,6 +36,27 @@
 - The `claude-isolation-flags` line of `doctor` no longer names a Claude Code version. It said
   `--max-turns` is not in the help of "Claude Code 2.1.281" on a machine that had 2.1.286; it now
   says "the installed version", in both languages (the second reviewer's F18).
+- `init` asks for a "short id" where it asked for a "handle", and offers the one the name just
+  typed makes (the second reviewer's F10). The question that names the person who signs their
+  approvals was "Handle, lowercase letters, digits and dashes, used as human:<handle>", and it
+  offered the system user's name even after the person had typed theirs ("ana" for "Ana Souza").
+  It now reads "Short id (lowercase letters, digits and hyphens) that signs your approvals" (in
+  Portuguese, "Apelido curto (minúsculas, números e hífen), que assina as suas aprovações"), and
+  the offer follows the name: lower case, accents folded, anything else a hyphen, so "Ana
+  Conceição" is offered `ana-conceicao`, and the system user's when nothing usable is left. The same
+  holds for `--yes` with a name in the answers file and no handle. The key stays `handle`, in the
+  answers file and in the configuration.
+- `init` run through a pipe says which question has no answer by its name, not by its internal
+  key (the second reviewer's F22): `no answer for "Language"`, `sem resposta para "Idioma"`, where
+  it said `"lang"`. The retry of a bad answer and the "input ended" message name the question the
+  same way.
+- `init` on a new vault prints one line when `validate` and `lint` find nothing, where it printed
+  both full reports, about 45 lines of rule names (the second reviewer's F11): "brain-kit
+  validate and brain-kit lint --base all checked the new vault: nothing found." Clean means each
+  exits 0, wrote nothing to stderr and ended its report with its own clean verdict (not the ones
+  for stale notes, skipped rules or warnings only). When either says anything else, `init` prints
+  exactly what it printed before, under the same heading, in the same order and on the same
+  streams. `init --adopt` still prints both reports. `validate` and `lint` are unchanged.
 
 ## 0.0.8 (tagged `v0.0.8`, not on npm)
 

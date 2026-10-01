@@ -15,7 +15,7 @@ import {
   adoptRepositoryState, adoptionPaths, buildAdoptionManifest, inferConfig, inspectAdoptTarget, readDefaults, writeAdoption,
 } from '../init/adopt.mjs';
 import {
-  ANSWER_KEYS, QUESTIONS, askInteractively, defaultAnswers, defaultLang, describeAnswer, invalidAnswer, readAnswersFile, suggestedRepoName,
+  ANSWER_KEYS, QUESTIONS, askInteractively, defaultAnswers, defaultLang, describeAnswer, invalidAnswer, questionLabel, readAnswersFile, suggestedRepoName,
 } from '../init/answers.mjs';
 import { claudeProjectName } from '../sources/transcripts-claude-code.mjs';
 import {
@@ -343,7 +343,7 @@ export async function runInit(argv, io, t, {
       answers.lang = defaultLang(env);
       defaulted.push('lang');
     }
-    const defaults = defaultAnswers({ lang: answers.lang, env, t: translatorFor(io, answers.lang) });
+    const defaults = defaultAnswers({ lang: answers.lang, env, t: translatorFor(io, answers.lang), name: answers.name });
     for (const key of QUESTIONS) {
       if (answers[key] === undefined) {
         answers[key] = defaults[key];
@@ -357,7 +357,7 @@ export async function runInit(argv, io, t, {
       if (parsed.answersFile !== undefined) {
         io.stderr.write(`${t('init.answers_missing', { file: resolve(cwd, parsed.answersFile), answer: missing })}\n`);
       } else {
-        io.stderr.write(`${t('init.missing_answer', { answer: missing })}\n`);
+        io.stderr.write(`${t('init.missing_answer', { answer: questionLabel(t, missing) })}\n`);
       }
       return EXIT.USAGE;
     }
@@ -365,7 +365,7 @@ export async function runInit(argv, io, t, {
       stdin: io.stdin, stdout: io.stdout, preset: answers, env, translatorFor: (lang) => translatorFor(io, lang), t,
     });
     if (asked.ended !== undefined) {
-      io.stderr.write(`\n${t('init.stdin_ended', { answer: asked.ended })}\n`);
+      io.stderr.write(`\n${t('init.stdin_ended', { answer: questionLabel(t, asked.ended) })}\n`);
       return EXIT.USAGE;
     }
     Object.assign(answers, asked.answers);
@@ -542,16 +542,11 @@ export async function runInit(argv, io, t, {
     (gateFailed ? io.stderr : io.stdout).write(`${t(gate.messageKey, gate.params)}\n`);
   }
 
-  if (parsed.adopt) io.stdout.write(`${t('init.adopt_checking')}\n`);
-  else io.stdout.write(`${t('init.checking')}\n`);
   const runChecks = checks ?? {
     validate: (args, cio, ct) => runValidate(args, cio, ct, walkVault),
     lint: (args, cio, ct) => runLint(args, cio, ct, walkVault),
   };
-  const [validated, linted] = await withProcessEnvCleaned(localVars, async () => [
-    await runChecks.validate([target], io, t),
-    await runChecks.lint([target, '--base', 'all'], io, t),
-  ]);
+  const [validated, linted] = await runReports({ runChecks, target, localVars, io, t, quietWhenClean: !parsed.adopt, heading: parsed.adopt ? t('init.adopt_checking') : t('init.checking') });
   const checked = worseExit(validated, linted);
   if (parsed.adopt) {
     io.stdout.write(`${t('init.adopt_no_commit')}\n`);
@@ -583,6 +578,71 @@ export async function runInit(argv, io, t, {
     io.stdout.write(`${t('init.next_steps', { dir: target, name: suggestedRepoName({ repo: answers.repo, dir: target }) })}\n`);
   }
   return worseExit(code, checked);
+}
+
+// validate and lint on the result, and what is said about them.
+//
+// For an adopted vault they write straight to the terminal under their
+// heading, as always. For a new vault their output is held while they run:
+// each full report is about 45 lines of rule names, and when BOTH say the
+// vault is clean the person gets one line instead (the second stranger's F11);
+// when either says anything else, the heading and everything they wrote is
+// printed, in the order and on the streams they wrote it, which is what was
+// printed before. A vault is clean here only when each command exits OK,
+// wrote nothing to stderr, and ended its report with its own clean verdict
+// (src/commands/validate.mjs and lint.mjs, renderVerdict: not the one with
+// stale notes, the partial one, or the one for warnings). Anything this
+// function cannot recognise as that is printed whole: the cost of a mistake
+// is a long report, never a finding left out. Neither command is changed.
+async function runReports({ runChecks, target, localVars, io, t, quietWhenClean, heading }) {
+  if (!quietWhenClean) {
+    io.stdout.write(`${heading}\n`);
+    return withProcessEnvCleaned(localVars, async () => [
+      await runChecks.validate([target], io, t),
+      await runChecks.lint([target, '--base', 'all'], io, t),
+    ]);
+  }
+  const held = { validate: holdOutput(), lint: holdOutput() };
+  let codes;
+  try {
+    codes = await withProcessEnvCleaned(localVars, async () => [
+      await runChecks.validate([target], held.validate.io, t),
+      await runChecks.lint([target, '--base', 'all'], held.lint.io, t),
+    ]);
+  } catch (error) {
+    // What a check had written before it failed is printed, then the error goes up.
+    release(io, heading, held);
+    throw error;
+  }
+  const clean = reportsClean(held.validate, codes[0], t('validate.verdict_clean')) && reportsClean(held.lint, codes[1], t('lint.verdict_clean'));
+  if (clean) io.stdout.write(`${t('init.checks_clean')}\n`);
+  else release(io, heading, held);
+  return codes;
+}
+
+// A stand-in for io that keeps what is written to it, in order.
+function holdOutput() {
+  const written = [];
+  return {
+    written,
+    io: {
+      stdout: { write(chunk) { written.push(['stdout', chunk]); return true; } },
+      stderr: { write(chunk) { written.push(['stderr', chunk]); return true; } },
+    },
+  };
+}
+
+function release(io, heading, held) {
+  io.stdout.write(`${heading}\n`);
+  for (const hold of [held.validate, held.lint]) {
+    for (const [stream, chunk] of hold.written) io[stream].write(chunk);
+  }
+}
+
+function reportsClean(hold, code, verdict) {
+  if (code !== EXIT.OK || hold.written.some(([stream]) => stream !== 'stdout')) return false;
+  const text = hold.written.map(([, chunk]) => chunk).join('').trimEnd();
+  return text === verdict || text.endsWith(`\n${verdict}`);
 }
 
 // A failure after the first write: remove everything this run created,

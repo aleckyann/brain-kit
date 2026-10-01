@@ -38,7 +38,7 @@ import { LINT_RULES } from '../src/rules/lint.mjs';
 import { hasDotSegment, walkVault } from '../src/vault.mjs';
 import { splitFrontmatter, readMapping } from '../src/frontmatter.mjs';
 import { completeDefaults } from '../src/init/config.mjs';
-import { resolveClaudeBin, defaultAnswers, invalidAnswer, suggestedRepoName } from '../src/init/answers.mjs';
+import { QUESTIONS, defaultAnswers, defaultHandle, handleFromName, invalidAnswer, resolveClaudeBin, suggestedRepoName } from '../src/init/answers.mjs';
 import {
   MANAGED_SKELETON_FILES, HOOK_PATH, PR_BODY_PATH, CLAUDE_SETTINGS_PATH, isInside, stampGenerated, writeVault,
 } from '../src/init/skeleton.mjs';
@@ -647,14 +647,25 @@ for (const stdinMode of ['pipe', 'ignore']) {
     const r = await spawnTimed(['init', vault], testEnv(state), stdinMode);
     assert.equal(r.status, EXIT.USAGE, r.stdout + r.stderr);
     assert.ok(r.elapsed < 1000 + 500, `took ${r.elapsed} ms`);
-    assert.match(r.stderr, /"lang"/);
+    // The question's own label ("Language"), as the prompt it would have shown
+    // starts with, and not the internal key (the second stranger's F22).
+    assert.match(r.stderr, /no answer for "Language", and stdin is not a terminal/);
+    assert.doesNotMatch(r.stderr, /"lang"/);
     assert.equal(existsSync(vault), false);
     assert.equal(existsSync(state), false);
 
     const withLang = await spawnTimed(['init', vault, '--lang', 'en'], testEnv(state), stdinMode);
     assert.equal(withLang.status, EXIT.USAGE);
-    assert.match(withLang.stderr, /"name"/);
+    assert.match(withLang.stderr, /no answer for "First name"/);
+    assert.doesNotMatch(withLang.stderr, /"name"/);
     assert.equal(existsSync(vault), false);
+
+    // In Portuguese, the Portuguese label.
+    const pt = await spawnTimed(['init', vault], testEnv(state, { BRAIN_KIT_LANG: 'pt-BR' }), stdinMode);
+    assert.equal(pt.status, EXIT.USAGE);
+    assert.match(pt.stderr, /sem resposta para "Idioma"/);
+    const ptName = await spawnTimed(['init', vault, '--lang', 'pt-BR'], testEnv(state, { BRAIN_KIT_LANG: 'pt-BR' }), stdinMode);
+    assert.match(ptName.stderr, /sem resposta para "Primeiro nome"/);
   });
 }
 
@@ -819,7 +830,7 @@ test('on a terminal, the questions come one at a time in order, a blank line tak
   const stdin = fakeTty(['en', 'Ana Souza', 'Ana S', 'asouza', 'Field Notes', '', '', 'Mars/Olympus', 'Europe/Lisbon']);
   const r = await initDirect([vault], { stdin, env: testEnv(state) });
   assert.equal(r.code, EXIT.OK, r.stdout + r.stderr);
-  const order = ['Language', 'First name', 'Handle', 'Vault title', 'GitHub repository', 'private', 'Time zone'];
+  const order = ['Language', 'First name', 'Short id', 'Vault title', 'GitHub repository', 'private', 'Time zone'];
   let at = -1;
   for (const label of order) {
     const index = r.stdout.indexOf(label, at + 1);
@@ -832,7 +843,12 @@ test('on a terminal, the questions come one at a time in order, a blank line tak
   assert.equal(config.vault.repo, null);
   assert.equal(config.vault.private, true);
   assert.equal(config.vault.timezone, 'Europe/Lisbon');
-  assert.equal((r.stdout + r.stderr).match(/Handle/g).length, 2, 'the bad handle is asked again');
+  // The bad short id is asked again, with the same words and the same default, and
+  // the retry names the question by its label, not by the key `handle`.
+  const prompt = 'Short id (lowercase letters, digits and hyphens) that signs your approvals [ana-souza]: ';
+  assert.equal(r.stdout.split(prompt).length - 1, 2, r.stdout);
+  assert.match(r.stdout, /That is not a valid answer for "Short id"; please answer again\./);
+  assert.doesNotMatch(r.stdout + r.stderr, /Handle|"handle"/);
 });
 
 test('on a terminal, declining the private repository refuses with exit 2 and writes nothing', async () => {
@@ -850,7 +866,7 @@ test('on a terminal, stdin ending before the last answer refuses with exit 2 nam
   const stdin = fakeTty(['en', 'Ana Souza', 'asouza']);
   const r = await initDirect([vault], { stdin, env: testEnv(state) });
   assert.equal(r.code, EXIT.USAGE);
-  assert.match(r.stderr, /input ended before "title"/);
+  assert.match(r.stderr, /input ended before "Vault title" was answered/);
   assert.equal(existsSync(vault), false);
   assert.equal(existsSync(state), false);
 });
@@ -886,6 +902,316 @@ test('a directory that fills up while the questions are answered is refused just
   assert.match(stderr.text, /not empty/);
   assert.deepEqual(snapshot(vault), before);
   assert.equal(existsSync(state), false);
+});
+
+// --- the questions, in plain words (the second stranger's F10 and F22) ---------------
+//
+// "Handle, lowercase letters, digits and dashes, used as human:<handle>" is a
+// word a person who is not a developer has never met, and its default came
+// from the system user instead of the name just typed ("ana" offered to
+// someone who had answered "Ana Souza"). The question is now a plain sentence
+// and its default follows the name. The key stays `handle`, in the answers
+// file and in the configuration.
+
+const CONCEICAO = `Ana Concei${String.fromCharCode(0xe7, 0xe3)}o`;
+
+test('handleFromName: lowercase, accents folded, anything outside a-z0-9 a hyphen, hyphens collapsed and trimmed; null when nothing usable is left', () => {
+  const cases = [
+    ['Ana Souza', 'ana-souza'],
+    ['  Ana   Souza  ', 'ana-souza'],
+    ['ANA', 'ana'],
+    [`Ana Concei${String.fromCharCode(0xe7, 0xe3)}o`, 'ana-conceicao'],
+    [`Ana M${String.fromCharCode(0xfc)}ller-${String.fromCharCode(0xd1)}and${String.fromCharCode(0xfa)}`, 'ana-muller-nandu'],
+    [`Ana ${String.fromCharCode(0xc1)}vila`, 'ana-avila'],
+    ['ana_b.okafor', 'ana-b-okafor'],
+    ["Ana O'Brien", 'ana-o-brien'],
+    ['Ben Okafor 2', 'ben-okafor-2'],
+    ['2Pac', '2pac'],
+    ['a--b', 'a-b'],
+    ['-x-', 'x'],
+    ['---', null],
+    ['!!!', null],
+    ['', null],
+    ['   ', null],
+    [String.fromCharCode(0x65e5, 0x672c, 0x8a9e), null],
+    [undefined, null],
+    [null, null],
+    [42, '42'],
+  ];
+  for (const [name, expected] of cases) assert.equal(handleFromName(name), expected, JSON.stringify(name));
+  // Whatever it offers is a handle the answer check accepts.
+  for (const [name] of cases) {
+    const offered = handleFromName(name);
+    if (offered !== null) assert.equal(invalidAnswer('handle', offered), null, offered);
+  }
+});
+
+test('the handle offered follows the name; with nothing usable in it, the system user\'s, and "owner" when there is none either', () => {
+  const env = { USER: 'ana', LOGNAME: 'ana' };
+  assert.equal(defaultAnswers({ lang: 'en', env }).handle, 'ana', 'no name yet: the system user, as before');
+  assert.equal(defaultAnswers({ lang: 'en', env, name: 'Ben Okafor' }).handle, 'ben-okafor');
+  assert.equal(defaultAnswers({ lang: 'en', env, name: 'Ben Okafor' }).name, 'ana', 'the name default is still the system user\'s: only the handle follows what was typed');
+  assert.equal(defaultAnswers({ lang: 'en', env, name: '!!!' }).handle, 'ana');
+  assert.equal(defaultAnswers({ lang: 'en', env, name: '' }).handle, 'ana');
+  assert.equal(defaultHandle('Ben Okafor', { USER: 'ana' }), 'ben-okafor');
+  assert.equal(defaultHandle('!!!', { USER: 'Ana Souza' }), 'ana-souza', 'the system user\'s name is folded too');
+  assert.equal(defaultHandle('!!!', { USER: '', LOGNAME: '', USERNAME: '' }), defaultHandle('', { USER: '', LOGNAME: '', USERNAME: '' }));
+});
+
+test('on a terminal, the short id offered is the name just typed, folded, and a blank line takes it', async () => {
+  const { vault, state } = freshTarget();
+  const stdin = fakeTty(['en', CONCEICAO, '', 'Field Notes', '', 'y', 'UTC']);
+  const r = await initDirect([vault], { stdin, env: testEnv(state) });
+  assert.equal(r.code, EXIT.OK, r.stdout + r.stderr);
+  assert.ok(r.stdout.includes('Short id (lowercase letters, digits and hyphens) that signs your approvals [ana-conceicao]: '), r.stdout);
+  assert.equal(readConfig(vault).owner.handle, 'ana-conceicao');
+  assert.equal(readConfig(vault).owner.name, CONCEICAO);
+});
+
+test('on a terminal, a name with nothing usable in it offers the system user\'s handle, and one the person types is kept as typed', async () => {
+  const first = freshTarget();
+  const r = await initDirect([first.vault], { stdin: fakeTty(['en', '!!!', '', 'Field Notes', '', 'y', 'UTC']), env: testEnv(first.state) });
+  assert.equal(r.code, EXIT.OK, r.stdout + r.stderr);
+  assert.ok(r.stdout.includes('that signs your approvals [ana]: '), r.stdout);
+  assert.equal(readConfig(first.vault).owner.handle, 'ana');
+  const second = freshTarget();
+  const typed = await initDirect([second.vault], { stdin: fakeTty(['en', 'Ben Okafor', 'bokafor', 'Field Notes', '', 'y', 'UTC']), env: testEnv(second.state) });
+  assert.equal(typed.code, EXIT.OK, typed.stdout + typed.stderr);
+  assert.ok(typed.stdout.includes('that signs your approvals [ben-okafor]: '));
+  assert.equal(readConfig(second.vault).owner.handle, 'bokafor');
+});
+
+test('on a terminal, the Portuguese questions say "apelido curto", with the accents, and the retry names it by that label', async () => {
+  const { vault, state } = freshTarget();
+  const stdin = fakeTty(['pt-BR', CONCEICAO, 'Ana C', '', 'Anota' + String.fromCharCode(0xe7, 0xf5) + 'es', '', 's', 'Europe/Lisbon']);
+  const r = await initDirect([vault], { stdin, env: testEnv(state) });
+  assert.equal(r.code, EXIT.OK, r.stdout + r.stderr);
+  const prompt = `Apelido curto (min${String.fromCharCode(0xfa)}sculas, n${String.fromCharCode(0xfa)}meros e h${String.fromCharCode(0xed)}fen), que assina as suas aprova${String.fromCharCode(0xe7, 0xf5)}es [ana-conceicao]: `;
+  assert.equal(r.stdout.split(prompt).length - 1, 2, r.stdout);
+  assert.ok(r.stdout.includes(`Essa n${String.fromCharCode(0xe3)}o ${String.fromCharCode(0xe9)} uma resposta v${String.fromCharCode(0xe1)}lida para "Apelido curto"; responda de novo.`), r.stdout);
+  assert.equal(readConfig(vault).owner.handle, 'ana-conceicao');
+  assert.doesNotMatch(r.stdout, /Handle|human:</);
+});
+
+test('--yes, with a name in the answers file and no handle, offers the handle that name makes; with no name, the system user\'s', () => {
+  const { base, vault, state } = freshTarget();
+  const file = writeAnswers(base, { name: 'Ben Okafor' });
+  const r = brainKit(['init', vault, '--yes', '--from-answers', file], { env: testEnv(state), stdio: ['ignore', 'pipe', 'pipe'] });
+  assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
+  assert.equal(readConfig(vault).owner.handle, 'ben-okafor');
+  assert.equal(readConfig(vault).owner.name, 'Ben Okafor');
+  assert.match(r.stdout, /^ {2}handle: ben-okafor$/m);
+  assert.doesNotMatch(r.stdout, /^ {2}name: /m, 'a name given is not listed as a default');
+  const other = freshTarget();
+  const none = brainKit(['init', other.vault, '--yes'], { env: testEnv(other.state), stdio: ['ignore', 'pipe', 'pipe'] });
+  assert.equal(none.status, EXIT.OK, none.stdout + none.stderr);
+  assert.equal(readConfig(other.vault).owner.handle, 'ana');
+  // An explicit handle in the file is never replaced.
+  const kept = freshTarget();
+  const keptFile = writeAnswers(kept.base, { name: 'Ben Okafor', handle: 'bokafor' });
+  const k = brainKit(['init', kept.vault, '--yes', '--from-answers', keptFile], { env: testEnv(kept.state), stdio: ['ignore', 'pipe', 'pipe'] });
+  assert.equal(k.status, EXIT.OK, k.stdout + k.stderr);
+  assert.equal(readConfig(kept.vault).owner.handle, 'bokafor');
+});
+
+test('every question has a label in both packs, and its prompt starts with it (the private-repository sentence apart)', () => {
+  for (const lang of ['en', 'pt-BR']) {
+    const t = createTranslator(lang);
+    for (const key of QUESTIONS) {
+      const label = t(`init.label_${key}`);
+      assert.ok(label.length > 0 && !label.includes('{'), `${lang} ${key}`);
+      const prompt = t(`init.ask_${key}`, { langs: ['pt-BR', 'en'], value: 'x' });
+      if (key !== 'private') assert.ok(prompt.startsWith(label), `${lang}: the prompt of "${key}" starts with "${label}": ${prompt}`);
+    }
+  }
+  assert.equal(createTranslator('en')('init.label_lang'), 'Language');
+  assert.equal(createTranslator('pt-BR')('init.label_lang'), 'Idioma');
+});
+
+// --- a clean check is one line (the second stranger's F11) ---------------------------
+//
+// init ran validate and lint on the new vault and printed both full reports,
+// about 45 lines of rule names, when they had found nothing. When BOTH report
+// nothing, at any severity, it now says so in one line; when either finds
+// anything it prints exactly what it printed before. It decides from what the
+// two commands themselves say and return (their clean verdict as the last
+// line of their report, exit code OK, nothing on stderr), through the streams
+// it hands them, and neither command was changed.
+
+const CHECKING = { en: 'Checking the new vault with brain-kit validate and brain-kit lint --base all:', 'pt-BR': 'Verificando o vault novo com brain-kit validate e brain-kit lint --base all:' };
+
+for (const lang of ['en', 'pt-BR']) {
+  test(`${lang}: a new vault that validate and lint find nothing in gets one line about them, in its place`, () => {
+    const { base, vault, state } = freshTarget();
+    const file = writeAnswers(base, ANSWERS[lang]);
+    const r = brainKit(['init', vault, '--from-answers', file], { env: testEnv(state) });
+    assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
+    const t = createTranslator(lang);
+    const line = t('init.checks_clean');
+    assert.equal(r.stdout.split(`${line}\n`).length - 1, 1, 'said once');
+    assert.ok(line.includes('brain-kit validate') && line.includes('brain-kit lint --base all'), 'and it says what was checked');
+    assert.equal(line.includes('\n'), false);
+    // Between the two lines init always prints around it, where the heading and the reports were.
+    const lines = r.stdout.trimEnd().split('\n');
+    const at = lines.indexOf(line);
+    assert.ok(at > 1, r.stdout);
+    assert.match(lines[at - 1], lang === 'en' ? /^Wrote this machine's settings to / : /^As configura\S+ desta m\S+quina foram escritas em /);
+    assert.equal(lines[at + 1], t('init.no_commit'));
+    // None of the reports is there, nor the heading that announced them.
+    assert.doesNotMatch(r.stdout, /Totals:|Totais:|== |Result:|Resultado:|stale_after|The secrets rule|A regra de segredos/);
+    assert.equal(r.stdout.includes(CHECKING[lang]), false);
+    assert.ok(lines.length < 16, `${lines.length} lines: ${r.stdout}`);
+    assert.equal(r.stderr, '');
+    // What the line says is true: both commands, run on their own, say nothing is wrong.
+    assert.equal(brainKit(['validate', vault], { env: testEnv(state) }).status, EXIT.OK);
+    assert.equal(brainKit(['lint', vault, '--base', 'all'], { env: testEnv(state) }).status, EXIT.OK);
+  });
+}
+
+test('a vault that lint finds something in prints both reports exactly as validate and lint print them, under the heading, and no clean line', () => {
+  const { base, vault, state } = freshTarget();
+  const file = writeAnswers(base, { ...ANSWERS.en, title: KEY_TITLE });
+  const r = brainKit(['init', vault, '--from-answers', file], { env: testEnv(state) });
+  assert.equal(r.status, EXIT.FAILURE, r.stdout + r.stderr);
+  const v = brainKit(['validate', vault], { env: testEnv(state) });
+  const l = brainKit(['lint', vault, '--base', 'all'], { env: testEnv(state) });
+  assert.equal(l.status, EXIT.FAILURE);
+  assert.ok(r.stdout.includes(`${CHECKING.en}\n${v.stdout}${l.stdout}`), 'the heading, then validate\'s report, then lint\'s, byte for byte');
+  assert.equal(r.stdout.includes(createTranslator('en')('init.checks_clean')), false);
+  assert.equal(r.stderr, '');
+});
+
+test('a vault that validate finds something in prints both reports in full, the clean lint report too', async () => {
+  const { base, vault, state } = freshTarget();
+  const file = writeAnswers(base, ANSWERS.en);
+  const stdout = collector();
+  const stderr = collector();
+  const code = await runInit([vault, '--from-answers', file], { stdin: fakeTty([]), stdout, stderr }, createTranslator('en'), {
+    walkVault, env: testEnv(state), cwd: base, now: () => new Date('+010000-01-01T00:00:00Z'),
+  });
+  assert.equal(code, EXIT.FAILURE, stdout.text + stderr.text);
+  assert.ok(stdout.text.includes(CHECKING.en));
+  assert.match(stdout.text, /findings above \(guidance or house rules\) block this run/);
+  assert.match(stdout.text, /Totals: 0 error\(s\), 0 warning\(s\)/);
+  assert.match(stdout.text, /Result: no findings\./, 'lint\'s clean report is printed beside validate\'s findings');
+  assert.equal(stdout.text.includes(createTranslator('en')('init.checks_clean')), false);
+});
+
+// What counts as clean is what the two commands say, so it is held here with
+// stand-ins that write what the real ones write.
+function stubChecks({ validateText, validateCode = EXIT.OK, validateErr = '', lintText, lintCode = EXIT.OK, lintErr = '' }) {
+  return {
+    // stderr first, so that the report's last line is still its verdict: only a
+    // check of stderr itself, not of that line, can tell these from a clean run.
+    validate: async (_argv, cio) => {
+      if (validateErr !== '') cio.stderr.write(validateErr);
+      if (validateText !== undefined) cio.stdout.write(validateText);
+      return validateCode;
+    },
+    lint: async (_argv, cio) => {
+      if (lintErr !== '') cio.stderr.write(lintErr);
+      if (lintText !== undefined) cio.stdout.write(lintText);
+      return lintCode;
+    },
+  };
+}
+
+// What the two real commands print when the vault is clean, in short.
+const cleanReports = (t) => ({
+  validate: `Read 31 note(s) from git's list\n\n== Specification, must ==\nNo findings in this group.\n${t('validate.verdict_clean')}\n`,
+  lint: `Scope: "all"\n\n== Errors ==\nNo findings in this group.\n${t('lint.verdict_clean')}\n`,
+});
+
+test('an adopted vault keeps its heading and both full reports even when they are clean: the one line is for a new vault', async () => {
+  const t = createTranslator('en');
+  const { validate: cleanValidate, lint: cleanLint } = cleanReports(t);
+  const { base, vault, state } = freshTarget();
+  mkdirSync(vault);
+  writeFileSync(join(vault, 'index.md'), '# Index\n');
+  assert.equal(spawnSync('git', ['init', '-q', vault]).status, 0);
+  const file = writeAnswers(base, ANSWERS.en);
+  const defaults = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', 'en', 'config.defaults.json'), 'utf8'));
+  const out = collector();
+  const err = collector();
+  const code = await runInit(['--adopt', vault, '--from-answers', file, '--no-hook'], { stdin: fakeTty([]), stdout: out, stderr: err }, t, {
+    walkVault, env: testEnv(state), cwd: base, infer: () => ({ config: structuredClone(defaults), notes: [] }), checks: stubChecks({ validateText: cleanValidate, lintText: cleanLint }),
+  });
+  assert.equal(code, EXIT.OK, out.text + err.text);
+  assert.ok(out.text.includes(`${t('init.adopt_checking')}\n${cleanValidate}${cleanLint}`), out.text);
+  assert.equal(out.text.includes(t('init.checks_clean')), false);
+});
+
+test('it is clean only when BOTH say so: their clean verdict as the last line, exit 0, nothing on stderr; anything else prints what they wrote', async () => {
+  const t = createTranslator('en');
+  const { validate: cleanValidate, lint: cleanLint } = cleanReports(t);
+  const run = async (checks) => {
+    const { base, vault, state } = freshTarget();
+    const file = writeAnswers(base, ANSWERS.en);
+    const r = await initDirect([vault, '--from-answers', file], { env: testEnv(state), checks });
+    return r;
+  };
+  const quiet = await run(stubChecks({ validateText: cleanValidate, lintText: cleanLint }));
+  assert.equal(quiet.code, EXIT.OK);
+  assert.ok(quiet.stdout.includes(`${t('init.checks_clean')}\n`));
+  assert.equal(quiet.stdout.includes('No findings in this group'), false);
+  assert.equal(quiet.stdout.includes(CHECKING.en), false);
+
+  const loud = [
+    ['validate has a finding, though lint is clean', { validateText: 'x.md:1  broken\nvalidate: 1 finding\n', validateCode: EXIT.FAILURE, lintText: cleanLint }],
+    ['lint has a finding, though validate is clean', { validateText: cleanValidate, lintText: 'y.md:2  secret\nlint: 1 error\n', lintCode: EXIT.FAILURE }],
+    ['validate\'s clean verdict but not its exit code', { validateText: cleanValidate, validateCode: EXIT.FAILURE, lintText: cleanLint }],
+    ['lint\'s clean verdict but not its exit code', { validateText: cleanValidate, lintText: cleanLint, lintCode: EXIT.DEGRADED }],
+    ['validate\'s verdict with stale notes, which is not the clean one', { validateText: `${t('validate.verdict_clean_with_stale')}\n`, lintText: cleanLint }],
+    ['lint\'s verdict with rules skipped, which is not the clean one', { validateText: cleanValidate, lintText: `${t('lint.verdict_clean_but_partial')}\n` }],
+    ['a warning only, which fails nothing but is not nothing', { validateText: cleanValidate, lintText: `${t('lint.verdict_warnings_only')}\n` }],
+    ['validate wrote to stderr', { validateText: cleanValidate, validateErr: 'a warning on stderr\n', lintText: cleanLint }],
+    ['lint wrote to stderr', { validateText: cleanValidate, lintText: cleanLint, lintErr: 'another warning on stderr\n' }],
+    ['validate said nothing at all', { lintText: cleanLint }],
+    ['lint said nothing at all', { validateText: cleanValidate }],
+    ['a clean verdict that is not the last line', { validateText: `${cleanValidate}and one more line\n`, lintText: cleanLint }],
+  ];
+  for (const [what, spec] of loud) {
+    const r = await run(stubChecks(spec));
+    assert.equal(r.stdout.includes(t('init.checks_clean')), false, `${what}: the clean line must not be printed`);
+    assert.ok(r.stdout.includes(`${CHECKING.en}\n`), `${what}: the heading stays`);
+    for (const text of [spec.validateText, spec.lintText]) if (text !== undefined) assert.ok(r.stdout.includes(text), `${what}: ${JSON.stringify(text)} is printed whole`);
+    for (const err of [spec.validateErr, spec.lintErr]) if (err) assert.ok(r.stderr.includes(err), `${what}: ${JSON.stringify(err)} reaches stderr`);
+  }
+});
+
+test('when it prints the reports it prints them as they were written: the same streams, the same order', async () => {
+  const { base, vault, state } = freshTarget();
+  const file = writeAnswers(base, ANSWERS.en);
+  const seen = [];
+  const io = {
+    stdin: fakeTty([]),
+    stdout: { write(chunk) { seen.push(['out', chunk]); return true; } },
+    stderr: { write(chunk) { seen.push(['err', chunk]); return true; } },
+  };
+  const checks = {
+    validate: async (_argv, cio) => { cio.stdout.write('V1\n'); cio.stderr.write('E1\n'); cio.stdout.write('V2\n'); return EXIT.FAILURE; },
+    lint: async (_argv, cio) => { cio.stderr.write('E2\n'); cio.stdout.write('L1\n'); return EXIT.OK; },
+  };
+  const code = await runInit([vault, '--from-answers', file], io, createTranslator('en'), { walkVault, env: testEnv(state), cwd: base, checks });
+  assert.equal(code, EXIT.FAILURE);
+  const at = seen.findIndex(([, chunk]) => chunk === `${CHECKING.en}\n`);
+  assert.ok(at > 0, JSON.stringify(seen));
+  assert.deepEqual(seen.slice(at, at + 6), [
+    ['out', `${CHECKING.en}\n`], ['out', 'V1\n'], ['err', 'E1\n'], ['out', 'V2\n'], ['err', 'E2\n'], ['out', 'L1\n'],
+  ]);
+});
+
+test('if a check throws, what it had written is still printed before the error goes up', async () => {
+  const { base, vault, state } = freshTarget();
+  const file = writeAnswers(base, ANSWERS.en);
+  const out = collector();
+  const err = collector();
+  const checks = {
+    validate: async (_argv, cio) => { cio.stdout.write('V1\n'); throw new Error('boom'); },
+    lint: async () => EXIT.OK,
+  };
+  await assert.rejects(() => runInit([vault, '--from-answers', file], { stdin: fakeTty([]), stdout: out, stderr: err }, createTranslator('en'), { walkVault, env: testEnv(state), cwd: base, checks }), /boom/);
+  assert.ok(out.text.includes(`${CHECKING.en}\nV1\n`), out.text);
 });
 
 // --- the adversarial path, end to end ------------------------------------------
@@ -1319,7 +1645,7 @@ test('on a terminal, a garbled answer to the private-repository question is aske
   const r = await initDirect([vault], { stdin, env: testEnv(state) });
   assert.equal(r.code, EXIT.USAGE, 'the second answer, "n", decides: refused');
   assert.equal(r.stdout.match(/Confirm it will be private/g).length, 2);
-  assert.match(r.stdout, /not a valid answer for "private"/);
+  assert.match(r.stdout, /not a valid answer for "Private repository"/);
   assert.equal(existsSync(vault), false);
 });
 
@@ -1347,7 +1673,7 @@ test('a genuinely closed stdin (descriptor 0 closed, not /dev/null) exits 2 at o
   });
   assert.equal(r.status, EXIT.USAGE, r.stdout + r.stderr);
   assert.ok(Date.now() - started < 1500);
-  assert.match(r.stderr, /"lang"/);
+  assert.match(r.stderr, /no answer for "Language"/);
   assert.equal(existsSync(vault), false);
 });
 
