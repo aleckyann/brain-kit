@@ -31,7 +31,7 @@ real Node 22 showed the code already supported.
   prints), both READMEs, CONTRIBUTING.md, docs/testing.md, the setup skill and its evals, and
   the lowest Node of the CI matrix. It holds the recommended Node (`RECOMMENDED_NODE_MAJOR`, 24)
   the same way: the guard's and the doctor's sentences, both READMEs, CONTRIBUTING.md and the
-  setup skills, with the CI matrix required to run it. A person on Node 20 or older sees one
+  setup skills, with the CI matrix required to run it. A person on Node 14.8 to 21 sees one
   sentence from `brain-kit`, in their language ("brain-kit needs Node 22 or newer; this machine
   has Node 20.11.1. Install Node 24 (LTS) from https://nodejs.org and run it again.", exit code
   2), and `doctor` fails `node-version` with a sentence that names the same minimum and the
@@ -159,31 +159,34 @@ real Node 22 showed the code already supported.
   line of a session ("Retrato da sessão tirado", a word-for-word "snapshot taken") and the
   Stop hook's "0 caminho(s) ... ficaram de fora: não cabe a esta sessão propô-los", which
   read as cut short. The English pack is unchanged.
-- A Node older than the supported minimum (22) now gets one clear sentence and exit code 2,
-  instead of whatever that Node does with the code: a SyntaxError or a TypeError and a stack
-  trace from inside `src/` (found in the walkthrough). The sentence is in your language, names
-  the Node it found and says where to get a supported one: "brain-kit needs Node 22 or newer;
-  this machine has Node 20.11.1. Install Node 24 (LTS) from https://nodejs.org and run it
-  again." The launcher, `bin/brain-kit.mjs`, imports only a small guard (`src/node-guard.mjs`:
-  no imports, and no syntax an old Node cannot parse), asks it, and loads the CLI with a
-  dynamic `import()` only when the Node is supported. The language is chosen as every other
-  message of the kit is (`BRAIN_KIT_LANG`, then `LC_ALL`, `LC_MESSAGES` and `LANG`), and a
-  version string it cannot read never blocks. This also refuses a Node that happened to run
-  the kit before: every command exits 2 with the sentence, the push gate refuses every push,
-  and the Claude Code hooks stand down, until a supported Node is first on PATH. The one
-  exception is `brain-kit hook ...`: it prints the same line to stderr and exits 0, because a
-  Claude Code hook that fails breaks the session it runs in. The launcher awaits the CLI at
-  its top level, so a command that never settles still ends with Node's exit code 13, not 0,
-  which keeps the push gate closed. No Node older than 22 was at hand, so the tests make the
-  real launcher believe it runs on Node 20 with a preload, and scan the guard for syntax an
-  old Node cannot parse.
+- A Node from 14.8 to 21, older than the supported minimum (22), now gets one clear sentence
+  and exit code 2, instead of whatever that Node does with the code: a SyntaxError or a
+  TypeError and a stack trace from inside `src/` (found in the walkthrough). The sentence is in
+  your language, names the Node it found and says where to get a supported one: "brain-kit
+  needs Node 22 or newer; this machine has Node 20.11.1. Install Node 24 (LTS) from
+  https://nodejs.org and run it again." The launcher, `bin/brain-kit.mjs`, imports only a
+  small guard (`src/node-guard.mjs`: no imports, and no syntax an old Node cannot parse), asks
+  it, and loads the CLI with a dynamic `import()` only when the Node is supported. The
+  language is chosen as every other message of the kit is (`BRAIN_KIT_LANG`, then `LC_ALL`,
+  `LC_MESSAGES` and `LANG`), and a version string it cannot read never blocks. This also
+  refuses a Node that happened to run the kit before: every command exits 2 with the sentence,
+  the push gate refuses every push, and the Claude Code hooks stand down, until a supported
+  Node is first on PATH. The one exception is `brain-kit hook ...`: it prints the same line to
+  stderr and exits 0, because a Claude Code hook that fails breaks the session it runs in. The
+  launcher awaits the CLI at its top level, so a command that never settles still ends with
+  Node's exit code 13, not 0, which keeps the push gate closed; that top-level await needs
+  Node 14.8, so an older Node stops with its own syntax error before the guard runs. No Node
+  older than 22 was at hand, so the tests make the real launcher believe it runs on Node 20
+  with a preload, and scan the guard for syntax an old Node cannot parse.
 - `brain-kit doctor` outside a vault is now the check of the machine, where it only said "no
   vault found" and checked nothing (found in the walkthrough; the README says it tells
   whether "this machine and this vault are ready", and nothing could be run before `init`). It runs the checks that read no vault: Node, git, `brain-kit` on
   PATH, `gh` and its login (asked about github.com, since there is no origin to read), and the
   `claude` on PATH (does it run, is it the real CLI, not a launcher stub). Its heading says that
-  only the machine is checked, and it ends with the same "no vault found ... To create one:
-  brain-kit init <dir>" sentence as before. The report is compact or `--verbose` as inside a
+  only the machine is checked, and it ends with the "no vault found" sentence that every command
+  now ends with (the bullet above on the commands that cannot run outside a vault): "If you
+  already have a vault, go into its folder (`cd <folder>`) or pass `-C <folder>`. To create a
+  new one: `brain-kit init <dir>`." The report is compact or `--verbose` as inside a
   vault, `--json` has the same shape with `vault: null`, and `--only` may name only those checks:
   one that reads a vault, or `--probe`, is a usage error that runs nothing. One behaviour change:
   the exit code outside a vault is no longer 2 but 0, or 1 when one of those checks fails (a
@@ -192,10 +195,11 @@ real Node 22 showed the code already supported.
   when everything is fine (found in the walkthrough). The
   default text report is the heading, the lines of the checks that are not `ok` (every warning and
   every failure, each as it was printed and in the same order), one line saying how many `ok`
-  checks it left out and how to see them ("25 checks ok not listed; use --verbose to list them"),
-  and the summary line. `--verbose` (or `-v`) prints the full list as it always did. `--only`
-  lists every check it names, ok or not, as `--verbose` does: `brain-kit doctor --only time-cap`
-  prints the `time-cap` line, not "1 check ok not listed". `--json` is unchanged and still lists
+  checks it left out and how to see them (for example,
+  `27 checks ok not listed; use --verbose to list them` on a fresh vault), and the summary line.
+  `--verbose` (or `-v`) prints the full list as it always did. `--only` lists every check it
+  names, ok or not, as `--verbose` does: `brain-kit doctor --only time-cap` prints the
+  `time-cap` line, not "1 check ok not listed". `--json` is unchanged and still lists
   every check, so the tools that read it see no difference, and the exit codes are unchanged. A
   check that is not `ok` is never left out of the compact report.
 - The `claude-isolation-flags` line of `doctor` no longer names a Claude Code version. It said
@@ -243,7 +247,9 @@ real Node 22 showed the code already supported.
 - The long description of what the repository holds (the npm package, the plugin, the
   marketplace, the story of the npm name, the engine) moved from the top of both READMEs to a
   section of its own, "O que há no repositório" ("What is in the repository"), after the
-  first-run path and before "O que funciona hoje". Nothing in it changed. A reader who goes
+  first-run path and before "O que funciona hoje". Its wording is plainer (the npm package,
+  `lint`, the frontmatter and the configuration file each gain a short gloss) and it names
+  Node.js 22 and 24 where it named 24; no fact it held was dropped. A reader who goes
   from the top to the bottom now crosses the glossary and the requirements before it, instead
   of a screenful of npm and plugin vocabulary.
 - The requirements are cut to what the first pull request needs (Node.js 22 or newer, git, a logged-in
