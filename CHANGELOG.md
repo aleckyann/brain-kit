@@ -13,11 +13,14 @@
   lightweight (no message), and nothing related the version in `package.json` to the
   CHANGELOG or to the READMEs, which is how the READMEs still described the stage of 0.0.2
   four releases later. `scripts/release-notes.mjs` (maintainer tooling, not in the
-  package) runs eight checks, each with a stable id: `changelog-section` (exactly one
-  `## <version>` heading, with text, at most 120000 characters), `changelog-order` (version
-  headings strictly descending, each once, `## Unreleased` once and only above them),
-  `status-stamp`, `status-latest-tag`, `install-literals` and, only for a tag,
-  `tag-version`, `tag-annotated` and `unreleased-empty`.
+  package) runs nine checks, each with a stable id: `package-version` (a valid version in
+  `package.json`, which every other check is relative to), `changelog-section` (exactly one
+  `## <version>` heading, with text, at most 120000 characters, and no code fence left
+  open), `changelog-order` (version headings strictly descending, each once, `## Unreleased`
+  once and only above them, and nothing but `## Unreleased` above the first version heading,
+  so a `## [Unreleased]` cannot hide entries), `status-stamp`, `status-latest-tag`,
+  `install-literals` and, only for a tag, `tag-version`, `tag-annotated` and
+  `unreleased-empty`.
 - `test/release-docs.test.mjs` tests each check against hand-built fixtures and runs the
   checks, without a tag, over the repository's own files, so they run on every `npm test`
   and in CI on every push. An ordinary commit passes them; a version bump that left the
@@ -29,8 +32,9 @@
 - `.github/workflows/release.yml` publishes the GitHub Release when a tag `v*` is pushed:
   it runs the checks on the tag (which must be annotated, with a subject), takes the
   CHANGELOG section of the version as the body with a last line `Full diff` to the previous
-  tag, and uses the tag's subject as the title. The tag and the token reach the shell only
-  through `env`. A re-run of the job edits the Release instead of creating a second one. It
+  tag, and uses the tag's subject as the title. It fetches the annotated tag object again
+  before the check, because `actions/checkout` rewrites a pushed annotated tag as a
+  lightweight one. The tag and the token reach the shell only through `env`. A re-run of the job edits the Release instead of creating a second one. It
   does not wait for CI, and attaches nothing.
 - `docs/releasing.md` is the maintainer checklist (six version fields, the CHANGELOG as the
   specification, the Status re-read and re-stamp, annotated tag, what to do when the

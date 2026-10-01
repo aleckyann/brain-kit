@@ -17,10 +17,11 @@ or README that was broken.
 
 ## Checklist
 
-1. **Bump the six version fields**, in one commit named `chore: version X.Y.Z`:
-   `package.json`, `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`,
-   `lang/en/config.defaults.json` (`kit_version`), `lang/pt-BR/config.defaults.json`
-   (`kit_version`), and the CHANGELOG heading.
+1. **Bump the six version fields**: `package.json`, `.claude-plugin/plugin.json`,
+   `.claude-plugin/marketplace.json`, `lang/en/config.defaults.json` (`kit_version`),
+   `lang/pt-BR/config.defaults.json` (`kit_version`), and the CHANGELOG heading. Steps 1 to
+   3 go into the same commit, named `chore: version X.Y.Z`: a commit that bumps the version
+   without the CHANGELOG section, the stamp and the latest-tag sentence fails the suite.
 2. **Write the specification.** In `CHANGELOG.md`, rename `## Unreleased` to
    ``## X.Y.Z (tagged `vX.Y.Z`, not on npm)``. The section must say what was done in this
    version: what a person who uses the kit sees change, why, and what is left out on
@@ -52,7 +53,8 @@ or README that was broken.
    is an annotated one with an empty subject. The second command is the same check the
    workflow runs, run before the push.
 7. **Let the Release workflow publish.** It runs only on the push of a tag named `v*`. It
-   checks the tag (`check --tag`), builds the body from the CHANGELOG section of the version
+   first fetches the annotated tag object again (on a tag push `actions/checkout` rewrites
+   the tag as a lightweight one), then checks the tag (`check --tag`), builds the body from the CHANGELOG section of the version
    plus a last line `Full diff: <compare link>` to the previous tag, and creates the Release
    with `--verify-tag`. If a Release for the tag already exists it edits it with the same
    title and body, so running the job again is safe.
@@ -63,8 +65,9 @@ or README that was broken.
 
 | Id | What it refuses |
 |---|---|
-| `changelog-section` | no `## X.Y.Z` heading (a suffix after the version is fine), two of them, a section with no text, or a section over 120000 characters (GitHub refuses a Release body over 125000) |
-| `changelog-order` | version headings not strictly descending by semver, a version twice, `## Unreleased` twice or below a version heading |
+| `package-version` | `package.json` without a valid `X.Y.Z` version; every other check is relative to it, so it is reported alone |
+| `changelog-section` | no `## X.Y.Z` heading (a suffix after the version is fine), two of them, a section with no text, a section over 120000 characters (GitHub refuses a Release body over 125000), or a CHANGELOG that ends inside an unclosed code fence |
+| `changelog-order` | version headings not strictly descending by semver, a version twice, `## Unreleased` twice or below a version heading, any other level-two heading above the first version heading (`## [Unreleased]`, `## Unreleased (next)`, `## Unreleased:`) |
 | `status-stamp` | a README without exactly one `<!-- status-reviewed: X.Y.Z -->`, or one whose version is not the one in `package.json` |
 | `status-latest-tag` | a Status section without the latest-tag sentence for this version, in either language |
 | `install-literals` | a literal tag (`v1.2.3`) or tarball name in a fenced code block of either README |
