@@ -489,10 +489,12 @@ function messageText(line) {
 
 // Whether a line is the harness's own by its own marks: isMeta (an
 // expanded slash command or skill body, a caveat), a compact summary
-// (isCompactSummary, isVisibleInTranscriptOnly), or a user line whose
-// `origin.kind`, when it carries one, is none of HUMAN_ORIGINS.
+// (isCompactSummary, isVisibleInTranscriptOnly), a subagent's side of the
+// conversation (isSidechain: its "user" lines are prompts the model wrote,
+// not the person), or a user line whose `origin.kind`, when it carries
+// one, is none of HUMAN_ORIGINS.
 function harnessLine(line) {
-  if (line.isMeta === true || line.isCompactSummary === true || line.isVisibleInTranscriptOnly === true) return true;
+  if (line.isMeta === true || line.isCompactSummary === true || line.isVisibleInTranscriptOnly === true || line.isSidechain === true) return true;
   if (line.type !== 'user') return false;
   const origin = line.origin ?? line.message?.origin;
   return origin !== null && typeof origin === 'object' && typeof origin.kind === 'string' && !HUMAN_ORIGINS.includes(origin.kind);

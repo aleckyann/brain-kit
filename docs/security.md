@@ -293,7 +293,8 @@ What the model reads of a session, written by the round before the model starts
 - **What is filtered out, exactly.** Every tool call, tool result and thinking block (only
   the `text` blocks of a message are read). Every line Claude Code marks as its own:
   `isMeta` (an expanded slash command or skill, a caveat), `isCompactSummary` and
-  `isVisibleInTranscriptOnly` (a compact summary), and a user line whose `origin.kind` is
+  `isVisibleInTranscriptOnly` (a compact summary), `isSidechain` (a subagent's side of the
+  conversation, whose "user" lines are prompts a model wrote, in both roles), and a user line whose `origin.kind` is
   present and is not `human`, `remote` or `suggestion` (a task notification, another
   session or agent, a channel, a plugin, an automatic continuation). From what is left of
   a user line, every block of the tags Claude Code writes itself is removed wherever it

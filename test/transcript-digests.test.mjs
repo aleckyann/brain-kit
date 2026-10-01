@@ -182,6 +182,20 @@ test('a line the harness marks as its own is dropped on that mark alone: isMeta 
   assert.deepEqual(bodyOf(plan, file), ['[01:03 user] Ana stays']);
 });
 
+// Found by the adversarial review of the digests: a subagent's "user" lines
+// are prompts the model wrote, and showed up as the person's words.
+test('a subagent\'s side of the conversation (isSidechain) is dropped on that mark alone, in both roles', () => {
+  const world = makeWorld();
+  const file = world.write(PROJECT, 'a.jsonl', [
+    { ...user('SECRET-SUBAGENT-PROMPT written by the model', MINUTE(0)), isSidechain: true },
+    { ...assistant('SECRET-SUBAGENT-REPLY', MINUTE(1)), isSidechain: true },
+    user('Ana stays', MINUTE(2)),
+  ]);
+  const plan = world.collect();
+  assert.doesNotMatch(digestText(plan, file), /SECRET/);
+  assert.deepEqual(bodyOf(plan, file), ['[01:02 user] Ana stays']);
+});
+
 test('a tag only quoted, a person\'s own "Caveat:", and the assistant\'s words are kept as written: in doubt, include', () => {
   const world = makeWorld();
   const file = world.write(PROJECT, 'a.jsonl', [
