@@ -28,3 +28,5 @@ Uma senha, um token ou uma chave privada commitados aqui estão comprometidos no
 1. Revogue ou troque o segredo primeiro, na origem. Tirá-lo do arquivo não desfaz a exposição.
 2. Remova-o do arquivo e do histórico.
 3. Duas verificações procuram formatos de credencial, e cada uma lê uma coisa. O `brain-kit lint` lê a árvore de trabalho: todo arquivo que o git rastreia ou adicionaria, do jeito que está agora. A verificação de pre-push lê o que um push leva, todo commit que ele enviaria, e recusa o push se algum deles tiver um formato de credencial. Acrescente os seus próprios formatos em `privacy.secret_patterns` na configuração.
+
+A página passo a passo, na ordem em que as coisas devem ser feitas quando a pressão é alta (um segredo num commit, um repositório que ficou público por engano, dados pessoais de alguém para remover, um curador que fez o que não devia), é o `docs/incident-response.md` do repositório do brain-kit: https://github.com/aleckyann/brain-kit/blob/main/docs/incident-response.md

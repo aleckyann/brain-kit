@@ -4,7 +4,7 @@ title: Security and personal data
 description: How this vault treats data about third parties, how to remove it on request, and what to do if a secret gets in.
 generated:
   by: process:brain-kit-init
-  at: 2026-10-01T12:46:59+00:00
+  at: 2026-10-01T14:01:21+00:00
 ---
 
 # Security and personal data
@@ -28,3 +28,5 @@ A password, token or private key committed here is compromised the moment it is 
 1. Revoke or rotate the secret first, at its source. Removing it from the file does not undo the exposure.
 2. Remove it from the file and from the history.
 3. Two checks look for credential shapes, and they read different things. `brain-kit lint` reads the working tree: every file git tracks or would add, as it stands now. The pre-push gate reads what a push carries, every commit it would send, and refuses the push if one holds a credential shape. Add your own shapes to `privacy.secret_patterns` in the configuration.
+
+The step-by-step page, in the order to do things when stress is high (a secret in a commit, a repository that was public by mistake, someone's personal data to remove, a curator that did something it should not), is `docs/incident-response.md` in the brain-kit repository: https://github.com/aleckyann/brain-kit/blob/main/docs/incident-response.md

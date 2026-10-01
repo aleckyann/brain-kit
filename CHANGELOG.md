@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The `SECURITY.md` that `init` writes into every vault now points to `docs/incident-response.md` (by its absolute address, since a vault does not hold the kit's
+  docs), in both languages, because that is where the lint finding for a secret and the push
+  gate send a person. A vault created earlier gets the paragraph with `brain-kit update`;
+  `examples/minimal-vault` was refreshed the same way, and `test/vault-security-template.test.mjs`
+  fails if the pointer disappears.
 - `docs/incident-response.md` exists. It says what to do, in order (rotate first, rewrite the
   history second, tell people third), when a secret or a third party's personal data is in a
   vault, when the repository was public, and when the curator did something it should not
