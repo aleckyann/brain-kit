@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- A vault that already has its configuration can now be set up on a second machine from the
+  CLI, which before had no way at all: a clone on a laptop, or a curator machine rebuilt after
+  an incident, had no `machine.json`, `machine show` and `machine set` sent it to `init --adopt`
+  (which refuses an adopted vault and suggested deleting its configuration, its manifest and
+  its state to start over), and `machine register` refuses to guess on purpose. The new
+  `brain-kit machine register --new` is the person's statement that this machine has never had
+  state for the vault. It writes `machine.json` exactly as `init` does (one function now writes
+  both: detected `claude`, the state directory at 0700, the file at 0600) and nothing else: no
+  watermark, so the first round reads only yesterday, and no file of the vault. It refuses, writing
+  nothing, a folder that is not a configured vault (valid configuration and manifest), a
+  `machine.json` already there whatever it holds, a state directory that holds anything but the
+  trace of a round that stopped for lack of `machine.json`, the combination with `--from`, and,
+  unless `BRAIN_KIT_STATE_DIR` pins the state, a sibling state of a vault of the same folder
+  name that is no longer where its record says (or whose recorded path now leads here), which
+  is this vault before it moved and the case for `--from`. `machine show`, `machine set`,
+  `machine register`, `doctor`, the Stop hook, `curate` and `schedule` now name it where they
+  reported the missing file (`curate` said "created by brain-kit init from phase 1 onward"),
+  and `init --adopt` on an adopted vault leads with it and keeps the start-over recovery last.
+  `docs/scheduling.md` gets "The same vault on a second machine" (clone, `--new`, `doctor`,
+  `schedule install` only where the rounds run, and why two machines on a schedule would each
+  propose the same day); both READMEs point to it, and `docs/incident-response.md` names `--new`
+  for a curator machine whose state is gone.
 - `docs/incident-response.md` exists. It says what to do, in order (rotate first, rewrite the
   history second, tell people third), when a secret or a third party's personal data is in a
   vault, when the repository was public, and when the curator did something it should not

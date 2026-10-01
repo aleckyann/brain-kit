@@ -241,6 +241,12 @@ it as exposed: rotate it now ([section 1](#1-the-rule-of-the-first-minutes)).
    - Clone the vault again, best at the same path: the curator's state (its logs, its marks) is
      kept under a name made from that path, so nothing needs registering. At another path, run
      `brain-kit machine register --from <old path>` in the new clone.
+     If this machine has no state for the vault any more (it was rebuilt, or you deleted the
+     whole state directory), there is nothing to carry over: run
+     `brain-kit machine register --new` in the new clone instead. It writes a fresh
+     `machine.json` and no watermark, so the first round reads only yesterday; set each
+     source's mark with `brain-kit watermark set <source> <YYYY-MM-DD>` if you know the last
+     day it had swept.
    - In the new clone run `git config core.hooksPath .githooks` (a fresh clone has no gate),
      then `brain-kit doctor` and `brain-kit schedule install`.
    - When `brain-kit doctor` is green on the new clone, delete the moved-aside old clone. It

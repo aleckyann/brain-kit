@@ -160,6 +160,13 @@ From here on, [The scheduled curator](#the-scheduled-curator) feeds the vault fr
 Claude Code sessions without you asking, and [The morning briefing](#the-morning-briefing)
 tells you each morning where it stands.
 
+A vault you have already set up opens on another machine with a `git clone`, and that
+machine needs a `machine.json` of its own, which lives outside the vault:
+`brain-kit machine register --new` writes it, and `brain-kit doctor` checks it. Let only one
+machine run the curator's rounds;
+[docs/scheduling.md](docs/scheduling.md#the-same-vault-on-a-second-machine) has the steps
+and says why.
+
 ## What works today
 
 A vault is a directory holding a `brain-kit.config.json` and a root `index.md`; the
