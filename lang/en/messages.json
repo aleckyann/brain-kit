@@ -891,6 +891,7 @@
   "propose.dirty_before": "--all refused: these files were already changed when the session began ({at}), and may be another session's unfinished work: {files}. Propose your own paths with --only, or confirm them with --all --yes. Nothing was changed.",
   "propose.validate_failed": "Nothing was proposed: validate failed (exit {code}) on the working tree. Fix the findings above, then run again.",
   "propose.lint_failed": "Nothing was proposed: lint --base worktree failed (exit {code}). Fix the findings above, then run again.",
+  "propose.no_commit": "This repository has no commit yet, so propose has nothing to build on. Make the first commit:\n  git add -A\n  git commit -m \"first commit\"\nThen run propose again. Nothing was changed.",
   "propose.no_default_branch": "No default branch is known to propose against: {file} sets no vault.default_branch, and neither remote {remote} (HEAD, main, master) nor a local main or master names one. Set it there. Nothing was changed.",
   "propose.default_branch_invalid": "vault.default_branch in {file} is \"{name}\", which is not a branch name, so there is no base to propose against. Nothing was changed.",
   "propose.local_upstream": "The default branch {branch} tracks a branch of this same repository ({key} is \".\"), not a remote, so there is no remote base to propose against. Point it at the remote branch it publishes to, then run again. Nothing was changed.",

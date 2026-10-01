@@ -891,6 +891,7 @@
   "propose.dirty_before": "--all recusado: estes arquivos já estavam mudados quando a sessão começou ({at}) e podem ser trabalho inacabado de outra sessão: {files}. Proponha os seus caminhos com --only, ou confirme-os com --all --yes. Nada foi mudado.",
   "propose.validate_failed": "Nada foi proposto: o validate falhou (saída {code}) na árvore de trabalho. Corrija os achados acima e rode de novo.",
   "propose.lint_failed": "Nada foi proposto: o lint --base worktree falhou (saída {code}). Corrija os achados acima e rode de novo.",
+  "propose.no_commit": "Este repositório ainda não tem nenhum commit, então não dá para propor nada por enquanto. Faça o primeiro commit:\n  git add -A\n  git commit -m \"primeiro commit\"\nDepois rode o propose de novo. Nada foi mudado.",
   "propose.no_default_branch": "Nenhum branch padrão conhecido contra o qual propor: {file} não define vault.default_branch, e nem o remoto {remote} (HEAD, main, master) nem um main ou master local nomeiam um. Defina-o lá. Nada foi mudado.",
   "propose.default_branch_invalid": "vault.default_branch em {file} é \"{name}\", que não é nome de branch, então não há base contra a qual propor. Nada foi mudado.",
   "propose.local_upstream": "O branch padrão {branch} acompanha um branch deste mesmo repositório ({key} é \".\"), não um remoto, então não há base remota contra a qual propor. Aponte-o para o branch remoto em que ele publica, e rode de novo. Nada foi mudado.",
