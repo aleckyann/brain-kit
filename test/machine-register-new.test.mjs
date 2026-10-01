@@ -793,7 +793,14 @@ test('S4: the second-machine steps give the clone its push gate: the section, bo
   }
   const incident = readFileSync(join(KIT_ROOT, 'docs', 'incident-response.md'), 'utf8');
   assert.ok(incident.indexOf(gate, incident.indexOf('machine register --new')) > 0, 'the gate comes after the registration there');
-  for (const lang of ['en', 'pt-BR']) assert.ok(loadMessages(lang)['machine.register_new_next'].includes('core.hooksPath'), lang);
+  for (const lang of ['en', 'pt-BR']) {
+    const next = loadMessages(lang)['machine.register_new_next'];
+    const at = (needle) => next.indexOf(needle);
+    assert.ok(at('core.hooksPath') > -1, lang);
+    // The order a person must follow: the push gate first, then the check that looks for it, then the schedule.
+    assert.ok(at('core.hooksPath') < at('brain-kit doctor'), `${lang}: git config before doctor`);
+    assert.ok(at('brain-kit doctor') < at('brain-kit schedule install'), `${lang}: doctor before schedule install`);
+  }
 });
 
 // --- S5: plain init on a configured clone ---------------------------------------------------------
