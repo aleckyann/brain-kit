@@ -44,6 +44,62 @@
   is a machine where Claude Code never ran. A vault whose own project cannot be named has its own
   messages (`vault_unnamed`, `some_unnamed`) in place of "the list is empty" and "a project is
   missing".
+- `propose` in a repository that has no commit yet says so, and gives the fix. A vault made
+  by `init` has no commit until its owner makes one, and `propose` run before that said the
+  default branch could not be found and sent the person to `vault.default_branch` in the
+  configuration; following it led to "no remote called origin", to a `gh repo create` that
+  failed with "src refspec HEAD does not match any ref", and to "push the default branch
+  first" with no command: ten minutes in a maze whose only cause was the missing commit.
+  The check now comes first, before any path, default branch or remote, in the dry run and
+  the real run alike (exit 1, as the refusals it used to run into), and names the two
+  commands (`git add -A`, `git commit -m "first commit"`). It judges the repository, not
+  HEAD alone, so a repository with history whose checked-out branch is an orphan still
+  proposes.
+- `sync` with changes that were not committed no longer says "Commit, move or remove them",
+  which was the opposite of what the READMEs say (the file a session changed stays
+  uncommitted until its pull request is merged; committed on the default branch it makes
+  `sync` report "diverged" later). It names both honest paths: propose them with
+  `brain-kit propose "<summary>" --only <paths>` and run `sync` again after the merge,
+  without committing them on the default branch; or, if they are yours to keep, commit them
+  on another branch or stash them.
+- `sync` no longer offers a recovery command for a ref it has just removed. After a merge it
+  printed how to get a file back with `git restore --source=refs/brain-kit/proposed/<branch>`
+  and, one line below, that it had removed that very ref; the command failed with "could not
+  resolve". The line that reports the files brought back to HEAD now names the paths and the
+  branches only; how to get a file back is a separate sentence (`sync.proposed_recover`) said
+  last, in every outcome, and only for a ref git still resolves to the proposal's commit
+  when `sync` is done. A ref removed in the same run is not offered: the line that says it
+  was removed already says the default branch holds the content.
+- An unknown command (`brain-kit doctr`) now prints the unknown-command sentence, a
+  suggestion when a known command is close, and one line pointing to `brain-kit --help`,
+  instead of twenty-five to thirty lines of usage; exit 2 as before, and `brain-kit` with no
+  command, `--help`, `-h` and `help` still print the full usage. A command is suggested when
+  it is within two edits of what was typed (one for a word of three letters, and none for
+  one of one or two, which count only as the beginning of a command: "oo" is not a slip of
+  `hook`; every nearest command when several tie), or when what was typed is the beginning
+  of exactly one command. The names come from the command
+  table the CLI runs, the two commands its usage leaves out (`scan-blobs`, `push-gate`) are
+  never offered, and a suggestion is a sentence: nothing it names is run.
+- Every command that cannot run outside a vault now ends its "no vault found" message with
+  the same two sentences: "If you already have a vault, go into its folder (cd <folder>) or
+  pass -C <folder>. To create a new one: brain-kit init <dir>." Five commands said "To
+  create one" and eight said nothing, and the common case is a person who has a vault and
+  forgot to `cd` into it, whom "to create one" sent to make a second. `machine register
+  --new` keeps its own account of `--new` and takes the first sentence. A test walks both
+  packs, so a command added later with a `no_vault` message cannot skip the ending.
+- `init` on a folder of loose notes, and `init --adopt` on the same folder, no longer end in
+  a dead end. `init` refused the folder and pointed at `--adopt`; `--adopt` refused it for
+  want of an `index.md` at its root and ended with "Nothing was written". `init` now says
+  what adopting needs (a git repository, and an `index.md` at the root that lists the
+  folders) and the simplest way out (`brain-kit init <new-dir>` in a new, empty folder, and
+  the notes moved in); `--adopt` says how to supply what is missing, with a three-line
+  `index.md` as an example, and `git init` for a folder that is not a repository. Message-only:
+  `--adopt` still writes nothing when it refuses.
+- Three Portuguese sentences a Brazilian reader found wrong are rewritten: the dry run's
+  "Proporia X como ..., enviados para ..." (a plural participle for one file), the first
+  line of a session ("Retrato da sessão tirado", a word-for-word "snapshot taken") and the
+  Stop hook's "0 caminho(s) ... ficaram de fora: não cabe a esta sessão propô-los", which
+  read as cut short. The English pack is unchanged.
 
 ## 0.0.8 (tagged `v0.0.8`, not on npm)
 

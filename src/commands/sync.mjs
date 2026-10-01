@@ -19,7 +19,12 @@
 //      pushed (the proposed-paths ledger, src/guards/proposed.mjs) is
 //      brought back to HEAD and said, and the ledger pruned: its content
 //      is kept by a local ref (`refs/brain-kit/proposed/<slug>`, removed
-//      after a proved fetch once the default branch holds that content). A
+//      after a proved fetch once the default branch holds that content). The
+//      line that says so names the paths and the branches and no command:
+//      how to get a file back from the ref is said LAST, once, in every
+//      outcome, and only for a ref that is still there then (the second
+//      stranger's F7: it used to be said first, and one line below the run
+//      reported that it had removed that very ref). A
 //      path whose entry lost its ref is left as it is. Then a dirty working
 //      tree (anything `git status` reports but an ignored file) postpones
 //      the run, exit 75, naming every file, before any fetch: nothing else
@@ -160,12 +165,24 @@ export async function runSync(argv, io, t, deps = {}) {
 // is filled with `{ diverged: true }` for the one exit 1 a caller may want
 // to tell from the others (`curate` postpones on it, exit 75).
 export function syncUnderLock(root, io, t, env, outcome = {}) {
+  // What step 2 brought back to HEAD, so that the hint to get it back from
+  // its ref is said at the end of the run, whatever the run's outcome, for
+  // the refs that are still there then.
+  const brought = [];
+  try {
+    return syncSteps(root, io, t, env, outcome, brought);
+  } finally {
+    sayHowToGetBack(root, io, t, env, brought);
+  }
+}
+
+function syncSteps(root, io, t, env, outcome, brought) {
   const operation = operationInProgress(root, { env });
   if (operation !== null) {
     io.stderr.write(`${t('sync.operation_in_progress', { operation })}\n`);
     return EXIT.TEMPFAIL;
   }
-  restoreProposed(root, io, t, env);
+  restoreProposed(root, io, t, env, brought);
   const dirty = dirtyPaths(root, { env });
   if (dirty.length > 0) {
     io.stderr.write(`${t('sync.dirty', { files: dirty })}\n`);
@@ -259,8 +276,9 @@ export function syncUnderLock(root, io, t, env, outcome = {}) {
 // caller holds, but only when the entry's local ref
 // (`refs/brain-kit/proposed/<branch slug>`) still points at the entry's
 // commit: the bytes then stay reachable here whatever happened to the pushed
-// branch (ruling R-F2), and the line names the ref and the command that
-// brings a file back. A path whose entry has lost its ref is left exactly as
+// branch (ruling R-F2), and the line names the paths and the branches; what
+// each brought-back path was is kept in `brought`, for the hint that closes
+// the run (sayHowToGetBack). A path whose entry has lost its ref is left exactly as
 // it is, said, and postpones the run like any dirty file. Then every entry
 // that lost its ref, and every entry none of whose paths is still dirty, is
 // pruned (by its branch, commit and paths, so an entry appended meanwhile
@@ -268,7 +286,7 @@ export function syncUnderLock(root, io, t, env, outcome = {}) {
 // edit makes the path proposed again. A path edited after the push does not
 // match, stays dirty, and still postpones the run. A ledger that cannot be
 // read or does not validate changes nothing but one line on stderr.
-function restoreProposed(root, io, t, env) {
+function restoreProposed(root, io, t, env, brought) {
   const ledger = readLedger(root, env);
   if (ledger.state === 'invalid' || ledger.state === 'unreadable') {
     io.stderr.write(`${t('proposed.ledger_ignored', { file: ledger.file ?? '-', detail: ledger.detail ?? t('proposed.ledger_not_valid') })}\n`);
@@ -281,9 +299,8 @@ function restoreProposed(root, io, t, env) {
   if (match.matching.length > 0) {
     const branches = branchesOf(match);
     const restored = restoreMatching(root, match, env);
-    const refs = [...new Set(restored.map((path) => proposedRef(match.details.get(path).entry.branch)))];
-    const recover = restored.map((path) => `git restore --source=${proposedRef(match.details.get(path).entry.branch)} -- ${path}`);
-    io.stdout.write(`${t('sync.restored_proposed', { count: restored.length, paths: restored, branches, refs, recover })}\n`);
+    for (const path of restored) brought.push({ path, entry: match.details.get(path).entry });
+    io.stdout.write(`${t('sync.restored_proposed', { count: restored.length, paths: restored, branches })}\n`);
   }
   const orphaned = proposedMatch(root, unpinned, env, { paths: dirty });
   if (orphaned.matching.length > 0) {
@@ -302,6 +319,28 @@ function restoreProposed(root, io, t, env) {
 function dropMerged(root, io, t, env, tip) {
   const dropped = dropMergedRefs(root, tip, env);
   if (dropped.length > 0) io.stdout.write(`${t('sync.proposed_refs_dropped', { count: dropped.length, refs: dropped })}\n`);
+}
+
+// The end of a run that brought proposed paths back to HEAD: how to get a file
+// back from the local ref that keeps its content, said once and last, and only
+// for a path whose ref still points at its proposal's commit NOW. Earlier in
+// the run, `dropMerged` removes the refs the default branch has caught up
+// with, and a command for a ref that is gone fails ("could not resolve"),
+// which is what this used to offer one line before saying it had removed
+// the ref. Asked here, git says what is still there. A hint is not a verdict:
+// when git cannot be asked, nothing is said, never a command nobody vouched for.
+function sayHowToGetBack(root, io, t, env, brought) {
+  if (brought.length === 0) return;
+  try {
+    const { pinned } = pinnedEntries(root, [...new Set(brought.map((item) => item.entry))], env);
+    const left = brought.filter((item) => pinned.includes(item.entry));
+    if (left.length === 0) return;
+    const refs = [...new Set(left.map((item) => proposedRef(item.entry.branch)))];
+    const recover = left.map((item) => `git restore --source=${proposedRef(item.entry.branch)} -- ${item.path}`);
+    io.stdout.write(`${t('sync.proposed_recover', { refs, recover })}\n`);
+  } catch {
+    // Nothing is said: see above.
+  }
 }
 
 // Checkout, fast-forward, prove, return, prove. Every failure still tries

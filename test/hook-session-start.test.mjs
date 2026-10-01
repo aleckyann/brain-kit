@@ -227,7 +227,8 @@ test('a lock whose holder is provably dead is named as stale with brain-kit doct
 test('a pt-BR vault gets its line in Portuguese whatever the environment says', () => {
   const fx = makeHookVault({ lang: 'pt-BR' });
   const line = contextOf(start(fx, { session_id: 's1', source: 'startup' }));
-  assert.match(line, /Retrato da sessão tirado/);
+  assert.match(line, /Ao começar esta sessão, \d+ caminho\(s\) do vault já estavam alterados/);
+  assert.doesNotMatch(line, /Retrato da sessão tirado/);
 });
 
 test('the hook writes nothing into the working tree', () => {

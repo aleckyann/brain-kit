@@ -861,16 +861,19 @@ test('syncUnderLock refuses a dirty tree with the same words and exit as runSync
 
 // --- what an earlier propose already holds (final review of phase 4, C1) ---------
 
-async function proposeIn(world, argv) {
+async function proposeIn(world, argv, at = PROPOSE_NOW) {
   const f = fakeIo();
-  const code = await runPropose(argv, f.io, t, { env: world.env, cwd: world.vault, now: () => PROPOSE_NOW, walkVault, tmpdir: world.tmp });
+  const code = await runPropose(argv, f.io, t, { env: world.env, cwd: world.vault, now: () => at, walkVault, tmpdir: world.tmp });
   assert.equal(code, EXIT.OK, f.stderr());
 }
 
 const ledgerOf = (world) => join(world.vault, '.git', 'brain-kit-proposed.json');
 const PROPOSED_REF = `refs/brain-kit/proposed/${PROPOSE_BRANCH.replace(/\//g, '-')}`;
-const restoredParams = (paths) => ({
-  count: paths.length, paths, branches: [PROPOSE_BRANCH], refs: [PROPOSED_REF], recover: paths.map((path) => `git restore --source=${PROPOSED_REF} -- ${path}`),
+const restoredParams = (paths, branches = [PROPOSE_BRANCH]) => ({ count: paths.length, paths, branches });
+// The hint to get a file back from the ref that keeps it: said once, last,
+// and only for a ref that still exists when sync is done with it.
+const recoverParams = (pairs) => ({
+  refs: [...new Set(pairs.map(([ref]) => ref))], recover: pairs.map(([ref, path]) => `git restore --source=${ref} -- ${path}`),
 });
 
 test('a path an earlier propose pushed, byte for byte, is brought back to HEAD and said, the ledger pruned, and sync goes on instead of postponing', async () => {
@@ -884,6 +887,7 @@ test('a path an earlier propose pushed, byte for byte, is brought back to HEAD a
   assert.equal(r.stdout, [
     line('sync.restored_proposed', restoredParams(['index.md', 'notes/new.md'])),
     line('sync.up_to_date', { branch: 'main', upstream: 'origin/main' }),
+    line('sync.proposed_recover', recoverParams([[PROPOSED_REF, 'index.md'], [PROPOSED_REF, 'notes/new.md']])),
   ].join(''));
   assert.equal(readFileSync(join(world.vault, 'index.md'), 'utf8'), '# Index\n');
   assert.equal(existsSync(join(world.vault, 'notes', 'new.md')), false, 'a new file HEAD lacks is removed; it lives on the pushed branch');
@@ -900,6 +904,7 @@ test('behind the remote with a proposed path in the tree: restored, then fast-fo
   assert.equal(r.code, EXIT.OK, r.stderr);
   assert.ok(r.stdout.startsWith(line('sync.restored_proposed', restoredParams(['notes/a.md']))), r.stdout);
   assert.match(r.stdout, /fast-forwarded/);
+  assert.ok(r.stdout.endsWith(line('sync.proposed_recover', recoverParams([[PROPOSED_REF, 'notes/a.md']]))), 'the hint is the last thing said, for a ref that is still there');
 });
 
 test('one byte changed after the push still postpones, naming it, and the file is left exactly as it is', async () => {
@@ -921,7 +926,10 @@ test('a proposed path is restored and another dirty file still postpones, naming
   world.write('drafts/theirs.md', note('Theirs'));
   const r = await sync(world);
   assert.equal(r.code, EXIT.TEMPFAIL);
-  assert.equal(r.stdout, line('sync.restored_proposed', restoredParams(['notes/a.md'])));
+  assert.equal(r.stdout, [
+    line('sync.restored_proposed', restoredParams(['notes/a.md'])),
+    line('sync.proposed_recover', recoverParams([[PROPOSED_REF, 'notes/a.md']])),
+  ].join(''));
   assert.equal(r.stderr, line('sync.dirty', { files: ['drafts/theirs.md'] }));
 });
 
@@ -998,4 +1006,202 @@ test('an entry with a path edited after the push is kept by a sync that postpone
   const r = await sync(world);
   assert.equal(r.code, EXIT.OK, r.stderr);
   assert.ok(r.stdout.startsWith(line('sync.restored_proposed', restoredParams(['notes/a.md']))), r.stdout);
+});
+
+// --- what a dirty tree is told, and the recovery hint (the second stranger's F4 and F7, 01/10/2026) ---
+//
+// F4: with changes that were not committed, sync said "Commit, move or remove
+// them", the opposite of the README, which says the file a session changed
+// stays uncommitted until its pull request is merged (committed on the default
+// branch it makes sync report "diverged" later). A person who did as sync said
+// made exactly that mistake.
+//
+// F7: after the merge, sync printed how to get a file back from
+// refs/brain-kit/proposed/<branch> and, one line below, that it had removed
+// that very ref. The command it offered failed ("could not resolve").
+
+const DIRTY_TEXT = {
+  en: {
+    propose: /brain-kit propose "<summary>" --only <paths>/,
+    afterMerge: /run sync again after the merge/,
+    warn: /do not commit them on the default branch: sync would later report the branches as diverged/,
+    keep: /commit them on another branch or stash them \(git stash\)/,
+    old: /Commit, move or remove/,
+    // The only places the word may stand: the description of the tree, the
+    // warning, and the branch that is not the default one.
+    allowed: [/are not committed/g, /do not commit them on the default branch/g, /commit them on another branch/g],
+  },
+  'pt-BR': {
+    propose: /brain-kit propose "<resumo>" --only <caminhos>/,
+    afterMerge: /rode o sync de novo depois do merge/,
+    warn: /não faça commit delas no branch padrão, porque depois o sync recusaria, dizendo que os branches divergiram/,
+    keep: /faça commit delas em outro branch ou guarde-as com git stash/,
+    old: /Faça commit, mova ou apague/,
+    allowed: [/mudanças sem commit/g, /não faça commit delas no branch padrão/g, /faça commit delas em outro branch/g],
+  },
+};
+
+for (const lang of ['en', 'pt-BR']) {
+  test(`${lang}: sync.dirty names both honest paths: propose them and sync after the merge, or keep them on another branch or stashed`, () => {
+    const text = createTranslator(lang)('sync.dirty', { files: ['memoria/log.md'] });
+    const expected = DIRTY_TEXT[lang];
+    assert.match(text, expected.propose);
+    assert.match(text, expected.afterMerge);
+    assert.match(text, expected.warn, 'it says why the default branch is the wrong place for a commit');
+    assert.match(text, expected.keep);
+    assert.doesNotMatch(text, expected.old);
+    assert.match(text, /memoria\/log\.md/, 'it still names the files');
+    assert.doesNotMatch(text, /\{[a-z_]+\}/);
+  });
+
+  test(`${lang}: sync.dirty never tells anyone to commit on the default branch: every "commit" in it is the description, the warning or another branch`, () => {
+    let text = createTranslator(lang)('sync.dirty', { files: ['memoria/log.md'] });
+    for (const allowed of DIRTY_TEXT[lang].allowed) text = text.replace(allowed, '');
+    assert.doesNotMatch(text, /commit/i, text);
+  });
+}
+
+test('F4: the real sync with a change that is not committed (exit 75) says what the pack says, and moved nothing', async () => {
+  const world = makeProposeWorld();
+  world.write('memoria/log.md', note('Log'));
+  const before = repoState(world.vault);
+  const run = await sync(world);
+  assert.equal(run.code, EXIT.TEMPFAIL);
+  assert.equal(run.stderr, line('sync.dirty', { files: ['memoria/log.md'] }));
+  assert.match(run.stderr, /brain-kit propose "<summary>" --only <paths>/);
+  assert.deepEqual(repoState(world.vault), before);
+});
+
+// The owner's merge of a proposal's pull request, made on the remote as the
+// forge makes it: a merge commit on main holding the proposed branch.
+function mergeOnRemote(world, branch) {
+  git(world.elsewhere, ['pull', '-q', 'origin', 'main']);
+  git(world.elsewhere, ['fetch', '-q', 'origin']);
+  git(world.elsewhere, ['merge', '-q', '--no-ff', '-m', `Merge ${branch}`, `origin/${branch}`]);
+  git(world.elsewhere, ['push', '-q', 'origin', 'main']);
+}
+
+const refOf = (branch) => `refs/brain-kit/proposed/${branch.replace(/[^A-Za-z0-9._-]/g, '-')}`;
+const refExists = (world, ref) => gitProbe(world.vault, ['rev-parse', '-q', '--verify', ref]).status === 0;
+
+test('F7: a proposal merged on the remote: the file goes back to HEAD, the ref is removed, and no command is offered for a ref that is gone', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  await proposeIn(world, ['A', '--only', 'notes/a.md']);
+  mergeOnRemote(world, PROPOSE_BRANCH);
+  const from = world.sha('main');
+  const tip = world.sha('main', world.elsewhere);
+  assert.equal(refExists(world, PROPOSED_REF), true);
+  const r = await sync(world);
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  assert.equal(r.stderr, '');
+  assert.equal(r.stdout, [
+    line('sync.restored_proposed', restoredParams(['notes/a.md'])),
+    line('sync.proposed_refs_dropped', { count: 1, refs: [PROPOSED_REF] }),
+    line('sync.fast_forwarded', { branch: 'main', upstream: 'origin/main', behind: 2, from: short(from), to: short(tip) }),
+  ].join(''), 'the whole output, in order: restored, removed, fast-forwarded, and nothing to recover');
+  assert.doesNotMatch(r.stdout + r.stderr, /git restore/);
+  assert.equal(refExists(world, PROPOSED_REF), false);
+  assert.equal(readFileSync(join(world.vault, 'notes', 'a.md'), 'utf8'), note('A'), 'the merged content is in the tree');
+  assert.equal(git(world.vault, ['status', '--porcelain']), '');
+});
+
+test('F7: the same, in Portuguese: the sentence about the ref that stays on this machine is not said at all', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  await proposeIn(world, ['A', '--only', 'notes/a.md']);
+  mergeOnRemote(world, PROPOSE_BRANCH);
+  const f = fakeIo();
+  const code = await runSync([], f.io, createTranslator('pt-BR'), { env: world.env, cwd: world.vault });
+  assert.equal(code, EXIT.OK, f.stderr());
+  assert.doesNotMatch(f.stdout(), /git restore|continua guardado nesta máquina|continua nesta máquina/);
+  assert.match(f.stdout(), /Removidas 1 ref\(s\) locais/);
+});
+
+test('F7: a proposal not merged yet keeps its ref, and the hint comes last, with a command that works', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  await proposeIn(world, ['A', '--only', 'notes/a.md']);
+  const r = await sync(world);
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  assert.equal(r.stdout, [
+    line('sync.restored_proposed', restoredParams(['notes/a.md'])),
+    line('sync.up_to_date', { branch: 'main', upstream: 'origin/main' }),
+    line('sync.proposed_recover', recoverParams([[PROPOSED_REF, 'notes/a.md']])),
+  ].join(''));
+  assert.equal(refExists(world, PROPOSED_REF), true, 'the ref the hint names is there');
+  assert.equal(existsSync(join(world.vault, 'notes', 'a.md')), false, 'the file went back to HEAD');
+  // The command the hint offers is a command that works.
+  const restore = gitProbe(world.vault, ['restore', `--source=${PROPOSED_REF}`, '--', 'notes/a.md']);
+  assert.equal(restore.status, 0, restore.stderr);
+  assert.equal(readFileSync(join(world.vault, 'notes', 'a.md'), 'utf8'), note('A'));
+});
+
+test('F7: with two proposals and only one merged, the hint names the one whose ref is left and not the one that was removed', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  await proposeIn(world, ['A', '--only', 'notes/a.md']);
+  const later = new Date(PROPOSE_NOW.getTime() + 1000);
+  world.write('notes/b.md', note('B'));
+  await proposeIn(world, ['B', '--only', 'notes/b.md'], later);
+  const second = `${PROPOSE_BRANCH.slice(0, -2)}01`;
+  assert.equal(refExists(world, refOf(second)), true);
+  mergeOnRemote(world, PROPOSE_BRANCH);
+  const from = world.sha('main');
+  const tip = world.sha('main', world.elsewhere);
+  const r = await sync(world);
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  assert.equal(r.stdout, [
+    line('sync.restored_proposed', restoredParams(['notes/a.md', 'notes/b.md'], [PROPOSE_BRANCH, second])),
+    line('sync.proposed_refs_dropped', { count: 1, refs: [PROPOSED_REF] }),
+    line('sync.fast_forwarded', { branch: 'main', upstream: 'origin/main', behind: 2, from: short(from), to: short(tip) }),
+    line('sync.proposed_recover', recoverParams([[refOf(second), 'notes/b.md']])),
+  ].join(''));
+  assert.doesNotMatch(r.stdout, new RegExp(`--source=${PROPOSED_REF}`));
+  assert.equal(refExists(world, PROPOSED_REF), false);
+  assert.equal(refExists(world, refOf(second)), true);
+});
+
+test('F7: a run that ends early (a remote that cannot be reached) still says how to get the file back, since the ref is there', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  await proposeIn(world, ['A', '--only', 'notes/a.md']);
+  git(world.vault, ['remote', 'set-url', 'origin', join(world.base, 'gone.git')]);
+  const r = await sync(world);
+  assert.equal(r.code, EXIT.FAILURE, r.stderr);
+  assert.equal(r.stdout, [
+    line('sync.restored_proposed', restoredParams(['notes/a.md'])),
+    line('sync.proposed_recover', recoverParams([[PROPOSED_REF, 'notes/a.md']])),
+  ].join(''));
+  assert.match(r.stderr, /Could not fetch/);
+});
+
+test('F7: a ref the person removed by hand while sync ran is not offered either: the hint asks git at the end, not at the start', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  await proposeIn(world, ['A', '--only', 'notes/a.md']);
+  world.publish(1);
+  // A fetch that also deletes the ref, as a concurrent `git update-ref -d` would.
+  const env = withShim(world, { fetch: `real; code=$?; real update-ref -d ${PROPOSED_REF} >/dev/null 2>&1; exit $code` });
+  const r = await sync(world, [], { env });
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  assert.equal(refExists(world, PROPOSED_REF), false);
+  assert.doesNotMatch(r.stdout, /git restore/);
+});
+
+test('F7: a run that stops on an unexpected git failure (exit 1) still says how to get the file back', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  await proposeIn(world, ['A', '--only', 'notes/a.md']);
+  world.publish(1);
+  // The ahead and behind counts cannot be read: sync throws, and runSync turns that into exit 1.
+  const env = withShim(world, { 'rev-list': 'echo "fatal: bad object" >&2; exit 128' });
+  const r = await sync(world, [], { env });
+  assert.equal(r.code, EXIT.FAILURE, r.stderr);
+  assert.match(r.stderr, /rev-list/);
+  assert.equal(r.stdout, [
+    line('sync.restored_proposed', restoredParams(['notes/a.md'])),
+    line('sync.proposed_recover', recoverParams([[PROPOSED_REF, 'notes/a.md']])),
+  ].join(''));
+  assertUnlocked(world);
 });

@@ -1391,8 +1391,9 @@ test('the CLI\'s own messages follow the same resolution as init\'s default', ()
   assert.equal(pt.status, EXIT.USAGE);
   assert.equal(en.status, EXIT.USAGE);
   assert.match(en.stderr, /unknown command/);
+  assert.match(en.stderr, /^To see every command: brain-kit --help$/m, 'the English pointer to the usage');
   assert.doesNotMatch(pt.stderr, /unknown command/);
-  assert.match(pt.stderr, /^Uso: brain-kit/m, 'the Portuguese usage text');
+  assert.match(pt.stderr, /^Para ver todos os comandos: brain-kit --help$/m, 'the Portuguese pointer to the usage');
 });
 
 // --- nested inside another repository ------------------------------------------

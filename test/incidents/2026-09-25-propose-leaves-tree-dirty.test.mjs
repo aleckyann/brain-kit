@@ -127,7 +127,8 @@ test('25/09/2026 replayed: after propose, the Stop hook releases, a second propo
   const synced = w.kit(['sync']);
   assert.equal(synced.status, EXIT.OK, synced.stderr);
   const ref = `refs/brain-kit/proposed/${branch.replace(/\//g, '-')}`;
-  assert.ok(synced.stdout.startsWith(t('sync.restored_proposed', { count: 1, paths: [LOG], branches: [branch], refs: [ref], recover: [`git restore --source=${ref} -- ${LOG}`] })), synced.stdout);
+  assert.ok(synced.stdout.startsWith(t('sync.restored_proposed', { count: 1, paths: [LOG], branches: [branch] })), synced.stdout);
+  assert.ok(synced.stdout.endsWith(`${t('sync.proposed_recover', { refs: [ref], recover: [`git restore --source=${ref} -- ${LOG}`] })}\n`), 'the pull request is not merged, so the ref is there and the hint to get the file back is the last line');
   assert.equal(w.status(), '');
   assert.equal(readFileSync(join(w.root, LOG), 'utf8'), atHead);
   assert.equal(existsSync(w.ledger), false, 'the ledger is pruned once nothing holds proposed bytes');

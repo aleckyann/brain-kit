@@ -284,13 +284,16 @@ What `sync` brings back to HEAD always stays on this machine. With each ledger e
 `propose` makes a local ref at the pushed commit, `refs/brain-kit/proposed/<branch>` (a
 branch name with `/` turned into `-`), which is never pushed or fetched. Only an entry
 whose ref still points at its commit counts as proposed, so `sync` restores a file only
-when that ref holds exactly the file's bytes, and its line names the ref and the command
-that brings the file back, `git restore --source=<ref> -- <path>`. This holds when the
-pull request was never opened and the pushed branch was deleted on the remote. `sync`
-removes a ref after a fetch, once the default branch holds its content (merged, squashed
-or rebased), and says so. To list them: `git for-each-ref refs/brain-kit/proposed/`. To
-drop one yourself: `git update-ref -d <ref>`. The file it proposed then counts as
-unproposed work again, and `sync` leaves it where it is.
+when that ref holds exactly the file's bytes. Its line names the paths and the branches;
+the last line of the run names the ref and the command that brings a file back,
+`git restore --source=<ref> -- <path>`, and only for a ref that is still there when `sync`
+is done. This holds when the pull request was never opened and the pushed branch was
+deleted on the remote. `sync` removes a ref after a fetch, once the default branch holds
+its content (merged, squashed or rebased), and says so; a ref it removes in the same run
+is not offered, since the content is then on the default branch. To list them:
+`git for-each-ref refs/brain-kit/proposed/`. To drop one yourself:
+`git update-ref -d <ref>`. The file it proposed then counts as unproposed work again, and
+`sync` leaves it where it is.
 
 A question is marked answered only after the `propose` that records its answer exited 0
 or 3 with the commit pushed. When a curator round holds the vault's lock, the kit's
