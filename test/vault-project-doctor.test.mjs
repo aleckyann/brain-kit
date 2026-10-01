@@ -445,7 +445,7 @@ test('docs/scheduling.md says how a vault made by an earlier init switches to {v
 });
 
 test('the changelog says the same about the kit: every machine needs this one before the entry, and update raises kit_version', () => {
-  const text = section('CHANGELOG.md', '## Unreleased');
+  const text = section('CHANGELOG.md', '## 0.0.9 (tagged `v0.0.9`, not on npm)');
   assert.match(text, /every machine that opens the vault needs this kit or a newer one/i);
   assert.match(text, /an older kit reads `"\{vault\}"` as the name of a project/);
   assert.match(text, /`brain-kit update` first, which sets `kit_version`/);
