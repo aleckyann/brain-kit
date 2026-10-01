@@ -14,6 +14,10 @@ Every skill body is printed by a `!` line (`node .../bin/brain-kit.mjs prompt sk
 
 Measured on 24/09/2026 with Claude Code 2.1.281: the `tool_used: Skill` grader passes (the skill is picked from a request that does not name it), and the body is rendered in a real `claude -p --plugin-dir .` session. On a machine where the eval sandbox cannot start a shell (it failed there with a seccomp error on `/proc/self/setgroups`), no `!` line can run inside the eval, the body never reaches the model and the `llm` grader fails; that result says nothing about the skill.
 
+## Choosing the model of a real run
+
+The three opt-in real runs (`test/e2e-curate.test.mjs`, `test/e2e-connectors.test.mjs`, `test/e2e-briefing.test.mjs`) use the model alias `sonnet` unless `BRAIN_KIT_E2E_MODEL` names another, for example `BRAIN_KIT_E2E_MODEL=claude-opus-5-5`. Use it to rehearse the exact model a vault's `machine.json` will run before switching a scheduled round to it.
+
 ## The connector round
 
 `BRAIN_KIT_E2E_CONNECTORS=1 node --test test/e2e-connectors.test.mjs` runs one real round against your own claude.ai calendar and document store, with the real `claude` and a real, small cost; it never runs otherwise. It builds everything in a scratch folder under the system's temporary directory and prints its path. The round keeps the model's raw output (`--keep-stream`), so the state logs in that folder hold the real calendar and document content the model read: delete the folder once you have read the run. The real CLI also updates your own `~/.claude.json` for the scratch working directory, as any use of your login does.

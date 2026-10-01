@@ -36,7 +36,7 @@ const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
 const FAKE_CLAUDE = fileURLToPath(new URL('./helpers/fake-claude.mjs', import.meta.url));
 const PROJECT = '-home-ana-reading';
 const FACT = 'Ana decided to move the reading group to Thursdays';
-const MODEL = 'sonnet';
+const MODEL = process.env.BRAIN_KIT_E2E_MODEL || 'sonnet';
 const ROUND_TIMEOUT_MS = 30 * 60 * 1000;
 
 function findOnPath(name) {

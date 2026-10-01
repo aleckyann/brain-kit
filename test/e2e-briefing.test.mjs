@@ -69,7 +69,7 @@ import { BIN, TZ, WORLD, buildBriefingWorld, run } from './helpers/briefing-worl
 const ENABLED = process.env.BRAIN_KIT_E2E_BRIEFING === '1';
 const LANG = process.env.BRAIN_KIT_E2E_LANG || 'en';
 const FAKE_CLAUDE = fileURLToPath(new URL('./helpers/fake-claude.mjs', import.meta.url));
-const MODEL = 'sonnet';
+const MODEL = process.env.BRAIN_KIT_E2E_MODEL || 'sonnet';
 // The kit's own subcommands the session may run: the ones the briefing and
 // the skill body name, and the read-only ones a model reaches for.
 const KIT_SUBCOMMANDS = Object.freeze(['questions', 'validate', 'lint', 'propose', 'doctor', 'preflight']);

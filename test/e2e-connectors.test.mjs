@@ -57,7 +57,7 @@ const LANG = process.env.BRAIN_KIT_E2E_LANG || 'en';
 const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
 const FAKE_CLAUDE = fileURLToPath(new URL('./helpers/fake-claude.mjs', import.meta.url));
 const PROJECT = '-home-ana-reading';
-const MODEL = 'sonnet';
+const MODEL = process.env.BRAIN_KIT_E2E_MODEL || 'sonnet';
 const ROUND_TIMEOUT_MS = 30 * 60 * 1000;
 const CONNECTOR_SOURCES = Object.freeze(['calendar', 'meeting_notes']);
 // Each connector's write tools (src/sources/calendar-google.mjs and
