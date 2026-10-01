@@ -26,9 +26,19 @@
   bounded pass over the first 16 KB of the message, so a first message of megabytes costs
   nothing, and a tag that is not finished inside it is no envelope.
 - The signature must still be the prompt's first line ([docs/briefing.md](docs/briefing.md),
-  "Which sessions the curator skips", now says what was measured instead of "not measured
-  yet"). `schedule status` and `doctor` read the task from its file, where the prompt is
-  not wrapped, and say what they said before.
+  "Which sessions the curator skips" and both READMEs now say what was measured instead of
+  "not measured yet"). `schedule status` and `doctor` read the task from its file, where
+  the prompt is not wrapped, and say what they said before: they agree with the curator on
+  that prompt, and stay strict on a task named with the kit's prefix whose prompt lacks the
+  signature (`unsigned`), which the curator drops by name while the application wraps it.
+- One limit is deliberate and documented: a session of yours whose first message is the
+  kit's own envelope pasted whole (or only its opening tag), with a question after it, is
+  skipped as the kit's own. A word of your own in front keeps it in.
+- The message that counts the sessions the curator left out
+  (`sources.transcripts.dropped_self_trace`) now says an envelope counts too, and the two
+  `unsigned` messages of `schedule status` and `doctor` say the curator "may not be able
+  to" tell the sessions apart instead of "cannot", in both languages; keys and
+  placeholders are unchanged.
 - The task id prefix `brain-kit-briefing-` is defined once, in `src/briefing/task-id.mjs`,
   and `src/commands/schedule.mjs` re-exports it.
 

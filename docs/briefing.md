@@ -443,9 +443,21 @@ recognizes, the session is read like one of your own: the cost is the one of a b
 you ask for yourself, described below. The round's log line `plan` counts the sessions it
 left out as the kit's own under `selfTrace`.
 
+One limit is deliberate. The name clause looks at the tag's name only, so a session of yours
+whose first message is the kit's own envelope, pasted whole or only its opening tag, with a
+question after it, is skipped as the kit's own. Start the message with a word of your own
+and the session stays in. A guard on what follows the closing tag was weighed and left out:
+it is one more branch for a rare case, and it would stop recognizing the briefing the day
+the application adds text after its closing tag.
+
 `schedule status --job briefing` and `doctor` read the task from the file the application
 keeps, where the prompt is not wrapped, and judge it with the same function the curator
-uses, so "the task is signed" and "the curator drops its sessions" cannot disagree.
+uses, so on that prompt they agree with the curator: a prompt they call signed is one whose
+sessions the curator skips. They stay strict on one point. A task named with the kit's
+prefix whose prompt lacks the signature is `unsigned` for them, while, as long as the
+application wraps the prompt as measured, the curator skips that task's sessions by its
+name anyway. They still ask for the signature because it is what keeps working if the
+application changes or drops its envelope.
 
 A briefing you ask for in your own session starts with your own message, so it is your
 session and the curator reads it like any other. That is on purpose: when in doubt, a

@@ -232,14 +232,17 @@ session is yours, and the curator reads it. [docs/briefing.md](docs/briefing.md)
 the blocks, the facts and where each comes from, the queue, the desktop task and what
 never changes.
 
-Not measured yet: whether the desktop application hands the task's prompt to the session
-as its first user message, unchanged. The curator drops the task's session only if it
-does. If the application wraps the prompt (a skill invocation line, a header), the session
-is read like one of your own: the cost is the one of a briefing you ask for yourself (a
-capture the next round may propose again, visible in its diff, nothing lost), and only
-when the task's working directory is a project listed in
-`sources.transcripts.include_projects`. After the first scheduled run, `brain-kit curate
---dry` shows the transcripts plan and how many sessions it left out as the kit's own.
+The desktop application does not hand the task's prompt to the session as it is. Measured
+on the first real run, the session's first message is the prompt wrapped in an envelope: an
+opening `<scheduled-task ...>` tag, a paragraph in the application's own wording, the prompt
+and a closing tag. The curator looks through it, by the task's name or by the prompt inside,
+so the signature must stay the prompt's first line. If the application ever changes the
+envelope into a shape the curator does not recognize, the session is read like one of your
+own: the cost is the one of a briefing you ask for yourself (a capture the next round may
+propose again, visible in its diff, nothing lost), and only when the task's working
+directory is a project listed in `sources.transcripts.include_projects`. The round's log
+line `plan` counts the sessions it left out as the kit's own, under `selfTrace`;
+[docs/briefing.md](docs/briefing.md), "Which sessions the curator skips", has the details.
 
 ## Installing a fixed version
 

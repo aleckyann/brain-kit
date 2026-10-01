@@ -489,7 +489,10 @@ on the application's paragraph, which is its wording and may change; read the ta
 bounded pass, because a first message can be a pasted blob of megabytes; and let
 anything that does not clearly match stay in, as before. A signature anywhere else in
 the message, the tag quoted in the middle of a text, and the envelope of the person's own
-other scheduled task (another name, an unsigned prompt) are still the person's.
+other scheduled task (another name, an unsigned prompt) are still the person's. One limit
+is known and left alone: a session of the person's that opens by pasting the kit's own
+envelope, with a question after it, is dropped too, because the name clause looks at the
+name only and a stricter filter is how three work sessions were lost on 11/08/2026.
 **Where it lives in brain-kit.** `src/sources/transcripts-claude-code.mjs`
 (`startsWithSignature` and the envelope reading it uses), `src/briefing/task-id.mjs` (the
 task id prefix, defined once and re-exported by `src/commands/schedule.mjs`),

@@ -239,15 +239,19 @@ briefing que você pede numa sessão sua é seu, e o curador o lê. O
 [docs/briefing.md](docs/briefing.md) explica os blocos, os fatos e de onde cada um vem, a
 fila, a tarefa no aplicativo e o que nunca muda.
 
-Ainda não medido: se o aplicativo para desktop entrega o prompt da tarefa à sessão como a
-primeira mensagem do usuário, sem mudança. O curador só descarta a sessão da tarefa se ele
-fizer isso. Se o aplicativo embrulhar o prompt (uma linha de invocação de skill, um
-cabeçalho), a sessão é lida como uma sua: o custo é o de um briefing que você mesmo pede
+O aplicativo para desktop não entrega o prompt da tarefa à sessão como ele é. Medido na
+primeira execução real, a primeira mensagem da sessão é o prompt embrulhado num envelope:
+uma tag de abertura `<scheduled-task ...>`, um parágrafo com as palavras do próprio
+aplicativo, o prompt e uma tag de fechamento. O curador enxerga através dele, pelo nome da
+tarefa ou pelo prompt que está dentro, e por isso a assinatura continua sendo a primeira
+linha do prompt. Se um dia o aplicativo mudar o envelope para uma forma que o curador não
+reconheça, a sessão é lida como uma sua: o custo é o de um briefing que você mesmo pede
 (uma captura que a próxima rodada pode propor de novo, visível no diff, nada se perde), e
 só quando o diretório de trabalho da tarefa é um projeto listado em
-`sources.transcripts.include_projects`. Depois da primeira execução agendada, o `brain-kit
-curate --dry` mostra o plano das transcrições e quantas sessões ele deixou de fora como do
-próprio kit.
+`sources.transcripts.include_projects`. A linha `plan` do log da rodada conta, em
+`selfTrace`, as sessões que ela deixou de fora como do próprio kit; o
+[docs/briefing.md](docs/briefing.md), em "Which sessions the curator skips", tem os
+detalhes.
 
 ## Instalando uma versão fixa
 
