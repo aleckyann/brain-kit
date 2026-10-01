@@ -1,0 +1,148 @@
+{
+  "lang": "en",
+  "files": [
+    {
+      "path": ".brain-kit/pr-body.md",
+      "sha256": "c548fe8c75a66aa29d160a2b98d09460c719d3bc8b80a90c7ca9ec9ee4ba1680",
+      "class": "managed"
+    },
+    {
+      "path": ".claude/settings.json",
+      "sha256": "73a1391388de63a9c78399bfead495e93a227abd85efaa1c95c4b7f73e15ceca",
+      "class": "managed"
+    },
+    {
+      "path": "AGENTS.md",
+      "sha256": "4004e5da49c87e2a1dc8904278198f57ac46bf700ae54757212b7cff3e9edb89",
+      "class": "managed"
+    },
+    {
+      "path": "CLAUDE.md",
+      "sha256": "61e17e45b69cba483fdfdf8117026c3e0c28a45e4c094f8bfdfa955d76d0f14d",
+      "class": "managed"
+    },
+    {
+      "path": "CONVENTIONS.md",
+      "sha256": "817c60a50fe00bc85753112478be5f12c2bfb0e4d592128a0a2f29082b73351e",
+      "class": "managed"
+    },
+    {
+      "path": "SECURITY.md",
+      "sha256": "59e9c5fb26b031cd6dea5b3bee08a6fa1897898739b60c91a360fc7a4d0897bb",
+      "class": "managed"
+    },
+    {
+      "path": "attachments/index.md",
+      "class": "seeded"
+    },
+    {
+      "path": "core/decision-frameworks.md",
+      "class": "seeded"
+    },
+    {
+      "path": "core/identity.md",
+      "class": "seeded"
+    },
+    {
+      "path": "core/index.md",
+      "class": "seeded"
+    },
+    {
+      "path": "core/response-guidelines.md",
+      "class": "seeded"
+    },
+    {
+      "path": "core/values.md",
+      "class": "seeded"
+    },
+    {
+      "path": "core/weekly-rhythm.md",
+      "class": "seeded"
+    },
+    {
+      "path": "decisions/index.md",
+      "class": "seeded"
+    },
+    {
+      "path": "index.md",
+      "class": "seeded"
+    },
+    {
+      "path": "memory/index.md",
+      "class": "seeded"
+    },
+    {
+      "path": "memory/log.md",
+      "class": "seeded"
+    },
+    {
+      "path": "organizations/index.md",
+      "class": "seeded"
+    },
+    {
+      "path": "pending/follow-ups.md",
+      "class": "seeded"
+    },
+    {
+      "path": "pending/index.md",
+      "class": "seeded"
+    },
+    {
+      "path": "pending/promises.md",
+      "class": "seeded"
+    },
+    {
+      "path": "people/index.md",
+      "class": "seeded"
+    },
+    {
+      "path": "projects/index.md",
+      "class": "seeded"
+    },
+    {
+      "path": "references/books/index.md",
+      "class": "seeded"
+    },
+    {
+      "path": "references/index.md",
+      "class": "seeded"
+    },
+    {
+      "path": "reflections/index.md",
+      "class": "seeded"
+    },
+    {
+      "path": "templates/index.md",
+      "class": "seeded"
+    },
+    {
+      "path": "templates/template-book.md",
+      "class": "seeded"
+    },
+    {
+      "path": "templates/template-decision.md",
+      "class": "seeded"
+    },
+    {
+      "path": "templates/template-organization.md",
+      "class": "seeded"
+    },
+    {
+      "path": "templates/template-person.md",
+      "class": "seeded"
+    },
+    {
+      "path": "templates/template-project.md",
+      "class": "seeded"
+    },
+    {
+      "path": "templates/template-reflection.md",
+      "class": "seeded"
+    },
+    {
+      "path": ".gitignore",
+      "sha256": "a6c8a414cac433b18d544b7b669ad148ef114ce7fd8aba1b6b5d6d49ef9c2335",
+      "class": "managed"
+    }
+  ]
+}

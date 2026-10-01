@@ -1,0 +1,22 @@
+# Written by brain-kit init. Machine-local files, which never belong in the vault's history.
+
+# Dependencies: installed per machine, never versioned.
+node_modules/
+
+# Local environment files: credentials live here, and must never reach a remote.
+.env
+.env.*
+!.env.example
+
+# Operating system and editor state.
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Claude Code agent worktrees: separate checkouts, never part of this vault's history.
+.claude/worktrees/
+
+# Written by brain-kit update: versions offered beside a file you edited, and temporary files a stopped run can leave.
+*.brain-kit-new
+.*.brain-kit-tmp-*
