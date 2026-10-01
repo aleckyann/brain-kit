@@ -8,6 +8,14 @@
   have. It ships in the package, `SECURITY.md` points to it, and
   `test/incident-response-doc.test.mjs` fails when a command, flag, path, configuration key or
   `doctor` check id it names is renamed or removed.
+- `examples/minimal-vault/` is a small fictional vault (an owner called Ana, one person, one
+  organization, one project, one decision and a three-entry log), built with `init` and then
+  written by hand, so a reader can see what a vault looks like without running anything. Its
+  README gives the `init` command and the `validate` and `lint` commands. It is not in the npm
+  package, and `test/example-vault.test.mjs` keeps it valid: it copies the folder to a scratch
+  directory, runs the real CLI over it, and fails when `validate` or `lint` finds anything, when
+  a note carries `verified`, or when the folder holds an absolute path, an address outside
+  example.com or a `.git` entry.
 
 ## 0.0.7 (tagged `v0.0.7`, not on npm)
 
