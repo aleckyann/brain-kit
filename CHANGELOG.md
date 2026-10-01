@@ -23,7 +23,19 @@
   `docs/scheduling.md` gets "The same vault on a second machine" (clone, `--new`, `doctor`,
   `schedule install` only where the rounds run, and why two machines on a schedule would each
   propose the same day); both READMEs point to it, and `docs/incident-response.md` names `--new`
-  for a curator machine whose state is gone.
+  for a curator machine whose state is gone. Found in review and fixed: a vault moved AND renamed
+  is not recognised by `--new` (the folder name is the only sign), so it now lists the records
+  of vaults that are gone, with the undo, and the missing-file messages say "moved or renamed";
+  `register --from` accepts a target holding only the trace of a refused round (it used to
+  refuse it, a dead end after `curate`), setting it aside and putting it back if the register
+  fails; the steps include `git config core.hooksPath .githooks` (a clone has no push gate);
+  plain `init` on a clone and `schedule` say what is true for it, and `--new`'s refusal of a
+  state directory no longer offers to throw away marks set with `watermark set` before it.
+  One behaviour change: `doctor`'s `schedule` check on a vault with no `machine.json` is now a
+  `fail` with `schedule.machine_missing` (it was a `warn`, `doctor.schedule.unknown`), so
+  `doctor --only schedule` exits 1 there; a configured vault without that file cannot run a
+  round at all. The `setup` skill gains a branch for a folder that already has
+  `brain-kit.config.json`.
 - `docs/incident-response.md` exists. It says what to do, in order (rotate first, rewrite the
   history second, tell people third), when a secret or a third party's personal data is in a
   vault, when the repository was public, and when the curator did something it should not

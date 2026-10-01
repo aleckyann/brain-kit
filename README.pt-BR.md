@@ -166,9 +166,10 @@ toda manhã onde ele está.
 
 Um vault que você já configurou abre em outra máquina com um `git clone`, e essa máquina
 precisa de um `machine.json` próprio, que fica fora do vault:
-`brain-kit machine register --new` o escreve, e o `brain-kit doctor` o confere. Deixe só uma
-máquina rodar as rodadas do curador;
-o [docs/scheduling.md](docs/scheduling.md#the-same-vault-on-a-second-machine) traz os passos e
+`brain-kit machine register --new` o escreve, o `git config core.hooksPath .githooks` dá ao
+clone a trava de push dele, e o `brain-kit doctor` confere os dois. Deixe só uma máquina rodar
+as rodadas do curador; o
+[docs/scheduling.md](docs/scheduling.md#the-same-vault-on-a-second-machine) traz os passos e
 explica por quê.
 
 ## O que funciona hoje

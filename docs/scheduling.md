@@ -405,8 +405,15 @@ directory outside the vault and are never versioned. Until the machine has its o
    round reads only yesterday, and no file of the vault is touched. It prints what it found
    and the defaults that apply until you set them with `brain-kit machine set` (the model,
    the network check, the notify command, the transcripts directory).
-3. `brain-kit doctor`.
-4. `brain-kit schedule install`, only on the machine that runs the rounds (below).
+3. `git config core.hooksPath .githooks`: git does not version its own configuration, so a
+   clone has no push gate until you point it at the vault's, and `doctor` fails `hooks-path`
+   for it.
+4. `brain-kit doctor`.
+5. `brain-kit schedule install`, only on the machine that runs the rounds (below).
+
+Set no mark (`brain-kit watermark set`) and ask no question (`brain-kit questions add`) before
+step 2: both write into the state directory without a `machine.json`, and `--new` then
+refuses what it finds there. Set them after it.
 
 `--new` is your statement that this machine has never had state for this vault, which is
 the one thing `machine register` cannot tell by itself. So it refuses, writing nothing, when
@@ -421,6 +428,14 @@ empty state next to them. The two flags cannot be combined: `--from` says the va
 `--new` says it never had state here. A state directory pinned with `BRAIN_KIT_STATE_DIR` is
 not searched for that sign, because the pin is your statement.
 
+The folder name is the only sign `--new` has, so a vault that was **moved and renamed** on
+this machine looks like any other: `--new` goes ahead and starts a second, empty state beside
+the old one. It does say so. When it succeeds it lists every state on the machine whose vault
+is no longer where its record says, with the old path, and the undo: delete the
+`machine.json` it just wrote, then run `brain-kit machine register --from <that path>`. A
+refused round that left its trace (`last-run.json` and the logs) does not get in the way of
+that `--from`: `register` sets the trace aside and removes it once the state is registered.
+
 **One machine runs the rounds.** State is per machine and not in the vault, so each machine
 has its own watermark, and the vault lock sits in each clone's `.git`, where it cannot keep
 two machines apart. Two machines with `schedule install` would each read yesterday and each
@@ -433,8 +448,10 @@ session there.
 If the rounds are moving from one machine to the other, the new machine knows nothing of the
 old one's marks. Read them on the old machine with `brain-kit watermark show`, stop its
 schedule with `brain-kit schedule uninstall`, and set each on the new one with
-`brain-kit watermark set <source> <YYYY-MM-DD>` before its first round; otherwise the days
-in between are never read.
+`brain-kit watermark set <source> <YYYY-MM-DD>`, after `brain-kit machine register --new`
+and before its first round; otherwise the days in between are never read. If you set a mark
+first, `--new` refuses the `watermark.json` it finds: move that file to another folder, run
+`--new`, and move it back.
 
 ## Moving from a legacy lock
 

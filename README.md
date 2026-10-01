@@ -162,10 +162,10 @@ tells you each morning where it stands.
 
 A vault you have already set up opens on another machine with a `git clone`, and that
 machine needs a `machine.json` of its own, which lives outside the vault:
-`brain-kit machine register --new` writes it, and `brain-kit doctor` checks it. Let only one
-machine run the curator's rounds;
-[docs/scheduling.md](docs/scheduling.md#the-same-vault-on-a-second-machine) has the steps
-and says why.
+`brain-kit machine register --new` writes it, `git config core.hooksPath .githooks` gives the
+clone its push gate, and `brain-kit doctor` checks both. Let only one machine run the
+curator's rounds; [docs/scheduling.md](docs/scheduling.md#the-same-vault-on-a-second-machine)
+has the steps and says why.
 
 ## What works today
 

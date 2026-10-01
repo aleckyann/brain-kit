@@ -15,7 +15,7 @@ You are helping the person start a second brain with brain-kit, or bring an exis
 
 `init` never asks anything here: without a terminal it takes every answer from a file. You ask the questions yourself, in the chat, and write the file.
 
-4. Ask one question and wait for the answer: is this a new vault, or a folder of notes that already exists? For a new one, also ask where it should live.
+4. Ask one question and wait for the answer: is this a new vault, or a folder of notes that already exists? For a new one, also ask where it should live. If that folder already has a `brain-kit.config.json`, it is a vault that was set up before, usually on another machine and cloned here: `init` and `init --adopt` both refuse it, so skip steps 5 to 10 and go to step 11.
 5. Ask for each answer below, one at a time, waiting for each reply, and offer a sensible default when there is one:
    - `lang`: `pt-BR` or `en`;
    - `name`: the person's first name, and `handle`: a short lowercase id, such as `ana`;
@@ -35,6 +35,6 @@ You are helping the person start a second brain with brain-kit, or bring an exis
 
 ## Register and finish
 
-11. Inside the vault, run `{{kit}} machine register`, so this machine records where the vault lives. Right after `init`, it says the vault is already registered and there is nothing to do: that is expected, not a problem.
+11. Inside the vault, run `{{kit}} machine register`, so this machine records where the vault lives. Right after `init`, it says the vault is already registered and there is nothing to do: that is expected, not a problem. For a vault that `init` did not create on this machine (the clone of step 4), run `{{kit}} machine register --new` instead, then `git config core.hooksPath .githooks`, since a clone has no push gate. If it refuses because it found the state of a vault of the same name that was moved, show the person what it printed and ask whether this vault was moved here; never choose `--from` or `--new` for them.
 12. Offer the morning briefing: on the schedule in `briefing.schedule`, a session of its own that states the facts the kit computes, the vault's own blocks and the open questions, and turns the answers into one pull request. Ask and wait. On yes, run `{{kit}} schedule install --job briefing <dir>`. It exits 3 on purpose, because a scheduled task of the desktop application can be created only from inside the application: create the task it prints with the application's scheduled-task tool (`create_scheduled_task`, which usually arrives deferred: load it with `ToolSearch` first), passing `taskId`, `title`, `cronExpression`, `description` and `prompt` exactly as printed, the prompt's two lines unchanged. Then tell the person that the task runs while the application is open, and on its next launch when it was closed at that hour. If the tool is not in this session, say so, show the person the printed values to create the task themselves, and never register it any other way.
 13. Finish with `{{kit}} doctor`. Say plainly which checks still fail and what the person has to do about each. Do not call the setup done while a check fails.

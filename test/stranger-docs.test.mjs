@@ -217,6 +217,9 @@ const SKILL_SENTENCES = {
       'refuses to run outside a vault',
       '{{kit}} doctor <dir>',
       'a repository with no commit has nothing to push',
+      'If that folder already has a `brain-kit.config.json`, it is a vault that was set up before, usually on another machine and cloned here: `init` and `init --adopt` both refuse it, so skip steps 5 to 10 and go to step 11.',
+      'run `{{kit}} machine register --new` instead, then `git config core.hooksPath .githooks`, since a clone has no push gate.',
+      'never choose `--from` or `--new` for them.',
     ],
     'pt-BR': [
       'gh repo create <nome> --private --source <dir> --push',
@@ -225,6 +228,9 @@ const SKILL_SENTENCES = {
       'recusa rodar fora de um vault',
       '{{kit}} doctor <dir>',
       'um repositório sem commit não tem o que enviar',
+      'Se essa pasta já tem um `brain-kit.config.json`, é um vault configurado antes, em geral em outra máquina e clonado aqui: o `init` e o `init --adopt` recusam esse vault, então pule os passos 5 a 10 e vá para o passo 11.',
+      'rode `{{kit}} machine register --new` no lugar, e depois `git config core.hooksPath .githooks`, porque um clone não tem a trava de push.',
+      'nunca escolha `--from` ou `--new` por ela.',
     ],
   },
   'curate-session': {
