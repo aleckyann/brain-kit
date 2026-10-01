@@ -36,7 +36,7 @@ import { accessSync, constants as fsConstants, lstatSync, readdirSync, readFileS
 import { homedir } from 'node:os';
 import { basename, delimiter, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { run } from '../exec.mjs';
-import { authArgs, authVerdict, hostOfRemote, loginCommand } from '../gh.mjs';
+import { DEFAULT_HOST, authArgs, authVerdict, hostOfRemote, loginCommand } from '../gh.mjs';
 import { EXIT } from '../exit-codes.mjs';
 import { decodeBytes } from '../io.mjs';
 import { CONFIG_FILENAME, ConfigError, MACHINE_FILENAME, canonicalPathMatches, findMachineOnlyKeys, loadConfig, validateConfig, validateMachine } from '../config.mjs';
@@ -207,8 +207,15 @@ function readJsonFile(file) {
 //
 // `probe` is what `doctor --probe` saw (probeConnectors, below), set by the
 // command before the checks run; null when it was not asked for.
+//
+// `hasVault` false is the context of `doctor` outside any vault, where `root`
+// is only the directory it was started in (the working directory of the
+// programs it runs). It carries what the machine checks below use and
+// nothing that is read from a vault: no configuration, no machine file, no
+// state directory. A check that reached for one would find no function there
+// and be reported as crashed, never read a path that cannot exist.
 export function buildContext({
-  root, env = process.env, nodeVersion = process.versions.node, execPath = process.execPath, engineVersion = kitVersion(), now = new Date(),
+  root, hasVault = true, env = process.env, nodeVersion = process.versions.node, execPath = process.execPath, engineVersion = kitVersion(), now = new Date(),
   probeTimeoutMs = PROBE_INIT_TIMEOUT_MS, ghTimeoutMs = PROBE_TIMEOUT_MS,
 }) {
   const memo = new Map();
@@ -216,8 +223,9 @@ export function buildContext({
     if (!memo.has(key)) memo.set(key, compute());
     return memo.get(key);
   };
-  const ctx = { root, env, nodeVersion, execPath, engineVersion, now, probeTimeoutMs, ghTimeoutMs, probe: null };
+  const ctx = { root, hasVault, env, nodeVersion, execPath, engineVersion, now, probeTimeoutMs, ghTimeoutMs, probe: null };
   ctx.localGitVars = once('localGitVars', () => localGitVarNames(env));
+  if (!hasVault) return ctx;
   ctx.realRoot = once('realRoot', () => realpathSync(root));
   ctx.configFile = join(root, CONFIG_FILENAME);
   ctx.config = once('config', () => readJsonFile(ctx.configFile));
@@ -445,7 +453,7 @@ function brainKitOnPath(ctx) {
   if (!match) {
     return { id, status: 'fail', messageKey: 'doctor.brain_kit_on_path.unrecognised', params: { bin, output: firstLine(r.stdout) } };
   }
-  const unit = roundPathProblem(ctx);
+  const unit = ctx.hasVault ? roundPathProblem(ctx) : null;
   if (unit !== null) {
     return { id, status: 'fail', messageKey: `doctor.brain_kit_on_path.${unit.kind}`, params: { bin, version: match[1], ...unit.params } };
   }
@@ -720,7 +728,9 @@ function ghAuth(ctx) {
   const skipped = { id, status: 'ok', messageKey: 'doctor.gh_auth.skipped', params: {} };
   const bin = findExecutable('gh', pathDirs(ctx.env));
   if (!bin) return skipped;
-  const host = hostOfRemote((args) => git(ctx, args), 'origin');
+  // With no vault there is no origin to read: the question is about the host a
+  // first `gh repo create` would use.
+  const host = ctx.hasVault ? hostOfRemote((args) => git(ctx, args), 'origin') : DEFAULT_HOST;
   const verdict = authVerdict(probe(ctx, bin, authArgs(host), undefined, undefined, ctx.ghTimeoutMs));
   if (verdict.state === 'logged_in') return { id, status: 'ok', messageKey: 'doctor.gh_auth.ok', params: { host } };
   // 'absent' here means the file found on PATH could not be started (a
@@ -778,11 +788,16 @@ function claudePresent(ctx) {
   if (!resolved) {
     return { id, status: 'warn', messageKey: 'doctor.claude_present.not_found', params: { bin } };
   }
-  // Resolving is not running: a package manager can leave a stub where
-  // the binary should be, executable and on PATH, that does nothing but
-  // fail. Asking it for its version is the proof it runs, and the answer
-  // must be shaped like the Claude CLI's own version line: any program
-  // prints a version, and `git` or `node` named as claude_bin is not claude.
+  return claudeAnswersVersion(ctx, id, resolved);
+}
+
+// Resolving is not running: a package manager can leave a stub where
+// the binary should be, executable and on PATH, that does nothing but
+// fail. Asking it for its version is the proof it runs, and the answer
+// must be shaped like the Claude CLI's own version line: any program
+// prints a version, and `git` or `node` named as claude_bin is not claude.
+// The same reading whether the file was named by machine.json or found on PATH.
+function claudeAnswersVersion(ctx, id, resolved) {
   const r = probe(ctx, resolved, ['--version']);
   if (r.status !== 0) {
     return { id, status: 'warn', messageKey: 'doctor.claude_present.failed', params: { bin: resolved, status: r.status } };
@@ -792,6 +807,21 @@ function claudePresent(ctx) {
     return { id, status: 'warn', messageKey: 'doctor.claude_present.unrecognised', params: { bin: resolved, output: firstLine(r.stdout) } };
   }
   return { id, status: 'ok', messageKey: 'doctor.claude_present.ok', params: { bin: resolved, version: match[1] } };
+}
+
+// The claude `init` would record in a new vault's machine.json (src/init/
+// answers.mjs, resolveClaudeBin): the program called claude, found on PATH.
+// With no vault there is no machine.json to name another, so this is the one
+// `doctor` outside a vault asks about, with the readings claude-present makes.
+const DEFAULT_CLAUDE_BIN = 'claude';
+
+function claudePresentOnMachine(ctx) {
+  const id = 'claude-present';
+  const resolved = resolveClaude(DEFAULT_CLAUDE_BIN, [], ctx.env, ctx.root);
+  if (!resolved) {
+    return { id, status: 'warn', messageKey: 'doctor.claude_present.not_on_path', params: {} };
+  }
+  return claudeAnswersVersion(ctx, id, resolved);
 }
 
 // Without the quiet flag on purpose: `check-ignore -q` answers only by
@@ -957,7 +987,12 @@ function claudeReal(ctx) {
   if (inputs.disabled) return curateDisabled(ctx, id);
   const target = claudeToRun(ctx, id);
   if (target.result) return target.result;
-  const bin = target.bin;
+  return claudeIsRealCli(ctx, id, target.bin);
+}
+
+// The round's own guard (src/guards/cli.mjs) asked about the file at `bin`,
+// whichever way it was named.
+function claudeIsRealCli(ctx, id, bin) {
   const cli = checkCli(bin, { env: { ...withoutLocalGitVars(ctx.env, ctx.localGitVars()), LC_ALL: 'C' }, timeoutMs: PROBE_TIMEOUT_MS });
   if (cli.problem === 'missing') {
     return { id, status: 'fail', messageKey: 'doctor.claude_real.not_found', params: { bin, command: SET_CLAUDE_COMMAND } };
@@ -969,6 +1004,16 @@ function claudeReal(ctx) {
     return { id, status: 'fail', messageKey: 'doctor.claude_real.version', params: { bin, output: cli.params.output } };
   }
   return { id, status: 'ok', messageKey: 'doctor.claude_real.ok', params: { bin, version: cli.version } };
+}
+
+// Outside a vault, whether the claude on PATH is the real CLI. No claude at
+// all is claude-present's finding, and is not counted twice (the way gh-auth
+// leaves the absence of gh to gh-present).
+function claudeRealOnMachine(ctx) {
+  const id = 'claude-real';
+  const bin = resolveClaude(DEFAULT_CLAUDE_BIN, [], ctx.env, ctx.root);
+  if (!bin) return { id, status: 'ok', messageKey: 'doctor.claude_real.skipped', params: {} };
+  return claudeIsRealCli(ctx, id, bin);
 }
 
 // Every option buildArgv can put on a round's command line, in either
@@ -1922,6 +1967,29 @@ export const CHECKS = new Map([
 ]);
 
 export const CHECK_IDS = Object.freeze([...CHECKS.keys()]);
+
+// The checks that need no vault, for `doctor` outside any: whether this
+// machine is ready for the kit before `init` has made one (both strangers'
+// step 0: the first's m2, the second's F24). Each is decided by what it
+// reads. Node, git, brain-kit on PATH, gh and its login read programs and
+// PATH only. claude-present and claude-real read a claude too, here the one
+// on PATH, since the claude_bin a vault records is in its machine.json
+// (claudePresentOnMachine, claudeRealOnMachine). Every other check reads the
+// vault's repository, configuration, machine file, state directory or
+// rounds, and claude-isolation-flags is left with them: what it proves is
+// that a scheduled round can run, which only a configured curator needs.
+// id -> check, in the order the report prints them.
+export const MACHINE_CHECKS = new Map([
+  ['node-version', nodeVersion],
+  ['git-present', gitPresent],
+  ['brain-kit-on-path', brainKitOnPath],
+  ['gh-present', ghPresent],
+  ['gh-auth', ghAuth],
+  ['claude-present', claudePresentOnMachine],
+  ['claude-real', claudeRealOnMachine],
+]);
+
+export const MACHINE_CHECK_IDS = Object.freeze(CHECK_IDS.filter((id) => MACHINE_CHECKS.has(id)));
 
 // Runs the named checks in the order given, a check's list of results in
 // its own order. A check that throws is a defect in the check, not a pass:

@@ -5,7 +5,8 @@
 //   brain-kit doctor [dir] [--json] [--only <id,...>] [--probe] [--verbose | -v]
 //
 // Exit 0 when every check is ok or warn, 1 when any fails, 2 on a usage
-// error or when no vault is found. The report is written in the vault's own
+// error. Outside any vault it is the machine check (below), with the same
+// exit codes. The report is written in the vault's own
 // language, as `validate`, `lint`, the hooks and `prompt` write theirs: the
 // `lang` its configuration names, when that is a language the kit has a
 // pack for. What this command reports includes a configuration it could not
@@ -24,6 +25,21 @@
 // case: a consumer of the JSON, and the Stop hook and the briefing that read
 // checks, never see less than all of them. A status that is not ok is never
 // left out, whatever it is called.
+//
+// OUTSIDE ANY VAULT it checks the machine and says so. `doctor` before `init`
+// used to answer "no vault found" and nothing else, exit 2, while the README
+// promises it tells whether "this machine and this vault are ready" (the
+// first stranger's m2, the second's F24). Now it runs the checks that read
+// no vault (MACHINE_CHECKS in src/doctor/checks.mjs: Node, git, brain-kit on
+// PATH, gh and its login, the claude on PATH), in a context that holds no
+// vault, under a heading that says only the machine is checked, in the
+// language of the locale (there is no vault to ask). It ends with the same
+// "no vault found" sentence the other commands give, which names the command
+// that makes one. Exit 0 unless one of them fails, as inside a vault, and
+// `--json` has the same shape with `vault: null`. `--only` may name only
+// those checks, and `--probe`, which asks a vault's connectors, is refused:
+// each is a usage error that runs nothing, never a quiet run of fewer checks
+// than were asked for.
 //
 // `--only` with an id no check has is a usage error, never a run of the
 // checks that do exist minus the typo: a person who asked for one check
@@ -53,7 +69,7 @@ import { EXIT } from '../exit-codes.mjs';
 import { CONFIG_FILENAME } from '../config.mjs';
 import { createTranslator, SUPPORTED_LANGS } from '../lang.mjs';
 import { findVaultRoot } from '../vault.mjs';
-import { CHECK_IDS, buildContext, exitCodeFor, probeConnectors, runChecks } from '../doctor/checks.mjs';
+import { CHECK_IDS, MACHINE_CHECKS, MACHINE_CHECK_IDS, buildContext, exitCodeFor, probeConnectors, runChecks } from '../doctor/checks.mjs';
 
 const JSON_VERSION = 'brain-kit.doctor/1';
 const ROOT_INDEX = 'index.md';
@@ -99,6 +115,15 @@ function parseArgs(argv) {
     else return { error: 'argument', arg };
   }
   return result;
+}
+
+// What the tests hand in for the context, and nothing else.
+function contextOptions(deps) {
+  return {
+    ...(deps.nodeVersion !== undefined ? { nodeVersion: deps.nodeVersion } : {}), ...(deps.now !== undefined ? { now: deps.now } : {}),
+    ...(deps.probeTimeoutMs !== undefined ? { probeTimeoutMs: deps.probeTimeoutMs } : {}),
+    ...(deps.ghTimeoutMs !== undefined ? { ghTimeoutMs: deps.ghTimeoutMs } : {}),
+  };
 }
 
 function statusLabel(t, status) {
@@ -168,35 +193,65 @@ export async function runDoctor(argv, io, t, deps = {}) {
     }
   }
   const root = findVaultRoot(startDir);
-  if (!root) {
-    io.stderr.write(`${t('doctor.no_vault', { dir: startDir, config: CONFIG_FILENAME, index: ROOT_INDEX })}\n`);
-    return EXIT.USAGE;
-  }
+  if (!root) return checkMachine({ parsed, startDir, env, deps, io, t });
 
-  const ctx = buildContext({
-    root, env, ...(deps.nodeVersion !== undefined ? { nodeVersion: deps.nodeVersion } : {}), ...(deps.now !== undefined ? { now: deps.now } : {}),
-    ...(deps.probeTimeoutMs !== undefined ? { probeTimeoutMs: deps.probeTimeoutMs } : {}),
-    ...(deps.ghTimeoutMs !== undefined ? { ghTimeoutMs: deps.ghTimeoutMs } : {}),
-  });
+  const ctx = buildContext({ root, env, ...contextOptions(deps) });
   const reportT = reportTranslator(ctx, t, io);
   if (parsed.probe) ctx.probe = await probeConnectors(ctx, { prompt: reportT('doctor.connectors.probe_prompt') });
   const results = runChecks(ctx, ids);
   const exitCode = exitCodeFor(results);
+  const counts = tally(results);
+
+  if (parsed.json) {
+    io.stdout.write(`${JSON.stringify(jsonReport(reportT, { vault: root, results, counts, exitCode }))}\n`);
+    return exitCode;
+  }
+
+  io.stdout.write(renderReport(reportT, { heading: reportT('doctor.heading', { vault: root }), results, counts, verbose: parsed.verbose }));
+  return exitCode;
+}
+
+function jsonReport(reportT, { vault, results, counts, exitCode }) {
+  const checks = results.map(({ id, status, messageKey, params }) => ({
+    id, status, messageKey, params, message: renderMessage(reportT, messageKey, params),
+  }));
+  return { version: JSON_VERSION, vault, checks, counts, exitCode };
+}
+
+function tally(results) {
   const counts = { ok: 0, warn: 0, fail: 0 };
   for (const result of results) {
     if (result.status in counts) counts[result.status] += 1;
     else counts.fail += 1;
   }
+  return counts;
+}
 
+// `doctor` where no vault was found: see the header. `startDir` is where the
+// search began, which is also where the programs it runs are started.
+function checkMachine({ parsed, startDir, env, deps, io, t }) {
+  if (parsed.probe) {
+    io.stderr.write(`${t('doctor.probe_needs_vault', { dir: startDir })}\n`);
+    return EXIT.USAGE;
+  }
+  if (parsed.only) {
+    const needVault = parsed.only.filter((id) => !MACHINE_CHECK_IDS.includes(id));
+    if (needVault.length > 0) {
+      io.stderr.write(`${t('doctor.only_needs_vault', { dir: startDir, ids: needVault, known: MACHINE_CHECK_IDS })}\n`);
+      return EXIT.USAGE;
+    }
+  }
+  const ids = parsed.only ? MACHINE_CHECK_IDS.filter((id) => parsed.only.includes(id)) : MACHINE_CHECK_IDS;
+  const ctx = buildContext({ root: startDir, hasVault: false, env, ...contextOptions(deps) });
+  const results = runChecks(ctx, ids, MACHINE_CHECKS);
+  const exitCode = exitCodeFor(results);
+  const counts = tally(results);
   if (parsed.json) {
-    const checks = results.map(({ id, status, messageKey, params }) => ({
-      id, status, messageKey, params, message: renderMessage(reportT, messageKey, params),
-    }));
-    io.stdout.write(`${JSON.stringify({ version: JSON_VERSION, vault: root, checks, counts, exitCode })}\n`);
+    io.stdout.write(`${JSON.stringify(jsonReport(t, { vault: null, results, counts, exitCode }))}\n`);
     return exitCode;
   }
-
-  io.stdout.write(renderReport(reportT, { heading: reportT('doctor.heading', { vault: root }), results, counts, verbose: parsed.verbose }));
+  const text = renderReport(t, { heading: t('doctor.machine_only'), results, counts, verbose: parsed.verbose });
+  io.stdout.write(`${text}${t('doctor.no_vault', { dir: startDir, config: CONFIG_FILENAME, index: ROOT_INDEX })}\n`);
   return exitCode;
 }
 

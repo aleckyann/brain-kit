@@ -31,7 +31,7 @@ import { KIT_ROOT, kitVersion } from '../src/version.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { stateDirFor } from '../src/state.mjs';
 import { renderMessage, runDoctor } from '../src/commands/doctor.mjs';
-import { CHECK_IDS, exitCodeFor, roundFlags, runChecks } from '../src/doctor/checks.mjs';
+import { CHECK_IDS, MACHINE_CHECKS, MACHINE_CHECK_IDS, buildContext, exitCodeFor, roundFlags, runChecks } from '../src/doctor/checks.mjs';
 import { briefingTask, briefingTaskFile, runScheduleSync } from '../src/commands/schedule.mjs';
 import { kitCommand } from '../src/curate/tools.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
@@ -1847,7 +1847,7 @@ test('--only with no value, or an empty one, is a usage error', async () => {
   assert.equal(f.stdout(), '');
 });
 
-test('an unknown flag, a missing path, a file, and a directory with no vault are usage errors', async () => {
+test('an unknown flag, a missing path and a file are usage errors; a directory with no vault is not one (it is the machine check, below)', async () => {
   const fx = setup();
   let f = fakeIo();
   assert.equal(await runDoctor(['--frobnicate'], f.io, t, { env: fx.env, cwd: fx.root }), EXIT.USAGE);
@@ -1855,10 +1855,7 @@ test('an unknown flag, a missing path, a file, and a directory with no vault are
   assert.equal(await runDoctor([join(fx.base, 'nowhere')], f.io, t, { env: fx.env, cwd: fx.root }), EXIT.USAGE);
   f = fakeIo();
   assert.equal(await runDoctor([join(fx.root, 'index.md')], f.io, t, { env: fx.env, cwd: fx.root }), EXIT.USAGE);
-  f = fakeIo();
-  const empty = makeTempDir('brain-kit-doctor-empty-');
-  assert.equal(await runDoctor([empty], f.io, t, { env: fx.env, cwd: fx.root }), EXIT.USAGE);
-  assert.match(f.stderr(), /brain-kit\.config\.json/);
+  assert.equal(f.stdout(), '');
 });
 
 test('with no directory argument the vault is found from the working directory', async () => {
@@ -2083,15 +2080,256 @@ test('a vault whose configuration cannot be read, or names a language the kit ha
   assert.match(r.out, /aviso\(s\)/);
 });
 
-test('outside any vault the locale decides, as before', async () => {
-  const fx = setup();
-  for (const [lang, expected] of [['pt-BR', /nenhum vault brain-kit encontrado/], ['en', /no brain-kit vault found/]]) {
-    const f = fakeIo();
-    const code = await runDoctor([], f.io, createTranslator(lang), { env: fx.env, cwd: fx.base });
-    assert.equal(code, EXIT.USAGE);
-    assert.match(f.stderr(), expected);
+// --- outside any vault: the machine check (both strangers' step 0) -----------------
+//
+// `brain-kit doctor` before `init` only said no vault was found and exited 2,
+// checking nothing, while the README promises it tells whether "this machine
+// and this vault are ready" (the first stranger's m2, the second's F24). Outside
+// any vault it now runs the checks that need none (MACHINE_CHECK_IDS: Node, git,
+// brain-kit on PATH, gh and its login, the claude on PATH), says so in its
+// heading, ends with the way to create a vault, and exits 0 unless one of them
+// fails, 1 if one does.
+
+// A machine with no vault: a PATH built as setup() builds it, a HOME and git
+// configuration isolated from the machine running the suite, and an empty
+// directory to run from that no vault encloses.
+function bareMachine({ tools = {} } = {}) {
+  const base = makeTempDir('brain-kit-doctor-bare-');
+  const home = join(base, 'home');
+  mkdirSync(join(home, '.config'), { recursive: true });
+  writeFileSync(join(home, '.gitconfig'), '');
+  const dir = join(base, 'somewhere');
+  mkdirSync(dir);
+  const toolsDir = makeTools(tools);
+  const env = {
+    PATH: toolsDir,
+    HOME: home,
+    XDG_CONFIG_HOME: join(home, '.config'),
+    XDG_STATE_HOME: join(base, 'state'),
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: join(home, '.gitconfig'),
+  };
+  return { base, home, dir, env, toolsDir };
+}
+
+async function bareReport(m, argv = [], translator = t, extra = {}) {
+  const f = fakeIo();
+  const code = await runDoctor(argv, f.io, translator, { env: m.env, cwd: m.dir, ...extra });
+  return { code, out: f.stdout(), err: f.stderr(), lines: lines(f.stdout()) };
+}
+
+async function bareJson(m, argv = [], extra = {}) {
+  const r = await bareReport(m, ['--json', ...argv], t, extra);
+  return { ...r, report: r.out === '' ? null : JSON.parse(r.out) };
+}
+
+const MACHINE_IDS = ['node-version', 'git-present', 'brain-kit-on-path', 'gh-present', 'gh-auth', 'claude-present', 'claude-real'];
+const NO_VAULT_HEADING = 'brain-kit doctor: no vault found, so only this machine is checked:';
+// The sentence every command gives when it finds no vault (doctor.no_vault,
+// which this report ends with, unchanged), in the language asked for.
+const noVaultSentence = (dir, translator = t) => translator('doctor.no_vault', { dir, config: 'brain-kit.config.json', index: 'index.md' });
+
+test('outside any vault the checks that need none are the machine checks, in table order, and are a subset of the table', () => {
+  assert.deepEqual(MACHINE_CHECK_IDS, MACHINE_IDS);
+  assert.deepEqual(MACHINE_CHECK_IDS, CHECK_IDS.filter((id) => MACHINE_CHECK_IDS.includes(id)), 'table order');
+  assert.deepEqual([...MACHINE_CHECKS.keys()], MACHINE_IDS);
+});
+
+test('outside any vault the machine checks run on a context that holds no vault at all, and none of them reaches for one', () => {
+  const m = bareMachine();
+  const ctx = buildContext({ root: m.dir, hasVault: false, env: m.env });
+  for (const name of ['config', 'machine', 'lastRun', 'connectors', 'realRoot', 'stateDir', 'machineFile', 'configFile']) {
+    assert.equal(ctx[name], undefined, `a context without a vault has no ${name}`);
+  }
+  const results = runChecks(ctx, MACHINE_CHECK_IDS, MACHINE_CHECKS);
+  assert.deepEqual(results.map((r) => r.id), MACHINE_IDS);
+  assert.deepEqual(results.filter((r) => r.messageKey === 'doctor.check_crashed'), [], 'a check that read a vault would have crashed here');
+  for (const r of results) assert.equal(r.status, 'ok', JSON.stringify(r));
+});
+
+test('outside any vault, doctor --verbose lists the machine checks under a heading that says so, and ends with how to create a vault', async () => {
+  const m = bareMachine();
+  const r = await bareReport(m, ['--verbose']);
+  assert.equal(r.code, EXIT.OK, r.out + r.err);
+  assert.equal(r.err, '');
+  assert.equal(r.lines[0], NO_VAULT_HEADING);
+  const ids = r.lines.slice(1, -2).map((line) => /^ {2}\S+ +(\S+) {2}/.exec(line)[1]);
+  assert.deepEqual(ids, MACHINE_IDS);
+  for (const line of r.lines.slice(1, -2)) assert.match(line, /^ {2}ok /);
+  assert.equal(r.lines.at(-2), 'doctor: 7 ok, 0 warn, 0 fail');
+  assert.equal(r.lines.at(-1), noVaultSentence(m.dir));
+  assert.equal(r.lines.length, 1 + 7 + 1 + 1);
+});
+
+test('outside any vault the report is compact by default, as inside one: the heading, the hint, the summary, then how to create a vault', async () => {
+  const m = bareMachine();
+  const r = await bareReport(m);
+  assert.equal(r.code, EXIT.OK);
+  assert.deepEqual(r.lines, [NO_VAULT_HEADING, '7 checks ok not listed; use --verbose to list them', 'doctor: 7 ok, 0 warn, 0 fail', noVaultSentence(m.dir)]);
+  // A failure is listed, and the hint counts only what was left out.
+  const broken = bareMachine({ tools: { gh: 'loggedOut' } });
+  const b = await bareReport(broken);
+  assert.equal(b.code, EXIT.FAILURE);
+  assert.equal(b.lines.length, 5, b.out);
+  assert.match(b.lines[1], /^ {2}fail +gh-auth {2}.*gh auth login --hostname github\.com/);
+  assert.equal(b.lines[2], '6 checks ok not listed; use --verbose to list them');
+  assert.equal(b.lines[3], 'doctor: 6 ok, 0 warn, 1 fail');
+  assert.equal(b.lines[4], noVaultSentence(broken.dir));
+});
+
+test('outside any vault, --json keeps the shape of the vault report with vault: null, and lists every machine check', async () => {
+  const m = bareMachine({ tools: { gh: 'absent' } });
+  const inside = await doctor(setup({ tools: { gh: 'absent' } }), ['--only', 'node-version']);
+  const r = await bareJson(m);
+  assert.equal(r.out.endsWith('\n') && !r.out.trimEnd().includes('\n'), true, 'one line');
+  assert.deepEqual(Object.keys(r.report).sort(), Object.keys(inside.report).sort());
+  assert.equal(r.report.version, 'brain-kit.doctor/1');
+  assert.equal(r.report.vault, null);
+  assert.deepEqual(r.report.checks.map((c) => c.id), MACHINE_IDS);
+  for (const c of r.report.checks) {
+    assert.deepEqual(Object.keys(c).sort(), ['id', 'message', 'messageKey', 'params', 'status']);
+    assert.equal(c.message, renderMessage(t, c.messageKey, c.params));
+  }
+  assertCheck(r.report, 'gh-present', 'warn', 'doctor.gh_present.not_installed');
+  assertCheck(r.report, 'gh-auth', 'ok', 'doctor.gh_auth.skipped');
+  assert.deepEqual(r.report.counts, { ok: 6, warn: 1, fail: 0 });
+  assert.equal(r.report.exitCode, EXIT.OK);
+  assert.equal(r.code, EXIT.OK);
+  assert.equal(r.err, '');
+  // With --verbose, the text report is not what --json prints, and --json does not change.
+  assert.deepEqual((await bareJson(m, ['--verbose'])).report, r.report);
+});
+
+test('outside any vault the exit code is 0 unless a machine check fails, then 1; a warning never changes it', async () => {
+  const cases = [
+    [{}, EXIT.OK, null],
+    [{ gh: 'absent' }, EXIT.OK, ['warn', 'gh-present']],
+    [{ gh: 'loggedOut' }, EXIT.FAILURE, ['fail', 'gh-auth']],
+    [{ git: 'absent' }, EXIT.FAILURE, ['fail', 'git-present']],
+    [{ git: 'silent' }, EXIT.FAILURE, ['fail', 'git-present']],
+    [{ node: 'old' }, EXIT.FAILURE, ['fail', 'node-version']],
+    [{ node: 'absent' }, EXIT.FAILURE, ['fail', 'node-version']],
+    [{ brainKit: 'absent' }, EXIT.FAILURE, ['fail', 'brain-kit-on-path']],
+    [{ brainKit: 'other' }, EXIT.OK, ['warn', 'brain-kit-on-path']],
+    [{ claude: 'absent' }, EXIT.OK, ['warn', 'claude-present']],
+    [{ claude: 'broken' }, EXIT.FAILURE, ['fail', 'claude-real']],
+    [{ claude: 'silent' }, EXIT.FAILURE, ['fail', 'claude-real']],
+  ];
+  for (const [tools, code, expected] of cases) {
+    const m = bareMachine({ tools });
+    const r = await bareJson(m);
+    assert.equal(r.code, code, `${JSON.stringify(tools)}: ${r.out}`);
+    assert.equal(r.report.exitCode, code);
+    if (expected !== null) assertCheck(r.report, expected[1], expected[0]);
+    assert.equal(exitCodeFor(r.report.checks), code, 'the same rule as inside a vault');
   }
 });
+
+test('outside any vault, claude is the one on PATH: found and real, absent (claude-real says it is not counting the absence twice), or a stub', async () => {
+  const ready = bareMachine();
+  let r = await bareJson(ready);
+  const present = assertCheck(r.report, 'claude-present', 'ok', 'doctor.claude_present.ok');
+  assert.equal(present.params.bin, join(ready.toolsDir, 'claude'));
+  assertCheck(r.report, 'claude-real', 'ok', 'doctor.claude_real.ok');
+  r = await bareJson(bareMachine({ tools: { claude: 'absent' } }));
+  assertCheck(r.report, 'claude-present', 'warn', 'doctor.claude_present.not_on_path');
+  assert.match(check(r.report, 'claude-present').message, /no claude on PATH/);
+  const skipped = assertCheck(r.report, 'claude-real', 'ok', 'doctor.claude_real.skipped');
+  assert.match(skipped.message, /claude-present/);
+  r = await bareJson(bareMachine({ tools: { claude: 'broken' } }));
+  assertCheck(r.report, 'claude-present', 'warn', 'doctor.claude_present.failed');
+  assertCheck(r.report, 'claude-real', 'fail', 'doctor.claude_real.stub');
+});
+
+test('outside any vault, gh-auth asks about github.com, even from inside a repository whose origin is another host', async () => {
+  const m = bareMachine();
+  fixtureGit(m.dir, ['init', '-q', '.'], m.home);
+  fixtureGit(m.dir, ['remote', 'add', 'origin', `git${AT}ghe.example.com:ana/other.git`], m.home);
+  const log = recordingGh(m, 0);
+  const r = await bareJson(m, ['--only', 'gh-auth']);
+  assertCheck(r.report, 'gh-auth', 'ok', 'doctor.gh_auth.ok');
+  assert.deepEqual(readFileSync(log, 'utf8').trim().split('\n'), ['auth status --hostname github.com']);
+});
+
+test('outside any vault, an injected Node version and gh timeout reach the checks, as they do inside one', async () => {
+  const m = bareMachine();
+  const old = await bareJson(m, ['--only', 'node-version'], { nodeVersion: '22.11.0' });
+  assertCheck(old.report, 'node-version', 'fail', 'doctor.node_version.too_old');
+  assert.equal(old.code, EXIT.FAILURE);
+  writeScript(join(m.toolsDir, 'gh'), 'case "$1" in\n  auth) exec node -e "setTimeout(() => {}, 5000)" ;;\nesac\necho "gh version 2.40.1 (2026-01-01)"');
+  const slow = await bareJson(m, ['--only', 'gh-auth'], { ghTimeoutMs: 300 });
+  assertCheck(slow.report, 'gh-auth', 'warn', 'doctor.gh_auth.unverified');
+});
+
+test('outside any vault a directory argument is where the search starts, and a configuration there that is not a vault is never read', async () => {
+  const m = bareMachine();
+  // brain-kit.config.json without a root index.md is not a vault; if the machine
+  // checks read it, the broken text would show.
+  writeFileSync(join(m.dir, 'brain-kit.config.json'), '{ this is not json');
+  const r = await bareReport(m, [m.dir, '--verbose'], t, { cwd: m.base });
+  assert.equal(r.code, EXIT.OK, r.out);
+  assert.equal(r.lines[0], NO_VAULT_HEADING);
+  assert.equal(r.lines.at(-1), noVaultSentence(m.dir));
+  assert.doesNotMatch(r.out, /not json|config-valid|config_unknown|brain-kit\.config\.json:/);
+  // The heading for a path given is the path resolved from the working directory.
+  const relative = await bareReport(m, ['somewhere'], t, { cwd: m.base });
+  assert.equal(relative.lines.at(-1), noVaultSentence(m.dir));
+});
+
+test('outside any vault, --only takes the machine checks, and refuses a check that reads a vault (and --probe, which asks one) as a usage error that runs nothing', async () => {
+  const m = bareMachine();
+  const some = await bareJson(m, ['--only', 'gh-auth,node-version']);
+  assert.deepEqual(some.report.checks.map((c) => c.id), ['node-version', 'gh-auth'], 'table order, not the order asked for');
+  for (const argv of [['--only', 'hooks-path'], ['--only', 'node-version,hooks-path,config-valid'], ['--only', 'connectors', '--probe']]) {
+    const r = await bareReport(m, argv);
+    assert.equal(r.code, EXIT.USAGE, argv.join(' '));
+    assert.equal(r.out, '', 'nothing ran');
+  }
+  const named = await bareReport(m, ['--only', 'node-version,hooks-path,config-valid']);
+  assert.match(named.err, /hooks-path, config-valid/);
+  assert.match(named.err, /node-version, git-present, brain-kit-on-path, gh-present, gh-auth, claude-present, claude-real/);
+  assert.match(named.err, new RegExp(m.dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  const probe = await bareReport(m, ['--probe']);
+  assert.equal(probe.code, EXIT.USAGE);
+  assert.match(probe.err, /--probe/);
+  assert.equal(probe.out, '');
+  // An id no check has is still the same usage error as ever.
+  const typo = await bareReport(m, ['--only', 'gh-auht']);
+  assert.equal(typo.code, EXIT.USAGE);
+  assert.match(typo.err, /gh-auht/);
+});
+
+test('outside any vault the locale decides the language of the whole report, heading and last line included', async () => {
+  const m = bareMachine();
+  const pt = await bareReport(m, ['--verbose'], createTranslator('pt-BR'));
+  assert.equal(pt.code, EXIT.OK);
+  assert.equal(pt.err, '');
+  assert.equal(pt.lines[0], `brain-kit doctor: nenhum vault encontrado, ent${String.fromCharCode(0xe3)}o s${String.fromCharCode(0xf3)} esta m${String.fromCharCode(0xe1)}quina ${String.fromCharCode(0xe9)} conferida:`);
+  assert.equal(pt.lines.at(-2), 'doctor: 7 ok, 0 aviso(s), 0 falha(s)');
+  assert.equal(pt.lines.at(-1), noVaultSentence(m.dir, createTranslator('pt-BR')));
+  assert.ok(pt.lines.at(-1).endsWith('Para criar um: brain-kit init <dir>'));
+  assert.match(pt.lines.at(-1), /nenhum vault brain-kit encontrado/);
+  assert.doesNotMatch(pt.out, /\{[a-z_]+\}/);
+  const en = await bareReport(m, [], createTranslator('en'));
+  assert.equal(en.lines[0], NO_VAULT_HEADING);
+  const failing = await bareReport(bareMachine({ tools: { gh: 'loggedOut' } }), [], createTranslator('pt-BR'));
+  assert.match(failing.lines[1], /^ {2}falha +gh-auth {2}/);
+});
+
+test('the real binary, outside any vault, checks the machine: exit 0 on a ready one, 1 on a failing one, the way to create a vault last', () => {
+  for (const [tools, status, lang] of [[{}, EXIT.OK, 'en'], [{ gh: 'loggedOut' }, EXIT.FAILURE, 'pt-BR']]) {
+    const m = bareMachine({ tools });
+    const r = spawnSync(process.execPath, [BIN, 'doctor'], { cwd: m.dir, encoding: 'utf8', env: { ...m.env, BRAIN_KIT_LANG: lang } });
+    assert.equal(r.status, status, r.stdout + r.stderr);
+    assert.equal(r.stderr, '');
+    assert.ok(r.stdout.trimEnd().split('\n').at(-1).endsWith(lang === 'en' ? 'To create one: brain-kit init <dir>' : 'Para criar um: brain-kit init <dir>'), r.stdout);
+    assert.match(r.stdout, lang === 'en' ? /^brain-kit doctor: no vault found, so only this machine is checked:\n/ : /^brain-kit doctor: nenhum vault encontrado/);
+    const json = spawnSync(process.execPath, [BIN, 'doctor', '--json'], { cwd: m.dir, encoding: 'utf8', env: { ...m.env, BRAIN_KIT_LANG: lang } });
+    assert.equal(json.status, status);
+    assert.equal(JSON.parse(json.stdout).vault, null);
+  }
+});
+
 
 test('the real binary runs doctor --json against a vault in the hard path and exits with the report\'s code', () => {
   const fx = setup({ tools: { gh: 'absent' } });
@@ -2107,9 +2345,13 @@ test('the real binary runs doctor --json against a vault in the hard path and ex
   assert.equal(r2.status, EXIT.FAILURE, r2.stdout + r2.stderr);
 });
 
-test('doctor is listed in the CLI usage', () => {
-  const r = spawnSync(process.execPath, [BIN, '--help'], { encoding: 'utf8', env: { ...process.env, BRAIN_KIT_LANG: 'en' } });
-  assert.match(r.stdout, /doctor \[dir\] \[--json\] \[--only <id,\.\.\.>\]/);
+test('doctor is listed in the CLI usage, with --verbose and with what it does outside a vault, in both languages', () => {
+  for (const [lang, outside, verbose] of [['en', /or only this machine outside a vault/, /every check with --verbose/], ['pt-BR', /ou s\u00f3 esta m\u00e1quina fora de um vault/, /todas as verifica\u00e7\u00f5es com --verbose/]]) {
+    const r = spawnSync(process.execPath, [BIN, '--help'], { encoding: 'utf8', env: { ...process.env, BRAIN_KIT_LANG: lang } });
+    assert.match(r.stdout, /doctor \[dir\] \[--json\] \[--only <id,\.\.\.>\] \[--probe\] \[--verbose\]/, lang);
+    assert.match(r.stdout, outside, lang);
+    assert.match(r.stdout, verbose, lang);
+  }
 });
 
 // --- the scheduled curator (phase 2) -----------------------------------------

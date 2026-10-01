@@ -14,6 +14,17 @@
   the same line and exits 0, because a Claude Code hook that fails breaks the session it runs in.
   No old Node was at hand, so the tests make the real launcher believe it runs on Node 22 with a
   preload, and scan the guard for syntax an old Node cannot parse.
+- `brain-kit doctor` outside a vault is now the check of the machine, where it only said "no
+  vault found" and checked nothing (the first reviewer's m2, the second's F24; the README says it
+  tells whether "this machine and this vault are ready", and nothing could be run before `init`).
+  It runs the checks that read no vault: Node, git, `brain-kit` on PATH, `gh` and its login (asked
+  about github.com, since there is no origin to read), and the `claude` on PATH (does it run, is
+  it the real CLI, not a launcher stub). Its heading says that only the machine is checked, and
+  it ends with the same "no vault found ... To create one: brain-kit init <dir>" sentence as
+  before. The report is compact or `--verbose` as inside a vault, `--json` has the same shape with
+  `vault: null`, and `--only` may name only those checks: one that reads a vault, or `--probe`,
+  is a usage error that runs nothing. One behaviour change: the exit code outside a vault is no
+  longer 2 but 0, or 1 when one of those checks fails (a warning never changes it).
 - `brain-kit doctor` now puts what needs attention first, and prints three lines instead of 34
   when everything is fine (the first reviewer's m9, the second's F12). The default text report is
   the heading, the lines of the checks that are not `ok` (every warning and every failure, each

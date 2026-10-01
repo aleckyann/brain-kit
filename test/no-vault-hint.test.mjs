@@ -1,6 +1,10 @@
-// Outside a vault, the five commands a first-time user is likely to run
-// first end their "no vault found" message with the one command that makes a
-// vault, in the user's language (the stranger's m3 and m8, 01/10/2026), and
+// Outside a vault, the commands a first-time user is likely to run first end
+// their "no vault found" message with the one command that makes a vault, in
+// the user's language (the stranger's m3 and m8, 01/10/2026): four of them
+// refuse with it. `doctor` is not one of them any more: outside a vault it
+// checks the machine and ends its report with the same sentence, which
+// test/doctor.test.mjs holds, with a PATH of its own (a check of the machine
+// runs gh and claude, and no test here may run the real ones).
 // `curate` no longer says the vault is marked by one of two files when it is
 // marked by both.
 import { test } from 'node:test';
@@ -14,7 +18,6 @@ import { makeTempDir } from './helpers/tmp.mjs';
 const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
 const HINT = { en: 'To create one: brain-kit init <dir>', 'pt-BR': 'Para criar um: brain-kit init <dir>' };
 const COMMANDS = {
-  doctor: ['doctor'],
   validate: ['validate'],
   lint: ['lint'],
   propose: ['propose', 'Add a note', '--only', 'notes/a.md'],
