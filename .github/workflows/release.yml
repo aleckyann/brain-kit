@@ -1,0 +1,49 @@
+name: Release
+
+# Publishes the GitHub Release of a version tag. The Release body is the
+# CHANGELOG section of that version and its title is the subject of the
+# annotated tag, so the tag says what was done in it. Nothing here waits for
+# CI: the procedure in docs/releasing.md says to wait for green before
+# tagging. A re-run of the job is safe: a Release that exists is edited.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      # The tag and the token reach the shell only through env, never
+      # through an expression written into the script text.
+      - name: Check the tag, the CHANGELOG and the READMEs
+        env:
+          TAG: ${{ github.ref_name }}
+        run: node scripts/release-notes.mjs check --tag "$TAG"
+      - name: Publish the Release
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -u
+          NOTES="$RUNNER_TEMP/release-notes.md"
+          PREV=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$TAG^" 2>/dev/null || true)
+          node scripts/release-notes.mjs notes --version "${TAG#v}" --prev "$PREV" --repo "$REPO" > "$NOTES"
+          TITLE=$(git for-each-ref "refs/tags/$TAG" --format='%(contents:subject)')
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TITLE" --notes-file "$NOTES" --verify-tag
+          else
+            gh release create "$TAG" --title "$TITLE" --notes-file "$NOTES" --verify-tag
+          fi

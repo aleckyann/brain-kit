@@ -303,6 +303,8 @@ A pasta `evals/` traz um caso de `claude plugin eval` por skill e idioma; veja
 
 ## Status
 
+<!-- status-reviewed: 0.0.6 -->
+
 | Fase | Conteúdo | Estado |
 |---|---|---|
 | 0 | Esqueleto, códigos de saída, packs de idioma, schemas de config, trava anti-vazamento, CI, docs | concluída, 0.0.1 no npm |

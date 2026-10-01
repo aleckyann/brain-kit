@@ -294,6 +294,8 @@ marketplace. Inside a vault:
 
 ## Status
 
+<!-- status-reviewed: 0.0.6 -->
+
 | Phase | Content | State |
 |---|---|---|
 | 0 | Skeleton, exit codes, language packs, config schemas, anti-leak gate, CI, docs | done, 0.0.1 on npm |
