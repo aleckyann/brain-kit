@@ -19,7 +19,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
@@ -33,7 +33,9 @@ const NEW_DIR = { en: 'brain-kit init <new-dir>', 'pt-BR': 'brain-kit init <past
 
 // A folder of loose notes: no git, no index.md.
 function looseNotes(lang) {
-  const base = makeTempDir('brain-kit-nextstep-');
+  // The real path: the messages print the folder as the kit resolves it, and on macOS the
+  // temporary directory (/var/folders/...) is a link to /private/var/folders/....
+  const base = realpathSync(makeTempDir('brain-kit-nextstep-'));
   const folder = join(base, 'notes');
   mkdirSync(folder);
   writeFileSync(join(folder, 'idea.md'), '# An idea\n');
