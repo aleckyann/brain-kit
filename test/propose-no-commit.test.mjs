@@ -16,7 +16,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
@@ -93,13 +93,35 @@ for (const lang of ['en', 'pt-BR']) {
   });
 }
 
-test('the check comes before the default-branch logic: a vault whose default branch is configured, and whose remote publishes it, is refused too', () => {
+// Every git command the run starts, one line each, from a `git` placed first on PATH
+// that writes down its arguments and then runs the real one.
+function recordGitCalls(world) {
+  const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8', env: world.env }).stdout.trim();
+  const log = join(world.base, 'git-calls.log');
+  writeFileSync(join(world.base, 'fakebin', 'git'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexec '${realGit}' "$@"\n`, { mode: 0o755 });
+  return () => (existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean) : []);
+}
+
+// What a git command line is about: its first word that is not an option.
+const subcommandOf = (line) => line.split(' ').find((word) => !word.startsWith('-'));
+
+// What the default branch and the remote are asked with.
+const ASKS_ABOUT_THE_BASE = ['config', 'remote', 'symbolic-ref', 'for-each-ref', 'ls-remote', 'fetch', 'push'];
+
+test('a vault whose default branch is configured and whose remote publishes it is refused all the same, before git is asked anything about the base', () => {
   // Without the check the run goes on: the configured main resolves, the
   // remote publishes it, and a branch is pushed and a pull request opened
-  // from a repository that has no commit.
-  const world = unbornWorld({ defaultBranch: 'main', remote: true });
-  assertRefusedFirst(world, ['propose', 'Add A', '--only', 'notes/a.md']);
-  assertRefusedFirst(world, ['propose', 'Add A', '--only', 'notes/a.md', '--dry']);
+  // from a repository that has no commit. With it, the run asks git only
+  // where it is (rev-parse) and whether any commit exists (rev-list): nothing
+  // about the configuration, the branches, the remote or the network.
+  for (const extra of [[], ['--dry']]) {
+    const world = unbornWorld({ defaultBranch: 'main', remote: true });
+    const calls = recordGitCalls(world);
+    assertRefusedFirst(world, ['propose', 'Add A', '--only', 'notes/a.md', ...extra]);
+    const asked = calls();
+    assert.ok(asked.some((call) => subcommandOf(call) === 'rev-list'), `the recorder sees git: ${asked.join(' | ')}`);
+    assert.deepEqual(asked.filter((call) => ASKS_ABOUT_THE_BASE.includes(subcommandOf(call))), [], `git was asked about the base: ${asked.join(' | ')}`);
+  }
 });
 
 test('the check comes before the choice of paths: --all (with and without --yes) and a path that is not dirty meet the same sentence', () => {
@@ -127,6 +149,25 @@ test('a repository with history is not refused because the branch checked out is
   const dry = brainKit(world, ['propose', 'Add A', '--only', 'notes/a.md', '--dry']);
   assert.equal(dry.status, EXIT.OK, dry.stdout + dry.stderr);
   assert.doesNotMatch(dry.stderr, /no commit/);
+  assert.match(dry.stdout, /^Dry run: /);
+  const real = brainKit(world, ['propose', 'Add A', '--only', 'notes/a.md']);
+  assert.equal(real.status, EXIT.OK, real.stdout + real.stderr);
+  assert.match(real.stdout, /^Pull request opened against main from /);
+});
+
+// The comment on hasNoCommit promises that a commit reachable from ANY reference
+// counts. A checked-out orphan branch with the local branches gone leaves the
+// history behind a remote-tracking branch only: `rev-list --branches` would miss
+// it and refuse a repository whose proposal the base would open.
+test('a repository whose only history is a remote-tracking branch is not refused for having no commit, dry run and real run', () => {
+  const world = makeProposeWorld();
+  git(world.vault, ['checkout', '-q', '--orphan', 'fresh']);
+  git(world.vault, ['branch', '-D', 'main']);
+  assert.equal(git(world.vault, ['for-each-ref', '--format=%(refname)', 'refs/heads']).trim(), '', 'no local branch holds a commit');
+  assert.match(git(world.vault, ['for-each-ref', '--format=%(refname)', 'refs/remotes']), /refs\/remotes\/origin\/main/);
+  world.write('notes/a.md', note('A'));
+  const dry = brainKit(world, ['propose', 'Add A', '--only', 'notes/a.md', '--dry']);
+  assert.equal(dry.status, EXIT.OK, dry.stdout + dry.stderr);
   assert.match(dry.stdout, /^Dry run: /);
   const real = brainKit(world, ['propose', 'Add A', '--only', 'notes/a.md']);
   assert.equal(real.status, EXIT.OK, real.stdout + real.stderr);

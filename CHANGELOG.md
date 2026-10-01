@@ -51,8 +51,17 @@
   named, a broken link or a file in its place, and a typo beside it still refuse. A vault that
   lists its project by name (every vault `init` made in 0.0.8) keeps working where it was made,
   exactly as before, and nothing rewrites its configuration; on a second machine it still fails
-  until you replace that entry with `"{vault}"` (see "Before the first round" in
-  `docs/scheduling.md`). The schema already took any string in the list, so it is unchanged:
+  until you replace that entry with `"{vault}"`, through a pull request like any other change
+  (`brain-kit propose "<summary>" --only brain-kit.config.json`, merge it, then `brain-kit sync`;
+  see "Before the first round" in `docs/scheduling.md`). Every machine that opens the vault needs
+  this kit or a newer one before that: an older kit reads `"{vault}"` as the name of a project, so
+  its `doctor` fails `include-projects` and says to fix the names in `brain-kit.config.json` (the
+  failure this entry removes, brought back by that advice) and its rounds refuse, and in a vault
+  whose entry was changed by hand `kit_version` stays 0.0.8, so its `kit-version` check says ok and
+  nothing points at the cause. Run `brain-kit update` first, which sets `kit_version` in the
+  configuration to the running kit's version (that one value, in the working tree) and refreshes the
+  kit's own files you have not edited: an older kit then warns in `kit-version` and `manifest-valid`
+  and refuses `update`. The schema already took any string in the list, so it is unchanged:
   `"{vault}"` validates, and a bare string other than `"all"` is still refused.
 - `doctor` and `curate` no longer send a person to the shared configuration to fix a name that
   only differs by machine. The empty-list message of `include-projects` offers `"{vault}"` first
@@ -71,6 +80,7 @@
   messages (`vault_unnamed`, `some_unnamed`) in place of "the list is empty" and "a project is
   missing".
 - `propose` in a repository that has no commit yet says so, and gives the fix. A vault made
+- `propose` and `sync` in a repository that has no commit yet say so, and give the fix. A vault made
   by `init` has no commit until its owner makes one, and `propose` run before that said the
   default branch could not be found and sent the person to `vault.default_branch` in the
   configuration; following it led to "no remote called origin", to a `gh repo create` that
@@ -80,14 +90,23 @@
   the real run alike (exit 1, as the refusals it used to run into), and names the two
   commands (`git add -A`, `git commit -m "first commit"`). It judges the repository, not
   HEAD alone, so a repository with history whose checked-out branch is an orphan still
-  proposes.
+  proposes. `sync` asks the same question first (`sync.no_commit`, exit 1, one helper in
+  `src/git.mjs` for both): in such a vault it used to say "do not commit them on the default
+  branch" and offer a `git stash`, which fails there ("You do not have the initial commit
+  yet"), and the `propose` it pointed to said to make the first commit.
 - `sync` with changes that were not committed no longer says "Commit, move or remove them",
   which was the opposite of what the READMEs say (the file a session changed stays
   uncommitted until its pull request is merged; committed on the default branch it makes
   `sync` report "diverged" later). It names both honest paths: propose them with
   `brain-kit propose "<summary>" --only <paths>` and run `sync` again after the merge,
   without committing them on the default branch; or, if they are yours to keep, commit them
-  on another branch or stash them.
+  on another branch or stash them with `git stash -u` (the `-u` is what saves a new file:
+  plain `git stash` answers "No local changes to save" and `sync` postpones again with the
+  same sentence). A round of `curate` prints its own sentence right under sync's, and it is
+  the text that goes into the failure notification and `last-run.json`; it said "Commit,
+  propose or discard them", and `verify` said "Commit, move or remove them". Both now say the
+  same two paths (messages only, keys and placeholders unchanged; the row for exit 75 in
+  `docs/scheduling.md` too).
 - `sync` no longer offers a recovery command for a ref it has just removed. After a merge it
   printed how to get a file back with `git restore --source=refs/brain-kit/proposed/<branch>`
   and, one line below, that it had removed that very ref; the command failed with "could not
@@ -119,8 +138,9 @@
   what adopting needs (a git repository, and an `index.md` at the root that lists the
   folders) and the simplest way out (`brain-kit init <new-dir>` in a new, empty folder, and
   the notes moved in); `--adopt` says how to supply what is missing, with a three-line
-  `index.md` as an example, and `git init` for a folder that is not a repository. Message-only:
-  `--adopt` still writes nothing when it refuses.
+  `index.md` as an example, and `git init` for a folder that is not a repository, after
+  writing its `.gitignore` (so nothing kept out of git is ever committed, the order the
+  README asks for). Message-only: `--adopt` still writes nothing when it refuses.
 - Three Portuguese sentences a Brazilian reader found wrong are rewritten: the dry run's
   "Proporia X como ..., enviados para ..." (a plural participle for one file), the first
   line of a session ("Retrato da sessão tirado", a word-for-word "snapshot taken") and the
@@ -139,42 +159,56 @@
   the same line and exits 0, because a Claude Code hook that fails breaks the session it runs in.
   No Node older than 22 was at hand, so the tests make the real launcher believe it runs on Node
   20 with a preload, and scan the guard for syntax an old Node cannot parse.
+- A Node older than the supported minimum now gets one clear sentence and exit code 2, instead of
+  whatever that Node does with the code (found when a first-time user ran the README on a clean
+  machine). The sentence is in your language, names the Node it found and says where to get a
+  supported one. The launcher, `bin/brain-kit.mjs`, imports only a small guard
+  (`src/node-guard.mjs`: no imports, and no syntax an old Node cannot parse), asks it, and loads
+  the CLI with a dynamic `import()` only when the Node is supported. The language is chosen as
+  every other message of the kit is (`BRAIN_KIT_LANG`, then `LC_ALL`, `LC_MESSAGES` and `LANG`),
+  and a version string it cannot read never blocks. This also refuses a Node that happened to run
+  the kit before: every command exits 2 with the sentence, the push gate refuses every push, and
+  the Claude Code hooks stand down, until a supported Node is first on PATH. The one exception is
+  `brain-kit hook ...`: it prints the same line to stderr and exits 0, because a Claude Code hook
+  that fails breaks the session it runs in.
 - `brain-kit doctor` outside a vault is now the check of the machine, where it only said "no
-  vault found" and checked nothing (the first reviewer's m2, the second's F24; the README says it
-  tells whether "this machine and this vault are ready", and nothing could be run before `init`).
-  It runs the checks that read no vault: Node, git, `brain-kit` on PATH, `gh` and its login (asked
-  about github.com, since there is no origin to read), and the `claude` on PATH (does it run, is
-  it the real CLI, not a launcher stub). Its heading says that only the machine is checked, and
-  it ends with the same "no vault found ... To create one: brain-kit init <dir>" sentence as
-  before. The report is compact or `--verbose` as inside a vault, `--json` has the same shape with
-  `vault: null`, and `--only` may name only those checks: one that reads a vault, or `--probe`,
-  is a usage error that runs nothing. One behaviour change: the exit code outside a vault is no
-  longer 2 but 0, or 1 when one of those checks fails (a warning never changes it).
+  vault found" and checked nothing (found when a first-time user ran the README on a clean
+  machine; the README says it tells whether "this machine and this vault are ready", and nothing
+  could be run before `init`). It runs the checks that read no vault: Node, git, `brain-kit` on
+  PATH, `gh` and its login (asked about github.com, since there is no origin to read), and the
+  `claude` on PATH (does it run, is it the real CLI, not a launcher stub). Its heading says that
+  only the machine is checked, and it ends with the same "no vault found ... To create one:
+  brain-kit init <dir>" sentence as before. The report is compact or `--verbose` as inside a
+  vault, `--json` has the same shape with `vault: null`, and `--only` may name only those checks:
+  one that reads a vault, or `--probe`, is a usage error that runs nothing. One behaviour change:
+  the exit code outside a vault is no longer 2 but 0, or 1 when one of those checks fails (a
+  warning never changes it).
 - `brain-kit doctor` now puts what needs attention first, and prints three lines instead of 34
-  when everything is fine (the first reviewer's m9, the second's F12). The default text report is
-  the heading, the lines of the checks that are not `ok` (every warning and every failure, each
-  as it was printed and in the same order), one line saying how many `ok` checks it left out and
-  how to see them ("31 checks ok not listed; use --verbose to list them"), and the summary line.
-  `--verbose` (or `-v`) prints the full list as it always did. `--json` is unchanged and still
-  lists every check, so the tools that read it see no difference, and the exit codes are
-  unchanged. A check that is not `ok` is never left out of the compact report.
+  when everything is fine (found when a first-time user ran the README on a clean machine). The
+  default text report is the heading, the lines of the checks that are not `ok` (every warning and
+  every failure, each as it was printed and in the same order), one line saying how many `ok`
+  checks it left out and how to see them ("31 checks ok not listed; use --verbose to list them"),
+  and the summary line. `--verbose` (or `-v`) prints the full list as it always did. `--json` is
+  unchanged and still lists every check, so the tools that read it see no difference, and the exit
+  codes are unchanged. A check that is not `ok` is never left out of the compact report.
 - The `claude-isolation-flags` line of `doctor` no longer names a Claude Code version. It said
   `--max-turns` is not in the help of "Claude Code 2.1.281" on a machine that had 2.1.286; it now
-  says "the installed version", in both languages (the second reviewer's F18).
+  says "the installed version", in both languages (found when a first-time user ran the README on a
+  clean machine).
 - `init` asks for a "short id" where it asked for a "handle", and offers the one the name just
-  typed makes (the second reviewer's F10). The question that names the person who signs their
-  approvals was "Handle, lowercase letters, digits and dashes, used as human:<handle>", and it
-  offered the system user's name even after the person had typed theirs ("ana" for "Ana Souza").
-  It now reads "Short id (lowercase letters, digits and hyphens) that signs your approvals" (in
-  Portuguese, "Apelido curto (minúsculas, números e hífen), que assina as suas aprovações"), and
-  the offer follows the name: lower case, accents folded, anything else a hyphen, so "Ana
-  Conceição" is offered `ana-conceicao`, and the system user's when nothing usable is left. The same
-  holds for `--yes` with a name in the answers file and no handle. The key stays `handle`, in the
-  answers file and in the configuration.
+  typed makes (found when a first-time user ran the README on a clean machine). The question that
+  names the person who signs their approvals was "Handle, lowercase letters, digits and dashes,
+  used as human:<handle>", and it offered the system user's name even after the person had typed
+  theirs ("ana" for "Ana Souza"). It now reads "Short id (lowercase letters, digits and hyphens)
+  that signs your approvals" (in Portuguese, "Apelido curto (minúsculas, números e hífen), que
+  assina as suas aprovações"), and the offer follows the name: lower case, accents folded, anything
+  else a hyphen, so "Ana Conceição" is offered `ana-conceicao`, and the system user's when nothing
+  usable is left. The same holds for `--yes` with a name in the answers file and no handle. The
+  key stays `handle`, in the answers file and in the configuration.
 - `init` run through a pipe says which question has no answer by its name, not by its internal
-  key (the second reviewer's F22): `no answer for "Language"`, `sem resposta para "Idioma"`, where
-  it said `"lang"`. The retry of a bad answer and the "input ended" message name the question the
-  same way.
+  key (found when a first-time user ran the README on a clean machine): `no answer for
+  "Language"`, `sem resposta para "Idioma"`, where it said `"lang"`. The retry of a bad answer and
+  the "input ended" message name the question the same way.
 - `init` on a new vault prints one line when `validate` and `lint` find nothing, where it printed
   both full reports, about 45 lines of rule names (the second reviewer's F11): "brain-kit
   validate and brain-kit lint --base all checked the new vault: nothing found." Clean means each
@@ -183,11 +217,14 @@
   exactly what it printed before, under the same heading, in the same order and on the same
   streams. `init --adopt` still prints both reports. `validate` and `lint` are unchanged.
 - Both READMEs now open with a box a first-time reader can follow: "Comece aqui" in
-  `README.pt-BR.md`, "Start here" in `README.md`. Seven numbered steps take a clean machine to
-  the first pull request, each with its command, its time (install 2 min, `gh auth login` 3,
-  the machine check 1, `init` 3, first commit 2, push 1, first pull request 5) and a link to
-  the detailed step, under a plain "about 30 minutes the first time" that calls the times
-  estimates, because no outside adopter has timed the path yet. A glossary of twelve words
+  `README.pt-BR.md`, "Start here" in `README.md`. Seven numbered steps take a machine that
+  already has the requirements to the first pull request, each with its command, its time
+  (install 2 min, `gh auth login` 3, the machine check 1, `init` 3, first commit 3, push 1,
+  steps 7 to 10 together 8) and a link to the detailed step. They sit under a plain "about 30
+  minutes the first time" that is arithmetic: about 10 minutes of reading plus the 21 of the
+  steps, for someone who already has Node.js, git, `gh`, Claude Code and a GitHub account. The
+  times are called estimates, not a promise, because no outside adopter has timed the path
+  yet. A glossary of twelve words
   (terminal, PATH, repository, branch, commit, pull request, merge, vault, push gate, hook,
   skill, plugin and marketplace) follows the box. The second stranger, who followed only the
   Portuguese README, reached the first pull request but estimated 30 to 40 minutes for a person
@@ -230,23 +267,45 @@
   refusal of the first commit, and says why git asks. Step 7 names the doctor lines by the
   words on the screen (`falha`, `aviso`, `ok` in Portuguese; `fail`, `warn`, `ok` in English)
   and says the output lists only the warnings and the failures, with `--verbose` for all of
-  them. A closing "Se travar" ("If you get stuck") list gives, in at most eight lines, the fix
-  for the five traps most likely to stop a new person, and links the incident page only for
-  secrets.
+  them. Steps 3, 7 and 11 say what the person sees (a `doctor:` line that ends in `0 falha(s)`
+  or `0 fail`; "nothing to stamp, and nothing was written") and never an exit code, which a
+  terminal does not show. A closing "Se travar" ("If you get stuck") list gives, in at most
+  eight lines, the fix for the five traps most likely to stop a new person, and links the
+  incident page only for secrets. Its `propose` item gives `git push -u origin HEAD` for an
+  `origin` that exists with nothing pushed (the kit says "push the default branch first"
+  without a command, and repeating `gh repo create` fails because the repository exists), and
+  its `command not found` item sends the person through the whole `EACCES` block, because the
+  paste ends in "Successfully installed" even when npm refused.
 - The second machine has a section of its own in both READMEs, in the order
   `docs/scheduling.md` gives: clone, `machine register --new`,
   `git config core.hooksPath .githooks`, `doctor`, and `schedule install` only where the
   rounds run. Before, the Portuguese README only linked to an English section. The section
   also says that the tool's own next-steps text puts the `doctor` before the `git config` (the
-  outcome is the same, since the doctor fails `hooks-path` and names the command), that the
-  shared `brain-kit.config.json` must not be edited to silence the doctor, and that a new
-  vault's `{vault}` in `include_projects` makes a clone at another path need no edit. A test
-  compares the README's commands with the scheduling page's, in order.
+  outcome is the same, since the doctor fails `hooks-path` and names the command), that a
+  vault created by this version lists its project as `{vault}` in `include_projects` and needs
+  no edit on a second machine, and that a vault created before 0.0.9 lists the first machine's
+  project name, fails `include-projects` on the second machine, and has to switch that entry
+  to `"{vault}"` (propose it, merge it, `brain-kit sync` on both machines) rather than get the
+  second machine's name, which would stop the first machine's rounds from reading its own
+  sessions. A test compares the README's commands with the scheduling page's, in order.
 - `README.pt-BR.md` uses one name for the push check, "trava de push", the term the tool
   prints (the README said "gate de push" and the doctor "trava de push"), and replaces the
   English fragments the stranger listed: "best effort" is now "de melhor esforço", "overlay de
   prompt" is described as a prompt of the vault's own, "tarball" is the `.tgz` file, and
   `verified` is glossed where `verify` stamps it.
+  both full reports, about 40 lines of rule names (found when a first-time user ran the README on
+  a clean machine): "brain-kit validate and brain-kit lint --base all checked the new vault:
+  nothing found." Clean means each exits 0, wrote nothing to stderr and ended its report with its
+  own clean verdict (not the ones for stale notes, skipped rules or warnings only). When either
+  says anything else, `init` prints exactly what it printed before, under the same heading, in the
+  same order and on the same streams. `init --adopt` still prints both reports. `validate` and
+  `lint` are unchanged.
+- The `setup` skill, in both languages, and its eval criteria no longer say that the doctor
+  refuses to run outside a vault and so runs only after `init`: that stopped being true when
+  the doctor learned to check the machine there. Step 3 now runs `doctor` from a folder that
+  is not a vault as the machine check (the "no vault found" line it prints is expected), and
+  the doctor after `init` and the final one stay as they were. The test that pinned the old
+  sentence now pins the three runs, in order.
 
 ## 0.0.8 (tagged `v0.0.8`, not on npm)
 

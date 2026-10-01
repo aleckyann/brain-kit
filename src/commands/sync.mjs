@@ -14,7 +14,12 @@
 //
 //   1. An operation left half done (a rebase, a merge, a cherry-pick, a
 //      revert, a bisection) postpones the run, exit 75: checking out
-//      another branch in the middle of one strands it.
+//      another branch in the middle of one strands it. A repository that
+//      has never had a commit (hasNoCommit, src/git.mjs) is exit 1, said
+//      with the two commands that make the first one, before the tree is
+//      judged: in that state every file is "not committed", and the advice a
+//      dirty tree gets (propose them, or keep them on another branch or in a
+//      stash) is wrong for it, and a stash fails there.
 //   2. A path whose bytes are still exactly what an earlier `propose`
 //      pushed (the proposed-paths ledger, src/guards/proposed.mjs) is
 //      brought back to HEAD and said, and the ledger pruned: its content
@@ -88,7 +93,7 @@ import {
   branchesOf, dropMergedRefs, pinnedEntries, proposedMatch, proposedRef, pruneLedger, readLedger, restoreMatching,
 } from '../guards/proposed.mjs';
 import {
-  aheadBehind, currentBranch, defaultBranch, dirtyPaths, defaultBranchUpstream, fetch, ignoredInTheWay, operationInProgress, resolveCommit, runGit, trackedRemote,
+  aheadBehind, currentBranch, defaultBranch, dirtyPaths, defaultBranchUpstream, fetch, hasNoCommit, ignoredInTheWay, operationInProgress, resolveCommit, runGit, trackedRemote,
 } from '../git.mjs';
 
 const ROOT_INDEX = 'index.md';
@@ -181,6 +186,10 @@ function syncSteps(root, io, t, env, outcome, brought) {
   if (operation !== null) {
     io.stderr.write(`${t('sync.operation_in_progress', { operation })}\n`);
     return EXIT.TEMPFAIL;
+  }
+  if (hasNoCommit(root, { env })) {
+    io.stderr.write(`${t('sync.no_commit')}\n`);
+    return EXIT.FAILURE;
   }
   restoreProposed(root, io, t, env, brought);
   const dirty = dirtyPaths(root, { env });

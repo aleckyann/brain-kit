@@ -9,7 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runSync, syncUnderLock } from '../src/commands/sync.mjs';
@@ -1025,7 +1025,7 @@ const DIRTY_TEXT = {
     propose: /brain-kit propose "<summary>" --only <paths>/,
     afterMerge: /run sync again after the merge/,
     warn: /do not commit them on the default branch: sync would later report the branches as diverged/,
-    keep: /commit them on another branch or stash them \(git stash\)/,
+    keep: /commit them on another branch or stash them \(git stash -u\)/,
     old: /Commit, move or remove/,
     // The only places the word may stand: the description of the tree, the
     // warning, and the branch that is not the default one.
@@ -1035,7 +1035,7 @@ const DIRTY_TEXT = {
     propose: /brain-kit propose "<resumo>" --only <caminhos>/,
     afterMerge: /rode o sync de novo depois do merge/,
     warn: /não faça commit delas no branch padrão, porque depois o sync recusaria, dizendo que os branches divergiram/,
-    keep: /faça commit delas em outro branch ou guarde-as com git stash/,
+    keep: /faça commit delas em outro branch ou guarde-as com git stash -u/,
     old: /Faça commit, mova ou apague/,
     allowed: [/mudanças sem commit/g, /não faça commit delas no branch padrão/g, /faça commit delas em outro branch/g],
   },
@@ -1058,6 +1058,38 @@ for (const lang of ['en', 'pt-BR']) {
     let text = createTranslator(lang)('sync.dirty', { files: ['memoria/log.md'] });
     for (const allowed of DIRTY_TEXT[lang].allowed) text = text.replace(allowed, '');
     assert.doesNotMatch(text, /commit/i, text);
+  });
+}
+
+// S1 of the review of G2b: the message offered `git stash`, which does not save a
+// NEW file ("No local changes to save", exit 0), so a person who had just written
+// a note did as told and sync postponed again with the same sentence. The command
+// is taken from the sentence as it is printed and run, in both languages.
+const stashArgsOf = (text) => /git stash(?: -[A-Za-z-]+)*/.exec(text)[0].split(' ').slice(1);
+
+async function syncAs(world, translator) {
+  const f = fakeIo();
+  const code = await runSync([], f.io, translator, { env: world.env, cwd: world.vault });
+  return { code, stdout: f.stdout(), stderr: f.stderr() };
+}
+
+for (const lang of ['en', 'pt-BR']) {
+  test(`${lang}: the stash the message offers clears a NEW file as well as an edited one: sync goes on, and the pop gives both back`, async () => {
+    const world = makeProposeWorld();
+    const translator = createTranslator(lang);
+    world.write('notes/new.md', note('New'));
+    writeFileSync(join(world.vault, 'index.md'), '# Index\n\nEdited.\n');
+    const postponed = await syncAs(world, translator);
+    assert.equal(postponed.code, EXIT.TEMPFAIL);
+    // Do exactly what the sentence says, whatever it says.
+    const stash = stashArgsOf(translator('sync.dirty', { files: [] }));
+    git(world.vault, stash);
+    const goes = await syncAs(world, translator);
+    assert.equal(goes.code, EXIT.OK, `after "git ${stash.join(' ')}" sync is still postponed: ${goes.stderr}`);
+    assert.deepEqual(stash, ['stash', '-u'], 'and what it says is git stash -u');
+    git(world.vault, ['stash', 'pop']);
+    assert.equal(readFileSync(join(world.vault, 'notes', 'new.md'), 'utf8'), note('New'), 'the new file is back');
+    assert.equal(readFileSync(join(world.vault, 'index.md'), 'utf8'), '# Index\n\nEdited.\n', 'and so is the edit');
   });
 }
 
@@ -1204,4 +1236,105 @@ test('F7: a run that stops on an unexpected git failure (exit 1) still says how 
     line('sync.proposed_recover', recoverParams([[PROPOSED_REF, 'notes/a.md']])),
   ].join(''));
   assertUnlocked(world);
+});
+
+// --- a vault that has never had a commit (S2 of the review of G2b) ---------------------
+//
+// `brain-kit init` leaves a vault with no commit, and every file of it is "not
+// committed". Sync told its owner not to commit them on the default branch and
+// to `git stash` them, which fails here ("You do not have the initial commit
+// yet"), and the propose it pointed to said to make the first commit: in the
+// one state where a commit on the default branch is the right thing, the two
+// messages contradicted each other. Sync now says what propose says, first.
+
+function unbornVault() {
+  const world = makeWorld();
+  rmSync(world.vault, { recursive: true, force: true });
+  mkdirSync(world.vault);
+  git(world.vault, ['init', '-q', '-b', 'main']);
+  writeFileSync(join(world.vault, 'brain-kit.config.json'), configText(null));
+  writeFileSync(join(world.vault, 'index.md'), '# Index\n');
+  mkdirSync(join(world.vault, 'memoria'));
+  writeFileSync(join(world.vault, 'memoria', 'log.md'), '# Log\n');
+  return world;
+}
+
+// The commands the sentence prints (its indented lines), as the argument lists
+// git gets: quotes taken off the message, the word "git" left to the helper.
+const commandsOf = (text) => text.split('\n').filter((l) => l.startsWith('  git '))
+  .map((l) => l.trim().match(/"[^"]*"|\S+/g).map((word) => word.replace(/^"|"$/g, '')).slice(1));
+
+for (const lang of ['en', 'pt-BR']) {
+  test(`${lang}: sync in a vault with no commit says to make the first commit, exit 1, before it judges the files it finds, and moves nothing`, async () => {
+    const world = unbornVault();
+    const translator = createTranslator(lang);
+    const before = repoState(world.vault);
+    const run = await syncAs(world, translator);
+    assert.equal(run.code, EXIT.FAILURE, run.stderr);
+    assert.equal(run.stdout, '');
+    assert.equal(run.stderr, `${translator('sync.no_commit')}\n`);
+    assert.doesNotMatch(run.stderr, /stash/, 'no command that fails in this state');
+    assert.match(run.stderr, /git add -A/);
+    assert.match(run.stderr, /git commit -m "(first|primeiro) commit"/);
+    assert.deepEqual(repoState(world.vault), before);
+    assertUnlocked(world);
+  });
+
+  test(`${lang}: doing what that sentence says, in order, gets sync past it: the next thing it meets is the remote, not the first commit again`, async () => {
+    const world = unbornVault();
+    const translator = createTranslator(lang);
+    const commands = commandsOf(translator('sync.no_commit'));
+    assert.deepEqual(commands.map((args) => args[0]), ['add', 'commit'], 'the two commands it prints');
+    for (const args of commands) git(world.vault, args);
+    assert.equal(git(world.vault, ['rev-list', '--count', 'HEAD']).trim(), '1');
+    const next = await syncAs(world, translator);
+    assert.equal(next.code, EXIT.FAILURE, next.stderr);
+    assert.equal(next.stderr, `${translator('sync.no_remote', { remote: 'origin', branch: 'main' })}\n`);
+  });
+}
+
+test('in a vault with no commit sync offers nothing that fails there: no stash, and no "do not commit them" (the state where a commit is right)', async () => {
+  const world = unbornVault();
+  for (const lang of ['en', 'pt-BR']) {
+    const run = await syncAs(world, createTranslator(lang));
+    assert.doesNotMatch(run.stderr, /stash/, lang);
+    assert.doesNotMatch(run.stderr, /do not commit|não faça commit/, lang);
+  }
+});
+
+test('sync with no commit says what propose says: the same two commands, in both languages', () => {
+  for (const lang of ['en', 'pt-BR']) {
+    const translator = createTranslator(lang);
+    assert.deepEqual(
+      translator('sync.no_commit').split('\n').filter((l) => l.startsWith('  ')),
+      translator('propose.no_commit').split('\n').filter((l) => l.startsWith('  ')),
+      lang,
+    );
+  }
+});
+
+test('the same sentence reaches a round: syncUnderLock, which curate calls, says what runSync says', async () => {
+  const world = unbornVault();
+  const viaRun = await sync(world);
+  const viaUnder = underLock(world);
+  assert.equal(viaUnder.code, EXIT.FAILURE);
+  assert.deepEqual(viaUnder, viaRun);
+  assert.equal(viaRun.stderr, line('sync.no_commit'));
+});
+
+test('a repository with history is not told it has no commit because the branch checked out has none of its own', async () => {
+  const world = makeProposeWorld();
+  git(world.vault, ['checkout', '-q', '--orphan', 'fresh']);
+  assert.equal(gitProbe(world.vault, ['rev-parse', '-q', '--verify', 'HEAD']).status, 1, 'HEAD names no commit');
+  const run = await sync(world);
+  assert.equal(run.code, EXIT.TEMPFAIL, run.stderr);
+  assert.doesNotMatch(run.stderr, /no commit yet/);
+  assert.match(run.stderr, /have changes that are not committed|changes that are not committed/);
+});
+
+test('a vault with commits is never told it has none: the plain up-to-date case still says so', async () => {
+  const world = makeWorld();
+  const run = await sync(world);
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.equal(run.stdout, line('sync.up_to_date', { branch: 'main', upstream: 'origin/main' }));
 });

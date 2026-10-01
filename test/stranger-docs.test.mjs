@@ -57,6 +57,10 @@ const FIRST_RUN = {
     box: '> **Start here.**',
     thirty: 'about 30 minutes',
     estimates: 'estimates',
+    promise: /not a promise/,
+    stepsWord: 'for the steps below',
+    reading: /about (\d+) of reading/,
+    ready: /account ready/,
     glossary: '**Words you will see**',
     terms: ['terminal', 'PATH', 'repository', 'branch', 'commit', 'pull request', 'merge', 'vault', 'push gate', 'hook', 'skill', 'plugin', 'marketplace'],
     needs: [/Node\.js 22 or newer \(24 LTS is recommended\)/, /\bgit\b/, /`gh`/, /Claude Code/, /GitHub account/],
@@ -80,7 +84,9 @@ const FIRST_RUN = {
     identityError: 'Author identity unknown',
     identity: ['git config --global user.name "Your Name"', 'git config --global user.email "you@example.com"'],
     identityWhy: /git records who made each commit/,
-    machineCheck: /checks only the machine: Node, git, `gh` and its login, and Claude Code\. It exits 0 when nothing fails/,
+    machineCheck: /checks only the machine: Node, git, `gh` and its login, and Claude Code\. All is well when the line that starts with `doctor:` ends with `0 fail`/,
+    noVaultMessage: /The message "no brain-kit vault found", which comes right after it, is expected/,
+    healthy: /its last line ends with `0 fail`/,
     handle: /handle/i,
     accept: /accept the suggestion/,
     doctorWords: { used: ['`fail`', '`warn`'], unused: ['`falha`', '`aviso`'] },
@@ -88,16 +94,27 @@ const FIRST_RUN = {
     second: '## The same vault on a second machine',
     repo: '## What is in the repository',
     oneMachine: /Let only one machine run the curator's rounds/,
-    noEdit: 'Do not edit `brain-kit.config.json` to silence the `doctor`',
+    newVault: /A vault created by this version of `init` needs no edit on the second machine/,
+    oldVault: /A vault created before 0\.0\.9 lists its project by the name it had on the first machine/,
+    noName: 'Do not put this machine\'s project name in `brain-kit.config.json` to silence the `doctor`',
+    switchTo: /replace the name in `sources\.transcripts\.include_projects` with `"\{vault\}"`/,
+    switchPropose: '`brain-kit propose "Use {vault}" --only brain-kit.config.json`',
+    switchDoc: 'docs/scheduling.md#before-the-first-round',
     toolOrder: /prints these steps too, but with `doctor` before `git config`/,
     stuck: '**If you get stuck**',
-    traps: [/EACCES/, /`gh auth login`/, /`propose`.*commit/, /command not found/, /`doctor`.*fail.*gh auth login --hostname github\.com/, /incident-response\.md/],
+    traps: [/EACCES/, /`gh auth login`/, /`propose`.*commit.*`git push -u origin HEAD`/, /command not found.*Successfully installed.*whole .*EACCES/, /`doctor`.*fail.*gh auth login --hostname github\.com/, /incident-response\.md/],
+    notTrap: [null, null, /configuration/, /redo the PATH/, null, null],
     secrets: /password|key/i,
+    stamp: 'nothing to stamp, and nothing was written',
   },
   'pt-BR': {
     box: '> **Comece aqui.**',
     thirty: 'cerca de 30 minutos',
     estimates: 'estimativas',
+    promise: /não uma promessa/,
+    stepsWord: 'nos passos abaixo',
+    reading: /uns (\d+) de leitura/,
+    ready: /já prontos/,
     glossary: '**Palavras que você vai ver**',
     terms: ['terminal', 'PATH', 'repositório', 'branch', 'commit', 'pull request', 'merge', 'vault', 'trava de push', 'hook', 'skill', 'plugin', 'marketplace'],
     needs: [/Node\.js 22 ou mais novo \(o 24 LTS é o recomendado\)/, /\bgit\b/, /`gh`/, /Claude Code/, /conta no GitHub/],
@@ -121,7 +138,9 @@ const FIRST_RUN = {
     identityError: 'Author identity unknown',
     identity: ['git config --global user.name "Seu Nome"', 'git config --global user.email "voce@example.com"'],
     identityWhy: /O git guarda quem fez cada commit/,
-    machineCheck: /confere só a máquina: o Node, o git, o `gh` e o login dele, e o Claude Code\. Ele sai com 0 quando nada falha/,
+    machineCheck: /confere só a máquina: o Node, o git, o `gh` e o login dele, e o Claude Code\. Está tudo certo quando a linha que começa com `doctor:` termina em `0 falha\(s\)`/,
+    noVaultMessage: /A mensagem "nenhum vault brain-kit encontrado", que vem logo depois, é esperada/,
+    healthy: /a última linha termina em `0 falha\(s\)`/,
     handle: /Apelido curto/,
     accept: /aceite a sugestão/,
     doctorWords: { used: ['`falha`', '`aviso`'], unused: ['`fail`', '`warn`'] },
@@ -129,11 +148,18 @@ const FIRST_RUN = {
     second: '## O mesmo vault em uma segunda máquina',
     repo: '## O que há no repositório',
     oneMachine: /Deixe só uma máquina rodar as rodadas do curador/,
-    noEdit: 'Não edite o `brain-kit.config.json` para fazer o `doctor` calar',
+    newVault: /Um vault criado por esta versão do `init` não precisa de edição nenhuma na segunda máquina/,
+    oldVault: /Um vault criado antes da 0\.0\.9 lista o projeto pelo nome que ele tinha na primeira máquina/,
+    noName: 'Não ponha no `brain-kit.config.json` o nome do projeto desta máquina para fazer o `doctor` calar',
+    switchTo: /troque o nome que está em `sources\.transcripts\.include_projects` por `"\{vault\}"`/,
+    switchPropose: '`brain-kit propose "Usa {vault}" --only brain-kit.config.json`',
+    switchDoc: 'docs/scheduling.md#before-the-first-round',
     toolOrder: /imprime estes passos também, mas com o `doctor` antes do `git config`/,
     stuck: '**Se travar**',
-    traps: [/EACCES/, /`gh auth login`/, /`propose`.*commit/, /command not found/, /`doctor`.*falha.*gh auth login --hostname github\.com/, /incident-response\.md/],
+    traps: [/EACCES/, /`gh auth login`/, /`propose`.*commit.*`git push -u origin HEAD`/, /command not found.*Successfully installed.*bloco .*EACCES.* inteiro/, /`doctor`.*falha.*gh auth login --hostname github\.com/, /incident-response\.md/],
+    notTrap: [null, null, /configura/, /refaça o PATH/, null, null],
     secrets: /senha|chave/i,
+    stamp: 'nada a carimbar, e nada foi escrito',
   },
 };
 
@@ -280,11 +306,12 @@ for (const [lang, spec] of Object.entries(READMES)) {
     const merge = steps.find((item) => item.startsWith('11. '));
     assert.ok(propose && merge, 'steps 10 and 11');
     const words = lang === 'en'
-      ? { uncommitted: 'Leave the changed file uncommitted until the pull request is merged (step 11)', diverged: 'diverged', stamp: 'there is nothing to stamp and exits 0' }
-      : { uncommitted: 'Deixe o arquivo alterado sem commit até o pull request ser mergeado (passo 11)', diverged: 'divergiram', stamp: 'não há nada a carimbar e sai com 0' };
+      ? { uncommitted: 'Leave the changed file uncommitted until the pull request is merged (step 11)', diverged: 'diverged', stamp: FIRST_RUN[lang].stamp }
+      : { uncommitted: 'Deixe o arquivo alterado sem commit até o pull request ser mergeado (passo 11)', diverged: 'divergiram', stamp: FIRST_RUN[lang].stamp };
     assert.ok(propose.replace(/\s+/g, ' ').includes(words.uncommitted), 'step 10 says to leave the file uncommitted');
     assert.ok(propose.includes(words.diverged), 'step 10 says why');
-    assert.ok(merge.replace(/\s+/g, ' ').includes(words.stamp), 'step 11 says verify has nothing to stamp');
+    assert.ok(merge.replace(/\s+/g, ' ').includes(words.stamp), 'step 11 says what verify prints when it has nothing to stamp');
+    assert.doesNotMatch(merge, /exits? 0|sai com 0/, 'an exit code is not on the screen');
   });
 
   test(`${spec.file}: says how the language is chosen`, () => {
@@ -419,10 +446,20 @@ for (const [lang, spec] of Object.entries(READMES)) {
     const flat = norm(body.join(' '));
     assert.ok(flat.includes(run.thirty), 'it says how long the whole path takes');
     assert.ok(flat.includes(run.estimates), 'and that the times are estimates');
+    assert.match(flat, run.promise);
+    assert.match(flat, run.ready, 'the 30 minutes assume the programs are already there');
+    assert.doesNotMatch(flat, /clean machine|máquina limpa/, 'a clean machine would have to install them first');
     for (const need of run.needs) assert.match(flat, need);
     const steps = body.filter((line) => /^\d+\. /.test(line));
     assert.equal(steps.length, 7);
-    assert.deepEqual(steps.map((step) => /\b(\d+) min\b/.exec(step)?.[1]), ['2', '3', '1', '3', '2', '1', '5']);
+    const minutes = steps.map((step) => Number(/\b(\d+) min\b/.exec(step)?.[1]));
+    assert.deepEqual(minutes, [2, 3, 1, 3, 3, 1, 8]);
+    // The promise is arithmetic: the reading and the steps add up to the "about 30".
+    const reading = Number(run.reading.exec(flat)?.[1]);
+    const total = minutes.reduce((sum, value) => sum + value, 0);
+    assert.ok(reading >= 10, `the box counts ${reading} minutes of reading`);
+    assert.ok(Math.abs(reading + total - 30) <= 2, `${reading} of reading and ${total} of steps do not come to about 30`);
+    assert.ok(flat.includes(`${total} ${run.stepsWord}`), 'and it says what the steps come to');
     const named = ['gh auth login', 'brain-kit doctor', 'brain-kit init ~/my-brain', 'git add -A', 'gh repo create my-brain --private --source . --push', 'brain-kit propose'];
     named.forEach((command, index) => assert.ok(steps[index + 1].includes(command), `step ${index + 2} names ${command}`));
     assert.ok(steps[4].includes('git commit'));
@@ -430,6 +467,12 @@ for (const [lang, spec] of Object.entries(READMES)) {
     assert.ok(steps[0].includes(installLink), 'step 1 links the install snippet');
     assert.ok(flat.includes(firstLink), 'the box links the first-vault section');
     steps.forEach((step, index) => assert.match(step, /\]\(#[^)\s]+\)/, `step ${index + 1} links to its detail`));
+  });
+
+  test(`${spec.file}: the box and the first vault say what the screen shows, never an exit code`, () => {
+    const { lines } = startBox(text, run.box);
+    const firstRun = `${lines.join('\n')}\n${section(text, spec.first)}`;
+    assert.doesNotMatch(firstRun, /\bexits? (with )?0\b|\bexit code\b|sai com 0|código de saída/i);
   });
 
   test(`${spec.file}: every link inside the page lands on a heading or an anchor that exists`, () => {
@@ -528,6 +571,8 @@ for (const [lang, spec] of Object.entries(READMES)) {
     assert.deepEqual(fencedBlocks(login), ['gh auth login']);
     assert.deepEqual(fencedBlocks(machine), ['brain-kit doctor']);
     assert.match(norm(machine), run.machineCheck);
+    assert.match(norm(machine), run.noVaultMessage);
+    assert.doesNotMatch(machine, /exits? 0|sai com 0/, 'an exit code is not on the screen');
     assert.ok(items(section(text, spec.first))[0].includes(installLink), 'step 1 is the install');
   });
 
@@ -546,6 +591,8 @@ for (const [lang, spec] of Object.entries(READMES)) {
     for (const word of run.doctorWords.unused) assert.ok(!step.includes(word), `step 7 uses ${word}, the other language's word`);
     assert.ok(step.includes('--verbose'));
     assert.match(norm(step), run.compact);
+    assert.match(norm(step), run.healthy);
+    assert.doesNotMatch(step, /exits? 0|sai com 0/, 'an exit code is not on the screen');
   });
 
   test(`${spec.file}: the second machine is a section of its own, in the order docs/scheduling.md gives`, () => {
@@ -554,7 +601,19 @@ for (const [lang, spec] of Object.entries(READMES)) {
     assert.equal(body.split('\n').filter((line) => /^\d+\. /.test(line)).length, 5);
     assert.ok(body.includes(`docs/scheduling.md#the-same-vault-on-a-second-machine`));
     assert.match(norm(body), run.oneMachine);
-    assert.ok(norm(body).includes(run.noEdit));
+    // A vault made by this version needs no edit; one made before it lists its project by the
+    // first machine's name, and the doctor's own way out is named, step by step (measured against
+    // the integrated doctor: it says to use {vault} instead of a project name, and the scheduling
+    // page says to replace the entry and commit it).
+    const words = norm(body);
+    assert.match(words, run.newVault);
+    assert.match(words, run.oldVault);
+    assert.ok(words.includes(run.noName), 'it does not tell a person to put this machine\'s name in the shared file');
+    assert.match(words, run.switchTo);
+    assert.ok(words.includes(run.switchPropose));
+    assert.ok(words.includes('`brain-kit sync`'));
+    assert.ok(body.includes(run.switchDoc), 'and it points at the section that explains it');
+    assert.ok(read('docs/scheduling.md').split('\n').includes('## Before the first round'), 'which exists');
     const at = (heading) => text.split('\n').indexOf(heading);
     assert.ok(at(spec.first) < at(run.second) && at(run.second) < at(spec.works), 'between the first vault and the command reference');
     // The tool's own next steps print the doctor first and the push gate only if the doctor
@@ -591,6 +650,10 @@ for (const [lang, spec] of Object.entries(READMES)) {
     const bullets = block.filter((line) => line.startsWith('- '));
     assert.equal(bullets.length, 6);
     run.traps.forEach((pattern, index) => assert.match(bullets[index], pattern, `trap ${index + 1}`));
+    // What the old wording said and no longer holds: a configuration complaint for the propose
+    // trap (after the second task no case of it talks about configuration), and "redo the PATH"
+    // for a kit that was never installed.
+    run.notTrap.forEach((pattern, index) => { if (pattern) assert.doesNotMatch(bullets[index], pattern, `trap ${index + 1} still says what no longer holds`); });
     assert.equal(bullets.filter((bullet) => bullet.includes('docs/incident-response.md')).length, 1, 'the incident page is linked once, for secrets only');
     assert.match(bullets[5], run.secrets);
     assert.ok(bullets[0].includes('(#' + slug(run.eacces.replace(/^### /, '')) + ')'), 'the first trap links the EACCES block');
@@ -620,7 +683,8 @@ const SKILL_SENTENCES = {
       'gh repo create <name> --private --source <dir> --push',
       'Without `--push` the remote is empty and `propose` cannot work',
       '`claude --version`',
-      'refuses to run outside a vault',
+      'Then run `{{kit}} doctor` from a folder that is not a vault yet',
+      'that is expected here, not a problem',
       '{{kit}} doctor <dir>',
       'a repository with no commit has nothing to push',
       'If that folder already has a `brain-kit.config.json`, it is a vault that was set up before, usually on another machine and cloned here: `init` and `init --adopt` both refuse it, so skip steps 5 to 10 and go to step 11.',
@@ -631,7 +695,8 @@ const SKILL_SENTENCES = {
       'gh repo create <nome> --private --source <dir> --push',
       'Sem o `--push` o remoto fica vazio e o `propose` não consegue funcionar',
       '`claude --version`',
-      'recusa rodar fora de um vault',
+      'Depois rode o `{{kit}} doctor` numa pasta que ainda não é um vault',
+      'isso é esperado aqui, não é problema',
       '{{kit}} doctor <dir>',
       'um repositório sem commit não tem o que enviar',
       'Se essa pasta já tem um `brain-kit.config.json`, é um vault configurado antes, em geral em outra máquina e clonado aqui: o `init` e o `init --adopt` recusam esse vault, então pule os passos 5 a 10 e vá para o passo 11.',
@@ -696,14 +761,28 @@ test('the curate-session skill quotes the real start of the propose refusal for 
   }
 });
 
-test('the setup skill no longer runs the doctor before a vault exists, and still ends with it', () => {
+// The doctor checks the machine when it runs outside a vault (phase 6, 0.0.9), so the setup skill
+// runs it three times: as the machine check before any vault exists, after `init`, and at the end.
+// It used to say the opposite ("it refuses to run outside a vault, so it runs after init"), which
+// is false now; the skills, the eval criteria and this test were the five places that said so.
+test('the setup skill runs the doctor outside a vault as the machine check, again after init, and once more at the end', () => {
   for (const lang of ['en', 'pt-BR']) {
     const body = read(`lang/${lang}/skills/setup.md`);
     const machine = body.slice(body.indexOf('\n1. '), body.indexOf('\n4. '));
-    assert.doesNotMatch(machine, /(Run|Rode) `\{\{kit\}\} doctor/, `${lang}: the machine checks run before any vault exists`);
+    assert.match(machine, /(run|rode)( o)? `\{\{kit\}\} doctor`/i, `${lang}: the machine check runs the doctor before any vault exists`);
+    assert.match(machine, lang === 'en' ? /from a folder that is not a vault yet/ : /numa pasta que ainda não é um vault/, `${lang}: from outside a vault`);
+    assert.match(machine, lang === 'en' ? /checks only this machine/ : /confere só esta máquina/, `${lang}: where it checks only the machine`);
+    assert.doesNotMatch(body, /refuses to run outside a vault|recusa rodar fora de um vault|runs after `init`, in step 9|roda depois do `init`, no passo 9/, `${lang}: the old claim is gone`);
+    const runs = body.split('{{kit}} doctor').length - 1;
+    assert.equal(runs, 3, `${lang}: the doctor runs three times (${runs})`);
+    assert.ok(body.indexOf('{{kit}} doctor') < body.indexOf('--from-answers <'), `${lang}: the first run is before init`);
     assert.ok(body.indexOf('--from-answers <') < body.indexOf('{{kit}} doctor <dir>'), `${lang}: the doctor runs after init`);
     assert.ok(body.indexOf('{{kit}} doctor <dir>') < body.lastIndexOf('{{kit}} doctor'), `${lang}: and once more at the end`);
     assert.ok(!/gh repo create <(name|nome)> --private --source <dir>(?! --push)/.test(body), `${lang}: every repository command pushes`);
+    // What the eval judge is told to expect is the same story (nothing pinned it, and it went stale).
+    const criteria = read(`evals/setup-${lang}/graders/criteria.md`);
+    assert.doesNotMatch(criteria, /refuses outside a vault|recusa fora de um vault|without running the kit's `doctor` yet|sem rodar o `doctor` do kit ainda/, `${lang}: the criteria still say the doctor is not run yet`);
+    assert.match(criteria, lang === 'en' ? /then the kit's `doctor` from a folder that is not a vault, as the machine check/ : /e depois o `doctor` do kit numa pasta que não é um vault, como conferência da máquina/, `${lang}: the criteria expect the machine check`);
   }
 });
 

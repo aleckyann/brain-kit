@@ -71,10 +71,27 @@ machine that created it. That keeps working there, unchanged: nothing rewrites a
 configuration for you. On a second machine, where the clone is at another path, that name is
 a project that is not there, and `doctor` fails `include-projects`: first because the
 projects folder does not exist (Claude Code never ran on this machine), then because the name
-is not in it, and both messages say the way out. To switch, replace that entry in
-`brain-kit.config.json` with `"{vault}"` and commit it like any other change to the file. Do
-not repair the failure by writing the second machine's name there: the file is shared, and
-the first machine's rounds would stop reading their own sessions.
+is not in it, and both messages say the way out.
+
+To switch, first bring the kit up to date: every machine that opens the vault needs a kit
+that knows `"{vault}"`. An older kit reads it as the name of a project, so its `doctor` fails
+`include-projects` with advice that does not help (point `machine.json` elsewhere, or fix the
+names in `brain-kit.config.json`: do not, that would write this machine's name over the entry,
+the failure above again) and its rounds refuse. Run `brain-kit update` with the new kit before
+you touch the entry: `brain-kit update` sets `kit_version` in `brain-kit.config.json` to the
+running kit's version (that one value, in the working tree, the rest of the file as it was) and
+refreshes the kit's own files you have not edited. An older kit then warns in `kit-version` and
+`manifest-valid` and refuses to run `update`, which names the real cause; a vault whose entry
+was changed by hand keeps its old `kit_version`, both checks say ok, and nothing points at the
+kit.
+
+Then replace the entry with `"{vault}"` and propose the file like any other change:
+`brain-kit propose "<summary>" --only brain-kit.config.json` (add the files `update` reported
+as updated, if any), merge the pull request, then run `brain-kit sync` on each machine. Leave
+the file uncommitted until the pull request is merged: committed before `propose`, it leaves
+nothing to propose, and committed after, it makes `sync` refuse later, saying the branches have
+diverged. Do not repair the failure by writing the second machine's name there: the file is
+shared, and the first machine's rounds would stop reading their own sessions.
 
 To feed the vault from every project instead, write the string `"all"` in place of the list:
 `"include_projects": "all"`. Nothing reads every project unless the configuration says so in
@@ -573,7 +590,7 @@ What the bridge does not cover, by design:
 | 3 | Proposed, but the pull request is not open | The commit and branch are pushed; from the vault, run the `gh pr create --head <branch> --fill` the reason names (check `gh auth status`). The mark advanced. |
 | 4 | A required source was not read | Only a source in `curate.sources.required` sets it; a best-effort one never does. The reason says which. A file that cannot be read (`source_unreadable`): fix its permissions, or add a pattern for it to `sources.transcripts.exclude_path_patterns`; `brain-kit watermark assume-covered` skips its days once you have looked. A project directory that cannot be listed, or a link to one the round cannot follow (into a directory it cannot enter, to a volume that is not mounted, a loop) (`source_unreadable` too, the reason names it): its sessions could be on any day, so skipping days does not clear it and every round stops there until you fix its permissions or take it out of `sources.transcripts.include_projects` (with `"all"`, a pattern covering the whole directory leaves it out). A first day over the cap (`cap_exceeded`): raise `curate.caps.transcripts` or exclude some projects. Otherwise `last-run.json` says how many files of how many were read, or that the model's last line did not report the source. The day stays open and the next round reads it. |
 | 69 | No network, or the model unavailable | Usually passes on its own at the next window, except `auth_expired`: your Claude Code login expired, and every window stops the same way until you log in again ([When the login expires](#when-the-login-expires)). |
-| 75 | Postponed | Another writer holds the vault lock or the legacy lock, or the tree is dirty (the files are listed). Commit, propose or discard them; the next window retries. A tree that stays dirty stops every round, so do not let it sit. |
+| 75 | Postponed | Another writer holds the vault lock or the legacy lock, or the tree is dirty (the files are listed). Propose them (`brain-kit propose "<summary>" --only <paths>`), or, if they are yours to keep, commit them on another branch or stash them (`git stash -u`: plain `git stash` leaves a new file where it is); the next window retries. A tree that stays dirty stops every round, so do not let it sit. |
 
 ## Reading last-run.json and the logs
 

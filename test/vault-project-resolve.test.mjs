@@ -259,6 +259,13 @@ test('the vault\'s own project, missing where nothing may wait for it, is its ow
   assert.deepEqual(plan.waiting, [own]);
   assert.deepEqual(plan.problems, []);
   assert.equal(plan.misconfigured, false);
+  // Beside a project that is there the round goes on: it reads that one and warns. The doctor's check is a warning too, not a failure.
+  const beside = makeWorld({ include: ['{vault}', OTHER_PROJECT] });
+  const other = beside.write(OTHER_PROJECT, 'b.jsonl', [user('Ana writes code', INSIDE)]);
+  plan = planOf(beside, { vault, waiting: null });
+  assert.deepEqual(plan.problems, [{ code: 'own_project_missing', detail: own }]);
+  assert.equal(plan.misconfigured, false);
+  assert.deepEqual(paths(plan), [other]);
 });
 
 test('"all" keeps its meaning: every project directory of the transcripts directory, the vault\'s own absent or not', () => {

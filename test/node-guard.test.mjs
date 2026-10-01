@@ -11,12 +11,14 @@
 // 22.22.1 and only the version policy itself failed. test/node-minimum.test.mjs
 // holds that number to every other place that states it.
 //
-// An old Node cannot be run here, so what is proved is: the decision (a
-// table of versions), the message in both languages, the `hook` exception
-// (a Claude Code hook must never break a session), the shape of the two
-// files that keeps the guard able to run on an old Node, and, through a
+// An old Node is not assumed to exist where the suite runs, so what is proved
+// is: the decision (a table of versions), the message in both languages, the
+// `hook` exception (a Claude Code hook must never break a session), the shape
+// of the two files that keeps the guard able to run on an old Node, through a
 // preload that makes process.versions.node say another number, the real
-// launcher refusing and still working.
+// launcher refusing and still working, and, against a copy of the launcher
+// that came before the guard, that it ends the process with the same exit
+// code as that one did, whatever the CLI's main() does (fix round 1).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -203,8 +205,13 @@ test('the launcher imports the guard statically and the CLI only dynamically, af
   assert.ok(asked < loaded, 'and asks it BEFORE loading the CLI');
   assert.equal(text.indexOf('src/cli.mjs'), loaded + "import('../".length, 'the CLI is named once, in the dynamic import');
   assert.equal(text.lastIndexOf('src/cli.mjs'), text.indexOf('src/cli.mjs'), 'and named nowhere else');
-  // The launcher itself must parse on an old Node, so it has no top-level await.
-  assert.doesNotMatch(text, /\bawait\b/);
+  // The whole path is awaited at the top level, as the launcher always did: a
+  // main() whose promise never settles then ends the process with exit code 13
+  // (unsettled top-level await), where a promise chain ends it with 0 and the
+  // push gate and the scheduled rounds read that as success (fix round 1).
+  assert.match(text, /=\s*await import\('\.\.\/src\/cli\.mjs'\)/, 'the CLI is loaded with an awaited import');
+  assert.match(text, /process\.exitCode\s*=\s*await main\(/, 'and its main() is awaited into the exit code');
+  assert.doesNotMatch(text, /\.then\(|\.catch\(|\.finally\(/, 'no promise chain, which loses the exit code of a promise that never settles');
   assert.doesNotMatch(text, /\?\.|\?\?/);
 });
 
@@ -292,4 +299,102 @@ test('the real launcher, on exactly Node 22.0.0 and on 22.22.1, runs the CLI as 
     assert.equal(hook.status, EXIT.USAGE, 'a hook on a good Node is the CLI\'s own, unknown event and all');
     assert.match(hook.stderr, /nope/);
   }
+});
+
+// --- the launcher ends the process as the one before the guard did (fix round 1) ----------
+//
+// Before the guard the launcher was `process.exitCode = await main(...)` at the top
+// level of the file. That await is also a net: a main() whose promise never settles
+// (a stream that never ends, a lock nobody releases) lets the event loop empty
+// with the await still pending, and Node ends the process with exit code 13,
+// "unsettled top-level await". The pre-push hook reads exit 0 of `validate`, `lint`
+// and `push-gate` as a pass and a scheduled round's exit 0 as a success, so that 13
+// is the difference between a push refused and a push let through. A promise chain
+// in the launcher (the first version of the guard's) ended the same process with 0,
+// silently. The copy of the launcher below is the one that came before the guard,
+// verbatim, held here so that nothing depends on the history being present.
+
+const LAUNCHER_BEFORE_THE_GUARD = [
+  '#!/usr/bin/env node',
+  "import { main } from '../src/cli.mjs';",
+  '',
+  'process.exitCode = await main(process.argv.slice(2), {',
+  '  stdin: process.stdin,',
+  '  stdout: process.stdout,',
+  '  stderr: process.stderr,',
+  '});',
+  '',
+].join('\n');
+
+// A launcher, the current one or the one before the guard, in a directory of its
+// own, with `source` as the CLI it loads. Returns the launcher's path.
+function launcherWith(kind, source) {
+  const base = makeTempDir('brain-kit-launcher-');
+  mkdirSync(join(base, 'bin'));
+  mkdirSync(join(base, 'src'));
+  if (kind === 'before') {
+    writeFileSync(join(base, 'bin', 'brain-kit.mjs'), LAUNCHER_BEFORE_THE_GUARD);
+  } else {
+    copyFileSync(BIN, join(base, 'bin', 'brain-kit.mjs'));
+    copyFileSync(GUARD, join(base, 'src', 'node-guard.mjs'));
+  }
+  writeFileSync(join(base, 'src', 'cli.mjs'), source);
+  return join(base, 'bin', 'brain-kit.mjs');
+}
+
+function runLauncher(file, { version = null, args = ['one', '--two'] } = {}) {
+  return spawnSync(process.execPath, [...(version === null ? [] : ['--import', preload(version)]), file, ...args], {
+    cwd: join(file, '..', '..'), input: '', encoding: 'utf8', timeout: 30000, env: { PATH: process.env.PATH, LC_ALL: 'C' },
+  });
+}
+
+// What main() does, the exit code the launcher before the guard gave, and what
+// stderr must show (a pattern, or null for nothing).
+const WHAT_MAIN_DOES = [
+  ['returns 0', 'export async function main() { return 0; }', 0, null],
+  ['returns 1', 'export async function main() { return 1; }', 1, null],
+  ['returns 2', 'export async function main() { return 2; }', 2, null],
+  ['returns 75', 'export async function main() { return 75; }', 75, null],
+  ['returns nothing', 'export async function main() {}', 0, null],
+  ['returns a code after a delay', 'export async function main() { await new Promise((done) => setTimeout(done, 80)); return 3; }', 3, null],
+  ['returns its code from a plain function, not a promise', 'export function main() { return 4; }', 4, null],
+  ['rejects', "export async function main() { throw new Error('the command broke'); }", 1, /the command broke/],
+  ['never settles', 'export function main() { return new Promise(() => {}); }', 13, /unsettled top-level await/i],
+  ['is handed the arguments and the three streams of the process',
+    "export async function main(argv, io) { io.stdout.write(JSON.stringify([argv, io.stdin === process.stdin, io.stdout === process.stdout, io.stderr === process.stderr]) + '\\n'); return 5; }", 5, null],
+  ['cannot be loaded (a SyntaxError in the CLI)', 'export async function main() { this is not javascript ?. ?? # }\n', 1, /SyntaxError/],
+];
+
+for (const [what, source, expected, stderr] of WHAT_MAIN_DOES) {
+  test(`the launcher ends the process as the one before the guard did when main() ${what}`, () => {
+    const before = runLauncher(launcherWith('before', source));
+    const now = runLauncher(launcherWith('now', source));
+    // The reference itself: what the launcher before the guard does on this Node.
+    assert.equal(before.status, expected, `the launcher before the guard: ${before.stdout}${before.stderr}`);
+    // The launcher now does the same: the same exit code, never a signal, the same stdout.
+    assert.equal(now.status, before.status, `the launcher now: ${now.stdout}${now.stderr}`);
+    assert.equal(now.signal, before.signal);
+    assert.equal(now.stdout, before.stdout);
+    if (stderr === null) {
+      assert.equal(now.stderr, '');
+      assert.equal(before.stderr, '');
+    } else {
+      assert.match(before.stderr, stderr);
+      assert.match(now.stderr, stderr);
+    }
+  });
+}
+
+test('the launcher fails closed when main() never settles: not 0, whatever the Node says it is, and the guard\'s refusal does not wait for the CLI', () => {
+  const hung = 'export function main() { return new Promise(() => {}); }';
+  const now = runLauncher(launcherWith('now', hung));
+  assert.notEqual(now.status, 0, 'a gate command that hangs must not read as a pass');
+  assert.equal(now.status, 13);
+  // A refusal comes out at once, and never loads the CLI that would hang.
+  const refused = runLauncher(launcherWith('now', hung), { version: '20.11.1' });
+  assert.equal(refused.status, EXIT.USAGE, refused.stdout + refused.stderr);
+  assert.equal(refused.stderr, `${EN('20.11.1')}\n`);
+  const hook = runLauncher(launcherWith('now', hung), { version: '20.11.1', args: ['hook', 'stop'] });
+  assert.equal(hook.status, 0, hook.stdout + hook.stderr);
+  assert.equal(hook.stderr, `${EN('20.11.1')}\n`);
 });

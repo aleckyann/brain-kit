@@ -44,7 +44,7 @@
 //   1. An operation left half done (rebase, merge, cherry-pick, revert,
 //      bisection) postpones the run, exit 75. A vault that is not the top
 //      level of its repository is exit 2. A repository with no commit at
-//      all (hasNoCommit) is exit 1, in the dry run too, before a path, a
+//      all (hasNoCommit, src/git.mjs) is exit 1, in the dry run too, before a path, a
 //      default branch or a remote is looked at: every refusal further down
 //      would blame the configuration or the remote for what is only the
 //      first commit the person has not made yet (the second stranger's F3).
@@ -187,7 +187,7 @@ import { joinOrAcquire } from '../guards/lock.mjs';
 import { GuardError, locateRepository } from '../guards/location.mjs';
 import { readSnapshot, splitDirty } from '../guards/snapshot.mjs';
 import {
-  currentBranch, defaultBranch, defaultBranchUpstream, dirtyPathBytes, fetch, gitEnv, isBranchName, operationInProgress, publishedBranch, resolveCommit,
+  currentBranch, defaultBranch, defaultBranchUpstream, dirtyPathBytes, fetch, gitEnv, hasNoCommit, isBranchName, operationInProgress, publishedBranch, resolveCommit,
   runGit, trackedRemote,
 } from '../git.mjs';
 import { runValidate } from './validate.mjs';
@@ -436,7 +436,7 @@ async function proposeUnderLock({ root, cwd, config, parsed, io, t, env, now, wa
   if (prefix.stdout.replace(/\n$/, '') !== '') {
     throw new Refusal(EXIT.USAGE, t('propose.not_toplevel', { dir: root, prefix: prefix.stdout.trim() }));
   }
-  if (hasNoCommit(root, env)) throw new Refusal(EXIT.FAILURE, t('propose.no_commit'));
+  if (hasNoCommit(root, { env })) throw new Refusal(EXIT.FAILURE, t('propose.no_commit'));
   const gitConfig = config.git;
   const commonDir = realpathSync(resolve(root, gitOrFail(root, ['rev-parse', '--git-common-dir'], env).stdout.replace(/\n$/, '')));
   const proposals = join(commonDir, PROPOSALS_DIR);
@@ -740,20 +740,6 @@ function refuseNested(root, t, chosen, head) {
     return (head.get(path.toString('hex')) ?? '').startsWith(`${GITLINK_MODE} `);
   });
   if (nested.length > 0) throw new Refusal(EXIT.USAGE, t('propose.nested_repository', { paths: nested.map((path) => decodeBytes(path)) }));
-}
-
-// True for a repository that has never had a commit: HEAD names nothing and
-// no reference of any kind reaches a commit. `rev-list --all` names one when
-// there is one anywhere (another branch, a remote-tracking branch, a tag, a
-// proposal's local ref) and names none, exit 0, only for such a repository.
-// HEAD alone is not the test: the checked-out branch may be an orphan one
-// (`git checkout --orphan`) in a repository with history, and proposing from
-// it works, since the pull request is built on the remote's tip and never on
-// HEAD. A git that cannot answer is never read as "no commit".
-function hasNoCommit(root, env) {
-  if (resolveCommit(root, 'HEAD', { env }) !== null) return false;
-  const reached = runGit(root, ['rev-list', '-n', '1', '--all'], { env });
-  return reached.status === 0 && reached.stdout.trim() === '';
 }
 
 function configuredRemotes(root, env) {
