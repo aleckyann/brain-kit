@@ -155,6 +155,71 @@
   for stale notes, skipped rules or warnings only). When either says anything else, `init` prints
   exactly what it printed before, under the same heading, in the same order and on the same
   streams. `init --adopt` still prints both reports. `validate` and `lint` are unchanged.
+- Both READMEs now open with a box a first-time reader can follow: "Comece aqui" in
+  `README.pt-BR.md`, "Start here" in `README.md`. Seven numbered steps take a clean machine to
+  the first pull request, each with its command, its time (install 2 min, `gh auth login` 3,
+  the machine check 1, `init` 3, first commit 2, push 1, first pull request 5) and a link to
+  the detailed step, under a plain "about 30 minutes the first time" that calls the times
+  estimates, because no outside adopter has timed the path yet. A glossary of twelve words
+  (terminal, PATH, repository, branch, commit, pull request, merge, vault, push gate, hook,
+  skill, plugin and marketplace) follows the box. The second stranger, who followed only the
+  Portuguese README, reached the first pull request but estimated 30 to 40 minutes for a person
+  who is not a developer, ten to fifteen of them spent reading a dense page full of technical
+  terms.
+- The long description of what the repository holds (the npm package, the plugin, the
+  marketplace, the story of the npm name, the engine) moved from the top of both READMEs to a
+  section of its own, "O que há no repositório" ("What is in the repository"), after the
+  first-run path and before "O que funciona hoje". Nothing in it changed. A reader who goes
+  from the top to the bottom now crosses the glossary and the requirements before it, instead
+  of a screenful of npm and plugin vocabulary.
+- The requirements are cut to what the first pull request needs (Node.js 24, git, a logged-in
+  `gh`, Claude Code and a GitHub account), with one line saying the scheduled rounds are
+  optional. The systemd, `loginctl enable-linger`, launchd, cron and Windows note moved to "The
+  scheduled curator", the Google connectors' requirement to "Calendar and meeting notes" and
+  the desktop application's to "The morning briefing", where each is introduced; nothing was
+  dropped. The stranger had found the user timers and `enable-linger` scary on the first
+  screen and not needed for the first pull request.
+- The install snippet now deletes the `.tgz` it packs: a new `rm -f` line, with the same
+  `$TAG` variable, between the `npm i -g` line and the two `claude plugin` lines. Before, the
+  869 KB file stayed in the marketplace folder and `claude plugin install` copied it into the
+  plugin cache. The README now says the `brain-kit` folder the first line clones can be
+  deleted and the marketplace folder under `~/.local/share/brain-kit/` cannot: Claude Code
+  loads the plugin from it, and `claude plugin list` reports the plugin as failed to load
+  without it.
+- A new block under the install snippet, "If you see `EACCES`" ("Se aparecer `EACCES`"), gives
+  the exact commands for the npm permission error: `npm config set prefix ~/.local`, one
+  `echo ... >> ~/.bashrc` and one `>> ~/.zshrc` line that put `~/.local/bin` on the PATH,
+  "close the terminal and open a new one", paste the snippet again, and `brain-kit --version`
+  to check. It says why not to use `sudo`, that nvm users do not get the error, and what PATH
+  is. The second stranger predicted the error for most people (the system npm prefix is
+  `/usr/local`, owned by root) but their sandbox had a writable prefix and hid it; the
+  commands were run against that system prefix. Pasting the snippet a second time is safe: the
+  clone line complains that the folder exists, and the plugin lines report the marketplace and
+  the plugin as already installed.
+- The first-vault steps read as one path. The install and the plugin are step 1 and the login
+  is step 2. Step 3 runs `brain-kit doctor` before any vault exists, to check the machine.
+  Step 4 says what to answer to the short-id question (accept the suggestion). Step 5 gives
+  the git identity commands, with placeholders to edit, for the "Author identity unknown"
+  refusal of the first commit, and says why git asks. Step 7 names the doctor lines by the
+  words on the screen (`falha`, `aviso`, `ok` in Portuguese; `fail`, `warn`, `ok` in English)
+  and says the output lists only the warnings and the failures, with `--verbose` for all of
+  them. A closing "Se travar" ("If you get stuck") list gives, in at most eight lines, the fix
+  for the five traps most likely to stop a new person, and links the incident page only for
+  secrets.
+- The second machine has a section of its own in both READMEs, in the order
+  `docs/scheduling.md` gives: clone, `machine register --new`,
+  `git config core.hooksPath .githooks`, `doctor`, and `schedule install` only where the
+  rounds run. Before, the Portuguese README only linked to an English section. The section
+  also says that the tool's own next-steps text puts the `doctor` before the `git config` (the
+  outcome is the same, since the doctor fails `hooks-path` and names the command), that the
+  shared `brain-kit.config.json` must not be edited to silence the doctor, and that a new
+  vault's `{vault}` in `include_projects` makes a clone at another path need no edit. A test
+  compares the README's commands with the scheduling page's, in order.
+- `README.pt-BR.md` uses one name for the push check, "trava de push", the term the tool
+  prints (the README said "gate de push" and the doctor "trava de push"), and replaces the
+  English fragments the stranger listed: "best effort" is now "de melhor esforço", "overlay de
+  prompt" is described as a prompt of the vault's own, "tarball" is the `.tgz` file, and
+  `verified` is glossed where `verify` stamps it.
 
 ## 0.0.8 (tagged `v0.0.8`, not on npm)
 
