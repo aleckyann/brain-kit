@@ -9,7 +9,7 @@ You are helping the person start a second brain with brain-kit, or bring an exis
 
 1. Run `node --version`. It must be 24 or newer. If it is older, stop and say so.
 2. Run `git --version` and `gh auth status`. If gh is not logged in, tell the person to run `gh auth login` in their own terminal. Never run it for them, and never type a password, token or any other credential on their behalf.
-3. Run `{{kit}} doctor` and tell the person which checks fail.
+3. Run `claude --version`. Claude Code must be installed: the plugin and the vault's sessions run on it. Do not run `{{kit}} doctor` yet: it checks a vault and refuses to run outside a vault, so it runs after `init`, in step 9.
 
 ## New vault or existing one
 
@@ -27,11 +27,11 @@ You are helping the person start a second brain with brain-kit, or bring an exis
 6. Write the answers as one JSON object to a file in a temporary directory outside the vault, for example `{"lang": "en", "name": "Ana", "handle": "ana", "title": "Ana's brain", "repo": null, "private": true, "timezone": "America/New_York", "email": null}`. Show it to the person before running anything.
 7. New vault: run `{{kit}} init <dir> --from-answers <file>`.
 8. Existing vault: first explain what adopting writes. It writes only `brain-kit.config.json` and `.brain-kit/manifest.json` into the vault, and never moves, renames or rewrites a note. It also installs the push gate: it writes `.githooks/pre-push` into the vault and sets `core.hooksPath` in the repository's git config, unless the person already has a hook of their own or a `core.hooksPath` pointing elsewhere; that one it leaves exactly as it is and prints the line to add the gate to it. With `--no-hook` it skips the gate altogether. Then run `{{kit}} init --adopt <dir> --from-answers <file>`.
-9. Delete the answers file once `init` has finished. Use `--yes` instead of a file only if the person explicitly accepts every default.
+9. Delete the answers file once `init` has finished. Use `--yes` instead of a file only if the person explicitly accepts every default. Then run `{{kit}} doctor <dir>` and tell the person which checks fail. Warnings about the schedule, the watermark, the last round, the notify command and the briefing are expected in a vault that has not run a round yet, and so is one about the default branch until step 10 has published it.
 
 ## Repository
 
-10. Recommend a private GitHub repository, for example `gh repo create <name> --private --source <dir>`. Say why: the vault holds notes about people, and a public repository shows them to anyone. Let the person choose the name, and create it only after they confirm.
+10. Recommend a private GitHub repository. Say why: the vault holds notes about people, and a public repository shows them to anyone. Let the person choose the name, and create it only after they confirm. A new vault has no commit yet (the answers leave `commit` out), so the person makes the first one now, in the vault (`git add -A`, then `git commit`; `init` already ran `validate` and `lint`): a repository with no commit has nothing to push. Then create and publish the repository in one command: `gh repo create <name> --private --source <dir> --push`. Without `--push` the remote is empty and `propose` cannot work: it needs the default branch published on `origin`. `init` creates no repository itself, whatever the `repo` answer was. An existing vault that already has a remote needs none of this.
 
 ## Register and finish
 

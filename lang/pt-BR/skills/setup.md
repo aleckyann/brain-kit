@@ -9,7 +9,7 @@ Você está ajudando a pessoa a começar um segundo cérebro com o brain-kit, ou
 
 1. Rode `node --version`. Precisa ser 24 ou mais novo. Se for mais antigo, pare e avise.
 2. Rode `git --version` e `gh auth status`. Se o gh não estiver logado, peça para a pessoa rodar `gh auth login` no terminal dela. Nunca rode por ela, e nunca digite senha, token ou qualquer outra credencial no lugar dela.
-3. Rode `{{kit}} doctor` e diga quais verificações falharam.
+3. Rode `claude --version`. O Claude Code precisa estar instalado: o plugin e as sessões do vault rodam nele. Não rode o `{{kit}} doctor` ainda: ele confere um vault e recusa rodar fora de um vault, então ele roda depois do `init`, no passo 9.
 
 ## Vault novo ou existente
 
@@ -27,11 +27,11 @@ Aqui o `init` não pergunta nada: sem um terminal, ele tira todas as respostas d
 6. Grave as respostas como um objeto JSON num arquivo dentro de um diretório temporário, fora do vault, por exemplo `{"lang": "pt-BR", "name": "Ana", "handle": "ana", "title": "Cérebro da Ana", "repo": null, "private": true, "timezone": "America/Sao_Paulo", "email": null}`. Mostre o arquivo para a pessoa antes de rodar qualquer coisa.
 7. Vault novo: rode `{{kit}} init <dir> --from-answers <arquivo>`.
 8. Vault existente: antes, explique o que a adoção grava. Ela só grava `brain-kit.config.json` e `.brain-kit/manifest.json` no vault, e nenhuma nota é movida, renomeada ou reescrita. Ela também instala a trava de push: grava `.githooks/pre-push` no vault e configura `core.hooksPath` no git do repositório, a não ser que a pessoa já tenha um hook próprio ou um `core.hooksPath` apontando para outro lugar; nesse caso deixa tudo exatamente como está e imprime a linha para acrescentar a trava ao hook dela. Com `--no-hook`, a trava fica de fora. Depois rode `{{kit}} init --adopt <dir> --from-answers <arquivo>`.
-9. Apague o arquivo de respostas quando o `init` terminar. Use `--yes` no lugar do arquivo só se a pessoa aceitar explicitamente todos os padrões.
+9. Apague o arquivo de respostas quando o `init` terminar. Use `--yes` no lugar do arquivo só se a pessoa aceitar explicitamente todos os padrões. Depois rode `{{kit}} doctor <dir>` e diga quais verificações falharam. Avisos sobre o agendamento, a marca d'água, a última rodada, o comando de notificação e o briefing são esperados num vault que ainda não rodou nenhuma rodada, e o mesmo vale para o aviso sobre o branch padrão até o passo 10 publicá-lo.
 
 ## Repositório
 
-10. Recomende um repositório privado no GitHub, por exemplo `gh repo create <nome> --private --source <dir>`. Explique o motivo: o vault guarda notas sobre pessoas, e um repositório público deixa tudo isso à vista de qualquer um. Deixe a pessoa escolher o nome e só crie depois que ela confirmar.
+10. Recomende um repositório privado no GitHub. Explique o motivo: o vault guarda notas sobre pessoas, e um repositório público deixa tudo isso à vista de qualquer um. Deixe a pessoa escolher o nome e só crie depois que ela confirmar. Um vault novo ainda não tem nenhum commit (as respostas deixam `commit` de fora), então a pessoa faz o primeiro agora, dentro do vault (`git add -A` e depois `git commit`; o `init` já rodou `validate` e `lint`): um repositório sem commit não tem o que enviar. Depois crie e publique o repositório num comando só: `gh repo create <nome> --private --source <dir> --push`. Sem o `--push` o remoto fica vazio e o `propose` não consegue funcionar: ele precisa do branch padrão publicado no `origin`. O próprio `init` não cria repositório nenhum, seja qual for a resposta de `repo`. Um vault existente que já tem remoto não precisa de nada disso.
 
 ## Registrar e fechar
 

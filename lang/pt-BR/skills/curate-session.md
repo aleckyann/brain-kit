@@ -5,7 +5,7 @@ Rode o kit com: {{kit}}
 
 Você está fechando uma sessão de trabalho neste vault. O que a sessão ensinou entra no vault por um único pull request, só com os arquivos desta sessão. Quem faz o merge é o dono, nunca você.
 
-1. Rode `{{kit}} sync`. Se ele recusar, por qualquer motivo, pare e diga à pessoa o porquê antes de escrever qualquer coisa.
+1. Rode `{{kit}} sync`. Ele adia (saída 75) quando a árvore de trabalho tem mudanças sem commit, que é o estado de uma sessão que mexeu em notas. Se esse for o único motivo e todo arquivo que ele lista é um que esta sessão escreveu ou alterou, diga isso e siga: ele não buscou nada, e o `propose` busca a base sozinho antes de montar o pull request. Se ele recusar por qualquer outro motivo, ou listar um arquivo que não é desta sessão, pare e diga à pessoa o porquê antes de escrever qualquer coisa.
 2. Liste o que esta sessão aprendeu: o que é novo, o que mudou e o que entra em conflito com alguma nota. Se não houver nada, diga isso e pare.
 3. Abra `{{log}}`. Sob o título `## {{today_iso}}` (se ainda não existir, crie acima dos títulos mais antigos, o mais recente primeiro), acrescente uma entrada por item, a mais nova no topo, cada uma começando com o marcador em negrito **{{capture_marker}}**.
 4. Compile as entradas em notas: uma nota nova a partir do modelo certo, ou a alteração de uma que já existe. Toda nota que você criar ou alterar leva `generated: { by: {{agent}}, at: <data e hora ISO 8601 com o deslocamento de UTC> }`, trocando `<model>` pelo modelo que você está usando.
