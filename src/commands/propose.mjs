@@ -69,8 +69,16 @@
 //      defaultBranch, then the upstream it tracks, as sync reads it) are
 //      two variables that never share a meaning. A base that cannot be
 //      resolved, or a remote with no push url, is exit 1.
-//   6. `--dry` stops here, prints the plan and exits 0: before any fetch,
-//      so it moves no reference and writes no object.
+//   6. `--dry` stops here: it prints the plan and exits 0 only when the real
+//      run would get past what it checks before it writes anything, and it
+//      writes nothing. That means asking the remote what it publishes (a
+//      read-only `git ls-remote`, the question the fetch of step 7 starts
+//      with, judged by the same code: nothing published, the base missing,
+//      or no answer, which the dry run says it could not verify) and, last,
+//      asking gh whether it is logged in (`gh auth status`, the one thing
+//      that would make the real run publish its branch and then end with
+//      exit 3 and no pull request). No fetch, so no reference moves and no
+//      object is written.
 //   7. The base is fetched and the fetch proved (src/git.mjs, fetch);
 //      anything short of a proved tip is exit 1. Every chosen path must
 //      then be the same at HEAD as at that tip, present or absent on both:
@@ -167,12 +175,13 @@ import { decodeBytes } from '../io.mjs';
 import { run } from '../exec.mjs';
 import { KIT_ROOT } from '../version.mjs';
 import { PR_BODY_PATH } from '../init/skeleton.mjs';
+import { AUTH_STATUS_ARGS, authVerdict, loginCommand } from '../gh.mjs';
 import { joinOrAcquire } from '../guards/lock.mjs';
 import { GuardError, locateRepository } from '../guards/location.mjs';
 import { readSnapshot, splitDirty } from '../guards/snapshot.mjs';
 import {
-  currentBranch, defaultBranch, defaultBranchUpstream, dirtyPathBytes, fetch, gitEnv, isBranchName, operationInProgress, resolveCommit, runGit,
-  trackedRemote,
+  currentBranch, defaultBranch, defaultBranchUpstream, dirtyPathBytes, fetch, gitEnv, isBranchName, operationInProgress, publishedBranch, resolveCommit,
+  runGit, trackedRemote,
 } from '../git.mjs';
 import { runValidate } from './validate.mjs';
 import { runLint } from './lint.mjs';
@@ -487,7 +496,12 @@ async function proposeUnderLock({ root, cwd, config, parsed, io, t, env, now, wa
   if (!isBranchName(root, stamped, { env }) || stamped === base) throw new Refusal(EXIT.FAILURE, t('propose.branch_invalid', { branch: stamped }));
 
   if (parsed.dry) {
-    io.stdout.write(`${t('propose.dry_run', { files: names, urls, base, branch: stamped, title, origin })}\n`);
+    // What the real run would stop on before it writes anything, said as it
+    // says it; then the one thing it would find out only after publishing.
+    refuseUnlessPublished(t, remote, base, publishedBranch(root, remote, { branch: base, env }), { dry: true });
+    const program = gitConfig.pr_command;
+    refuseUnlessGhLoggedIn(root, t, env, program);
+    io.stdout.write(`${t('propose.dry_run', { files: names, urls, base, branch: stamped, title, origin, remote, program })}\n`);
     return EXIT.OK;
   }
 
@@ -793,10 +807,40 @@ function pushUrls(root, t, env, remote, dir) {
 function fetchBase(root, t, env, remote, base) {
   const fetched = fetch(root, remote, { branch: base, env });
   if (fetched.status === 'fetched') return fetched.sha;
-  if (fetched.status === 'absent') throw new Refusal(EXIT.FAILURE, t('propose.remote_has_no_branch', { remote, branch: base }));
-  if (fetched.status === 'missing') throw new Refusal(EXIT.FAILURE, t('propose.remote_lacks_branch', { remote, branch: base, published: fetched.branches }));
-  if (fetched.status === 'failed') throw new Refusal(EXIT.FAILURE, t('propose.fetch_failed', { remote, branch: base, detail: fetched.detail }));
+  refuseUnlessPublished(t, remote, base, fetched, { dry: false });
   throw new Refusal(EXIT.FAILURE, t('propose.fetch_incomplete', { remote, branch: base }));
+}
+
+// The refusals the remote's answer about the base can be, one set of
+// sentences and one exit code (1) for the real run (its fetch) and the dry
+// run (publishedBranch alone). Returns when the answer is neither a refusal
+// nor a failure to ask: 'published' (the dry run) or 'fetched' and
+// 'incomplete' (the real run, which judges those two itself). A remote that
+// cannot be asked is `fetch_failed` for the real run, which then did not
+// fetch; for the dry run it is `dry_unverified`, because the dry run cannot
+// tell a remote that is down from one that would refuse.
+function refuseUnlessPublished(t, remote, base, asked, { dry }) {
+  if (asked.status === 'absent') throw new Refusal(EXIT.FAILURE, t('propose.remote_has_no_branch', { remote, branch: base }));
+  if (asked.status === 'missing') throw new Refusal(EXIT.FAILURE, t('propose.remote_lacks_branch', { remote, branch: base, published: asked.branches }));
+  if (asked.status === 'failed') {
+    const key = dry ? 'propose.dry_unverified' : 'propose.fetch_failed';
+    throw new Refusal(EXIT.FAILURE, t(key, { remote, branch: base, detail: asked.detail }));
+  }
+}
+
+// The dry run's last question. The real run learns that gh cannot open the
+// pull request only after it has published its branch, and ends exit 3
+// (the commit is pushed, the pull request is not): a dry run that promised a
+// pull request over a gh that is not there, or not logged in, would promise
+// what the real run cannot do. Exit 3 here is that same code. `gh auth
+// status` writes nothing and opens nothing.
+function refuseUnlessGhLoggedIn(root, t, env, program) {
+  const asked = run(program, [...AUTH_STATUS_ARGS], { cwd: root, env: ghEnvOf(env), timeout: NETWORK_TIMEOUT_MS });
+  const verdict = authVerdict(asked);
+  if (verdict.state === 'absent') throw new Refusal(EXIT.DEGRADED, t('propose.dry_gh_absent', { program, command: loginCommand(program) }));
+  if (verdict.state === 'logged_out') {
+    throw new Refusal(EXIT.DEGRADED, t('propose.dry_gh_logged_out', { program, command: loginCommand(program), detail: verdict.detail }));
+  }
 }
 
 // Every entry of a commit's tree, path (hex) -> "mode type object".

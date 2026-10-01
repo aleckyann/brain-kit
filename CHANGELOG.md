@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### What the kit tells a first-time user is true (01/10/2026)
+
+A stranger followed only the README in a clean room and was misled in several places by the
+kit's own output. These are the fixes in the code and the messages (both language packs).
+
+- `propose --dry` no longer promises what the real run refuses. Before it said "Would
+  propose" and exited 0 over a remote that publishes no branch yet (the usual state right
+  after `gh repo create` without `--push`), a remote that publishes other branches but not
+  the base, a `gh` that is not installed and a `gh` that is not logged in; the real run then
+  stopped (exit 1 on the first two) or published its branch and ended without a pull request
+  (exit 3 on the last two). Now the dry run asks the remote what it publishes (a read-only
+  `git ls-remote`, judged by the same function as the real run's fetch, so it refuses with
+  the same sentence and the same exit code 1) and `gh auth status`, and refuses with exit 3
+  when `gh` is absent or logged out, naming `gh auth login`. A remote that cannot be asked is
+  said to be unverified, exit 1, never "Would propose". It still writes nothing.
+- `propose` in a repository with no remote of the name it reads the default branch from no
+  longer says "the default branch is published to remote origin" as if something had set it
+  up. It says the repository has no remote called that, and how to create one:
+  `gh repo create <name> --private --source . --push`.
+
 ## 0.0.7 (tagged `v0.0.7`, not on npm)
 
 No command does anything different in this version. It makes the documentation and the

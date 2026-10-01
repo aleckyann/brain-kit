@@ -42,7 +42,10 @@ export function run(command, args = [], options = {}, { spawn = spawnSync } = {}
     // Force non-zero explicitly rather than `?? 1`: spawnSync reports status
     // null in the cases seen so far (ENOENT, a killing timeout), but this is
     // the error branch, so a failure must never read back as status 0.
-    return { status: result.status || 1, stdout, stderr };
+    // `errorCode` is the spawn error's own code (ENOENT for a program that is
+    // not there), so a caller can tell "absent" from "ran and failed" without
+    // reading prose; it exists on this branch only.
+    return { status: result.status || 1, stdout, stderr, errorCode: result.error.code };
   }
   return {
     // spawnSync leaves status null when the process was killed by a signal;
