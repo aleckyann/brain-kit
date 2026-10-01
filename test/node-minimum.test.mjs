@@ -17,14 +17,19 @@
 // constant they export: a copy of the number kept by one of them under another
 // name, or compared with another operator, differs here the day it stops being
 // equal to the other. The sources are listed by hand on purpose: dropping one has
-// to be an edit of this file, visible in a review. A second test pins the CI wiring
-// that makes a matrix entry a run of the suite and not only an install.
+// to be an edit of this file, visible in a review.
+//
+// The Node the kit RECOMMENDS (24, written "LTS" and nothing more) is a second number
+// with sources of its own, held the same way by a second test. A third forbids any
+// sentence from saying which release line is the LTS today (that goes stale the day
+// the next one becomes it), and a fourth pins the CI wiring that makes a matrix entry
+// a run of the suite and not only an install.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
-import { MINIMUM_NODE_MAJOR, checkNodeVersion } from '../src/node-guard.mjs';
+import { MINIMUM_NODE_MAJOR, RECOMMENDED_NODE_MAJOR, checkNodeVersion } from '../src/node-guard.mjs';
 import { MACHINE_CHECKS, buildContext, runChecks } from '../src/doctor/checks.mjs';
 import { renderMessage } from '../src/commands/doctor.mjs';
 import { createTranslator } from '../src/lang.mjs';
@@ -36,7 +41,7 @@ const read = (path) => readFileSync(join(KIT_ROOT, path), 'utf8');
 // A line break inside a sentence is a space: the documents are wrapped by hand.
 function numberIn(text, pattern, where) {
   const match = pattern.exec(text.replace(/\s+/g, ' '));
-  assert.ok(match, `${where}: nothing matching ${pattern} (the sentence that states the minimum moved or was reworded: update this test with it)`);
+  assert.ok(match, `${where}: nothing matching ${pattern} (the sentence that states this number moved or was reworded: update this test with it)`);
   return Number(match[1]);
 }
 
@@ -97,6 +102,20 @@ function doctorSays(version, onPath = null) {
 }
 
 const FAR_ABOVE = '999.0.0';
+
+// The guard's refusal of a Node too old to say anything about, in the language of `locale`.
+const guardSentence = (locale) => checkNodeVersion('1.0.0', 'doctor', locale).message;
+
+// The doctor's two results that carry a sentence about the Node: the one for the Node
+// running it and the one for the node on PATH.
+function doctorSentences() {
+  const tooOld = doctorSays('1.0.0');
+  assert.equal(tooOld.messageKey, 'doctor.node_version.too_old');
+  const onPathTooOld = doctorSays(FAR_ABOVE, '1.0.0');
+  assert.equal(onPathTooOld.messageKey, 'doctor.node_version.path_too_old');
+  return { tooOld, onPathTooOld };
+}
+
 const isTooOld = (result) => result.messageKey === 'doctor.node_version.too_old' || result.messageKey === 'doctor.node_version.path_too_old';
 
 // The lowest major `accepts` takes, found by asking it about each major in turn.
@@ -132,19 +151,15 @@ test('every place that states the minimum Node states the same one', () => {
   add('package.json engines.node', numberIn(engines, /^>=(\d+)$/, 'package.json engines.node'));
   add('src/node-guard.mjs MINIMUM_NODE_MAJOR', MINIMUM_NODE_MAJOR);
   add('the lowest Node the guard lets through', lowestAccepted((major) => checkNodeVersion(`${major}.0.0`, 'doctor', {}) === null));
-  const refusal = (locale) => checkNodeVersion('1.0.0', 'doctor', locale).message;
-  add('the guard\'s sentence (English)', numberIn(refusal({}), /needs Node (\d+) or newer/, 'the guard\'s English sentence'));
-  add('the guard\'s sentence (Portuguese)', numberIn(refusal({ LANG: 'pt_BR.UTF-8' }), /precisa do Node (\d+) ou mais novo/, 'the guard\'s Portuguese sentence'));
+  add('the guard\'s sentence (English)', numberIn(guardSentence({}), /needs Node (\d+) or newer/, 'the guard\'s English sentence'));
+  add('the guard\'s sentence (Portuguese)', numberIn(guardSentence({ LANG: 'pt_BR.UTF-8' }), /precisa do Node (\d+) ou mais novo/, 'the guard\'s Portuguese sentence'));
 
   // --- the doctor's node-version check: the Node running it, and the node on PATH
   add('doctor: the lowest Node it accepts', lowestAccepted((major) => !isTooOld(doctorSays(`${major}.0.0`))));
   // A Node far above any floor is the one injected, so that only the node on PATH is judged.
   add('doctor: the lowest node on PATH it accepts', lowestAccepted((major) => !isTooOld(doctorSays(FAR_ABOVE, `${major}.0.0`))));
-  const tooOld = doctorSays('1.0.0');
-  assert.equal(tooOld.messageKey, 'doctor.node_version.too_old');
+  const { tooOld, onPathTooOld } = doctorSentences();
   add('doctor: the minimum it passes to its sentence', tooOld.params.minimum);
-  const onPathTooOld = doctorSays(FAR_ABOVE, '1.0.0');
-  assert.equal(onPathTooOld.messageKey, 'doctor.node_version.path_too_old');
   add('doctor: the minimum it passes to its PATH sentence', onPathTooOld.params.minimum);
   for (const [language, pattern] of [['en', /needs Node (\d+) or newer/], ['pt-BR', /precisa do Node (\d+) ou mais novo/]]) {
     const t = createTranslator(language);
@@ -189,14 +204,83 @@ test('every place that states the minimum Node states the same one', () => {
   assert.ok(Number.isInteger(distinct[0]) && distinct[0] >= 1, `not a major: ${distinct[0]}`);
 });
 
+// A number written right before "LTS" ("Node 24 (LTS)", "24 LTS") recommends that Node.
+const RECOMMENDS_A_NODE = /\b(\d+) \(?LTS\b/g;
+
+// A claim about WHICH release line is the LTS today. It is true when it is written and
+// false the day the next line becomes the LTS, so no sentence makes it: "LTS" and a number.
+const SAYS_WHICH_LINE_IS_LTS = /\b(?:current|latest|newest|active)\s+LTS\b|\bLTS\s+(?:atual|mais\s+recente)\b/gi;
+
+test('every place that recommends a Node recommends the same one, and it is newer than the minimum', () => {
+  const found = [];
+  const add = (where, value) => found.push({ where, value });
+
+  // --- the guard in front of the launcher
+  add('src/node-guard.mjs RECOMMENDED_NODE_MAJOR', RECOMMENDED_NODE_MAJOR);
+  add('the guard\'s sentence (English)', numberIn(guardSentence({}), /Install Node (\d+) \(LTS\)/, 'the guard\'s English sentence'));
+  add('the guard\'s sentence (Portuguese)', numberIn(guardSentence({ LANG: 'pt_BR.UTF-8' }), /Instale o Node (\d+) \(LTS\)/, 'the guard\'s Portuguese sentence'));
+
+  // --- the doctor: its two sentences, in both languages
+  const { tooOld, onPathTooOld } = doctorSentences();
+  for (const [language, pattern] of [['en', /[Ii]nstall Node (\d+) \(LTS\)/], ['pt-BR', /[Ii]nstale o Node (\d+) \(LTS\)/]]) {
+    const t = createTranslator(language);
+    add(`doctor's sentence (${language})`, numberIn(renderMessage(t, tooOld.messageKey, tooOld.params), pattern, `the doctor's sentence (${language})`));
+    add(`doctor's PATH sentence (${language})`, numberIn(renderMessage(t, onPathTooOld.messageKey, onPathTooOld.params), pattern, `the doctor's PATH sentence (${language})`));
+  }
+
+  // --- the documents a person reads: the box, the requirements and the line about the engine
+  // (it names the two Nodes CI runs; the second is the recommended one)
+  for (const [file, requirements, recommended, engine] of [
+    ['README.md', '## Requirements', /Node\.js \d+ or newer \((\d+) LTS is recommended\)/, /runs on Node\.js \d+ and (\d+)/],
+    ['README.pt-BR.md', '## Requisitos', /Node\.js \d+ ou mais novo \(o (\d+) LTS \u00e9 o recomendado\)/, /roda no Node\.js \d+ e no (\d+)/],
+  ]) {
+    const text = read(file);
+    add(`${file}, the "start here" box`, numberIn(opening(text), recommended, `${file}, the box`));
+    add(`${file}, the requirements`, numberIn(section(text, requirements), recommended, `${file}, the requirements`));
+    add(`${file}, the line about the engine`, numberIn(text, engine, `${file}, the line about the engine`));
+  }
+  add('CONTRIBUTING.md', numberIn(read('CONTRIBUTING.md'), /\((\d+) LTS is the one to develop on/, 'CONTRIBUTING.md'));
+
+  // --- the setup skill, which tells the agent where to send a person whose Node is too old
+  add('lang/en/skills/setup.md', numberIn(read('lang/en/skills/setup.md'), /install Node (\d+) \(LTS\)/, 'the English setup skill'));
+  add('lang/pt-BR/skills/setup.md', numberIn(read('lang/pt-BR/skills/setup.md'), /instalar o Node (\d+) \(LTS\)/, 'the Portuguese setup skill'));
+
+  // --- anywhere else: a number written right before "LTS" is a recommendation too
+  for (const file of sweptFiles()) {
+    const text = read(file).replace(/\s+/g, ' ');
+    for (const match of text.matchAll(RECOMMENDS_A_NODE)) add(`${file}: "${match[0]}"`, Number(match[1]));
+  }
+
+  const distinct = [...new Set(found.map((entry) => entry.value))];
+  const table = found.map((entry) => `  ${String(entry.value).padStart(3)}  ${entry.where}`).join('\n');
+  assert.equal(distinct.length, 1, `the recommended Node is not the same everywhere it is recommended:\n${table}`);
+  assert.ok(distinct[0] > MINIMUM_NODE_MAJOR, `the recommended Node (${distinct[0]}) must be newer than the minimum (${MINIMUM_NODE_MAJOR})`);
+});
+
+test('no sentence says which release line is the LTS today: the recommendation is "LTS" and a number', () => {
+  const stale = [];
+  const sentences = [guardSentence({}), guardSentence({ LANG: 'pt_BR.UTF-8' })];
+  const { tooOld, onPathTooOld } = doctorSentences();
+  for (const language of ['en', 'pt-BR']) {
+    // (the path of the fake node is a temporary directory, which can be called anything)
+    for (const result of [tooOld, onPathTooOld]) sentences.push(renderMessage(createTranslator(language), result.messageKey, { ...result.params, bin: 'node' }));
+  }
+  for (const sentence of sentences) if ([...sentence.matchAll(SAYS_WHICH_LINE_IS_LTS)].length > 0) stale.push(`a sentence the person reads: "${sentence}"`);
+  for (const file of sweptFiles()) {
+    const text = read(file).replace(/\s+/g, ' ');
+    for (const match of text.matchAll(SAYS_WHICH_LINE_IS_LTS)) stale.push(`${file}: "${match[0]}"`);
+  }
+  assert.deepEqual(stale, [], 'these go stale when the next release line becomes the LTS; say "LTS" and the number only');
+});
+
 // A matrix entry that is only installed is not tested. The Node that setup-node
 // puts on PATH is the Node `npm test` (`node --test`) runs with, so the axis has to
 // be what setup-node installs, in the same job and before the suite starts.
-test('CI runs the suite, not only an install, on every Node of its matrix: the minimum and a newer one', () => {
+test('CI runs the suite, not only an install, on every Node of its matrix: the minimum and the recommended one', () => {
   const job = ciTestJob();
   const axis = nodeAxis(job);
   assert.ok(axis.includes(MINIMUM_NODE_MAJOR), `the matrix must run the minimum itself (${MINIMUM_NODE_MAJOR}): ${axis}`);
-  assert.ok(axis.some((major) => major > MINIMUM_NODE_MAJOR), `and at least one newer Node: ${axis}`);
+  assert.ok(axis.includes(RECOMMENDED_NODE_MAJOR), `and the recommended one (${RECOMMENDED_NODE_MAJOR}), the Node a person is told to install: ${axis}`);
   assert.equal(new Set(axis).size, axis.length, 'a Node listed twice runs twice');
   assert.match(job, /fail-fast:\s*false/, 'one Node failing must not hide the other');
   assert.match(job, /^\s+os:\s*\[[^\]]+\]/m, 'the OS axis is still there');

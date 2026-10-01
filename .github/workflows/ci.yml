@@ -9,10 +9,10 @@ permissions:
 
 jobs:
   # The suite runs on the oldest Node the kit supports (22, the floor in
-  # package.json and src/node-guard.mjs) and on the one it recommends (24, the
-  # current LTS). setup-node puts the matrix Node first on PATH, so `npm test`
-  # (`node --test`) runs on it. test/node-minimum.test.mjs keeps the lowest entry
-  # of this axis equal to the floor.
+  # package.json and src/node-guard.mjs) and on the one it recommends (24 LTS).
+  # setup-node puts the matrix Node first on PATH, so `npm test` (`node --test`)
+  # runs on it. test/node-minimum.test.mjs keeps the lowest entry of this axis equal
+  # to the floor and requires the recommended Node to be in it too.
   test:
     name: node --test (${{ matrix.os }}, Node ${{ matrix.node }})
     strategy:
