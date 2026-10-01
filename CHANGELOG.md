@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- The oldest Node the kit supports is now 22, not 24, and CI runs the whole suite on 22 and on 24.
+  The 24 was a plan decision that nobody had measured. Run on a real Node 22.22.1 on 01/10/2026,
+  the suite of 0.0.8 (3582 tests) had 3560 tests pass, 6 skipped by the suite itself and 16 fail,
+  all 16 the doctor's own tests of the version policy (its `node-version` check said "fails below
+  24", and every test that runs a whole `doctor` saw that fail); nothing in curate, propose,
+  sync, the hooks, init, validate, lint or the sources failed. So the code already ran on Node
+  22, and a floor of 24 refused people who could use it. 22 is also the oldest Node that still
+  receives security fixes (Maintenance LTS until April 2027; 20 and 18 are end of life), and 24,
+  the current LTS, stays the one the READMEs recommend and the one a message sends a person to
+  install. `engines.node` is now `>=22`. The Node guard and the `node-version` check of `doctor`
+  read ONE number (`MINIMUM_NODE_MAJOR`, exported by `src/node-guard.mjs`; the doctor used to
+  keep its own copy), and the new `test/node-minimum.test.mjs` fails, naming the places, when any
+  other place that states it says something else: the guard and the doctor (by what each does
+  and by the sentence each prints), both READMEs, CONTRIBUTING.md, docs/testing.md, the setup
+  skill and its evals, and the lowest Node of the CI matrix. A person on Node 20 or older sees
+  one sentence from `brain-kit`, in their language ("brain-kit needs Node 22 or newer; this
+  machine has Node 20.11.1. Install Node 24 (the current LTS) from https://nodejs.org and run it
+  again.", exit code 2), and `doctor` fails `node-version` with a sentence that names the same
+  minimum and the version it found; a Node 22 or 23 passes that check with no warning. The CI
+  `test` job gained a Node axis, so it now runs on ubuntu and on macOS, each on 22 and on 24, and
+  its checks are named `node --test (ubuntu-latest, Node 22)` and so on (a branch protection that
+  requires the old names needs the new ones). The plugin validation and the Release workflow
+  stay on 24.
 - A new vault no longer fails `doctor` on a second machine: `brain-kit init` now writes the
   vault's own Claude Code project in a form that is right on every machine that clones it. 0.0.8
   made `init` write `sources.transcripts.include_projects` with that project named the way Claude
@@ -100,18 +123,19 @@
   line of a session ("Retrato da sessão tirado", a word-for-word "snapshot taken") and the
   Stop hook's "0 caminho(s) ... ficaram de fora: não cabe a esta sessão propô-los", which
   read as cut short. The English pack is unchanged.
-- On a Node older than 24, `brain-kit` now says so in one sentence, in your language, instead of
+- On a Node older than 22, `brain-kit` now says so in one sentence, in your language, instead of
   dying with a SyntaxError or a TypeError and a stack trace from inside `src/` (the first
-  reviewer's m13): "brain-kit needs Node 24 or newer; this machine has Node 22.12.0. Install
-  Node 24 from https://nodejs.org and run it again." The launcher, `bin/brain-kit.mjs`, now
-  imports only a small guard (`src/node-guard.mjs`: no imports, and no syntax an old Node cannot
-  parse), asks it, and loads the CLI with a dynamic `import()` only when the Node is 24 or newer;
+  reviewer's m13): "brain-kit needs Node 22 or newer; this machine has Node 20.11.1. Install
+  Node 24 (the current LTS) from https://nodejs.org and run it again." The launcher,
+  `bin/brain-kit.mjs`, now imports only a small guard (`src/node-guard.mjs`: no imports, and no
+  syntax an old Node cannot parse), asks it, and loads the CLI with a dynamic `import()` only when
+  the Node is 22 or newer;
   otherwise the sentence goes to stderr and the exit code is 2. The language is chosen as every
   other message of the kit is (`BRAIN_KIT_LANG`, then `LC_ALL`, `LC_MESSAGES` and `LANG`). A
   version string it cannot read never blocks. The one exception is `brain-kit hook ...`: it prints
   the same line and exits 0, because a Claude Code hook that fails breaks the session it runs in.
-  No old Node was at hand, so the tests make the real launcher believe it runs on Node 22 with a
-  preload, and scan the guard for syntax an old Node cannot parse.
+  No Node older than 22 was at hand, so the tests make the real launcher believe it runs on Node
+  20 with a preload, and scan the guard for syntax an old Node cannot parse.
 - `brain-kit doctor` outside a vault is now the check of the machine, where it only said "no
   vault found" and checked nothing (the first reviewer's m2, the second's F24; the README says it
   tells whether "this machine and this vault are ready", and nothing could be run before `init`).
@@ -172,7 +196,7 @@
   first-run path and before "O que funciona hoje". Nothing in it changed. A reader who goes
   from the top to the bottom now crosses the glossary and the requirements before it, instead
   of a screenful of npm and plugin vocabulary.
-- The requirements are cut to what the first pull request needs (Node.js 24, git, a logged-in
+- The requirements are cut to what the first pull request needs (Node.js 22 or newer, git, a logged-in
   `gh`, Claude Code and a GitHub account), with one line saying the scheduled rounds are
   optional. The systemd, `loginctl enable-linger`, launchd, cron and Windows note moved to "The
   scheduled curator", the Google connectors' requirement to "Calendar and meeting notes" and
