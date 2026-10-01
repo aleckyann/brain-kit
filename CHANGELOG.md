@@ -9,22 +9,25 @@
   24", and every test that runs a whole `doctor` saw that fail); nothing in curate, propose,
   sync, the hooks, init, validate, lint or the sources failed. So the code already ran on Node
   22, and a floor of 24 refused people who could use it. 22 is also the oldest Node that still
-  receives security fixes (Maintenance LTS until April 2027; 20 and 18 are end of life), and 24,
-  the current LTS, stays the one the READMEs recommend and the one a message sends a person to
-  install. `engines.node` is now `>=22`. The Node guard and the `node-version` check of `doctor`
-  read ONE number (`MINIMUM_NODE_MAJOR`, exported by `src/node-guard.mjs`; the doctor used to
-  keep its own copy), and the new `test/node-minimum.test.mjs` fails, naming the places, when any
-  other place that states it says something else: the guard and the doctor (by what each does
-  and by the sentence each prints), both READMEs, CONTRIBUTING.md, docs/testing.md, the setup
-  skill and its evals, and the lowest Node of the CI matrix. A person on Node 20 or older sees
-  one sentence from `brain-kit`, in their language ("brain-kit needs Node 22 or newer; this
-  machine has Node 20.11.1. Install Node 24 (the current LTS) from https://nodejs.org and run it
-  again.", exit code 2), and `doctor` fails `node-version` with a sentence that names the same
-  minimum and the version it found; a Node 22 or 23 passes that check with no warning. The CI
-  `test` job gained a Node axis, so it now runs on ubuntu and on macOS, each on 22 and on 24, and
-  its checks are named `node --test (ubuntu-latest, Node 22)` and so on (a branch protection that
-  requires the old names needs the new ones). The plugin validation and the Release workflow
-  stay on 24.
+  receives security fixes (Maintenance LTS until April 2027; 20 and 18 are end of life), and 24
+  (LTS) stays the one the READMEs recommend and the one a message sends a person to install.
+  Every sentence says "LTS" and nothing about which release line is the LTS today, so none goes
+  stale the day the next line becomes one. `engines.node` is now `>=22`. The Node guard and the
+  `node-version` check of `doctor` read ONE number (`MINIMUM_NODE_MAJOR`, exported by
+  `src/node-guard.mjs`; the doctor used to keep its own copy), and the new
+  `test/node-minimum.test.mjs` fails, naming the places, when any other place that states it
+  says something else: the guard and the doctor (by what each does and by the sentence each
+  prints), both READMEs, CONTRIBUTING.md, docs/testing.md, the setup skill and its evals, and
+  the lowest Node of the CI matrix. It holds the recommended Node (`RECOMMENDED_NODE_MAJOR`, 24)
+  the same way: the guard's and the doctor's sentences, both READMEs, CONTRIBUTING.md and the
+  setup skills, with the CI matrix required to run it. A person on Node 20 or older sees one
+  sentence from `brain-kit`, in their language ("brain-kit needs Node 22 or newer; this machine
+  has Node 20.11.1. Install Node 24 (LTS) from https://nodejs.org and run it again.", exit code
+  2), and `doctor` fails `node-version` with a sentence that names the same minimum and the
+  version it found; a Node 22 or 23 passes that check with no warning. The CI `test` job gained
+  a Node axis, so it now runs on ubuntu and on macOS, each on 22 and on 24, and its checks are
+  named `node --test (ubuntu-latest, Node 22)` and so on. The plugin validation and the Release
+  workflow stay on 24.
 - A new vault no longer fails `doctor` on a second machine: `brain-kit init` now writes the
   vault's own Claude Code project in a form that is right on every machine that clones it. 0.0.8
   made `init` write `sources.transcripts.include_projects` with that project named the way Claude
@@ -126,7 +129,7 @@
 - On a Node older than 22, `brain-kit` now says so in one sentence, in your language, instead of
   dying with a SyntaxError or a TypeError and a stack trace from inside `src/` (the first
   reviewer's m13): "brain-kit needs Node 22 or newer; this machine has Node 20.11.1. Install
-  Node 24 (the current LTS) from https://nodejs.org and run it again." The launcher,
+  Node 24 (LTS) from https://nodejs.org and run it again." The launcher,
   `bin/brain-kit.mjs`, now imports only a small guard (`src/node-guard.mjs`: no imports, and no
   syntax an old Node cannot parse), asks it, and loads the CLI with a dynamic `import()` only when
   the Node is 22 or newer;
