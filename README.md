@@ -241,7 +241,7 @@ tells you each morning where it stands.
 - `EACCES` when installing (npm cannot write where it wanted): use the commands in [If you see `EACCES`](#if-you-see-eacces).
 - `gh` asks you to log in: run `gh auth login` ([step 2](#step-2)) and try again.
 - `propose` complains about a branch, the GitHub address (`origin`) or the configuration: the first commit ([step 5](#step-5)) and the push ([step 6](#step-6)) are missing.
-- `brain-kit: command not found` after installing: close the terminal and open a new one; if it persists, redo the PATH in [If you see `EACCES`](#if-you-see-eacces).
+- `command not found` for `brain-kit` after installing: close the terminal and open a new one; if it persists, redo the PATH in [If you see `EACCES`](#if-you-see-eacces).
 - `doctor` says `fail` on `gh-auth`: the `gh` login expired or was never done; run the command the line shows, `gh auth login --hostname github.com`.
 - A password or key showed up in the vault: stop and follow [docs/incident-response.md](docs/incident-response.md).
 

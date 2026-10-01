@@ -242,7 +242,7 @@ toda manhã onde ele está.
 - `EACCES` ao instalar (o npm não pode gravar onde queria): use os comandos de [Se aparecer `EACCES`](#se-aparecer-eacces).
 - O `gh` pede login: rode `gh auth login` ([passo 2](#passo-2)) e tente de novo.
 - O `propose` reclama de branch, do endereço do GitHub (`origin`) ou de configuração: falta o primeiro commit ([passo 5](#passo-5)) e o envio ([passo 6](#passo-6)).
-- `brain-kit: command not found` depois de instalar: feche e abra o terminal; se continuar, refaça o PATH em [Se aparecer `EACCES`](#se-aparecer-eacces).
+- `command not found` (ou `comando não encontrado`) para o `brain-kit` depois de instalar: feche e abra o terminal; se continuar, refaça o PATH em [Se aparecer `EACCES`](#se-aparecer-eacces).
 - O `doctor` diz `falha` no `gh-auth`: o login do `gh` venceu ou nunca foi feito; rode o comando que a linha mostra, `gh auth login --hostname github.com`.
 - Uma senha ou chave apareceu no vault: pare e siga o [docs/incident-response.md](docs/incident-response.md) (em inglês).
 
