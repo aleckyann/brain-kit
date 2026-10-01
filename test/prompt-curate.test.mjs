@@ -210,6 +210,33 @@ for (const lang of LANGS) {
     }
   });
 
+  // 30/09/2026 (docs/incidents.md): two attachments came back "not found",
+  // the rule named only a permission reason, and the model reported the
+  // whole meeting-notes source failed, so its mark did not move. The same
+  // rule now covers the connector's "not found", with a label of its own,
+  // without a marker of its own: the permission label stays byte for byte.
+  test(`${lang}: no-access-label also covers a document the connector answers "not found" for, and it never holds the source's days open`, () => {
+    const text = rendered(lang);
+    const at = text.indexOf('<!-- rule:no-access-label -->');
+    const paragraph = text.slice(at, text.indexOf('\n\n', at));
+    const expected = {
+      en: [
+        'A document that does not open for a permission reason is **not verified**, with this exact reason: `no access (document store permission)`.',
+        'A document the connector answers "not found" for (such as "Requested entity was not found") is **not verified** too, with this exact reason: `not found by the connector (deleted attachment or no access)`, because the connector gives that answer both for an attachment that was deleted and for one never shared with you.',
+        'Either way, the document is never empty, never missing and never a failure of the source: with everything else read, the source is written `ok` in the last line, and its days close.',
+        'List those documents by title in your final message, so the owner can ask for access or ignore them.',
+      ],
+      'pt-BR': [
+        'Um documento que não abre por motivo de permissão fica **não verificado**, com este motivo exato: `sem acesso (permissão do repositório de documentos)`.',
+        'Um documento para o qual o conector responde "not found" (como "Requested entity was not found") também fica **não verificado**, com este motivo exato: `não encontrado pelo conector (anexo apagado ou sem acesso)`, porque o conector dá essa resposta tanto para um anexo que foi apagado quanto para um que nunca foi compartilhado com você.',
+        'Nos dois casos, o documento nunca está vazio, nunca está ausente e nunca é falha da fonte: com todo o resto lido, a fonte é escrita `ok` na última linha, e os dias dela fecham.',
+        'Liste esses documentos pelo título na sua mensagem final, para o dono poder pedir acesso ou ignorá-los.',
+      ],
+    }[lang];
+    for (const sentence of expected) assert.ok(paragraph.includes(sentence), `${lang}: ${sentence}`);
+    assert.equal(text.split('<!-- rule:').length - 1, CURATE_RULES.length, `${lang}: no marker was added`);
+  });
+
   test(`${lang}: the last line is the one the round gives, naming every state a source can be written with`, () => {
     const { vault, config } = vaultFor(lang);
     const line = 'BRAIN_KIT_SOURCES: transcripts=<ok|empty|failed> calendar=<ok|empty|failed|unavailable>';

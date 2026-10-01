@@ -73,7 +73,7 @@ Whenever something is uncertain, use exactly one of these three expressions, and
 Never soften one into another, and never fill the gap with a guess.
 
 <!-- rule:no-access-label -->
-A document that does not open for a permission reason is **not verified**, with this exact reason: `no access (document store permission)`. It is never empty, never missing and never a failure of the source. List those documents by title in your final message, so the owner can ask for access.
+A document that does not open for a permission reason is **not verified**, with this exact reason: `no access (document store permission)`. A document the connector answers "not found" for (such as "Requested entity was not found") is **not verified** too, with this exact reason: `not found by the connector (deleted attachment or no access)`, because the connector gives that answer both for an attachment that was deleted and for one never shared with you. Either way, the document is never empty, never missing and never a failure of the source: with everything else read, the source is written `ok` in the last line, and its days close. List those documents by title in your final message, so the owner can ask for access or ignore them.
 
 ## Finish
 

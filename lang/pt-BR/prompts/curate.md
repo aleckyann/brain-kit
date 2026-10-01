@@ -73,7 +73,7 @@ Sempre que algo for incerto, use exatamente uma destas três expressões, e nenh
 Nunca troque uma pela outra para suavizar, e nunca preencha a lacuna com um palpite.
 
 <!-- rule:no-access-label -->
-Um documento que não abre por motivo de permissão fica **não verificado**, com este motivo exato: `sem acesso (permissão do repositório de documentos)`. Ele nunca está vazio, nunca está ausente e nunca é falha da fonte. Liste esses documentos pelo título na sua mensagem final, para o dono poder pedir acesso.
+Um documento que não abre por motivo de permissão fica **não verificado**, com este motivo exato: `sem acesso (permissão do repositório de documentos)`. Um documento para o qual o conector responde "not found" (como "Requested entity was not found") também fica **não verificado**, com este motivo exato: `não encontrado pelo conector (anexo apagado ou sem acesso)`, porque o conector dá essa resposta tanto para um anexo que foi apagado quanto para um que nunca foi compartilhado com você. Nos dois casos, o documento nunca está vazio, nunca está ausente e nunca é falha da fonte: com todo o resto lido, a fonte é escrita `ok` na última linha, e os dias dela fecham. Liste esses documentos pelo título na sua mensagem final, para o dono poder pedir acesso ou ignorá-los.
 
 ## Terminar
 

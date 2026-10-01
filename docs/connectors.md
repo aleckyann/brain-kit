@@ -101,7 +101,12 @@ marks as a recording or a full transcription: those are listed by title as not r
 `never_download` list in the configuration is informational: no code reads it, and that
 rule holds whatever it says. A document that does not open for lack of permission is
 written as "no access (document store permission)", never as empty (incident of
-21/08/2026).
+21/08/2026). A document the connector answers "not found" for is written as "not found by
+the connector (deleted attachment or no access)", because the connector gives that answer
+both for an attachment that was deleted and for one never shared with you (30/09/2026).
+Neither one fails the source: with everything else read, the round reports the meeting
+notes `ok` and their day closes. The final message lists both kinds by title, so you can
+ask for access or ignore them.
 
 How many documents a round opens is counted and reported (`documents` in `last-run.json`),
 never a condition, since the kit cannot know how many there are. `curate.caps.search_docs_opened`

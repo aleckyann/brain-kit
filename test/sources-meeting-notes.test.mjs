@@ -234,6 +234,35 @@ test('the prompt block, in the vault language, gives the exact query and every r
   assert.notEqual(planFor({}, 'en').promptBlock, planFor({}, 'pt-BR').promptBlock);
 });
 
+// 30/09/2026 (docs/incidents.md): the connector answers "not found" both for
+// a deleted attachment and for one never shared with the reader, so that
+// answer has a label of its own, apart from the permission one, and neither
+// keeps the source's days open.
+test('the prompt block gives the connector\'s "not found" a label of its own, apart from the permission label, and neither fails the source', () => {
+  const expected = {
+    en: {
+      permission: '"no access (document store permission)"',
+      notFound: '"not found by the connector (deleted attachment or no access)"',
+      tokens: ['(the connector refuses access)', 'A document the connector answers "not found" for (such as "Requested entity was not found"', 'both for a deleted attachment and for one never shared with you', 'Neither is ever empty or a connector failure, and neither keeps this source\'s days open.', 'so the owner can ask for access or ignore them.'],
+    },
+    'pt-BR': {
+      permission: '"sem acesso (permissão do repositório de documentos)"',
+      notFound: '"não encontrado pelo conector (anexo apagado ou sem acesso)"',
+      tokens: ['(o conector recusa o acesso)', 'Um documento para o qual o conector responde "not found" (como "Requested entity was not found"', 'tanto para um anexo apagado quanto para um que nunca foi compartilhado com você', 'Nenhum dos dois é vazio nem falha do conector, e nenhum deixa os dias desta fonte abertos.', 'para o dono poder pedir acesso ou ignorá-los.'],
+    },
+  };
+  for (const lang of LANGS) {
+    const line = createTranslator(lang)('sources.meeting_notes.no_access');
+    const { permission, notFound, tokens } = expected[lang];
+    assert.ok(planFor({}, lang).promptBlock.includes(line), `${lang}: the line is in the block`);
+    assert.ok(line.includes(notFound), `${lang}: the not-found label`);
+    for (const token of tokens) assert.ok(line.includes(token), `${lang}: ${token}`);
+    const permissionSentence = line.slice(0, line.indexOf(permission) + permission.length);
+    assert.ok(line.indexOf(permission) !== -1 && line.indexOf(permission) < line.indexOf(notFound), `${lang}: the permission label comes first`);
+    assert.equal(permissionSentence.includes('not found'), false, `${lang}: the connector's "not found" is not a permission reason`);
+  }
+});
+
 test('an attached title prefix narrows the second door, in the words of the vault language', () => {
   for (const lang of LANGS) {
     const t = createTranslator(lang);

@@ -25,6 +25,12 @@
 //   - 10/08/2026 and 21/08/2026: a document is never declared empty
 //     without being opened, and one that does not open for a permission
 //     reason is "no access (document store permission)".
+//   - 30/09/2026, two attachments came back "not found" and the model
+//     reported the whole source failed, so its mark did not move. The
+//     connector answers "not found" both for a deleted attachment and for
+//     one never shared with the reader: such a document is "not found by
+//     the connector (deleted attachment or no access)", and neither label
+//     keeps the source's days open.
 //   - 03/09/2026, the search found nothing because the event is named after
 //     two people: minutes are reached through the event's attachment, never
 //     a search by a person's name; the whole document is read, every tab;

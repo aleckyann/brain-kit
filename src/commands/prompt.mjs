@@ -137,7 +137,9 @@ export const DEFAULT_SOURCES_LINE = 'BRAIN_KIT_SOURCES: transcripts=<ok|empty|fa
 // there, is reported and never reached another way (the undated "a wrong
 // allowlist burned every turn on workarounds"); a document is distilled,
 // never logged as a link (11/08/2026); a document that does not open for a
-// permission reason is said to be exactly that (10/08 and 21/08/2026); and
+// permission reason is said to be exactly that (10/08 and 21/08/2026), and
+// so is one the connector answers "not found" for, a sentence added to the
+// same rule on 30/09/2026 with no marker of its own; and
 // nothing of anyone's private life is content, other people's schedules
 // included (the undated "a colleague's medical appointment was in the
 // calendar window").

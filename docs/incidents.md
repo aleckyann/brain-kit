@@ -7,13 +7,14 @@ Names of people, companies and tools were removed on purpose.
 
 Seventy three lessons were extracted from the original vault, written up as seventy
 two entries: the four day curation outage of September 2026 produced two lessons about
-the same incident and is written up once, under 13/09/2026. Four entries were added
+the same incident and is written up once, under 13/09/2026. Five entries were added
 since, each dated: the leak gate that blocked its own release tag (18/09/2026), the
 selection of transcripts by modification time (24/09/2026), the settings a headless
-run inherits (24/09/2026), which the kit's own build produced, and the round that took
-its own parent for a competing curator (28/09/2026), found while moving a vault onto the
-kit. Seventy six entries follow. Where a lesson carries no date of its own, the entry
-says "Undated" and explains why.
+run inherits (24/09/2026), which the kit's own build produced, the round that took its
+own parent for a competing curator (28/09/2026), found while moving a vault onto the
+kit, and the attachments the connector answered "not found" (30/09/2026), found in a
+real round on the kit. Seventy seven entries follow. Where a lesson carries no date of
+its own, the entry says "Undated" and explains why.
 
 ## Format and links
 
@@ -771,6 +772,25 @@ and the list goes into the answer so the human can decide whether to request acc
 **Where it lives in brain-kit.** Closed label set in the curate prompt (Phase 2), its
 rule `no-access-label`, and the meeting-notes source's prompt block, which gives the exact
 reason, `src/sources/meeting-notes-google-drive.mjs` (Phase 3).
+
+### 30/09/2026: two attachments the connector could not find held the meeting notes open
+**What happened.** A real round through the owner's own document connector read six
+documents: four opened, and two came back "not found", attachments that were deleted or
+never shared with the reader, which the connector answers the same way. The rule for a
+document that does not open covered only a permission reason, so the model reported the
+whole meeting-notes source failed and its mark did not move. In production, one dead
+attachment inside the window would hold that source's day open on every round, until the
+window's cap.
+**Rule.** A document the connector answers "not found" for is not verified, with its own
+exact reason, "not found by the connector (deleted attachment or no access)". Like one
+with no access, it is never empty, never missing and never a failure of the source, so
+the source's day closes with it, and its title goes into the answer so the human can ask
+for access or ignore it.
+**Where it lives in brain-kit.** The curate prompt's rule `no-access-label`, in a
+sentence with no marker of its own, and the meeting-notes source's prompt block,
+`src/sources/meeting-notes-google-drive.mjs`, in both languages;
+`test/prompt-curate.test.mjs` and `test/sources-meeting-notes.test.mjs` pin the label
+(Phase 5).
 
 ### Undated: the document search is accent sensitive and fails silently
 **What happened.** The search string for the automatically generated meeting notes

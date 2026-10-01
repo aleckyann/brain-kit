@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### A document the connector answers "not found" for (30/09/2026)
+
+- The curate prompt's rule `no-access-label`, in both languages, now covers a document the
+  connector answers "not found" for, which is its answer both for a deleted attachment and
+  for one never shared with the reader ([docs/incidents.md](docs/incidents.md),
+  30/09/2026). Such a document is not verified, with its own exact reason, `not found by
+  the connector (deleted attachment or no access)` (`não encontrado pelo conector (anexo
+  apagado ou sem acesso)`); like one with no access, it is never empty, never missing and
+  never a failure of the source, so with everything else read the source is reported `ok`
+  and its days close, and the final message lists it by title. A real round had reported
+  the whole meeting-notes source `failed` over two such attachments, and its mark did not
+  move. The permission label is unchanged, byte for byte, and now goes only to a document
+  the connector refuses for permission. The meeting-notes source's prompt block
+  (`sources.meeting_notes.no_access`) says the same, and no longer files "Requested entity
+  was not found" under the permission label. No contract marker was added, so an overlay
+  that passes `prompt --check` still does. A vault with its own curate overlay gets the
+  source block, which the kit writes, but not the rule's new sentences: copy them by hand
+  into the overlay's `no-access-label` paragraph. No code reads the label text.
+
 ## 0.0.3 (tagged `v0.0.3`, not on npm)
 
 ### The SessionStart line says nothing about the legacy lock (28/09/2026)

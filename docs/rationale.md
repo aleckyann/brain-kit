@@ -219,7 +219,8 @@ in place with a date saying the previous version was wrong.
    validator separates the `[spec]` ruler from the `[house]` ruler in its output.
 9. **Closed vocabularies of uncertainty.** Not verified, not found and I do not know
    are distinct; empty, does not exist and no record are verification results with a
-   timestamp; no access is a label of its own.
+   timestamp; no access is a label of its own, and so is the connector's "not found",
+   which cannot tell a deleted document from one never shared.
 10. **Every cap announces itself.** Whoever truncates says how much was cut and what
     was left out, in the log or in the round's answer.
 11. **Silent failure is the enemy.** A guard that blocks work exits with a failure
