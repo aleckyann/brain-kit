@@ -78,13 +78,14 @@ To switch, first bring the kit up to date: every machine that opens the vault ne
 that knows `"{vault}"`. An older kit reads it as the name of a project, so its `doctor` fails
 `include-projects` with advice that does not help (point `machine.json` elsewhere, or fix the
 names in `brain-kit.config.json`: do not, that would write this machine's name over the entry,
-the failure above again) and its rounds refuse. Run `brain-kit update` with the new kit before
-you touch the entry: `brain-kit update` sets `kit_version` in `brain-kit.config.json` to the
-running kit's version (that one value, in the working tree, the rest of the file as it was) and
-refreshes the kit's own files you have not edited. An older kit then warns in `kit-version` and
-`manifest-valid` and refuses to run `update`, which names the real cause; a vault whose entry
-was changed by hand keeps its old `kit_version`, both checks say ok, and nothing points at the
-kit.
+the failure above again) and its rounds refuse. Install the new kit on every machine, then
+run `brain-kit update` with it before you touch the entry, once, on the machine where you will
+edit the file: the other machines only install the kit. `brain-kit update` sets `kit_version`
+in `brain-kit.config.json` to the running kit's version (that one value, in the working tree,
+the rest of the file as it was) and refreshes the kit's own files you have not edited. An older
+kit then warns in `kit-version` and `manifest-valid` and refuses to run `update`, which names
+the real cause; a vault whose entry was changed by hand keeps its old `kit_version`, both
+checks say ok, and nothing points at the kit.
 
 Then replace the entry with `"{vault}"` and propose the file like any other change:
 `brain-kit propose "<summary>" --only brain-kit.config.json` (add the files `update` reported
@@ -93,6 +94,13 @@ the file uncommitted until the pull request is merged: committed before `propose
 nothing to propose, and committed after, it makes `sync` refuse later, saying the branches have
 diverged. Do not repair the failure by writing the second machine's name there: the file is
 shared, and the first machine's rounds would stop reading their own sessions.
+
+If `update` was run on another machine too, that machine's copy of `brain-kit.config.json`
+(and of any other file `update` refreshed) is changed and uncommitted, and its `sync`
+postpones (exit 75), naming the files. Do not propose them: that copy still has the
+machine-specific name, and the pull request would put it back over `"{vault}"`. Discard those
+changes with `git restore <the files>` (the merged pull request carries the same
+`kit_version`) and run `brain-kit sync` again.
 
 To feed the vault from every project instead, write the string `"all"` in place of the list:
 `"include_projects": "all"`. Nothing reads every project unless the configuration says so in

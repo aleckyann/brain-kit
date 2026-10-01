@@ -437,11 +437,22 @@ test('docs/scheduling.md says how a vault made by an earlier init switches to {v
   assert.match(text, /merge the pull request/);
   assert.doesNotMatch(text, /commit it like any other change/, 'a commit on the default branch makes sync refuse later');
   assert.match(text, /every machine that opens the vault needs a kit that knows `"\{vault\}"`/);
-  assert.match(text, /Run `brain-kit update` with the new kit before you touch the entry/);
+  assert.match(text, /run `brain-kit update` with it before you touch the entry, once, on the machine where you will edit the file: the other machines only install the kit/);
   assert.match(text, /an older kit reads it as the name of a project/i);
   assert.match(text, /`brain-kit update` sets `kit_version` in `brain-kit\.config\.json` to the running kit's version/);
   assert.match(text, /an older kit then warns in `kit-version` and `manifest-valid`/i);
   assert.match(text, /a vault whose entry was changed by hand keeps its old `kit_version`/);
+});
+
+test('docs/scheduling.md says what to do on a machine where update was run as well: discard its copy, never propose it, then sync (the final review of 0.0.9, M2)', () => {
+  const text = section('docs/scheduling.md', '## Before the first round');
+  const trap = text.indexOf('If `update` was run on another machine too');
+  assert.notEqual(trap, -1, 'the trap is named');
+  const paragraph = text.slice(trap, text.indexOf('To feed the vault from every project', trap));
+  assert.match(paragraph, /^If `update` was run on another machine too, that machine's copy of `brain-kit\.config\.json` \(and of any other file `update` refreshed\) is changed and uncommitted, and its `sync` postpones \(exit 75\), naming the files\./);
+  assert.match(paragraph, /Do not propose them: that copy still has the machine-specific name, and the pull request would put it back over `"\{vault\}"`\./);
+  assert.match(paragraph, /Discard those changes with `git restore <the files>` \(the merged pull request carries the same `kit_version`\) and run `brain-kit sync` again\./);
+  assert.ok(trap > text.indexOf('brain-kit propose "<summary>" --only brain-kit.config.json'), 'after the proposal it explains');
 });
 
 test('the changelog says the same about the kit: every machine needs this one before the entry, and update raises kit_version', () => {
@@ -449,6 +460,9 @@ test('the changelog says the same about the kit: every machine needs this one be
   assert.match(text, /every machine that opens the vault needs this kit or a newer one/i);
   assert.match(text, /an older kit reads `"\{vault\}"` as the name of a project/);
   assert.match(text, /`brain-kit update` first, which sets `kit_version`/);
+  // Once, on the machine that edits the file, in both bullets that give the switch (the final review of 0.0.9, M2).
+  assert.equal(text.match(/once, on the machine where you will edit the file/g)?.length, 2, 'both bullets that give the switch say where update runs');
+  assert.doesNotMatch(text, /run `brain-kit update` first \(/, 'the second-machine bullet no longer reads as update on every machine');
   assert.match(text, /`brain-kit propose "<summary>" --only brain-kit\.config\.json`/);
   assert.doesNotMatch(text, /commit it like any other change/);
 });

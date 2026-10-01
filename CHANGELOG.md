@@ -72,7 +72,10 @@ real Node 22 showed the code already supported.
   nothing points at the cause. Run `brain-kit update` first, which sets `kit_version` in the
   configuration to the running kit's version (that one value, in the working tree) and refreshes the
   kit's own files you have not edited: an older kit then warns in `kit-version` and `manifest-valid`
-  and refuses `update`. The schema already took any string in the list, so it is unchanged:
+  and refuses `update`. Run it once, on the machine where you will edit the file, and only install
+  the kit on the others: where `update` was run as well, the file is changed and uncommitted, its
+  `sync` postpones, and the fix is to discard that copy with `git restore` (`docs/scheduling.md`,
+  "Before the first round"). The schema already took any string in the list, so it is unchanged:
   `"{vault}"` validates, and a bare string other than `"all"` is still refused.
 - `doctor` and `curate` no longer send a person to the shared configuration to fix a name that
   only differs by machine. The empty-list message of `include-projects` offers `"{vault}"` first
@@ -293,8 +296,9 @@ real Node 22 showed the code already supported.
   and has to switch that entry to `"{vault}"` rather than get the second machine's name, which
   would stop the first machine's rounds from reading its own sessions. The switch has an order,
   the one `docs/scheduling.md` gives: install this version on every machine that opens the
-  vault and run `brain-kit update` first (an older kit reads `"{vault}"` as a project name and
-  fails the same check), then propose the change, merge it and run `brain-kit sync` on both
+  vault (an older kit reads `"{vault}"` as a project name and fails the same check), run
+  `brain-kit update` once, on the machine where you will edit the file (the other machines only
+  install the kit), then propose the change, merge it and run `brain-kit sync` on both
   machines, without committing the file yourself before the merge. A test compares the
   README's commands with the scheduling page's, in order.
 - `brain-kit machine register --new` prints its next steps in the order that works: the push

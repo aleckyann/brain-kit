@@ -303,14 +303,15 @@ Um vault criado antes da 0.0.9 lista o projeto pelo nome que ele tinha na primei
 `doctor` da segunda dá `falha include-projects`. Não ponha no `brain-kit.config.json` o nome do
 projeto desta máquina para fazer o `doctor` calar: o arquivo é o mesmo nas duas máquinas, e a
 primeira deixaria de ler as próprias sessões. O caminho para sair disso tem ordem. Primeiro,
-instale esta versão do kit em todas as máquinas que abrem o vault e rode `brain-kit update`
-dentro do vault uma vez: um kit mais velho que a 0.0.9 lê `"{vault}"` como o nome de um projeto
-e falha na mesma checagem. Depois, troque o nome que está em
-`sources.transcripts.include_projects` por `"{vault}"`, proponha a mudança com
-`brain-kit propose "Usa {vault}" --only brain-kit.config.json` (depois de `--only`, ponha
-também qualquer outro arquivo que o `update` disse ter mudado), faça o merge no GitHub e rode
-`brain-kit sync` nas duas máquinas; o `doctor` passa a terminar em `0 falha(s)`. Não faça você
-mesmo o commit desse arquivo antes do merge do pull request. O
+instale esta versão do kit em todas as máquinas que abrem o vault: um kit mais velho que a
+0.0.9 lê `"{vault}"` como o nome de um projeto e falha na mesma checagem. Segundo, rode
+`brain-kit update` dentro do vault uma vez, na máquina em que você vai editar o arquivo; nas
+outras máquinas, só instale o kit, e elas recebem a mudança com `brain-kit sync` depois do
+merge. Terceiro, troque o nome que está em `sources.transcripts.include_projects` por
+`"{vault}"`, proponha a mudança com `brain-kit propose "Usa {vault}" --only brain-kit.config.json`
+(depois de `--only`, ponha também qualquer outro arquivo que o `update` disse ter mudado),
+faça o merge no GitHub e rode `brain-kit sync` nas duas máquinas; o `doctor` passa a terminar
+em `0 falha(s)`. Não faça você mesmo o commit desse arquivo antes do merge do pull request. O
 [docs/scheduling.md](docs/scheduling.md#before-the-first-round) (em inglês) explica isso na
 seção "Before the first round", e traz os
 [detalhes da segunda máquina](docs/scheduling.md#the-same-vault-on-a-second-machine), inclusive

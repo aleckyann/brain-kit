@@ -101,7 +101,9 @@ const FIRST_RUN = {
     switchPropose: '`brain-kit propose "Use {vault}" --only brain-kit.config.json`',
     switchDoc: 'docs/scheduling.md#before-the-first-round',
     toolSame: /prints the same three steps after it finishes, in the same order/,
-    switchFirst: /First install this version of the kit on every machine that opens the vault and run `brain-kit update` in the vault once/,
+    switchFirst: /First install this version of the kit on every machine that opens the vault: /,
+    switchOnce: /run `brain-kit update` in the vault once, on the machine where you will edit the file; the other machines only install the kit, and receive the change with `brain-kit sync` after the merge/,
+    switchEveryMachine: /on every machine that opens the vault and run `brain-kit update`/,
     switchOlder: /a kit older than 0\.0\.9 reads `"\{vault\}"` as the name of a project, and fails the same check/,
     switchFiles: /after `--only`, add any other file that `update` said it changed/,
     switchUncommitted: /Do not commit that file yourself before the pull request is merged/,
@@ -159,7 +161,9 @@ const FIRST_RUN = {
     switchPropose: '`brain-kit propose "Usa {vault}" --only brain-kit.config.json`',
     switchDoc: 'docs/scheduling.md#before-the-first-round',
     toolSame: /imprime os mesmos três passos quando termina, na mesma ordem/,
-    switchFirst: /Primeiro, instale esta versão do kit em todas as máquinas que abrem o vault e rode `brain-kit update` dentro do vault uma vez/,
+    switchFirst: /Primeiro, instale esta versão do kit em todas as máquinas que abrem o vault: /,
+    switchOnce: /rode `brain-kit update` dentro do vault uma vez, na máquina em que você vai editar o arquivo; nas outras máquinas, só instale o kit, e elas recebem a mudança com `brain-kit sync` depois do merge/,
+    switchEveryMachine: /em todas as máquinas que abrem o vault e rode `brain-kit update`/,
     switchOlder: /um kit mais velho que a 0\.0\.9 lê `"\{vault\}"` como o nome de um projeto e falha na mesma checagem/,
     switchFiles: /depois de `--only`, ponha também qualquer outro arquivo que o `update` disse ter mudado/,
     switchUncommitted: /Não faça você mesmo o commit desse arquivo antes do merge do pull request/,
@@ -625,11 +629,18 @@ for (const [lang, spec] of Object.entries(READMES)) {
     assert.ok(words.includes(run.noName), 'it does not tell a person to put this machine\'s name in the shared file');
     assert.match(words, run.switchFirst, 'the kit is brought up to date on every machine before the entry changes');
     assert.match(words, run.switchOlder, 'and it says why: an older kit reads the token as a name');
+    // `update` runs ONCE, on the machine that edits the file (the final review of 0.0.9, M2): run on every
+    // machine, the others are left with a changed, uncommitted file whose `sync` postpones, and the first
+    // branch of its message would propose the machine-specific name back over `{vault}`.
+    assert.match(words, run.switchOnce, 'update runs once, on the machine that edits the file; the others only install the kit');
+    assert.doesNotMatch(words, run.switchEveryMachine, 'the ambiguous wording, which read as "run update on every machine", is gone');
     assert.match(words, run.switchTo);
     assert.ok(words.includes(run.switchPropose));
     assert.match(words, run.switchFiles);
     assert.match(words, run.switchUncommitted);
-    assert.ok(words.search(run.switchFirst) !== -1 && words.search(run.switchFirst) < words.indexOf(run.switchPropose), 'update comes before the proposal');
+    const first = words.search(run.switchFirst);
+    const once = words.search(run.switchOnce);
+    assert.ok(first !== -1 && first < once && once < words.indexOf(run.switchPropose), 'the kit on every machine, then update once, then the proposal');
     assert.ok(words.includes('`brain-kit sync`'));
     assert.ok(body.includes(run.switchDoc), 'and it points at the section that explains it');
     assert.ok(read('docs/scheduling.md').split('\n').includes('## Before the first round'), 'which exists');

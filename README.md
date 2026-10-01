@@ -302,13 +302,15 @@ A vault created before 0.0.9 lists its project by the name it had on the first m
 second machine's `doctor` gives `fail include-projects`. Do not put this machine's project name
 in `brain-kit.config.json` to silence the `doctor`: the file is the same on both machines, and
 the first one would stop reading its own sessions. The way out has an order. First install this
-version of the kit on every machine that opens the vault and run `brain-kit update` in the
-vault once: a kit older than 0.0.9 reads `"{vault}"` as the name of a project, and fails the same
-check. Then replace the name in `sources.transcripts.include_projects` with `"{vault}"`, propose
-the change with `brain-kit propose "Use {vault}" --only brain-kit.config.json` (after `--only`,
-add any other file that `update` said it changed), merge it on GitHub and run `brain-kit sync`
-on both machines; the `doctor` then ends with `0 fail`. Do not commit that file yourself before
-the pull request is merged.
+version of the kit on every machine that opens the vault: a kit older than 0.0.9 reads
+`"{vault}"` as the name of a project, and fails the same check. Second, run `brain-kit update`
+in the vault once, on the machine where you will edit the file; the other machines only install
+the kit, and receive the change with `brain-kit sync` after the merge. Third, replace the name
+in `sources.transcripts.include_projects` with `"{vault}"`, propose the change with
+`brain-kit propose "Use {vault}" --only brain-kit.config.json` (after `--only`, add any other
+file that `update` said it changed), merge it on GitHub and run `brain-kit sync` on both
+machines; the `doctor` then ends with `0 fail`. Do not commit that file yourself before the
+pull request is merged.
 [docs/scheduling.md](docs/scheduling.md#before-the-first-round) explains this in "Before the
 first round", and has the
 [details of the second machine](docs/scheduling.md#the-same-vault-on-a-second-machine),
