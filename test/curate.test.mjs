@@ -805,14 +805,19 @@ test('what stays a real misconfiguration still refuses, exit 1, dry and real ali
       w.setMachine({ transcripts_dir: undefined });
       mkdirSync(join(w.env.HOME, '.claude', 'projects'), { recursive: true });
     }],
+    // CLAUDE_CONFIG_DIR blank (no setting), the default folder not there: its own alone would wait, a typo beside it is a mistake.
+    ['its own beside a typo with the default projects folder not there', (w) => {
+      listProjects(w, (own) => [own, '-home-ana-typo']);
+      w.setMachine({ transcripts_dir: undefined });
+    }, { CLAUDE_CONFIG_DIR: '' }],
   ];
-  for (const [label, prepare] of cases) {
+  for (const [label, prepare, extraEnv = {}] of cases) {
     const w = makeCurateWorld();
     prepare(w);
-    const dry = w.curate(['--dry']);
+    const dry = w.curate(['--dry'], extraEnv);
     assert.equal(dry.status, EXIT.FAILURE, `${label}: ${dry.stdout}${dry.stderr}`);
     assert.match(dry.stderr, /Dry run: a real round would refuse to run now \(exit 1\)\./, label);
-    const real = w.curate();
+    const real = w.curate([], extraEnv);
     assert.equal(real.status, EXIT.FAILURE, `${label}: ${real.stderr}`);
     assert.equal(w.watermark(), null, label);
   }
