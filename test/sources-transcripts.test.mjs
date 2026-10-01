@@ -9,7 +9,7 @@ import { join, sep } from 'node:path';
 import { machineValueErrors } from '../src/config.mjs';
 import { emptyWindow } from '../src/guards/empty-window.mjs';
 import { validateSource } from '../src/sources/index.mjs';
-import { allProjects, exclusionPatterns, projectEntryKind, transcriptsSource, DEFAULT_LIMITS, SAMPLE_BYTES } from '../src/sources/transcripts-claude-code.mjs';
+import { allProjects, claudeProjectName, exclusionPatterns, projectEntryKind, transcriptsSource, DEFAULT_LIMITS, SAMPLE_BYTES } from '../src/sources/transcripts-claude-code.mjs';
 import {
   FROM, TO, NOW, INSIDE, WEEKS_AGO, PROJECT, OTHER_PROJECT,
   assistant, customTitle, digestOf, lastPrompt, makeWorld, mode, paths, system, toolResult, user, userBlocks,
@@ -865,4 +865,28 @@ test('the default root is ~/.claude/projects, and a ~/ root is expanded', () => 
   const fallback = transcriptsSource.collect({ window: { from: FROM, to: TO }, config: world.config, machine: {}, now: NOW, home });
   assert.equal(fallback.root, join(home, '.claude', 'projects'));
   assert.deepEqual(fallback.problems.map((p) => p.code), ['root_missing']);
+});
+
+// The name Claude Code gives the folder of a directory's sessions under its
+// projects folder: the absolute path with every character that is not an
+// ASCII letter or digit turned into a dash (observed: a vault under a
+// localised desktop folder, with a space and an accented letter, is named
+// with a dash for each). init writes it for the vault itself, and doctor
+// recognises it as the one project that has no sessions until a session has
+// run in the vault.
+test('claudeProjectName: every character that is not an ASCII letter or digit becomes a dash, one for one', () => {
+  assert.equal(claudeProjectName('/home/ana/brain'), '-home-ana-brain');
+  assert.equal(claudeProjectName('/home/ana/Área de trabalho/brain'), '-home-ana--rea-de-trabalho-brain');
+  assert.equal(claudeProjectName('/home/ana/brain/.claude/worktrees/agent-1'), '-home-ana-brain--claude-worktrees-agent-1');
+  assert.equal(claudeProjectName('/home/ana/my_vault v2'), '-home-ana-my-vault-v2');
+});
+
+test('claudeProjectName: a path whose name would pass the length Claude Code keeps is not predicted, since the name it gives is a different one', () => {
+  assert.equal(claudeProjectName(`/${'b'.repeat(199)}`).length, 200);
+  assert.equal(claudeProjectName(`/${'b'.repeat(200)}`), null);
+});
+
+test('claudeProjectName refuses what is not an absolute path', () => {
+  assert.throws(() => claudeProjectName('brain'), /absolute/);
+  assert.throws(() => claudeProjectName(''), /absolute/);
 });

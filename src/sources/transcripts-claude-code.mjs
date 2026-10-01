@@ -213,6 +213,29 @@ export function exclusionPatterns(config) {
   return Array.isArray(patterns) ? patterns.filter((p) => typeof p === 'string' && p !== '') : [];
 }
 
+// The longest project name Claude Code keeps as the path spells it. A longer
+// one it shortens and suffixes with a hash this module cannot reproduce, so
+// no name is predicted for such a path.
+export const MAX_PROJECT_NAME_CHARS = 200;
+
+// The name Claude Code gives the folder, under its projects folder, that
+// holds the sessions run in `absolutePath`: the path with every character
+// that is not an ASCII letter or digit turned into a dash, one dash for each
+// character (a slash, a dot, a space and an accented letter alike). So
+// /home/ana/brain is -home-ana-brain. This is what a vault's own project is
+// called, which is what `init` lists in include_projects and what `doctor`
+// knows has no folder until a session has run in the vault. Null for a path
+// whose name is longer than MAX_PROJECT_NAME_CHARS. Observed behaviour of
+// Claude Code, not a specification: a name that disagrees with the folder
+// Claude Code really made shows as a project with no sessions.
+export function claudeProjectName(absolutePath) {
+  if (typeof absolutePath !== 'string' || !absolutePath.startsWith('/')) {
+    throw new TypeError(`claudeProjectName needs an absolute path (got ${JSON.stringify(absolutePath)})`);
+  }
+  const name = absolutePath.replace(/[^A-Za-z0-9]/g, '-');
+  return name.length <= MAX_PROJECT_NAME_CHARS ? name : null;
+}
+
 // What a name under the transcripts root is (ruling R-A7, 26/09/2026):
 // 'directory' (one, or a link to one), 'other' (a file, or a link to
 // something that is not a directory), 'gone' (nothing there any more) or

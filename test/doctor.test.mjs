@@ -38,6 +38,7 @@ import { EXIT } from '../src/exit-codes.mjs';
 import { LOCAL_GIT_VARS, localGitVarNames } from '../src/git-env.mjs';
 import { TEMPLATE_HOOK as SHIPPED_HOOK } from '../src/init/skeleton.mjs';
 import { ROUND_TOOLS } from '../src/harness/claude-code.mjs';
+import { claudeProjectName } from '../src/sources/transcripts-claude-code.mjs';
 
 const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
 const PACK_KEYWORDS = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', 'en', 'config.defaults.json'), 'utf8')).privacy.third_party_keywords;
@@ -84,6 +85,8 @@ const SCRIPTS = {
     ok: 'echo "gh version 2.40.1 (2026-01-01)"\necho "https://example.invalid/releases/v2.40.1"',
     silent: 'exit 0',
     broken: 'echo "gh: something went wrong" >&2\nexit 3',
+    // A real gh that holds no login: it answers --version and refuses auth status.
+    loggedOut: 'case "$1" in\n  auth) echo "You are not logged into any GitHub hosts. To log in, run: gh auth login" >&2; exit 1 ;;\nesac\necho "gh version 2.40.1 (2026-01-01)"',
   },
   claude: {
     // Above the 2 KB stub threshold (src/guards/cli.mjs), and answering
@@ -364,10 +367,10 @@ test('a ready vault under a path with a space, an accented letter and both quote
   assert.deepEqual(report.counts, { ok: CHECK_IDS.length + 1, warn: 0, fail: 0 });
 });
 
-test('the check table is exactly the phase 1, 2, 3, 4 and 5a set, each named by what it prevents', () => {
+test('the check table is exactly the phase 1, 2, 3, 4, 5a and 6 set, each named by what it prevents', () => {
   assert.deepEqual(CHECK_IDS, [
     'node-version', 'git-present', 'default-branch-known', 'hooks-path', 'brain-kit-on-path', 'config-valid', 'manifest-valid', 'machine-valid',
-    'state-dir-resolves', 'state-dir-mode', 'digest-dir', 'legacy-lock', 'kit-version', 'gh-present', 'claude-present', 'gitignore-node-modules', 'privacy-keywords',
+    'state-dir-resolves', 'state-dir-mode', 'digest-dir', 'legacy-lock', 'kit-version', 'gh-present', 'gh-auth', 'claude-present', 'gitignore-node-modules', 'privacy-keywords',
     'claude-real', 'claude-isolation-flags', 'round-scope', 'cost-cap', 'turn-cap', 'time-cap', 'include-projects', 'connectors', 'watermark', 'last-run', 'schedule', 'notify',
     'briefing',
   ]);
@@ -1083,6 +1086,78 @@ test('gh-present: passes and names the version', async () => {
   assert.equal(c.params.version, '2.40.1');
 });
 
+// --- gh-auth -----------------------------------------------------------------
+//
+// gh-present says a gh is there; only `gh auth status` says it can open a
+// pull request. A logged-out gh answered "ok gh-present" and the first
+// `propose` then ended exit 3 (the stranger's M5, 01/10/2026).
+
+function recordingGh(fx, exitCode) {
+  const log = join(fx.base, 'gh-calls.txt');
+  writeScript(join(fx.toolsDir, 'gh'), `echo "$*" >> "${log}"\ncase "$1" in\n  auth) echo "github.com" ; echo "  Logged in to github.com account ana (keyring)"; exit ${exitCode} ;;\nesac\necho "gh version 2.40.1 (2026-01-01)"`);
+  return log;
+}
+
+test('gh-auth: a gh that is logged in is ok, and the question asked is exactly "auth status"', async () => {
+  const fx = setup();
+  const log = recordingGh(fx, 0);
+  const { report, code } = await doctor(fx, ['--only', 'gh-auth']);
+  assertCheck(report, 'gh-auth', 'ok', 'doctor.gh_auth.ok');
+  assert.equal(code, EXIT.OK);
+  assert.deepEqual(readFileSync(log, 'utf8').trim().split('\n'), ['auth status']);
+});
+
+test('gh-auth: a gh that is logged out fails, naming gh auth login and gh\'s own sentence, so the doctor no longer reads ready', async () => {
+  const fx = setup({ tools: { gh: 'loggedOut' } });
+  const { report, code } = await doctor(fx, ['--only', 'gh-present,gh-auth']);
+  assertCheck(report, 'gh-present', 'ok', 'doctor.gh_present.ok');
+  const c = assertCheck(report, 'gh-auth', 'fail', 'doctor.gh_auth.logged_out');
+  assert.equal(c.params.status, 1);
+  assert.equal(c.params.command, 'gh auth login');
+  assert.match(c.message, /gh auth login/);
+  assert.match(c.message, /You are not logged into any GitHub hosts/);
+  assert.equal(code, EXIT.FAILURE);
+});
+
+test('gh-auth: with the same gh, a full doctor run fails on gh-auth alone', async () => {
+  const fx = setup({ tools: { gh: 'loggedOut' } });
+  const { report, code } = await doctor(fx);
+  assert.deepEqual(report.checks.filter((c) => c.status === 'fail').map((c) => c.id), ['gh-auth']);
+  assert.equal(code, EXIT.FAILURE);
+});
+
+test('gh-auth: with no gh it is skipped, pointing to gh-present, and does not report the same absence twice', async () => {
+  const fx = setup({ tools: { gh: 'absent' } });
+  const { report, code } = await doctor(fx, ['--only', 'gh-present,gh-auth']);
+  assertCheck(report, 'gh-present', 'warn', 'doctor.gh_present.not_installed');
+  const c = assertCheck(report, 'gh-auth', 'ok', 'doctor.gh_auth.skipped');
+  assert.match(c.message, /gh-present/);
+  assert.equal(code, EXIT.OK);
+});
+
+test('gh-auth: a gh that exits 0 for auth status is logged in; that it is a real gh is gh-present\'s question, not asked twice', async () => {
+  const fx = setup({ tools: { gh: 'silent' } });
+  const { report } = await doctor(fx, ['--only', 'gh-present,gh-auth']);
+  assertCheck(report, 'gh-present', 'warn', 'doctor.gh_present.unrecognised');
+  assertCheck(report, 'gh-auth', 'ok', 'doctor.gh_auth.ok');
+});
+
+test('gh-auth: the Portuguese pack names gh auth login too', async () => {
+  const fx = setup({ tools: { gh: 'loggedOut' } });
+  const f = fakeIo();
+  setVaultLang(fx, 'pt-BR');
+  await runDoctor([fx.root, '--only', 'gh-auth'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
+  assert.match(f.stdout(), /falha\s+gh-auth\s+.*saiu com 1.*Entre com: gh auth login/);
+  assert.doesNotMatch(f.stdout(), /\{[a-z_]+\}/);
+});
+
+test('gh-auth is a known id for --only, listed where an unknown id is refused', async () => {
+  const fx = setup();
+  const r = await doctor(fx, ['--only', 'gh-auht']);
+  assert.equal(r.code, EXIT.USAGE);
+  assert.match(r.stderr, /gh-auth/);
+});
+
 // --- claude-present ----------------------------------------------------------
 
 test('claude-present: warns when the configured claude_bin is on no path', async () => {
@@ -1756,9 +1831,72 @@ test('the human report names every check, its status and message, and a summary 
 test('the Portuguese pack renders the report', async () => {
   const fx = setup();
   const f = fakeIo();
+  setVaultLang(fx, 'pt-BR');
   await runDoctor([fx.root, '--only', 'gitignore-node-modules'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
   assert.match(f.stdout(), /node_modules\//);
+  assert.match(f.stdout(), /0 aviso\(s\), 0 falha\(s\)/);
   assert.doesNotMatch(f.stdout(), /\{[a-z_]+\}/);
+});
+
+// The report follows the language of the vault it is about, as init,
+// validate, lint, the hooks and prompt do, and the language of the locale
+// only when there is no vault to ask or the vault names none it can read
+// (the stranger's m5, 01/10/2026).
+function setVaultLang(fx, lang) {
+  const file = join(fx.root, 'brain-kit.config.json');
+  const config = JSON.parse(readFileSync(file, 'utf8'));
+  config.lang = lang;
+  writeFileSync(file, JSON.stringify(config, null, 2));
+  return fx;
+}
+
+async function humanReport(fx, translator, argv = ['--only', 'gitignore-node-modules']) {
+  const f = fakeIo();
+  const code = await runDoctor([fx.root, ...argv], f.io, translator, { env: fx.env, cwd: fx.root });
+  return { code, out: f.stdout(), err: f.stderr() };
+}
+
+test('the report follows the vault\'s language, not the locale\'s: a Portuguese vault read from an English locale', async () => {
+  const fx = setVaultLang(setup(), 'pt-BR');
+  const { out } = await humanReport(fx, createTranslator('en'));
+  assert.match(out, /doctor: 1 ok, 0 aviso\(s\), 0 falha\(s\)/);
+  assert.doesNotMatch(out, /\bwarn\b|\bfail\b/);
+  const json = await doctor(fx, ['--only', 'gh-auth']);
+  assert.equal(json.report.checks[0].messageKey, 'doctor.gh_auth.ok');
+  assert.equal(json.report.checks[0].message, 'o gh está logado ("gh auth status" saiu com 0)');
+});
+
+test('the report follows the vault\'s language, not the locale\'s: an English vault read from a Portuguese locale', async () => {
+  const fx = setup();
+  const { out } = await humanReport(fx, createTranslator('pt-BR'));
+  assert.match(out, /doctor: 1 ok, 0 warn, 0 fail/);
+  assert.doesNotMatch(out, /aviso|falha/);
+});
+
+test('a vault whose configuration cannot be read, or names a language the kit has no pack for, is reported in the locale\'s language', async () => {
+  const broken = setup({ configText: '{ this is not json' });
+  let r = await humanReport(broken, createTranslator('pt-BR'), ['--only', 'config-valid']);
+  assert.match(r.out, /falha\s+config-valid/);
+  r = await humanReport(broken, createTranslator('en'), ['--only', 'config-valid']);
+  assert.match(r.out, /fail\s+config-valid/);
+  const odd = setVaultLang(setup(), 'fr');
+  r = await humanReport(odd, createTranslator('pt-BR'));
+  assert.match(r.out, /aviso\(s\)/);
+  r = await humanReport(odd, createTranslator('en'));
+  assert.match(r.out, /0 warn, 0 fail/);
+  const none = setup({ config: (() => { const c = baseConfig(); delete c.lang; return c; })() });
+  r = await humanReport(none, createTranslator('pt-BR'));
+  assert.match(r.out, /aviso\(s\)/);
+});
+
+test('outside any vault the locale decides, as before', async () => {
+  const fx = setup();
+  for (const [lang, expected] of [['pt-BR', /nenhum vault brain-kit encontrado/], ['en', /no brain-kit vault found/]]) {
+    const f = fakeIo();
+    const code = await runDoctor([], f.io, createTranslator(lang), { env: fx.env, cwd: fx.base });
+    assert.equal(code, EXIT.USAGE);
+    assert.match(f.stderr(), expected);
+  }
 });
 
 test('the real binary runs doctor --json against a vault in the hard path and exits with the report\'s code', () => {
@@ -2021,6 +2159,124 @@ test('include-projects: with transcripts in no curate source there is nothing to
   assertCheck(report, 'include-projects', 'ok', 'doctor.include_projects.not_used');
 });
 
+// A new vault's list names its own project, and Claude Code makes that
+// project's folder only when a session first runs in the vault. Until then
+// the folder is not there, which is no failure; any other missing name still
+// is one (the stranger's M4, 01/10/2026).
+function ownProject(fx) {
+  return claudeProjectName(realpathSync(fx.root));
+}
+
+// Rewrites the vault's list once its own project name is known (the vault's
+// path only exists after setup); `names` receives that name.
+function listProjects(fx, names) {
+  const file = join(fx.root, 'brain-kit.config.json');
+  const config = JSON.parse(readFileSync(file, 'utf8'));
+  config.sources.transcripts.include_projects = names(ownProject(fx));
+  writeFileSync(file, JSON.stringify(config, null, 2));
+  return fx;
+}
+
+const PROJECTS_DIR = (fx) => join(fx.home, '.claude', 'projects');
+
+test('include-projects: the empty list names the exact edit, the form of an entry, what "all" means, and the doc that explains it', async () => {
+  const fx = setup({ config: configWith((c) => { c.sources.transcripts.include_projects = []; }) });
+  const { report, code } = await doctor(fx, ['--only', 'include-projects']);
+  const c = assertCheck(report, 'include-projects', 'fail', 'doctor.include_projects.empty');
+  assert.equal(code, EXIT.FAILURE);
+  assert.equal(c.params.project, ownProject(fx), 'the entry that would make this vault read its own sessions');
+  assert.equal(c.params.doc, 'docs/scheduling.md');
+  assert.match(c.message, /sources\.transcripts\.include_projects/);
+  assert.ok(c.message.includes(`["${ownProject(fx)}"]`), c.message);
+  assert.match(c.message, /name of a directory under /);
+  assert.match(c.message, /"all" is accepted .* every project on this machine/);
+  assert.match(c.message, /docs\/scheduling\.md/);
+  assert.match(c.message, /Before the first round/);
+  // The doc is there, and has the section the message cites.
+  const doc = readFileSync(join(KIT_ROOT, 'docs', 'scheduling.md'), 'utf8');
+  assert.match(doc, /^## Before the first round$/m);
+  assert.match(doc, /every character that is not a letter or a digit/, 'the doc says how a project directory is named');
+});
+
+test('include-projects: the empty list in Portuguese carries the same edit, "all" and doc', async () => {
+  const fx = setup({ config: configWith((c) => { c.sources.transcripts.include_projects = []; }) });
+  const f = fakeIo();
+  setVaultLang(fx, 'pt-BR');
+  await runDoctor([fx.root, '--only', 'include-projects'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
+  assert.ok(f.stdout().includes(`["${ownProject(fx)}"]`), f.stdout());
+  assert.match(f.stdout(), /"all"/);
+  assert.match(f.stdout(), /docs\/scheduling\.md/);
+  assert.match(f.stdout(), /Before the first round/);
+  assert.doesNotMatch(f.stdout(), /\{[a-z_]+\}/);
+});
+
+test('include-projects: the vault\'s own project, with no session run in the vault yet, is ok with a note that it has no sessions yet', async () => {
+  const fx = listProjects(setup(), (own) => [own]);
+  assert.ok(!existsSync(join(PROJECTS_DIR(fx), ownProject(fx))));
+  const { report, code } = await doctor(fx, ['--only', 'include-projects']);
+  const c = assertCheck(report, 'include-projects', 'ok', 'doctor.include_projects.no_sessions_yet');
+  assert.deepEqual(c.params.projects, [ownProject(fx)]);
+  assert.match(c.message, /no sessions yet/);
+  assert.equal(code, EXIT.OK);
+});
+
+test('include-projects: on a machine where Claude Code never wrote a session, the default projects folder is not there either, and the vault\'s own project is still only waiting', async () => {
+  const fx = listProjects(setup({ curator: false }), (own) => [own]);
+  assert.ok(!existsSync(PROJECTS_DIR(fx)));
+  const { report } = await doctor(fx, ['--only', 'include-projects']);
+  assertCheck(report, 'include-projects', 'ok', 'doctor.include_projects.no_sessions_yet');
+});
+
+test('include-projects: a projects folder that was named on purpose (machine transcripts_dir), or moved by CLAUDE_CONFIG_DIR, and is not there still fails', async () => {
+  const named = listProjects(setup({ curator: false, machine: { transcripts_dir: '~/nowhere' } }), (own) => [own]);
+  assertCheck((await doctor(named, ['--only', 'include-projects'])).report, 'include-projects', 'fail', 'doctor.include_projects.root_missing');
+  const moved = listProjects(setup({ curator: false }), (own) => [own]);
+  const { report } = await doctor(moved, ['--only', 'include-projects'], { env: { ...moved.env, CLAUDE_CONFIG_DIR: join(moved.home, 'elsewhere') } });
+  assertCheck(report, 'include-projects', 'fail', 'doctor.include_projects.root_missing');
+});
+
+test('include-projects: only the vault\'s own project is excused; a missing name that is not it fails as before, alone or beside the vault\'s own', async () => {
+  let fx = listProjects(setup(), () => ['-home-ana-typo']);
+  assertCheck((await doctor(fx, ['--only', 'include-projects'])).report, 'include-projects', 'fail', 'doctor.include_projects.all_missing');
+  fx = listProjects(setup(), (own) => [own, '-home-ana-typo']);
+  const c = assertCheck((await doctor(fx, ['--only', 'include-projects'])).report, 'include-projects', 'fail', 'doctor.include_projects.all_missing');
+  assert.deepEqual(c.params.projects, [ownProject(fx), '-home-ana-typo'], 'none of the listed names exists, the vault\'s own one included, in the order listed');
+  const bare = listProjects(setup({ curator: false }), () => ['-home-ana-typo']);
+  assertCheck((await doctor(bare, ['--only', 'include-projects'])).report, 'include-projects', 'fail', 'doctor.include_projects.root_missing');
+});
+
+test('include-projects: the vault\'s own project waiting beside a project that is there is ok and names the one waiting; a typo beside them only warns, naming the typo alone', async () => {
+  let fx = listProjects(setup(), (own) => [own, '-home-ana-brain']);
+  let c = assertCheck((await doctor(fx, ['--only', 'include-projects'])).report, 'include-projects', 'ok', 'doctor.include_projects.some_waiting');
+  assert.deepEqual(c.params.projects, [ownProject(fx)]);
+  assert.equal(c.params.count, 1);
+  fx = listProjects(setup(), (own) => [own, '-home-ana-brain', '-home-ana-typo']);
+  c = assertCheck((await doctor(fx, ['--only', 'include-projects'])).report, 'include-projects', 'warn', 'doctor.include_projects.some_missing');
+  assert.deepEqual(c.params.projects, ['-home-ana-typo']);
+});
+
+test('include-projects: once a session has run in the vault its folder is found like any project, and one that cannot be read still fails', { skip: process.getuid?.() === 0 ? 'root reads any directory' : false }, async () => {
+  const fx = listProjects(setup(), (own) => [own]);
+  const own = join(PROJECTS_DIR(fx), ownProject(fx));
+  mkdirSync(own);
+  assertCheck((await doctor(fx, ['--only', 'include-projects'])).report, 'include-projects', 'ok', 'doctor.include_projects.ok');
+  chmodSync(own, 0o000);
+  try {
+    assertCheck((await doctor(fx, ['--only', 'include-projects'])).report, 'include-projects', 'fail', 'doctor.include_projects.unreadable');
+  } finally {
+    chmodSync(own, 0o700);
+  }
+});
+
+test('include-projects: the note is in Portuguese too, and says a round has nothing to read until a session has run', async () => {
+  const fx = listProjects(setup(), (own) => [own]);
+  const f = fakeIo();
+  setVaultLang(fx, 'pt-BR');
+  await runDoctor([fx.root, '--only', 'include-projects'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
+  assert.match(f.stdout(), /ok\s+include-projects\s+.*ainda sem sessões/);
+  assert.doesNotMatch(f.stdout(), /\{[a-z_]+\}/);
+});
+
 // Phase 5a, task 4: "all" is counted as the round resolves it, today: every
 // directory under the transcripts directory, minus those a pattern of
 // exclude_path_patterns leaves out whole; a plain file is no project.
@@ -2038,6 +2294,7 @@ test('include-projects: "all" passes saying how many projects it reads today, th
   mkdirSync(join(projects, '-home-ana-new'));
   assert.equal(assertCheck((await doctor(fx, ['--only', 'include-projects'])).report, 'include-projects', 'ok', 'doctor.include_projects.all').params.count, 3);
   const f = fakeIo();
+  setVaultLang(fx, 'pt-BR');
   await runDoctor([fx.root, '--only', 'include-projects'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
   assert.match(f.stdout(), /all \(3 projeto\(s\) hoje\) em /);
 });
@@ -2501,6 +2758,7 @@ test('config-valid: a cost cap of 0 or below fails naming curate.budget_usd, in 
     assert.equal(code, EXIT.FAILURE);
     for (const lang of ['en', 'pt-BR']) {
       const f = fakeIo();
+      setVaultLang(fx, lang);
       await runDoctor([fx.root, '--only', 'config-valid'], f.io, createTranslator(lang), { env: fx.env, cwd: fx.root });
       assert.ok(f.stdout().includes('$.curate.budget_usd: must be > 0'), `${lang}: ${f.stdout()}`);
       assert.ok(f.stdout().includes(lang === 'en' ? 'is invalid' : 'é inválido'), `${lang}: ${f.stdout()}`);
@@ -2526,6 +2784,7 @@ test('cost-cap: the Portuguese pack says each case, no cap for null, with nothin
   const file = join(fx.root, 'brain-kit.config.json');
   const said = async () => {
     const f = fakeIo();
+    setVaultLang(fx, 'pt-BR');
     await runDoctor([fx.root, '--only', 'cost-cap'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
     assert.doesNotMatch(f.stdout(), /\{[a-z_]+\}|\[object Object\]/);
     return f.stdout();
@@ -2620,6 +2879,7 @@ test('turn-cap and time-cap: curate.enabled false passes saying so; the Portugue
   const file = join(fx.root, 'brain-kit.config.json');
   const said = async () => {
     const f = fakeIo();
+    setVaultLang(fx, 'pt-BR');
     await runDoctor([fx.root, '--only', 'turn-cap,time-cap'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
     assert.doesNotMatch(f.stdout(), /\{[a-z_]+\}|\[object Object\]/);
     return f.stdout();
@@ -2812,6 +3072,7 @@ test('connectors: the old consent flag is superseded by team_authorization: a wa
   const r = await doctor(trusting, ['--only', 'connectors']);
   assert.equal(lineFor(r.report, 'calendar', 'doctor.connectors.team_authorization').status, 'fail', 'the old flag authorises nothing');
   const f = fakeIo();
+  setVaultLang(trusting, 'pt-BR');
   await runDoctor([trusting.root, '--only', 'connectors'], f.io, createTranslator('pt-BR'), { env: trusting.env, cwd: trusting.root });
   assert.match(f.stdout(), /sources\.calendar\.team_calendars_consent_noted não é mais lido: sources\.calendar\.team_authorization o substituiu/);
 });
@@ -2861,6 +3122,7 @@ test('connectors: team calendars without a recorded authorization fail, naming s
   const alone = setup({ config: connectorConfig() });
   assert.equal(connectorLines((await doctor(alone, ['--only', 'connectors'])).report).some((line) => line.messageKey === 'doctor.connectors.team_authorization'), false);
   const f = fakeIo();
+  setVaultLang(fx, 'pt-BR');
   await runDoctor([fx.root, '--only', 'connectors'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
   assert.match(f.stdout(), /Ele não está definido\. Enquanto sources\.calendar\.team_authorization em brain-kit\.config\.json não registrar isso, toda rodada deixa essas agendas de fora e continua lendo as do dono\./);
 });
@@ -2898,6 +3160,7 @@ test('connectors: every calendar listed in both lists is named: someone else\'s 
   const clean = setup({ config: connectorConfig() });
   assert.equal(connectorLines((await doctor(clean, ['--only', 'connectors'])).report).some((line) => line.messageKey.startsWith('doctor.connectors.listed_twice')), false);
   const f = fakeIo();
+  setVaultLang(mine, 'pt-BR');
   await runDoctor([mine.root, '--only', 'connectors'], f.io, createTranslator('pt-BR'), { env: mine.env, cwd: mine.root });
   assert.match(f.stdout(), /ana@example\.com está em sources\.calendar\.calendars e em sources\.calendar\.team_calendars; é a agenda do próprio dono/);
 });
@@ -2918,6 +3181,7 @@ test('connectors: the Portuguese pack renders every connector line with nothing 
   const at = new Date().toISOString();
   writeRoundWith(fx, { at, connectorStates: { calendar: { state: 'connected', at }, meeting_notes: { state: 'needs_auth', at } } });
   const f = fakeIo();
+  setVaultLang(fx, 'pt-BR');
   await runDoctor([fx.root, '--only', 'connectors'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
   assert.match(f.stdout(), /conectado na rodada de/);
   assert.match(f.stdout(), /needs_auth na rodada de/);

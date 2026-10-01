@@ -17,6 +17,24 @@ kit's own output. These are the fixes in the code and the messages (both languag
   the same sentence and the same exit code 1) and `gh auth status`, and refuses with exit 3
   when `gh` is absent or logged out, naming `gh auth login`. A remote that cannot be asked is
   said to be unverified, exit 1, never "Would propose". It still writes nothing.
+- `doctor` has a new check, `gh-auth` (after `gh-present`): it runs `gh auth status` and
+  fails, naming `gh auth login`, when `gh` is installed but holds no login. Until now a
+  logged-out `gh` read `ok` and the first `propose` ended exit 3 with the branch pushed and
+  no pull request. With no `gh` at all the check is skipped (and says so), because
+  `gh-present` already reports that. The id is accepted by `--only`.
+- `doctor`'s `include-projects` failure says how to fix it. The empty-list message now names
+  the key, the form of an entry (a directory under the transcripts folder, with this
+  vault's own entry written out), that `"all"` is accepted but means every project on the
+  machine, and the section of `docs/scheduling.md` that explains it ("Before the first
+  round", which now also says how Claude Code names a project's directory). A vault's own
+  project, whose folder Claude Code only makes when a session first runs there, is `ok`
+  with a note that it has no sessions yet, also when the default projects folder itself is
+  not there; every other failing case still fails, including a missing name that is not the
+  vault's own and a projects folder named by `transcripts_dir` or moved by
+  `CLAUDE_CONFIG_DIR`.
+- `doctor` writes its report in the vault's language, as `validate`, `lint`, the hooks and
+  `prompt` do: the `lang` of `brain-kit.config.json`. Outside a vault, with a configuration
+  it cannot read or with a language the kit has no pack for, the locale still decides.
 - `propose` in a repository with no remote of the name it reads the default branch from no
   longer says "the default branch is published to remote origin" as if something had set it
   up. It says the repository has no remote called that, and how to create one:

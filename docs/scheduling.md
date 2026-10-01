@@ -30,6 +30,15 @@ project directories (the names under `~/.claude/projects`) whose sessions feed t
 Nothing outside that list is ever offered to the model. An empty list makes every round
 refuse to run, and `doctor` says so.
 
+Claude Code names a project's directory after the folder its sessions ran in: the absolute
+path with every character that is not a letter or a digit replaced by a dash, one dash for
+each. The vault at `/home/ana/brain` is `-home-ana-brain`, one at `/home/ana/My Notes/brain`
+is `-home-ana-My-Notes-brain`, and an accented letter or a dot is a dash too. `brain-kit init`
+writes the vault's own project into the list for you. Claude Code makes that directory the
+first time a session runs in the vault, so until then `doctor` says the project has no
+sessions yet, which is no fault; a name that is not the vault's own and is not there is
+reported as missing.
+
 To feed the vault from every project instead, write the string `"all"` in place of the list:
 `"include_projects": "all"`. Nothing reads every project unless the configuration says so in
 those words, and it is your choice to make: every session on this machine becomes something
