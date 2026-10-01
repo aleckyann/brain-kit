@@ -675,6 +675,62 @@ test('--dry takes no lock, writes no state, runs no check and prints the window 
   assert.deepEqual(w.roundFiles(), []);
 });
 
+// A dry run that exits 0 over a round that would refuse promises what the
+// round will not do (the stranger's m7, 01/10/2026): it showed the raw token
+// no_projects and exited 0, and the real round exited 1. For the sources a
+// round cannot do without, --dry now says in words that the real round would
+// refuse, and why, with the real round's own sentence and exit code.
+const REFUSALS = [
+  ['a required source with no project listed', (c) => { c.sources.transcripts.include_projects = []; }, /No project is listed in sources\.transcripts\.include_projects, so no transcript was read/],
+  ['a required source whose only listed project is not there', (c) => { c.sources.transcripts.include_projects = ['-home-ana-gone']; }, /The project -home-ana-gone listed in sources\.transcripts\.include_projects has no directory under /],
+  ['a required source that is off', (c) => { c.curate.sources.required = ['transcripts', 'calendar']; }, /the required source calendar is not set up/],
+  ['a required source the kit has no module for', (c) => { c.curate.sources.required = ['transcripts', 'nosuch']; }, /nosuch/],
+];
+
+for (const [label, edit, why] of REFUSALS) {
+  test(`--dry says a real round would refuse over ${label}: the reason in words, the real round's exit code, nothing written`, () => {
+    const w = makeCurateWorld({ config: edit });
+    const before = readdirSync(w.state).sort();
+    const dry = w.curate(['--dry']);
+    assert.deepEqual(readdirSync(w.state).sort(), before, 'the dry run wrote nothing');
+    const real = w.curate();
+    assert.equal(real.status, EXIT.FAILURE, real.stderr);
+    assert.equal(dry.status, real.status, `${dry.stdout}\n${dry.stderr}`);
+    assert.match(dry.stderr, /Dry run: a real round would refuse to run now \(exit 1\)\./);
+    assert.match(dry.stderr, why);
+    assert.doesNotMatch(dry.stdout + dry.stderr, /\bno_projects\b|\bproject_missing\b/, 'no raw problem code');
+    assert.equal(dry.stdout.includes('Source transcripts: 1 file'), false);
+  });
+}
+
+test('--dry changes nothing in the state directory when it refuses, and takes no lock', () => {
+  const w = makeCurateWorld({ config: (c) => { c.sources.transcripts.include_projects = []; } });
+  const before = readdirSync(w.state).sort();
+  const dry = w.curate(['--dry']);
+  assert.equal(dry.status, EXIT.FAILURE);
+  assert.deepEqual(readdirSync(w.state).sort(), before);
+  assert.deepEqual(traces(w), NONE);
+  assert.deepEqual(w.roundFiles(), []);
+});
+
+test('--dry speaks the vault\'s language when it refuses', () => {
+  const w = makeCurateWorld({ config: (c) => { c.lang = 'pt-BR'; c.sources.transcripts.include_projects = []; } });
+  const dry = w.curate(['--dry']);
+  assert.equal(dry.status, EXIT.FAILURE);
+  assert.match(dry.stderr, /Simulação: uma rodada real se recusaria a rodar agora \(saída 1\)\./);
+  assert.match(dry.stderr, /Nenhum projeto está listado em sources\.transcripts\.include_projects/);
+  assert.doesNotMatch(dry.stdout + dry.stderr, /\bno_projects\b/);
+});
+
+test('--dry with the transcripts as a best-effort source and no project listed still exits 0 as the round does, but names the problem in words', () => {
+  const w = makeCurateWorld({ config: (c) => { c.curate.sources.required = []; c.curate.sources.best_effort = ['transcripts']; c.sources.transcripts.include_projects = []; } });
+  const dry = w.curate(['--dry']);
+  assert.equal(dry.status, EXIT.OK, dry.stderr);
+  assert.match(dry.stdout, /No project is listed in sources\.transcripts\.include_projects, so no transcript was read/);
+  assert.doesNotMatch(dry.stdout, /\bno_projects\b/);
+  assert.equal(w.curate().status, EXIT.OK, 'and the real round goes on');
+});
+
 test('--check runs the steps up to the model and stops: no model, no last-run, no mark', () => {
   const w = makeCurateWorld();
   const r = w.curate(['--check']);

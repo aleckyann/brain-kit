@@ -5,10 +5,14 @@
 //   brain-kit doctor [dir] [--json] [--only <id,...>] [--probe]
 //
 // Exit 0 when every check is ok or warn, 1 when any fails, 2 on a usage
-// error or when no vault is found. The report is written in the language
-// the CLI's own translator speaks (BRAIN_KIT_LANG), not the vault's: one
-// of the things this command reports is a configuration it could not
-// read, so the vault's declared language is not something it can rely on.
+// error or when no vault is found. The report is written in the vault's own
+// language, as `validate`, `lint`, the hooks and `prompt` write theirs: the
+// `lang` its configuration names, when that is a language the kit has a
+// pack for. What this command reports includes a configuration it could not
+// read, so when the file is missing, is not JSON, or names no supported
+// language, the report falls back to the language the CLI's own translator
+// speaks (BRAIN_KIT_LANG, then the locale), which is also the language of
+// every message before a vault is found: the usage errors and "no vault".
 //
 // `--only` with an id no check has is a usage error, never a run of the
 // checks that do exist minus the typo: a person who asked for one check
@@ -35,6 +39,7 @@ import { existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { EXIT } from '../exit-codes.mjs';
 import { CONFIG_FILENAME } from '../config.mjs';
+import { createTranslator, SUPPORTED_LANGS } from '../lang.mjs';
 import { findVaultRoot } from '../vault.mjs';
 import { CHECK_IDS, buildContext, exitCodeFor, probeConnectors, runChecks } from '../doctor/checks.mjs';
 
@@ -88,6 +93,15 @@ function statusLabel(t, status) {
   if (status === 'warn') return t('doctor.status_warn');
   if (status === 'fail') return t('doctor.status_fail');
   return String(status);
+}
+
+// The translator for the report: the vault's own language when its
+// configuration names a supported one, else `t`, the CLI's.
+function reportTranslator(ctx, t, io) {
+  const read = ctx.config();
+  const lang = read.ok && read.value !== null && typeof read.value === 'object' ? read.value.lang : undefined;
+  if (!SUPPORTED_LANGS.includes(lang)) return t;
+  return createTranslator(lang, { warn: (message) => io.stderr.write(`${message}\n`) });
 }
 
 export async function runDoctor(argv, io, t, deps = {}) {
@@ -150,7 +164,8 @@ export async function runDoctor(argv, io, t, deps = {}) {
     root, env, ...(deps.nodeVersion !== undefined ? { nodeVersion: deps.nodeVersion } : {}), ...(deps.now !== undefined ? { now: deps.now } : {}),
     ...(deps.probeTimeoutMs !== undefined ? { probeTimeoutMs: deps.probeTimeoutMs } : {}),
   });
-  if (parsed.probe) ctx.probe = await probeConnectors(ctx, { prompt: t('doctor.connectors.probe_prompt') });
+  const reportT = reportTranslator(ctx, t, io);
+  if (parsed.probe) ctx.probe = await probeConnectors(ctx, { prompt: reportT('doctor.connectors.probe_prompt') });
   const results = runChecks(ctx, ids);
   const exitCode = exitCodeFor(results);
   const counts = { ok: 0, warn: 0, fail: 0 };
@@ -161,21 +176,21 @@ export async function runDoctor(argv, io, t, deps = {}) {
 
   if (parsed.json) {
     const checks = results.map(({ id, status, messageKey, params }) => ({
-      id, status, messageKey, params, message: renderMessage(t, messageKey, params),
+      id, status, messageKey, params, message: renderMessage(reportT, messageKey, params),
     }));
     io.stdout.write(`${JSON.stringify({ version: JSON_VERSION, vault: root, checks, counts, exitCode })}\n`);
     return exitCode;
   }
 
   const width = Math.max(...results.map((r) => r.id.length));
-  const labels = results.map((r) => statusLabel(t, r.status));
+  const labels = results.map((r) => statusLabel(reportT, r.status));
   const labelWidth = Math.max(...labels.map((label) => label.length));
-  let text = `${t('doctor.heading', { vault: root })}\n`;
+  let text = `${reportT('doctor.heading', { vault: root })}\n`;
   results.forEach((result, index) => {
-    const line = renderMessage(t, result.messageKey, result.params);
+    const line = renderMessage(reportT, result.messageKey, result.params);
     text += `  ${labels[index].padEnd(labelWidth)}  ${result.id.padEnd(width)}  ${line}\n`;
   });
-  text += `${t('doctor.summary', { ok: counts.ok, warn: counts.warn, fail: counts.fail })}\n`;
+  text += `${reportT('doctor.summary', { ok: counts.ok, warn: counts.warn, fail: counts.fail })}\n`;
   io.stdout.write(text);
   return exitCode;
 }

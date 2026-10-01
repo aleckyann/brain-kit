@@ -15,7 +15,9 @@ import {
 } from '../init/adopt.mjs';
 import {
   ANSWER_KEYS, QUESTIONS, askInteractively, defaultAnswers, defaultLang, describeAnswer, invalidAnswer, readAnswersFile, resolveClaudeBin,
+  suggestedRepoName,
 } from '../init/answers.mjs';
+import { claudeProjectName } from '../sources/transcripts-claude-code.mjs';
 import {
   GITIGNORE_PATH, gitignoreText, inspectTarget, isInside, isoStamp, makeDirs, makeOwnTree, nearestExisting, recordMode, rollback, writeNew,
   writeVault,
@@ -414,7 +416,10 @@ export async function runInit(argv, io, t, {
       return EXIT.USAGE;
     }
   }
-  const config = completeDefaults(inferred?.config ?? readDefaults(answers.lang), answers, { kitVersion: kitVersion() });
+  // The vault's own project is the name Claude Code will give the sessions
+  // run in it, from its canonical path; null when that path is too long to be
+  // named as it is spelt, and then the list is left empty for doctor to say.
+  const config = completeDefaults(inferred?.config ?? readDefaults(answers.lang), answers, { kitVersion: kitVersion(), project: claudeProjectName(target) });
   const configErrors = validateConfig(config);
   if (configErrors.length > 0) {
     io.stderr.write(`${t('init.config_invalid', { errors: configErrors })}\n`);
@@ -587,6 +592,12 @@ export async function runInit(argv, io, t, {
     } else {
       io.stdout.write(`${t('init.committed')}\n`);
     }
+  }
+  // What leads from a vault on this machine to its first pull request, in
+  // order, for a person who has not been told: said, never run, and only over
+  // a vault that is checked and, when init committed, committed.
+  if (code === EXIT.OK && checked === EXIT.OK) {
+    io.stdout.write(`${t('init.next_steps', { dir: target, name: suggestedRepoName({ repo: answers.repo, dir: target }) })}\n`);
   }
   return worseExit(code, checked);
 }

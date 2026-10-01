@@ -51,6 +51,18 @@ function optional(value) {
   return value === undefined || value === '' ? null : value;
 }
 
+function isEmptyList(value) {
+  return Array.isArray(value) && value.length === 0;
+}
+
+// True when a round reads transcripts: curate is on and transcripts is among
+// its sources. The question doctor's include-projects check asks first.
+function transcriptsAreRead(config) {
+  if (config.curate?.enabled === false) return false;
+  const sources = [...(config.curate?.sources?.required ?? []), ...(config.curate?.sources?.best_effort ?? [])];
+  return sources.includes('transcripts');
+}
+
 function findPlaceholders(value, path, found) {
   if (typeof value === 'string') {
     for (const token of Object.values(PLACEHOLDERS)) {
@@ -68,7 +80,16 @@ function findPlaceholders(value, path, found) {
 // kit_version. `init` passes kitVersion() (src/version.mjs) so a new
 // vault records the kit that actually made it; it is a parameter rather
 // than a read of package.json here so this function stays pure.
-export function completeDefaults(defaults, answers, { kitVersion } = {}) {
+//
+// `options.project`, when it is a string, is the name Claude Code gives the
+// vault's own sessions (claudeProjectName in src/sources/
+// transcripts-claude-code.mjs). It becomes the one entry of
+// sources.transcripts.include_projects, so that a new vault reads the
+// sessions held in it and the first `doctor` has nothing to fail on. Only
+// into an empty list (a choice already there, a list or "all", is never
+// replaced), and only while a round reads transcripts at all: curate on, and
+// transcripts among its required or best-effort sources. Never "all".
+export function completeDefaults(defaults, answers, { kitVersion, project } = {}) {
   if (kitVersion !== undefined && typeof kitVersion !== 'string') {
     throw new TypeError('completeDefaults: kitVersion must be a string');
   }
@@ -103,6 +124,9 @@ export function completeDefaults(defaults, answers, { kitVersion } = {}) {
   // and turning it on moves the round into connector mode, which a person
   // chooses by setting sources.calendar.enabled and naming the calendars.
   config.briefing.calendar_id = email;
+  if (typeof project === 'string' && transcriptsAreRead(config) && isEmptyList(config.sources?.transcripts?.include_projects)) {
+    config.sources.transcripts.include_projects = [project];
+  }
 
   const left = findPlaceholders(config, '$', []);
   if (left.length > 0) {

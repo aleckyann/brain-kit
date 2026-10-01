@@ -38,11 +38,12 @@ import { LINT_RULES } from '../src/rules/lint.mjs';
 import { hasDotSegment, walkVault } from '../src/vault.mjs';
 import { splitFrontmatter, readMapping } from '../src/frontmatter.mjs';
 import { completeDefaults } from '../src/init/config.mjs';
-import { resolveClaudeBin, defaultAnswers, invalidAnswer } from '../src/init/answers.mjs';
+import { resolveClaudeBin, defaultAnswers, invalidAnswer, suggestedRepoName } from '../src/init/answers.mjs';
 import {
   MANAGED_SKELETON_FILES, HOOK_PATH, PR_BODY_PATH, CLAUDE_SETTINGS_PATH, isInside, stampGenerated, writeVault,
 } from '../src/init/skeleton.mjs';
 import { runInit, worseExit } from '../src/commands/init.mjs';
+import { claudeProjectName } from '../src/sources/transcripts-claude-code.mjs';
 import { MANIFEST_PATH, readManifest } from '../src/manifest.mjs';
 import { makeTempDir } from './helpers/tmp.mjs';
 
@@ -201,7 +202,7 @@ for (const lang of ['en', 'pt-BR']) {
     // kit's version, valid, and free of machine-only keys.
     const config = readConfig(vault);
     const defaults = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', lang, 'config.defaults.json'), 'utf8'));
-    assert.deepEqual(config, completeDefaults(defaults, ANSWERS[lang], { kitVersion: kitVersion() }));
+    assert.deepEqual(config, completeDefaults(defaults, ANSWERS[lang], { kitVersion: kitVersion(), project: claudeProjectName(realpathSync(vault)) }));
     assert.equal(config.kit_version, kitVersion());
     assert.deepEqual(validateConfig(config), []);
     assert.deepEqual(findMachineOnlyKeys(config), []);
@@ -277,6 +278,169 @@ for (const lang of ['en', 'pt-BR']) {
     assert.equal(git(vault, ['check-ignore', '-q', '.claude/worktrees/agent-1/x.md']).status, 0);
   });
 }
+
+// --- the vault's own project, and what to do next --------------------------------
+//
+// A new vault used to start with an empty include_projects, so the first
+// doctor failed and said nothing about how to fix it (the stranger's M4); and
+// init ended at "commit it" without the three commands that lead to a first
+// pull request (M1). Init writes the vault's own project, only that, only
+// when transcripts are read, and prints the commands without running them.
+
+function noGh(base) {
+  // A gh that would record being run: init must never run it.
+  const bin = join(base, 'ghbin');
+  mkdirSync(bin);
+  const log = join(base, 'gh-ran.txt');
+  writeFileSync(join(bin, 'gh'), `#!/bin/sh\necho "$*" >> "${log}"\nexit 0\n`, { mode: 0o755 });
+  return { bin, log };
+}
+
+for (const lang of ['en', 'pt-BR']) {
+  test(`${lang}: init lists the vault's own project in include_projects, never "all", and the first doctor does not fail on it`, () => {
+    const { base, vault, state } = freshTarget();
+    const file = writeAnswers(base, ANSWERS[lang]);
+    const home = join(base, 'home');
+    mkdirSync(home);
+    const env = testEnv(state, { HOME: home });
+    const r = brainKit(['init', vault, '--from-answers', file], { env });
+    assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
+    const config = readConfig(vault);
+    assert.deepEqual(config.sources.transcripts.include_projects, [claudeProjectName(realpathSync(vault))]);
+    assert.notEqual(config.sources.transcripts.include_projects, 'all');
+    assert.deepEqual(validateConfig(config), []);
+    // The doctor, on a machine where Claude Code never ran, fails nothing about the projects.
+    const d = brainKit(['doctor', vault, '--only', 'include-projects', '--json'], { env });
+    assert.equal(d.status, EXIT.OK, d.stdout + d.stderr);
+    const check = JSON.parse(d.stdout).checks[0];
+    assert.equal(check.status, 'ok');
+    assert.equal(check.messageKey, 'doctor.include_projects.no_sessions_yet');
+  });
+}
+
+test('init writes the vault\'s own project whichever way it is run, and the project is the vault\'s real path, a link or not', () => {
+  const { base, vault, state } = freshTarget();
+  const real = join(base, 'real parent');
+  mkdirSync(real);
+  symlinkSync(real, join(base, 'link'));
+  const target = join(base, 'link', 'my vault');
+  const r = brainKit(['init', target, '--yes'], { env: testEnv(state), stdio: ['ignore', 'pipe', 'pipe'] });
+  assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
+  const project = claudeProjectName(realpathSync(join(real, 'my vault')));
+  assert.deepEqual(readConfig(join(real, 'my vault')).sources.transcripts.include_projects, [project]);
+  assert.match(project, /-real-parent-my-vault$/);
+  void vault;
+});
+
+test('completeDefaults writes the project only into an empty list, and only while transcripts are read', () => {
+  const defaults = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', 'en', 'config.defaults.json'), 'utf8'));
+  const answers = ANSWERS.en;
+  const make = (edit, options = { project: '-home-ana-brain' }) => {
+    const copy = structuredClone(defaults);
+    edit(copy);
+    return completeDefaults(copy, answers, { kitVersion: kitVersion(), ...options }).sources.transcripts.include_projects;
+  };
+  assert.deepEqual(make(() => {}), ['-home-ana-brain']);
+  assert.deepEqual(make(() => {}, {}), [], 'no project given: the list is left as it is');
+  assert.deepEqual(make(() => {}, { project: null }), [], 'a path whose project cannot be named: left as it is');
+  // Transcripts off: among no curate source, or curate disabled.
+  assert.deepEqual(make((c) => { c.curate.sources.required = []; c.curate.sources.best_effort = ['calendar']; }), []);
+  assert.deepEqual(make((c) => { c.curate.enabled = false; }), []);
+  // On as a best-effort source is on.
+  assert.deepEqual(make((c) => { c.curate.sources.required = []; c.curate.sources.best_effort = ['transcripts']; }), ['-home-ana-brain']);
+  // A choice already there is never replaced: a list, and "all".
+  assert.deepEqual(make((c) => { c.sources.transcripts.include_projects = ['-home-ana-other']; }), ['-home-ana-other']);
+  assert.equal(make((c) => { c.sources.transcripts.include_projects = 'all'; }), 'all');
+  // And the defaults object is not touched.
+  assert.deepEqual(defaults.sources.transcripts.include_projects, []);
+});
+
+test('adopt lists the vault\'s own project too, and not when the inferred configuration reads no transcripts', async () => {
+  const lang = 'en';
+  const defaults = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', lang, 'config.defaults.json'), 'utf8'));
+  for (const [reads, edit] of [[true, () => {}], [false, (c) => { c.curate.sources.required = []; c.curate.sources.best_effort = []; }]]) {
+    const { base, vault, state } = freshTarget();
+    mkdirSync(vault);
+    writeFileSync(join(vault, 'index.md'), '# Index\n');
+    assert.equal(spawnSync('git', ['init', '-q', vault]).status, 0);
+    const file = writeAnswers(base, ANSWERS[lang]);
+    const infer = () => {
+      const config = structuredClone(defaults);
+      edit(config);
+      return { config, notes: [] };
+    };
+    const f = collector();
+    const e = collector();
+    const code = await runInit(['--adopt', vault, '--from-answers', file, '--no-hook'], { stdin: fakeTty([]), stdout: f, stderr: e }, createTranslator('en'), {
+      walkVault, env: testEnv(state), cwd: base, infer, checks: { validate: async () => EXIT.OK, lint: async () => EXIT.OK },
+    });
+    assert.equal(code, EXIT.OK, f.text + e.text);
+    assert.deepEqual(readConfig(vault).sources.transcripts.include_projects, reads ? [claudeProjectName(realpathSync(vault))] : []);
+    assert.doesNotMatch(f.text, /gh repo create/, 'an adopted vault has its own repository: no first-repository commands');
+  }
+});
+
+test('suggestedRepoName: the answered repository, else the vault\'s folder name folded to what GitHub accepts', () => {
+  assert.equal(suggestedRepoName({ repo: 'acme-notes/vault', dir: '/home/ana/brain' }), 'acme-notes/vault');
+  assert.equal(suggestedRepoName({ repo: null, dir: '/home/ana/brain' }), 'brain');
+  assert.equal(suggestedRepoName({ repo: null, dir: '/home/ana/Meu Cérebro 2' }), 'Meu-Cerebro-2');
+  assert.equal(suggestedRepoName({ repo: null, dir: '/home/ana/.brain.' }), 'brain');
+  assert.equal(suggestedRepoName({ repo: null, dir: '/home/ana/---' }), 'brain', 'nothing usable left: a fixed name');
+  assert.equal(suggestedRepoName({ repo: 'not a repo', dir: '/home/ana/vault' }), 'vault');
+});
+
+for (const lang of ['en', 'pt-BR']) {
+  test(`${lang}: init ends with the three commands that lead to a first pull request, in order, five lines, and runs none of them`, () => {
+    const { base, vault, state } = freshTarget();
+    const file = writeAnswers(base, { ...ANSWERS[lang], repo: null });
+    const { bin, log } = noGh(base);
+    const env = testEnv(state, { PATH: `${bin}${delimiter}${process.env.PATH}` });
+    const r = brainKit(['init', vault, '--from-answers', file], { env });
+    assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
+    const t = createTranslator(lang);
+    const block = t('init.next_steps', { dir: realpathSync(vault), name: 'vault' });
+    assert.equal(block.split('\n').length, 5, block);
+    assert.ok(r.stdout.endsWith(`${block}\n`), 'it is the last thing init says');
+    // The commit instruction comes first, then the block, and the commands are in the order a stranger needs.
+    assert.ok(r.stdout.indexOf(t('init.no_commit')) < r.stdout.indexOf(block));
+    const lines = block.split('\n');
+    assert.match(lines[1], /gh auth status.*gh auth login/);
+    assert.match(lines[2], /gh repo create vault --private --source \. --push/);
+    assert.match(lines[3], /claude/);
+    assert.equal(existsSync(log), false, 'init ran no gh');
+    assert.equal(git(vault, ['remote']).stdout, '', 'init set no remote');
+    assert.equal(r.stderr, '');
+  });
+}
+
+test('the next commands use the repository the person answered, and come after the commit when init made it', () => {
+  const { base, vault, state } = freshTarget();
+  const file = writeAnswers(base, { ...ANSWERS.en, commit: true });
+  const r = brainKit(['init', vault, '--from-answers', file], { env: testEnv(state) });
+  assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
+  const t = createTranslator('en');
+  assert.ok(r.stdout.indexOf(t('init.committed')) < r.stdout.indexOf('gh repo create acme-notes/vault --private --source . --push'), r.stdout);
+});
+
+test('the next commands are not printed when the checks found a problem, when the commit failed, or for an adopted vault', async () => {
+  // A vault the checks reject: init exits non-zero and says nothing about a repository.
+  const bad = freshTarget();
+  const file = writeAnswers(bad.base, ANSWERS.en);
+  const failing = await initDirect([bad.vault, '--from-answers', file], {
+    env: testEnv(bad.state), cwd: bad.cwd, checks: { validate: async () => EXIT.FAILURE, lint: async () => EXIT.OK },
+  });
+  assert.equal(failing.code, EXIT.FAILURE);
+  assert.doesNotMatch(failing.stdout, /gh repo create/);
+  // A first commit that fails.
+  const broke = freshTarget();
+  const globalConfig = join(broke.base, 'gitconfig');
+  writeFileSync(globalConfig, '[user]\n\tuseConfigOnly = true\n');
+  const env = testEnv(broke.state, { GIT_CONFIG_GLOBAL: globalConfig, GIT_CONFIG_NOSYSTEM: '1' });
+  for (const key of ['GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL', 'EMAIL']) delete env[key];
+  const r = brainKit(['init', broke.vault, '--from-answers', writeAnswers(broke.base, { ...ANSWERS.en, commit: true })], { env });
+  assert.equal(r.status, EXIT.DEGRADED);
+  assert.doesNotMatch(r.stdout, /gh repo create/);
+});
 
 // --- refusals: nothing written --------------------------------------------------
 

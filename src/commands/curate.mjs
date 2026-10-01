@@ -9,7 +9,10 @@
 //    1. find the vault and load machine.json; missing or invalid: exit 2
 //    2. --dry: print what the round would do and exit 0, taking no lock and
 //       writing no state; the configuration is read from the working tree
-//       as it is, unsynced, and the output says so (ruling R4)
+//       as it is, unsynced, and the output says so (ruling R4). When the
+//       round would refuse over a source it cannot do without (a required
+//       source unknown, off, or with nothing to read: exit 1), --dry says
+//       so in words, with the round's own sentence, and exits 1 too
 //    3. take the vault lock; held: exit 75 naming the holder
 //    4. wait for the network; none: exit 69 (did_not_wait is a note, R14)
 //    5. sync in process, under the round's lock; diverged: 75; failed: 1
@@ -514,6 +517,49 @@ export function problemText(problems) {
   return problems.map((p) => (p.detail ? `${p.code} (${p.detail})` : p.code)).join(', ');
 }
 
+// What a source's problems read as: the plan's own sentences in the vault's
+// language when it has them (the transcripts source's), else the codes.
+function problemWords(plan) {
+  return Array.isArray(plan.problemLines) && plan.problemLines.length > 0 ? plan.problemLines.join(' ') : problemText(plan.problems);
+}
+
+// The three things a round refuses over, for a source it cannot do without,
+// in one place: the round says them and exits with the code
+// (REQUIRED_SOURCE_EXIT), and `--dry` says the same sentences and exits with
+// the same code. `problems` is what names the problems: the round writes the
+// codes (its log and last-run keep them), --dry writes them in words.
+const REQUIRED_SOURCE_EXIT = EXIT.FAILURE;
+
+function unknownRequiredText(t, ids) {
+  return t('curate.source_unknown', { sources: ids.join(', '), setting: `${CONFIG_FILENAME} curate.sources.required` });
+}
+
+function offRequiredText(t, source, problems) {
+  return t('curate.source_misconfigured', { source: source.id, setting: `${CONFIG_FILENAME} sources.${source.id}`, problems: problemText(problems) || '-' });
+}
+
+function misconfiguredText(t, source, plan, problems) {
+  const codes = plan.problems.filter((p) => ['no_projects', 'root_missing', 'root_unreadable', 'project_missing'].includes(p.code));
+  const setting = settingFor(codes[0]?.code ?? 'no_projects');
+  return t('curate.source_misconfigured', { source: source.id, setting, problems });
+}
+
+// What a round would refuse over, in its own order and with its own
+// sentences: { text } or null. The round does not call this (it refuses
+// where it stands, after the steps before it that log and write); --dry
+// does, and so cannot say "ok" over a round that stops.
+function requiredRefusal(t, { config, now, tz, required, unknownRequired, off, offered, plans }) {
+  if (unknownRequired.length > 0) return { text: unknownRequiredText(t, unknownRequired) };
+  for (const source of off) {
+    if (required.includes(source.id)) return { text: offRequiredText(t, source, offProblems(source, config, now, tz)) };
+  }
+  for (const source of offered) {
+    const plan = plans[source.id];
+    if (plan.misconfigured && required.includes(source.id)) return { text: misconfiguredText(t, source, plan, problemWords(plan)) };
+  }
+  return null;
+}
+
 // The parameters block. Each source the round offers gets its own section:
 // its days when they are not the round's, a line about the connector it is
 // read through, its plan's prompt block, and the limits it may reach. A
@@ -703,7 +749,7 @@ function sourceLines(t, { active, plans, days, unavailable, config, blocks }) {
     if (source.kind === 'local') lines.push(t('curate.check_source', { source: source.id, kept: keptOf(plan) ?? 0 }));
     else lines.push(t('curate.check_connector_source', { source: source.id, connector: source.serverSpec(config).serverDisplayName, days: own.map(shown).join(', ') }));
     if (blocks) lines.push(plan.promptBlock);
-    else if ((plan.problems ?? []).length > 0) lines.push(t('curate.source_warning', { source: source.id, problems: problemText(plan.problems) }));
+    else if ((plan.problems ?? []).length > 0) lines.push(t('curate.source_warning', { source: source.id, problems: problemWords(plan) }));
   }
   return lines;
 }
@@ -1185,8 +1231,7 @@ export async function runCurate(argv, io, t, deps = {}) {
     // 11. The sources.
     onStep('sources');
     if (unknownRequired.length > 0) {
-      const setting = `${CONFIG_FILENAME} curate.sources.required`;
-      return fail(EXIT.FAILURE, 'source_unknown', t('curate.source_unknown', { sources: unknownRequired.join(', '), setting }));
+      return fail(REQUIRED_SOURCE_EXIT, 'source_unknown', unknownRequiredText(t, unknownRequired));
     }
     for (const id of unknownBestEffort) {
       const text = t('curate.source_skipped', { source: id });
@@ -1201,7 +1246,7 @@ export async function runCurate(argv, io, t, deps = {}) {
       const problems = offProblems(source, config, now, tz);
       const setting = `${CONFIG_FILENAME} sources.${source.id}`;
       run.notConfigured.push({ source: source.id, problems: problems.map((p) => (p.detail ? `${p.code} (${p.detail})` : p.code)) });
-      if (required.includes(source.id)) return fail(EXIT.FAILURE, 'source_misconfigured', t('curate.source_misconfigured', { source: source.id, setting, problems: problemText(problems) || '-' }));
+      if (required.includes(source.id)) return fail(REQUIRED_SOURCE_EXIT, 'source_misconfigured', offRequiredText(t, source, problems));
       if (offOnPurpose(source, config, problems)) continue;
       const text = t('curate.source_off', { source: source.id, problems: problemText(problems) || '-', setting });
       run.warnings.push(text);
@@ -1219,9 +1264,7 @@ export async function runCurate(argv, io, t, deps = {}) {
       const plan = plans[source.id];
       run.sources[source.id] = sourceEntry(source, plan);
       if (plan.misconfigured && required.includes(source.id)) {
-        const codes = plan.problems.filter((p) => ['no_projects', 'root_missing', 'root_unreadable', 'project_missing'].includes(p.code));
-        const setting = settingFor(codes[0]?.code ?? 'no_projects');
-        return fail(EXIT.FAILURE, 'source_misconfigured', t('curate.source_misconfigured', { source: source.id, setting, problems: problemText(plan.problems) }));
+        return fail(REQUIRED_SOURCE_EXIT, 'source_misconfigured', misconfiguredText(t, source, plan, problemText(plan.problems)));
       }
       if (plan.problems.length > 0) {
         const text = t('curate.source_warning', { source: source.id, problems: problemText(plan.problems) });
@@ -1893,7 +1936,7 @@ function dryRun({ root, stateDir, machine, claudeBin, io, env, now, keepStream }
     return EXIT.USAGE;
   }
   const tz = config.vault?.timezone;
-  const { active, off, unknownRequired, unknownBestEffort } = sourcesOf(config);
+  const { active, off, required, unknownRequired, unknownBestEffort } = sourcesOf(config);
   let computed;
   try {
     computed = computeWindow(stateDir, active, now, tz);
@@ -1921,12 +1964,21 @@ function dryRun({ root, stateDir, machine, claudeBin, io, env, now, keepStream }
     return EXIT.OK;
   }
   io.stdout.write(`${t('curate.check_window', { days: window.days.map(shown).join(', '), from: window.from.toISOString(), to: window.to.toISOString() })}\n`);
-  for (const id of [...unknownRequired, ...unknownBestEffort]) io.stdout.write(`${t('curate.source_skipped', { source: id })}\n`);
+  // An unknown required source is a refusal, said below; an unknown best-effort one is only skipped.
+  for (const id of unknownBestEffort) io.stdout.write(`${t('curate.source_skipped', { source: id })}\n`);
   for (const source of off) io.stdout.write(`${t('curate.check_source_off', { source: source.id, problems: problemText(offProblems(source, config, now, tz)) || '-' })}\n`);
   const offered = active.filter((source) => days[source.id].length > 0);
   // The digests are built in memory to name them as the round would; a dry
   // run writes none.
   const plans = collectPlans(offered, days, config, machine, env, now, tz, digestDirFor(stateDir, now, keepStream));
+  // A round that would refuse over a source it cannot do without says so
+  // here, with its own sentence and exit code, instead of previewing a round
+  // that will not happen.
+  const refusal = requiredRefusal(t, { config, now, tz, required, unknownRequired, off, offered, plans });
+  if (refusal !== null) {
+    io.stderr.write(`${t('curate.dry_would_refuse', { code: REQUIRED_SOURCE_EXIT, reason: refusal.text })}\n`);
+    return REQUIRED_SOURCE_EXIT;
+  }
   for (const source of offered) {
     const over = plans[source.id].overCap;
     if (over) io.stdout.write(`${t('curate.dry_cap_exceeded', { day: shown(over.day), count: over.files, cap: plans[source.id].cap, setting: `${CONFIG_FILENAME} curate.caps.${source.id}` })}\n`);

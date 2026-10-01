@@ -62,6 +62,69 @@
   (and that the two say the same), the sentences added to the two skills in both languages,
   the manifest without options, and the packaged-docs guard. The grading criteria of the
   `setup` eval follow the skill's new order.
+### What the kit tells a first-time user is true (01/10/2026)
+
+A stranger followed only the README in a clean room and was misled in several places by the
+kit's own output. These are the fixes in the code and the messages (both language packs).
+
+- `propose --dry` no longer promises what the real run refuses. Before it said "Would
+  propose" and exited 0 over a remote that publishes no branch yet (the usual state right
+  after `gh repo create` without `--push`), a remote that publishes other branches but not
+  the base, a `gh` that is not installed and a `gh` that is not logged in; the real run then
+  stopped (exit 1 on the first two) or published its branch and ended without a pull request
+  (exit 3 on the last two). Now the dry run asks the remote what it publishes (a read-only
+  `git ls-remote`, judged by the same function as the real run's fetch, so it refuses with
+  the same sentence and the same exit code 1) and `gh auth status`, and refuses with exit 3
+  when `gh` is absent or logged out, naming `gh auth login`. A remote that cannot be asked is
+  said to be unverified, exit 1, never "Would propose". It also names the branch the real run
+  would make (with `-2` when a push url already holds the stamped one). It still writes
+  nothing.
+- `doctor` has a new check, `gh-auth` (after `gh-present`): it runs `gh auth status` and
+  fails, naming `gh auth login`, when `gh` is installed but holds no login. Until now a
+  logged-out `gh` read `ok` and the first `propose` ended exit 3 with the branch pushed and
+  no pull request. With no `gh` at all the check is skipped (and says so), because
+  `gh-present` already reports that. The id is accepted by `--only`.
+- `doctor`'s `include-projects` failure says how to fix it. The empty-list message now names
+  the key, the form of an entry (a directory under the transcripts folder, with this
+  vault's own entry written out), that `"all"` is accepted but means every project on the
+  machine, and the section of `docs/scheduling.md` that explains it ("Before the first
+  round", which now also says how Claude Code names a project's directory). A vault's own
+  project, whose folder Claude Code only makes when a session first runs there, is `ok`
+  with a note that it has no sessions yet, also when the default projects folder itself is
+  not there; every other failing case still fails, including a missing name that is not the
+  vault's own and a projects folder named by `transcripts_dir` or moved by
+  `CLAUDE_CONFIG_DIR`.
+- `doctor` writes its report in the vault's language, as `validate`, `lint`, the hooks and
+  `prompt` do: the `lang` of `brain-kit.config.json`. Outside a vault, with a configuration
+  it cannot read or with a language the kit has no pack for, the locale still decides.
+- `init` writes `sources.transcripts.include_projects` with the one project that is the new
+  vault itself (the name Claude Code gives the directory of the vault's own path, from one
+  function, `claudeProjectName`), so the first `doctor` has nothing to fail on. Only into an
+  empty list, only while a round reads transcripts, never `"all"`, and nothing for a path
+  too long to be named as it is spelt. `init --adopt` does the same.
+- `init` ends with the commands that lead to a first pull request, in order and in five
+  lines, and runs none of them: `gh auth status` (then `gh auth login` if it says no),
+  `gh repo create <name> --private --source . --push` (with the repository answered, or the
+  vault's folder name, as the default name) and `claude` in the vault. Printed only over a
+  vault whose checks passed and, when init committed, whose commit was made; not for an
+  adopted vault, which has a repository of its own.
+- Outside a vault, `doctor`, `validate`, `lint`, `propose` and `curate` end their "no vault
+  found" message with "To create one: brain-kit init <dir>", and `curate` no longer says it
+  looked for the configuration "or" a root index when both are required.
+- `schedule install --job briefing --dry` is accepted (the usage line lists `--dry`) and says
+  that for the briefing job nothing is written anyway; the run is the normal run of that job,
+  exit 3 included. `status` still takes no `--dry`.
+- `curate --dry` no longer exits 0 over a round that would refuse. For a required source that
+  is unknown, off, or has nothing to read (no project listed, none of the listed ones there),
+  it says "a real round would refuse to run now (exit 1)" with the round's own sentence, the
+  problem in words instead of the code `no_projects`, and exits 1. The same words replace the
+  codes in the warning it prints for a source that is only best effort. The other refusals of
+  a round (an over-cap first day, a file it cannot read: exit 4) are still previewed with exit
+  0, as before.
+- `propose` in a repository with no remote of the name it reads the default branch from no
+  longer says "the default branch is published to remote origin" as if something had set it
+  up. It says the repository has no remote called that, and how to create one:
+  `gh repo create <name> --private --source . --push`.
 
 ## 0.0.7 (tagged `v0.0.7`, not on npm)
 

@@ -36,6 +36,7 @@ import { accessSync, constants as fsConstants, lstatSync, readdirSync, readFileS
 import { homedir } from 'node:os';
 import { basename, delimiter, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { run } from '../exec.mjs';
+import { AUTH_STATUS_ARGS, authVerdict, loginCommand } from '../gh.mjs';
 import { EXIT } from '../exit-codes.mjs';
 import { decodeBytes } from '../io.mjs';
 import { CONFIG_FILENAME, ConfigError, MACHINE_FILENAME, canonicalPathMatches, findMachineOnlyKeys, loadConfig, validateConfig, validateMachine } from '../config.mjs';
@@ -69,7 +70,7 @@ import { installedRoundPath, readBriefingTask, ROUND_COMMANDS, roundPath, runSch
 // asks: its reading of briefing.blocks and of the question queue.
 import { blockProblemLine, briefingSetting, validateBriefingBlocks } from '../briefing/blocks.mjs';
 import { queueFile, readQueue } from '../briefing/questions.mjs';
-import { ALL_PROJECTS, allProjects, exclusionPatterns, projectEntryKind, signatureProblems } from '../sources/transcripts-claude-code.mjs';
+import { ALL_PROJECTS, allProjects, claudeProjectName, exclusionPatterns, projectEntryKind, signatureProblems } from '../sources/transcripts-claude-code.mjs';
 import { authorizationWhy, calendarsListedTwice } from '../sources/calendar-google.mjs';
 // The same kind of cycle with curate.mjs, which imports expandHome from
 // here: the connectors check asks the round's own choice of launch mode
@@ -701,6 +702,25 @@ function ghPresent(ctx) {
   return { id, status: 'ok', messageKey: 'doctor.gh_present.ok', params: { version: match[1] } };
 }
 
+// gh-present says a gh is there; only `gh auth status` says it can open a
+// pull request, which is all propose uses it for. A gh with no login used to
+// read `ok` here and then end the first propose with exit 3. A gh that
+// exits 0 is trusted for the login: that it is a real gh is gh-present's
+// question (it reads the shape of `gh --version`), and this one is not asked
+// twice. With no gh at all the check is skipped (`ok`, saying so), because
+// gh-present already reports that absence and a second finding for one cause
+// would count it twice.
+function ghAuth(ctx) {
+  const id = 'gh-auth';
+  const skipped = { id, status: 'ok', messageKey: 'doctor.gh_auth.skipped', params: {} };
+  const bin = findExecutable('gh', pathDirs(ctx.env));
+  if (!bin) return skipped;
+  const verdict = authVerdict(probe(ctx, bin, [...AUTH_STATUS_ARGS]));
+  if (verdict.state === 'absent') return skipped;
+  if (verdict.state === 'logged_in') return { id, status: 'ok', messageKey: 'doctor.gh_auth.ok', params: {} };
+  return { id, status: 'fail', messageKey: 'doctor.gh_auth.logged_out', params: { status: verdict.status, detail: verdict.detail, command: loginCommand('gh') } };
+}
+
 // The machine's path_extra comes first, because that is what it is for:
 // the directories a scheduled run adds to PATH so it finds what a login
 // shell would. A value with a slash in it is a path, resolved from the
@@ -826,6 +846,8 @@ const SOFT_EXITS = Object.freeze([EXIT.DEGRADED, EXIT.UNAVAILABLE, EXIT.TEMPFAIL
 const NO_MODEL_REASONS = Object.freeze(['up_to_date', 'nothing_to_curate']);
 const DEFAULT_TRANSCRIPTS_DIR = '~/.claude/projects';
 const INCLUDE_PROJECTS_KEY = 'sources.transcripts.include_projects';
+// Where the documentation of that key is, and the section that explains it.
+const INCLUDE_PROJECTS_DOC = 'docs/scheduling.md';
 const TEAM_AUTHORIZATION_KEY = 'sources.calendar.team_authorization';
 // The calendar setting team_authorization replaced (ruling R-A5); no round
 // reads it any more.
@@ -999,6 +1021,18 @@ function claudeIsolationFlags(ctx) {
 // 4; one that is missing is a warning in the round, and here. "all" is
 // counted as the source resolves it (allProjects), now: the next round
 // resolves it again, so the count is today's.
+//
+// One missing project is not a fault: the vault's own (the one `init` lists
+// for a new vault). Claude Code makes a project's folder when a session first
+// runs there, so until a session has run in the vault the folder is not
+// there, and the check says so and is `ok` (a round has nothing to read until
+// then). Nothing else is excused: a missing name that is not the vault's own
+// is a typo as far as anyone can tell and fails or warns as ever, and so does
+// a projects folder that was named on purpose (machine.json's
+// transcripts_dir) or moved (CLAUDE_CONFIG_DIR) and is not there. Only when
+// the default folder itself is absent, which on a machine where Claude Code
+// never ran a session it is, and the vault's own project is all that is
+// listed, is that absence excused too.
 function includeProjects(ctx) {
   const id = 'include-projects';
   const inputs = curateInputs(ctx, id);
@@ -1015,11 +1049,20 @@ function includeProjects(ctx) {
   const all = listed === ALL_PROJECTS;
   let projects = [...new Set(Array.isArray(listed) ? listed.filter((p) => typeof p === 'string' && p !== '') : [])];
   const configured = machineObject(ctx)?.transcripts_dir;
-  const root = expandHome(typeof configured === 'string' && configured !== '' ? configured : DEFAULT_TRANSCRIPTS_DIR, ctx.env);
+  const named = typeof configured === 'string' && configured !== '';
+  const root = expandHome(named ? configured : DEFAULT_TRANSCRIPTS_DIR, ctx.env);
+  const own = vaultsOwnProject(ctx);
   if (!all && projects.length === 0) {
-    return { id, status: 'fail', messageKey: 'doctor.include_projects.empty', params: { file, key, root } };
+    return { id, status: 'fail', messageKey: 'doctor.include_projects.empty', params: { file, key, root, project: own ?? '<project>', doc: INCLUDE_PROJECTS_DOC } };
   }
+  const waitingOnly = !all && own !== null && projects.every((project) => project === own);
   if (!isDirectory(root)) {
+    // Nothing has ever run under the default folder, and the only project
+    // listed is the one that is waiting for its first session.
+    const moved = typeof ctx.env.CLAUDE_CONFIG_DIR === 'string' && ctx.env.CLAUDE_CONFIG_DIR !== '';
+    if (waitingOnly && !named && !moved && !somethingAt(root)) {
+      return { id, status: 'ok', messageKey: 'doctor.include_projects.no_sessions_yet', params: { projects, root } };
+    }
     return { id, status: 'fail', messageKey: 'doctor.include_projects.root_missing', params: { root, command: SET_TRANSCRIPTS_COMMAND } };
   }
   let names;
@@ -1058,14 +1101,46 @@ function includeProjects(ctx) {
   if (unreadable.length > 0) {
     return { id, status: 'fail', messageKey: 'doctor.include_projects.unreadable', params: { projects: unreadable, root } };
   }
-  if (missing.length === projects.length) {
-    return { id, status: 'fail', messageKey: 'doctor.include_projects.all_missing', params: { projects: missing, root, file, key } };
+  // The vault's own project, absent, waits for its first session; it is not
+  // lost. Only a name that is not it is.
+  const waiting = missing.filter((project) => project === own && !all);
+  const lost = missing.filter((project) => !waiting.includes(project));
+  const found = projects.length - missing.length;
+  if (lost.length > 0 && found === 0) {
+    return { id, status: 'fail', messageKey: 'doctor.include_projects.all_missing', params: { projects: missing, root, file, key, doc: INCLUDE_PROJECTS_DOC } };
   }
-  if (missing.length > 0) {
-    return { id, status: 'warn', messageKey: 'doctor.include_projects.some_missing', params: { projects: missing, root, file, key } };
+  if (lost.length > 0) {
+    return { id, status: 'warn', messageKey: 'doctor.include_projects.some_missing', params: { projects: lost, root, file, key } };
+  }
+  if (waiting.length > 0 && found === 0) {
+    return { id, status: 'ok', messageKey: 'doctor.include_projects.no_sessions_yet', params: { projects: waiting, root } };
+  }
+  if (waiting.length > 0) {
+    return { id, status: 'ok', messageKey: 'doctor.include_projects.some_waiting', params: { count: found, projects: waiting, root } };
   }
   if (all) return { id, status: 'ok', messageKey: 'doctor.include_projects.all', params: { count: projects.length, root } };
   return { id, status: 'ok', messageKey: 'doctor.include_projects.ok', params: { count: projects.length, root } };
+}
+
+// The name Claude Code gives the vault's own project, or null when it cannot
+// be told (the vault's real path is unreadable, or too long to be named as
+// the path spells it).
+function vaultsOwnProject(ctx) {
+  try {
+    return claudeProjectName(ctx.realRoot());
+  } catch {
+    return null;
+  }
+}
+
+// True when anything at all is at `path`, a link that leads nowhere included.
+function somethingAt(path) {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // Per source: the last day a round swept, and how far behind yesterday it
@@ -1815,6 +1890,7 @@ export const CHECKS = new Map([
   ['legacy-lock', legacyLockCheck],
   ['kit-version', kitVersionCheck],
   ['gh-present', ghPresent],
+  ['gh-auth', ghAuth],
   ['claude-present', claudePresent],
   ['gitignore-node-modules', gitignoreNodeModules],
   ['privacy-keywords', privacyKeywords],

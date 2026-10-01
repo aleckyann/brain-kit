@@ -1,5 +1,5 @@
 import { accessSync, constants, readFileSync, statSync } from 'node:fs';
-import { delimiter, isAbsolute, join } from 'node:path';
+import { basename, delimiter, isAbsolute, join } from 'node:path';
 import { userInfo } from 'node:os';
 import { createInterface } from 'node:readline';
 import { SUPPORTED_LANGS, resolveLang } from '../lang.mjs';
@@ -157,6 +157,21 @@ export function resolveClaudeBin(env) {
     }
   }
   return 'claude';
+}
+
+// The name init suggests to `gh repo create`: the repository the person
+// answered (owner/name), else the vault's folder name folded to the
+// characters GitHub accepts in a repository name (accents dropped, anything
+// else a dash, dashes and dots trimmed off the ends), else a fixed "brain"
+// when nothing usable is left. Only ever printed, never run.
+export function suggestedRepoName({ repo, dir }) {
+  if (typeof repo === 'string' && REPO.test(repo)) return repo;
+  const folded = basename(dir)
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^[-.]+|[-.]+$/g, '');
+  return folded === '' ? 'brain' : folded;
 }
 
 // yes / no: the English words always, and the chosen language's own from

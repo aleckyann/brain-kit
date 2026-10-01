@@ -11,7 +11,10 @@
 //     reports a base other than the one requested); `otherhead` (`pr view`
 //     reports another head branch); `viewfail` (`pr view` exits 1);
 //     `killparent` (`pr create` kills the process that called it). `pr view`
-//     answers only for a head a successful `pr create` named. Each call also
+//     answers only for a head a successful `pr create` named. `auth status`
+//     (what the dry run asks, offline) answers as logged in unless
+//     FAKE_GH_AUTH is `out`, when it exits 1 with what gh prints for that.
+//     Each call also
 //     records its working directory and the git and prompt variables it saw. `absentPath()` is a PATH with the real git and no gh at
 //     all, so a gh installed on this machine can never answer a test.
 //   - `fingerprint(dir)`: HEAD, every reference in every namespace (but
@@ -41,6 +44,7 @@ for (const name of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_TERMINAL_
 const entry = { args, cwd: process.cwd(), env };
 const isCreate = args[0] === 'pr' && args[1] === 'create';
 const isView = args[0] === 'pr' && args[1] === 'view';
+const isAuth = args[0] === 'auth' && args[1] === 'status';
 if (isCreate) {
   const at = args.indexOf('--body-file');
   entry.body = at === -1 ? null : fs.readFileSync(args[at + 1], 'utf8');
@@ -48,6 +52,11 @@ if (isCreate) {
 }
 const before = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\\n').filter(Boolean).map((line) => JSON.parse(line)) : [];
 fs.appendFileSync(log, JSON.stringify(entry) + '\\n');
+if (isAuth) {
+  if (process.env.FAKE_GH_AUTH === 'out') { process.stderr.write('You are not logged into any GitHub hosts. To log in, run: gh auth login\\n'); process.exit(1); }
+  process.stdout.write('github.com\\n  Logged in to github.com account ana (keyring)\\n');
+  process.exit(0);
+}
 if (isCreate) {
   if (mode === 'killparent') { process.kill(process.ppid, 'SIGKILL'); process.exit(1); }
   if (mode === 'fail') { process.stderr.write('HTTP 422: Validation Failed (createPullRequest)\\n'); process.exit(1); }
@@ -83,7 +92,7 @@ export function makeProposeWorld(options = {}) {
   const gitOnly = join(world.base, 'gitonly');
   mkdirSync(gitOnly);
   symlinkSync(realGit, join(gitOnly, 'git'));
-  const env = { ...world.env, PATH: `${bin}:${world.env.PATH}`, FAKE_GH_MODE: 'ok' };
+  const env = { ...world.env, PATH: `${bin}:${world.env.PATH}`, FAKE_GH_MODE: 'ok', FAKE_GH_AUTH: 'in' };
   // The temporary directory propose is handed, so a test can see exactly
   // what it leaves behind.
   const tmp = join(world.base, 'tmp');

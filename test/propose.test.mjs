@@ -492,7 +492,7 @@ test('a reclaim that died and left its marker: exit 1 naming the marker', async 
   assert.deepEqual(world.ghCalls(), []);
 });
 
-test('--dry changes no reference (remote-tracking ones included), no file and no branch, asks gh nothing, and prints the plan', async () => {
+test('--dry changes no reference (remote-tracking ones included), no file and no branch, asks gh only whether it is logged in, and prints the plan', async () => {
   const world = makeProposeWorld();
   world.publishNotes(1);
   world.write('notes/a.md', note('A'));
@@ -500,10 +500,130 @@ test('--dry changes no reference (remote-tracking ones included), no file and no
   const refs = world.remoteRefs();
   const run = await propose(world, ['Add A', '--only', 'notes/a.md', '--dry']);
   assert.equal(run.code, EXIT.OK, run.stderr);
-  assert.equal(run.stdout, line('propose.dry_run', { files: ['notes/a.md'], urls: [world.remote], base: 'main', branch: BRANCH, title: 'curate: Add A', origin: 'main' }));
+  assert.equal(run.stdout, line('propose.dry_run', { files: ['notes/a.md'], urls: [world.remote], base: 'main', branch: BRANCH, title: 'curate: Add A', origin: 'main', remote: 'origin', program: 'gh' }));
   assert.deepEqual({ ...fingerprint(world.vault), all: repoState(world.vault) }, before);
   assert.equal(world.remoteRefs(), refs);
-  assert.deepEqual(world.ghCalls(), []);
+  assert.deepEqual(world.ghCalls().map((call) => call.args), [['auth', 'status']], 'gh was asked only whether it is logged in');
+});
+
+// The dry run promises what the real run will do, so every precondition
+// whose failure stops the real run before it writes anything is judged in
+// the dry run too, with the real run's own sentence and exit code, and the
+// dry run still writes nothing (the stranger's M2 and m15 of 01/10/2026).
+async function dryRefused(world, argv, code, expected) {
+  const before = { ...fingerprint(world.vault), all: repoState(world.vault) };
+  const refs = world.remoteRefs();
+  const run = await propose(world, [...argv, '--dry']);
+  assert.equal(run.code, code, run.stderr);
+  assert.equal(run.stderr, expected);
+  assert.equal(run.stdout, '', 'the dry run does not say it would propose');
+  assert.deepEqual({ ...fingerprint(world.vault), all: repoState(world.vault) }, before, 'nothing local moved');
+  assert.equal(world.remoteRefs(), refs, 'nothing pushed');
+  assert.deepEqual(readdirSync(world.tmp), [], 'nothing left in the temporary directory');
+  return run;
+}
+
+test('--dry: a remote that publishes no branch yet is refused as the real run refuses it, same sentence, same exit code', async () => {
+  const world = makeProposeWorld({ publishFirst: false });
+  world.write('notes/a.md', note('A'));
+  const expected = line('propose.remote_has_no_branch', { remote: 'origin', branch: 'main' });
+  await dryRefused(world, ['A', '--only', 'notes/a.md'], EXIT.FAILURE, expected);
+  await refused(world, ['A', '--only', 'notes/a.md'], EXIT.FAILURE, expected);
+});
+
+test('--dry: a remote that publishes other branches but not the base is refused as the real run refuses it', async () => {
+  const world = makeProposeWorld();
+  git(world.remote, ['branch', '-m', 'main', 'trunk']);
+  git(world.remote, ['symbolic-ref', 'HEAD', 'refs/heads/trunk']);
+  world.write('notes/a.md', note('A'));
+  const expected = line('propose.remote_lacks_branch', { remote: 'origin', branch: 'main', published: ['trunk'] });
+  await dryRefused(world, ['A', '--only', 'notes/a.md'], EXIT.FAILURE, expected);
+  await refused(world, ['A', '--only', 'notes/a.md'], EXIT.FAILURE, expected);
+});
+
+test('--dry: a remote that cannot be asked is said to be unverified, never "Would propose", and the exit code is 1', async () => {
+  const world = makeProposeWorld();
+  const gone = join(world.base, 'gone.git');
+  git(world.vault, ['remote', 'set-url', 'origin', gone]);
+  world.write('notes/a.md', note('A'));
+  const detail = gitProbe(world.vault, ['ls-remote', '--symref', 'origin']).stderr.trim().split('\n')[0];
+  assert.notEqual(detail, '', 'git said why');
+  const expected = line('propose.dry_unverified', { remote: 'origin', branch: 'main', detail });
+  assert.ok(!expected.includes('Would propose'));
+  await dryRefused(world, ['A', '--only', 'notes/a.md'], EXIT.FAILURE, expected);
+});
+
+test('--dry: a repository with no remote called origin says so and how to create one, as does the real run', async () => {
+  const world = makeProposeWorld();
+  git(world.vault, ['remote', 'remove', 'origin']);
+  world.write('notes/a.md', note('A'));
+  const expected = line('propose.no_remote', { remote: 'origin', branch: 'main' });
+  assert.match(expected, /no remote called origin/);
+  assert.match(expected, /gh repo create <name> --private --source \. --push/);
+  assert.ok(!expected.includes('is published to'), 'it does not assert as fact that the branch is published somewhere');
+  await dryRefused(world, ['A', '--only', 'notes/a.md'], EXIT.FAILURE, expected);
+  await refused(world, ['A', '--only', 'notes/a.md'], EXIT.FAILURE, expected);
+});
+
+test('--dry: gh that is not installed is refused, naming what the real run would do (push, then end without a pull request), exit 3', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  const env = { ...world.env, PATH: world.absentPath() };
+  const before = { ...fingerprint(world.vault), all: repoState(world.vault) };
+  const refs = world.remoteRefs();
+  const run = await propose(world, ['A', '--only', 'notes/a.md', '--dry'], { env });
+  assert.equal(run.code, EXIT.DEGRADED, run.stderr);
+  assert.equal(run.stderr, line('propose.dry_gh_absent', { program: 'gh', command: 'gh auth login' }));
+  assert.equal(run.stdout, '');
+  assert.deepEqual({ ...fingerprint(world.vault), all: repoState(world.vault) }, before);
+  assert.equal(world.remoteRefs(), refs);
+});
+
+test('--dry: gh that is not logged in is refused naming gh auth login, exit 3, after asking gh nothing but auth status', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  const before = { ...fingerprint(world.vault), all: repoState(world.vault) };
+  const refs = world.remoteRefs();
+  const run = await propose(world, ['A', '--only', 'notes/a.md', '--dry'], { env: { ...world.env, FAKE_GH_AUTH: 'out' } });
+  assert.equal(run.code, EXIT.DEGRADED, run.stderr);
+  assert.equal(run.stderr, line('propose.dry_gh_logged_out', { program: 'gh', command: 'gh auth login', detail: 'You are not logged into any GitHub hosts. To log in, run: gh auth login' }));
+  assert.match(run.stderr, /gh auth login/);
+  assert.equal(run.stdout, '');
+  assert.deepEqual(world.ghCalls().map((call) => call.args), [['auth', 'status']]);
+  assert.deepEqual({ ...fingerprint(world.vault), all: repoState(world.vault) }, before);
+  assert.equal(world.remoteRefs(), refs);
+});
+
+test('--dry: the remote is judged before gh, so a vault with both problems is told the one the real run would hit first', async () => {
+  const world = makeProposeWorld({ publishFirst: false });
+  world.write('notes/a.md', note('A'));
+  const run = await propose(world, ['A', '--only', 'notes/a.md', '--dry'], { env: { ...world.env, FAKE_GH_AUTH: 'out' } });
+  assert.equal(run.code, EXIT.FAILURE);
+  assert.equal(run.stderr, line('propose.remote_has_no_branch', { remote: 'origin', branch: 'main' }));
+  assert.deepEqual(world.ghCalls(), [], 'gh was not asked');
+});
+
+test('--dry names the branch the real run would push to: the stamped name, with -2 when a push url already holds it', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  git(world.elsewhere, ['push', '-q', 'origin', `HEAD:refs/heads/${BRANCH}`]);
+  const run = await propose(world, ['A', '--only', 'notes/a.md', '--dry']);
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.equal(run.stdout, line('propose.dry_run', { files: ['notes/a.md'], urls: [world.remote], base: 'main', branch: `${BRANCH}-2`, title: 'curate: A', origin: 'main', remote: 'origin', program: 'gh' }));
+  // And it is the one the real run uses.
+  const real = await propose(world, ['A', '--only', 'notes/a.md']);
+  assert.equal(real.code, EXIT.OK, real.stderr);
+  assert.ok(world.remoteSha(`refs/heads/${BRANCH}-2`));
+});
+
+test('--dry: with everything the real run needs in place it prints the plan, having asked the remote what it publishes and gh whether it is logged in, and nothing else', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  const run = await propose(world, ['A', '--only', 'notes/a.md', '--dry']);
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.equal(run.stdout, line('propose.dry_run', { files: ['notes/a.md'], urls: [world.remote], base: 'main', branch: BRANCH, title: 'curate: A', origin: 'main', remote: 'origin', program: 'gh' }));
+  assert.match(run.stdout, /Remote origin publishes the base and gh is logged in/);
+  assert.deepEqual(world.ghCalls().map((call) => call.args), [['auth', 'status']]);
 });
 
 test('behind the remote, with the path untouched there: the commit sits on the fetched tip, never on the stale local HEAD', async () => {
@@ -1124,7 +1244,7 @@ test('an earlier proposal record whose pull request now exists but on the wrong 
   assert.equal(run.stderr, line('propose.pending', { branch: record.branch, command: `gh pr edit ${record.branch} --base ${record.base}` }));
 });
 
-test('--dry never checks or reports an earlier unconfirmed proposal, and asks gh nothing', async () => {
+test('--dry never checks or reports an earlier unconfirmed proposal, and asks gh only whether it is logged in', async () => {
   const world = makeProposeWorld();
   const dir = join(world.vault, '.git', 'brain-kit-proposals');
   mkdirSync(dir, { recursive: true });
@@ -1132,8 +1252,8 @@ test('--dry never checks or reports an earlier unconfirmed proposal, and asks gh
   world.write('notes/a.md', note('A'));
   const run = await propose(world, ['A', '--only', 'notes/a.md', '--dry']);
   assert.equal(run.code, EXIT.OK, run.stderr);
-  assert.equal(run.stdout, line('propose.dry_run', { files: ['notes/a.md'], urls: [world.remote], base: 'main', branch: BRANCH, title: 'curate: A', origin: 'main' }));
-  assert.deepEqual(world.ghCalls(), []);
+  assert.equal(run.stdout, line('propose.dry_run', { files: ['notes/a.md'], urls: [world.remote], base: 'main', branch: BRANCH, title: 'curate: A', origin: 'main', remote: 'origin', program: 'gh' }));
+  assert.deepEqual(world.ghCalls().map((call) => call.args), [['auth', 'status']], 'no pr view for the earlier proposal');
   assert.ok(existsSync(join(dir, 'stale.json')), 'the stale record is left exactly as it was');
 });
 

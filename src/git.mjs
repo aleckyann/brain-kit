@@ -934,6 +934,27 @@ export function remoteBranches(root, remote, { env = process.env, timeout = NETW
   return { status: 'listed', heads, head };
 }
 
+// Whether a remote publishes `branch`, asked live and read-only (the same
+// `git ls-remote` fetch asks first, below, and with the same meaning for an
+// absent or a missing branch): { status: 'published', announced } (announced:
+// the object id the remote holds there), { status: 'absent' } (the remote
+// lists no branch at all), { status: 'missing', branches, head } or
+// { status: 'failed', detail }. It writes nothing: no reference, no object.
+// `propose --dry` uses it alone, so its answer about the remote is the real
+// run's, from one function.
+export function publishedBranch(root, remote, { branch, env = process.env, timeout = NETWORK_TIMEOUT_MS } = {}) {
+  if (!usableRemoteName(remote)) throw new TypeError(`publishedBranch needs a remote name that is not ".", empty or an option (got ${JSON.stringify(remote)})`);
+  if (!isBranchName(root, branch, { env })) throw new TypeError(`publishedBranch needs the name of the branch to look for (got ${JSON.stringify(branch)})`);
+  const listed = remoteBranches(root, remote, { env, timeout });
+  if (listed.status !== 'listed') return listed;
+  const announced = listed.heads.get(branch);
+  if (announced === undefined) {
+    if (listed.heads.size === 0) return { status: 'absent' };
+    return { status: 'missing', branches: [...listed.heads.keys()].sort(), head: listed.head };
+  }
+  return { status: 'published', announced };
+}
+
 // Fetch ONE branch of a remote, and prove the fetch reached it.
 //
 // A plain `git fetch <remote>` is the recurring shape of this project: it
@@ -959,13 +980,9 @@ export function remoteBranches(root, remote, { env = process.env, timeout = NETW
 export function fetch(root, remote, { branch, env = process.env, timeout = NETWORK_TIMEOUT_MS } = {}) {
   if (!usableRemoteName(remote)) throw new TypeError(`fetch needs a remote name that is not ".", empty or an option (got ${JSON.stringify(remote)})`);
   if (!isBranchName(root, branch, { env })) throw new TypeError(`fetch needs the name of the branch to fetch (got ${JSON.stringify(branch)})`);
-  const listed = remoteBranches(root, remote, { env, timeout });
-  if (listed.status !== 'listed') return listed;
-  const announced = listed.heads.get(branch);
-  if (announced === undefined) {
-    if (listed.heads.size === 0) return { status: 'absent' };
-    return { status: 'missing', branches: [...listed.heads.keys()].sort(), head: listed.head };
-  }
+  const asked = publishedBranch(root, remote, { branch, env, timeout });
+  if (asked.status !== 'published') return asked;
+  const { announced } = asked;
 
   const wanted = `refs/heads/${branch}`;
   const ref = `refs/remotes/${remote}/${branch}`;
