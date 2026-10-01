@@ -237,6 +237,20 @@ for (const lang of LANGS) {
     assert.equal(text.split('<!-- rule:').length - 1, CURATE_RULES.length, `${lang}: no marker was added`);
   });
 
+  // Found in the first real run on 30/09/2026 (after the sentence above was
+  // written): the `failed` bullet still said "something the block lists could
+  // not be read", and the model followed it for two not-found attachments.
+  test(`${lang}: the failed state never covers a document filed as not verified`, () => {
+    const text = rendered(lang);
+    const bullet = text.split('\n').find((line) => line.startsWith('- `failed`:'));
+    assert.ok(bullet, `${lang}: the failed bullet exists`);
+    const expected = {
+      en: 'A document the rule above files as **not verified** (no access, or not found by the connector) is not that: it never makes the source `failed`.',
+      'pt-BR': 'Um documento que a regra acima classifica como **não verificado** (sem acesso, ou não encontrado pelo conector) não é isso: ele nunca torna a fonte `failed`.',
+    }[lang];
+    assert.ok(bullet.includes(expected), `${lang}: ${bullet}`);
+  });
+
   test(`${lang}: the last line is the one the round gives, naming every state a source can be written with`, () => {
     const { vault, config } = vaultFor(lang);
     const line = 'BRAIN_KIT_SOURCES: transcripts=<ok|empty|failed> calendar=<ok|empty|failed|unavailable>';

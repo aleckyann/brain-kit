@@ -4,6 +4,7 @@
 
 ### A document the connector answers "not found" for (30/09/2026)
 
+- The `failed` state of the sources-line rule, in both languages, no longer covers a document filed as not verified. Its text said "something the block lists could not be read", and the model followed it for two not-found attachments (a real round, 30/09/2026), so a rule that said "never a failure of the source" was contradicted by the line that decided the mark.
 - The curate prompt's rule `no-access-label`, in both languages, now covers a document the
   connector answers "not found" for, which is its answer both for a deleted attachment and
   for one never shared with the reader ([docs/incidents.md](docs/incidents.md),

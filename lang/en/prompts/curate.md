@@ -100,5 +100,5 @@ In place of each source's `<...>`, write one of the states it lists:
 - `ok`: you read everything the block lists for that source: every transcript, every listing and every search, each to its last page.
 - `empty`: you read it and there was nothing: the block listed no transcript, or a listing or search the block gives came back with nothing in it.
 - `partial`: you reached a limit the block gives for that source, distilled up to it, and listed every remaining item in the log by its literal title under a line saying it was not distilled this round.
-- `failed`: something the block lists for that source could not be read, even if you read all the rest.
+- `failed`: something the block lists for that source could not be read, even if you read all the rest. A document the rule above files as **not verified** (no access, or not found by the connector) is not that: it never makes the source `failed`.
 - `unavailable`: the block says the source is unavailable this round, or its tools are not in your session.

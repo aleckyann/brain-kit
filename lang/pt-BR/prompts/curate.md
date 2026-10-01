@@ -100,5 +100,5 @@ No lugar do `<...>` de cada fonte, escreva um dos estados que ele lista:
 - `ok`: você leu tudo o que o bloco lista para aquela fonte: cada transcrição, cada listagem e cada busca, cada uma até a última página.
 - `empty`: você leu e não havia nada: o bloco não listou nenhuma transcrição, ou uma listagem ou busca que o bloco indica voltou sem nada.
 - `partial`: você chegou a um limite que o bloco dá para aquela fonte, destilou até ele e listou no log cada item restante pelo título literal, sob uma linha dizendo que ele não foi destilado nesta rodada.
-- `failed`: algo que o bloco lista para aquela fonte não pôde ser lido, mesmo que você tenha lido todo o resto.
+- `failed`: algo que o bloco lista para aquela fonte não pôde ser lido, mesmo que você tenha lido todo o resto. Um documento que a regra acima classifica como **não verificado** (sem acesso, ou não encontrado pelo conector) não é isso: ele nunca torna a fonte `failed`.
 - `unavailable`: o bloco diz que a fonte está indisponível nesta rodada, ou as ferramentas dela não estão na sua sessão.
