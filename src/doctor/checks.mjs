@@ -1158,7 +1158,7 @@ function includeProjects(ctx) {
   if (all) {
     projects = allProjects(root, [...names], exclusionPatterns(config));
     if (projects.length === 0) {
-      return { id, status: 'fail', messageKey: 'doctor.include_projects.all_empty', params: { key, file, root } };
+      return { id, status: 'fail', messageKey: 'doctor.include_projects.all_empty', params: { key, file, root, token: VAULT_PROJECT } };
     }
   }
   const missing = [];
