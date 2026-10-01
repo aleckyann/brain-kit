@@ -10,7 +10,8 @@ has no command for a step, the page says what to do by hand.
 While you work, do not paste the secret or the personal data into a chat, an issue, a pull
 request comment or a support ticket. Name commits by their hash and files by their path.
 
-Find your case:
+In every case, do [section 1](#1-the-rule-of-the-first-minutes) first. It takes a minute.
+Then find your case:
 
 - A password, token or key is in a commit: [section 2](#2-a-secret-is-in-a-commit).
 - Someone's personal data is in the vault: [section 4](#4-a-third-partys-personal-data-is-in-the-vault).
@@ -43,7 +44,8 @@ first, and the history rewrite follows when the data is sensitive.
 
 ## 2. A secret is in a commit
 
-First find how far it went. Do not type the secret into a command, because your shell keeps a
+If it was ever pushed, or you are not sure, rotate now ([section 1](#1-the-rule-of-the-first-minutes)).
+Then find how far it went. Do not type the secret into a command, because your shell keeps a
 history. Search by its shape:
 
 ```bash
@@ -66,16 +68,23 @@ never prints the matched text.
 
 ### 2a. The commit was never pushed
 
-Nothing has left your machine, so you can remove it. If the secret was ever in a synced folder,
-a backup or a chat, treat it as pushed and start at section 1 instead.
+No remote has it, so you can remove the commit. But "never pushed" is not "never left your
+machine". If the secret was ever in a synced folder, a backup, a chat, or a file that a Claude
+session or a curator round read (the text of what they read went to the model provider), treat
+it as exposed: rotate it now ([section 1](#1-the-rule-of-the-first-minutes)).
 
-1. If the secret is in the latest commit only: remove it from the file (or delete the file with
-   `git rm <file>`), then `git commit --amend`.
+1. If the secret is in the latest commit only: remove it from the file and run
+   `git add <file>` (or run `git rm <file>`), then `git commit --amend`. Without the `git add`
+   the amend reuses the old staged copy and the secret stays in the commit. If git says the amend
+   would leave the commit empty, the commit only added that file: run `git reset HEAD~1` and
+   delete the file.
 2. If it is in an older commit you have not pushed: `git reset --soft <last good commit>`
    moves HEAD back and keeps your changes staged. Run `git restore --staged <file>`, remove the
-   secret from the file or delete the file, then commit again. The unpushed commits become one.
+   secret from the file or delete the file, run `git add <file>` for a file you edited, then
+   commit again. The unpushed commits become one.
 3. Check that `git log --all --oneline -G'<shape>'` prints nothing and that
-   `brain-kit lint --rule secrets` finds nothing.
+   `brain-kit lint --rule secrets` finds nothing. `git show HEAD` must not show the secret
+   either.
 4. The old commit is still in `git reflog`, and its object stays in `.git` until the reflog
    entry expires, which takes weeks (git's defaults are 30 to 90 days). To drop it now:
 
@@ -101,14 +110,22 @@ a backup or a chat, treat it as pushed and start at section 1 instead.
    pull request keeps its own reference to its commits. Ask the host's support to run garbage
    collection on the repository and to drop the cached views of the pull request and of the
    commits. Give them the repository, the pull request number and the commit hashes. Never the
-   secret.
-4. If the pull request came from a curator round, the machine that ran the round still holds it:
-   - A proposal never moves the working tree, so the files stay modified there. Put them back:
-     `git restore -- <path>` for a tracked file, delete a new one.
-   - A local ref keeps the commit. List the refs with `git for-each-ref refs/brain-kit/proposed/`
-     and delete the one of that branch with `git update-ref -d <ref>`. The ref is named after
-     the branch, with each `/` turned into `-`.
-   - Then expire the reflog and collect garbage, as in step 4 of 2a.
+   secret. GitHub says it helps only where rotating the credential cannot remove the risk, so
+   support may decline for a secret you have already rotated. That is one more reason to rotate
+   first.
+4. If the pull request came from the curator, look at how it was made, because the machine that
+   made it keeps different things:
+   - **A scheduled round** puts the files it proposed back to the default branch's content
+     when it ends, and makes no local ref. Check that `leftovers` in `last-run.json` is
+     empty. The pushed commit then survives only as an object in that vault's `.git`, which
+     nothing refers to, until git prunes it. Drop it now by expiring the reflog and collecting
+     garbage, as in step 4 of 2a.
+   - **A `propose` outside a round** (an interactive session, the morning briefing) leaves the
+     files modified in the working tree and makes a local ref that keeps the commit. Put the
+     files back: `git restore -- <path>` for a tracked file, delete a new one. List the refs
+     with `git for-each-ref refs/brain-kit/proposed/` and delete the one of that branch with
+     `git update-ref -d <ref>`. The ref is named after the branch, with each `/` turned into
+     `-`. Then expire the reflog and collect garbage, as in step 4 of 2a.
 5. Find out why the push was not refused. `brain-kit doctor --only hooks-path` says whether this
    clone runs the push gate at all, and [section 3](#3-what-the-kits-own-checks-catch-and-miss)
    says what the gate does not see.
@@ -120,9 +137,13 @@ a backup or a chat, treat it as pushed and start at section 1 instead.
    `brain-kit schedule uninstall` ([section 6](#6-the-curator-did-something-it-should-not-have)
    has the details). If other people push to this repository, tell them to stop, in one line
    and without details.
-3. Work in a fresh clone. The tool is `git filter-repo`, which is not part of git: install it
-   from <https://github.com/newren/git-filter-repo> or your package manager. It refuses to
-   rewrite a clone that is not fresh, and your old clone stays as the backup until you push.
+3. Work in a fresh clone, with the procedure GitHub documents for this. The tool is
+   `git filter-repo`, version 2.47 or later (it needs the `--sensitive-data-removal` option). It
+   is not part of git: install it from <https://github.com/newren/git-filter-repo> or your
+   package manager. In that mode it first fetches every ref from `origin`, including the ones
+   outside branches and tags, so the rewrite reaches them too, and it records what it changed
+   for the support request below. It refuses to rewrite a clone that is not fresh, and your old
+   clone stays as the backup until you push.
 
    ```bash
    git clone https://example.com/ana/vault.git vault-clean
@@ -132,7 +153,7 @@ a backup or a chat, treat it as pushed and start at section 1 instead.
    Remove a whole file from every commit:
 
    ```bash
-   git filter-repo --invert-paths --path attachments/export.csv
+   git filter-repo --sensitive-data-removal --invert-paths --path attachments/export.csv
    ```
 
    Replace text in every file of every commit. Put the rules in a file outside the repository,
@@ -143,13 +164,15 @@ a backup or a chat, treat it as pushed and start at section 1 instead.
    ```
 
    ```bash
-   git filter-repo --replace-text ../replacements.txt
+   git filter-repo --sensitive-data-removal --replace-text ../replacements.txt
    ```
 
    A rule can also be `literal:<the text>==>REMOVED`, but then that file holds the secret:
    delete it when you are done. `--replace-text` does not touch commit messages; use
-   `--replace-message` for those. `git filter-repo` removes the `origin` remote on purpose, so
-   add it back: `git remote add origin <url>`.
+   `--replace-message`, which takes the same rule syntax, for those. Keep the output of the run:
+   you need it in step 8. Without `--sensitive-data-removal` the tool removes the `origin`
+   remote on purpose; whichever way it ran, look at `git remote -v`, and if there is no
+   `origin`, add it back with `git remote add origin <url>`.
 4. Check the result before you push: `git log --all --oneline -G'<shape>'` prints nothing and
    `brain-kit lint --rule secrets` finds nothing. A fresh clone runs no push gate until
    `git config core.hooksPath .githooks` is set in it (`brain-kit doctor --only hooks-path`
@@ -159,39 +182,60 @@ a backup or a chat, treat it as pushed and start at section 1 instead.
    host's settings, allow force pushes on that branch for the minutes you need, then turn the
    protection back on. Push under your own identity, never the curator's (`git.agent_identity`);
    the hook refuses that identity on the default branch.
+6. Look at what you are about to publish. `--mirror` makes the remote match this clone and
+   pushes every ref it finds, so `git for-each-ref` must list `refs/heads/` and `refs/tags/`
+   (and `refs/pull/`, which the host will refuse) and no `refs/remotes/`: a `refs/remotes/` ref
+   would publish the old history again. Then push, the way GitHub documents it:
 
    ```bash
-   git push --force --all origin
-   git push --force --tags origin
+   git push --force --mirror origin
    ```
 
-6. Close every open pull request and delete the branches they came from. The host keeps the
-   old commits behind each pull request, and the curator will propose again.
-7. Every clone and every fork still has the old history, and so do the host's pull request
-   references. A `git pull` in an old clone would merge the old history back, and the next push
-   would publish the secret again. Tell each holder to delete the clone and clone again, and
-   each fork's owner to delete the fork.
+   If the push lists `refs/pull/...` refs as rejected, the host does not let you change them;
+   only support can (step 8).
+7. Close every open pull request and delete the branches they came from. The host keeps the
+   old commits behind each pull request, and the curator will propose again. Every clone and
+   every fork still has the old history, and so do the host's pull request references. A
+   `git pull` in an old clone would merge the old history back, and the next push would
+   publish the secret again. Tell each holder to delete the clone and clone again, and each
+   fork's owner to delete the fork. A collaborator who has a branch made from the old history
+   must rebase it onto the new history, not merge.
 8. Ask the host's support for the garbage collection and the cache purge, as in step 3 of 2b.
-9. Put the curator back. Clone the vault again where the rounds run; if the new clone is at a
-   different path, run `brain-kit machine register --from <old path>` in it. Then run
-   `brain-kit doctor` and `brain-kit schedule install`.
+   For this rewrite send them the repository, the number of pull requests it changed
+   (`grep -c '^refs/pull/.*/head$' .git/filter-repo/changed-refs`), the "First Changed
+   Commit(s)" the tool printed (also in `.git/filter-repo/first-changed-commits`), and the list
+   of orphaned LFS objects if the run printed one. Support may decline if rotating the secret
+   already removes the risk, as in step 3 of 2b.
+9. Put the curator back, on the machine where the rounds run. Delete the old clone first: it
+   holds the old history, and `brain-kit machine register --from` refuses while the old
+   clone is still there. Then clone the vault again, best at the same path: the curator's state
+   (its logs, its marks) is kept under a name made from that path, so nothing needs registering.
+   At another path, run `brain-kit machine register --from <old path>` in the new clone once the
+   old one is gone. In the new clone run `git config core.hooksPath .githooks` (a fresh clone has
+   no gate), then `brain-kit doctor` and `brain-kit schedule install`.
 
 #### Where a copy can hide
 
 Go through this list after any rewrite. A copy in one of these places survives it.
 
 - Forks of the repository (the host's fork list), and clones on other machines, in backups and
-  in sync folders. Delete the old clone on the curator's machine too, with its
-  `refs/brain-kit/proposed/*` refs.
+  in sync folders. Delete the old clone on the curator's machine too, with any
+  `refs/brain-kit/proposed/*` refs it holds.
 - Pull request descriptions and comments, issues, and the e-mail and chat notifications that
   quoted them.
 - CI logs, caches and artifacts. Delete the runs and the caches on the host.
 - The curator's state directory, outside the vault (`brain-kit machine show` prints it as
-  `state_dir`). Its `logs/` folder holds the round logs. With `--keep-stream` (or `keep_stream`
-  in `machine.json`) it also holds `logs/curate-<stamp>.stream.jsonl` and the round's digests,
-  which contain what the model read, so a secret that was in a note or a session can be in
-  them. Delete those files. Each round removes logs older than `log_retention_days` (30 by
-  default) on its own.
+  `state_dir`). It survives a new clone of the vault. Its `logs/` folder holds the round logs.
+  With `--keep-stream` (or `keep_stream` in `machine.json`) it also holds
+  `logs/curate-<stamp>.stream.jsonl` and the round's digests, which contain what the model read,
+  so a secret that was in a note or a session can be in them. Delete those files. Each round
+  removes logs older than `log_retention_days` (30 by default) on its own, but you uninstalled
+  the schedule. Two more copies sit there. `questions.log` is the briefing's question queue, one
+  line of JSON per question, with the text of each: `brain-kit questions archive` keeps that
+  text and no command deletes a question, so open the file and delete the line. And a
+  `digests/` folder is the transcript text of a round that was killed outright (SIGKILL, a power
+  cut): the next round would sweep it, and with the schedule uninstalled no next round runs, so
+  delete the folder yourself.
 - The Claude Code session where you typed or pasted the secret. Its transcript stays on that
   machine, under the folder `transcripts_dir` names (`~/.claude/projects` by default), and the
   curator builds its digests from transcripts.
@@ -209,8 +253,8 @@ pattern scanners. Read this section before you trust a clean result.
 **What they match.** The six shapes in `src/leak.mjs`, and every regular expression you add to
 `privacy.secret_patterns` in `brain-kit.config.json`. Matching ignores case.
 
-- A private key header: the line that opens a PEM key (with or without RSA, OPENSSH, EC, DSA
-  or PGP in it).
+- A private key header: the line that opens a PEM key (with or without RSA, OPENSSH, EC or DSA
+  in it).
 - A GitHub classic token (starts with ghp_) and a GitHub fine-grained token (starts with
   github_pat_).
 - An Anthropic API key (starts with sk-ant-).
@@ -248,11 +292,15 @@ A finding names the file, the line and the pattern. It never prints the matched 
   encrypted or binary (an archive, an office document, most PDFs).
 - A value written another way: encoded in base64, split across a line break, or written with
   spaces between the letters. [SECURITY.md](../SECURITY.md) records the measurements.
-- A secret with no known shape: a password, a database address with the password in it, a
-  signed token, a key from a vendor not in the list. Add a regular expression for it to
-  `privacy.secret_patterns`; `brain-kit doctor --only config-valid` checks that each one
-  compiles. Never put the secret itself in that list: `lint` reports an entry that has the
-  shape of a real credential.
+- A secret that none of the six shapes describes. Tried against `brain-kit lint`, these are
+  not matched: the header of an armored PGP private key (it ends in PRIVATE KEY BLOCK), the
+  header of an encrypted PKCS#8 key (it says ENCRYPTED PRIVATE KEY), GitHub tokens that start
+  with gho_, ghs_, ghu_ or ghr_, an AWS secret access key (it has no prefix), and a key from a
+  vendor not in the list (a Stripe live key, for example). Nor is a password, a database
+  address with the password in it, or a signed token. Add a regular expression for each to
+  `privacy.secret_patterns`, for example `gh[ousr]_[A-Za-z0-9]{36}` for the four GitHub token
+  kinds. `brain-kit doctor --only config-valid` checks that each one compiles. Never put the
+  secret itself in that list: `lint` reports an entry that has the shape of a real credential.
 - A push that skipped the gate. `git push --no-verify` skips it, so does a clone where
   `core.hooksPath` is not set, and so does an edited hook. The gate runs on your machine.
 - History, for `lint`: it reads the working tree only. The gate reads only what one push
@@ -292,19 +340,23 @@ found and what you did.
      holds a phrase from `privacy.third_party_keywords`. With `--base all` it does not check
      the phrases, and says so.
    - Look in the places a note about a person leaks into: the log (`memory/log.md` in the
-     English skeleton), the index files, `pending/`, open pull requests and branches, and the
-     question queue (`brain-kit questions list`).
-   - Outside the vault: the curator's state directory (section 2c, "Where a copy can hide"),
-     and the sources the data came from, which are your Claude Code sessions, your calendar
-     and your meeting notes.
+     English skeleton), the index files, `pending/`, and open pull requests and branches.
+   - Outside the vault: the curator's state directory, which holds the briefing's question
+     queue (`questions.log`; `brain-kit questions list` shows it), the round logs and, if
+     they were kept, the streams and digests, and any `digests/` folder a killed round left
+     (section 2c, "Where a copy can hide"); and the sources the data came from, which are your
+     Claude Code sessions, your calendar and your meeting notes.
 3. **Remove it.**
    - Delete the note and every mention in other notes, in the log and in the indexes. Then run
      `brain-kit validate`: a link to the deleted note is reported as `link-target-exists`, so
      you see what is left.
    - Make the change by pull request and merge it, as for any change to the vault.
+   - In the state directory, open `questions.log` and delete the line of any question that
+     holds the data (`brain-kit questions archive` keeps the text, and no command deletes a
+     question), and delete the stream, digest and log files that hold it.
    - If the data is sensitive, or the person asks for it, remove it from the history too, with
-     the rewrite in 2c: `git filter-repo --invert-paths --path people/ana-example.md`, and a
-     `--replace-text` file for the mentions in other notes. The same caveats hold: every clone
+     the rewrite in 2c: `git filter-repo --sensitive-data-removal --invert-paths --path people/ana-example.md`,
+     and a `--replace-text` file for the mentions in other notes. The same caveats hold: every clone
      and fork keeps the old history, and the host needs the cache purge.
    - Search again in a fresh clone.
 4. **Stop it coming back.** The curator reads your Claude Code sessions, and your calendar and
@@ -336,27 +388,39 @@ found and what you did.
 
 ## 5. The vault repository became public by mistake
 
-1. **Make it private now.** On GitHub, use the repository's settings page, or run
-   `gh repo edit --visibility private --accept-visibility-change-consequences` in the clone.
-   Then check: `gh repo view --json visibility,isPrivate,forkCount,stargazerCount`.
+1. **Save the fork and star lists, then make it private. Do both within a minute.** GitHub
+   detaches the public forks and erases the stars and watchers when a public repository goes
+   private, so once you change it these lists can no longer be read, and only the host's
+   support can say who forked it. Run these in a clone, and write the files outside the
+   repository:
+
+   ```bash
+   gh repo view --json forkCount,stargazerCount
+   gh api 'repos/{owner}/{repo}/forks' --paginate --jq '.[].full_name' > ../forks.txt
+   gh api 'repos/{owner}/{repo}/stargazers' --paginate --jq '.[].login' > ../stargazers.txt
+   gh repo edit --visibility private --accept-visibility-change-consequences
+   gh repo view --json visibility,isPrivate
+   ```
+
+   The first command gives the counts, to check the files against. The last confirms the new
+   visibility. If you prefer the settings page, save the two lists first all the same.
 2. **Assume a copy exists.** Treat everything the repository held, in every commit, as
    published for as long as it was public. Making it private takes back no clone, no fork and
    no cache. If the host has an audit log, note when the visibility changed.
 3. **Rotate every secret that was ever in it,** not only the ones in the current files. Use
    `git log --all --oneline -G'<shape>'` to find the commits, and think of what the curator saw
    as well. [Section 2c](#2c-the-commit-is-in-the-default-branch) has the rest.
-4. **Check the fork and star lists.** On the host: the repository's forks page and its
-   stargazers. From the command line: `gh api repos/OWNER/REPO/forks --paginate --jq '.[].full_name'`
-   and `gh api repos/OWNER/REPO/stargazers --paginate --jq '.[].login'`. A fork made while it
-   was public holds the whole history and may stay public after the original is private. Ask
-   its owner to delete it, and ask the host's support about the ones you cannot reach.
+4. **Go through the lists you saved.** `forks.txt` and `stargazers.txt` are who may hold a
+   copy. A fork made while the repository was public holds the whole history and stays public
+   after the original is private. Ask its owner to delete it, and ask the host's support about
+   the ones you cannot reach.
 5. **Personal data.** If `people/` or any note about someone was in it, go through
    [section 4](#4-a-third-partys-personal-data-is-in-the-vault), and ask your legal adviser
    whether the people concerned must be told. This page does not say.
 6. **Run `brain-kit doctor`, and know what it does not check.** It has no check on whether the
    remote is public. The configuration has a key, `privacy.require_private_repo`, which
    defaults to true, but nothing in the kit reads it, so setting it protects nothing.
-   Look at the repository's visibility on the host yourself, with the command in step 1. What
+   Look at the repository's visibility on the host yourself, with the last command in step 1. What
    `doctor` does check after an incident like this one: `hooks-path` (the push gate runs in
    this clone), `config-valid` (your secret patterns compile) and `privacy-keywords`.
 
@@ -402,8 +466,10 @@ request with content you did not expect, or ran a command you did not allow.
    - `logs/curate-<stamp>.stream.jsonl`, the model's raw output, exists only if the round ran with
      `--keep-stream` (or `keep_stream` in `machine.json`). Without it the round keeps no
      record of what the model ran, only of what it was denied and what it proposed.
-   - In the repository: `git for-each-ref refs/brain-kit/proposed/` (one local ref for each
-     proposal), the branches that start with `git.branch_prefix` (`bot/` by default),
+   - In the repository: the branches that start with `git.branch_prefix` (`bot/` by default),
+     `git for-each-ref refs/brain-kit/proposed/` (one local ref for each `propose` made outside
+     a round, by a session or the briefing; a scheduled round makes none, and what it proposed is
+     in `proposed` of `last-run.json`),
      `git log --format='%h %an %ae %s' <default branch>` to see what was committed under
      `git.agent_identity`, and the pull requests on the host.
    - The scheduler's own log. For systemd:
@@ -469,10 +535,16 @@ request with content you did not expect, or ran a command you did not allow.
 4. The next round runs at the next window in `curate.schedule` (09:30, 14:00 and 20:00 by
    default). To see what it would do first, run `brain-kit curate --check`, which stops before
    the model.
-5. The curator's working tree still holds the closed proposal's files until the next
-   `brain-kit sync` (every round runs it) puts them back. If the content must be gone from the
-   machine now, run `git restore -- <path>` and delete the local ref
-   `git update-ref -d refs/brain-kit/proposed/<branch with / turned into ->`.
+5. A scheduled round already put its proposed files back when it ended and made no local ref;
+   the pushed commit is an unreferenced object in the vault's `.git` until git prunes it.
+   If the content must be gone from the machine now, expire the reflog and collect garbage, as
+   in step 4 of 2a.
+6. A `propose` made outside a round (a session, the briefing) leaves its files modified in the
+   working tree until the next `brain-kit sync` (every round runs it) puts them back, and a
+   local ref that keeps the commit. If the content must be gone now, run
+   `git restore -- <path>`, delete the ref with
+   `git update-ref -d refs/brain-kit/proposed/<branch with / turned into ->`, and expire the
+   reflog and collect garbage, as in step 4 of 2a.
 
 ## 8. A flaw in the kit itself
 

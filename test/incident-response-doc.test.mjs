@@ -17,10 +17,11 @@
 //   schema/machine.schema.json;
 // - the files the page cites: they must exist.
 //
-// Two statements on the page are about what the kit does NOT do (nothing reads
-// privacy.require_private_repo, and doctor has no check on a remote's
-// visibility). A negative claim rots the other way round, by the feature
-// arriving, so the last test here fails when either stops being true.
+// Some statements on the page are about what the kit does NOT do (nothing reads
+// privacy.require_private_repo, doctor has no check on a remote's visibility,
+// and the generic secret shapes miss a few real key formats). A negative claim
+// rots the other way round, by the feature arriving, so a test below fails
+// when one stops being true.
 //
 // Each checking function is also proved able to fail, against a planted
 // mistake: a guard that cannot fail is worse than none.
@@ -31,7 +32,8 @@ import { dirname, join, resolve } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 import { CHECK_IDS } from '../src/doctor/checks.mjs';
 import { STATE_FILES } from '../src/state.mjs';
-import { LEDGER_NAME, PROPOSED_REF_PREFIX } from '../src/guards/proposed.mjs';
+import { PROPOSED_REF_PREFIX } from '../src/guards/proposed.mjs';
+import { GENERIC_PATTERNS } from '../src/leak.mjs';
 
 const PAGE = 'docs/incident-response.md';
 const FENCE = '`'.repeat(3);
@@ -209,6 +211,49 @@ function loggedEvents() {
   return new Set([...read('src/commands/curate.mjs').matchAll(/\blog\('([a-z_]+)'/g)].map((match) => match[1]));
 }
 
+// The text of the list item that starts with the given inline-code span, up to
+// the next item or blank line.
+function bulletOf(text, span) {
+  const lines = text.split('\n');
+  const start = lines.findIndex((line) => line.trimStart().startsWith(`- \`${span}\``));
+  if (start === -1) return null;
+  const body = [lines[start]];
+  for (let i = start + 1; i < lines.length; i++) {
+    if (lines[i].trim() === '' || /^\s*(?:- |\d+\. )/.test(lines[i])) break;
+    body.push(lines[i]);
+  }
+  return body.join('\n');
+}
+
+// The fields of last-run.json: the keys of the record src/commands/curate.mjs
+// starts every round with.
+function lastRunFields() {
+  const block = /\n  const run = \{([\s\S]*?)\n  \};/.exec(read('src/commands/curate.mjs'));
+  assert.ok(block, 'src/commands/curate.mjs no longer starts a round with a "const run = {" record this test reads');
+  return new Set([...block[1].matchAll(/\b([A-Za-z]+):/g)].map((match) => match[1]));
+}
+
+function citedRecordProblems(text) {
+  const problems = [];
+  const fields = lastRunFields();
+  const lastRun = bulletOf(text, 'last-run.json');
+  if (lastRun === null) return ['the page has no list item starting with `last-run.json`'];
+  const cited = codeOf(lastRun).inline.filter((span) => /^[A-Za-z]+$/.test(span));
+  if (cited.length < 6) problems.push(`only ${cited.length} last-run.json fields found on the page`);
+  for (const field of cited) {
+    if (!fields.has(field)) problems.push(`${field} is not a field of last-run.json`);
+  }
+  const log = bulletOf(text, 'logs/curate-YYYY-MM-DD.log');
+  if (log === null) return [...problems, 'the page has no list item starting with `logs/curate-YYYY-MM-DD.log`'];
+  const events = loggedEvents();
+  const named = codeOf(log).inline.filter((span) => /^[a-z_]+$/.test(span));
+  if (named.length < 3) problems.push(`only ${named.length} log events found on the page`);
+  for (const event of named) {
+    if (!events.has(event)) problems.push(`${event} is not an event the round logs`);
+  }
+  return problems;
+}
+
 function keyProblems(inline) {
   const config = readJson('schema/config.schema.json');
   const names = propertyNames(config);
@@ -333,7 +378,6 @@ test('the names the code owns are the ones the page writes', () => {
   assert.ok(text.includes(PROPOSED_REF_PREFIX), `the page does not name ${PROPOSED_REF_PREFIX}`);
   assert.ok(text.includes(STATE_FILES.LAST_RUN), `the page does not name ${STATE_FILES.LAST_RUN}`);
   assert.ok(text.includes(`${STATE_FILES.LOG_DIR}/`), `the page does not name ${STATE_FILES.LOG_DIR}/`);
-  assert.ok(text.includes(LEDGER_NAME) || !text.includes('ledger'), `the page names the ledger without its file name ${LEDGER_NAME}`);
   assert.ok(read('src/commands/curate.mjs').includes('.stream.jsonl'), 'the kept stream is no longer a .stream.jsonl file');
   assert.ok(text.includes('.stream.jsonl'), 'the page does not name the kept stream file');
 });
@@ -350,6 +394,28 @@ test('the two things the page says the kit does not check are still true', () =>
   assert.deepEqual(visibility, [], 'doctor now has a check on repository visibility: rewrite section 5 of the incident-response page, which says it has none');
 });
 
+test('the last-run.json fields and the log events the page cites are the ones the round writes', () => {
+  assert.deepEqual(citedRecordProblems(read(PAGE)), []);
+});
+
+test('the key formats the page says the generic shapes do not match are still unmatched', () => {
+  const text = read(PAGE);
+  const probe = `ghp${'_'}${'A'.repeat(36)}`;
+  assert.ok(GENERIC_PATTERNS.some((pattern) => new RegExp(pattern, 'i').test(probe)), 'precondition: the probe cannot match even a token the shapes do cover');
+  const dashes = '-----';
+  const unmatched = [
+    ['an armored PGP private key header', `${dashes}BEGIN PGP ${'PRIVATE KEY BLOCK'}${dashes}`, 'PRIVATE KEY BLOCK'],
+    ['an encrypted PKCS#8 key header', `${dashes}BEGIN ENCRYPTED ${'PRIVATE KEY'}${dashes}`, 'ENCRYPTED PRIVATE KEY'],
+    ...['gho', 'ghs', 'ghu', 'ghr'].map((kind) => [`a ${kind} token`, `${kind}${'_'}${'A'.repeat(36)}`, `${kind}_`]),
+  ];
+  for (const [what, sample, mention] of unmatched) {
+    const matching = GENERIC_PATTERNS.filter((pattern) => new RegExp(pattern, 'i').test(sample));
+    assert.deepEqual(matching, [], `the kit now matches ${what}: rewrite the "cannot see" list in section 3 of the incident-response page`);
+    assert.ok(text.includes(mention), `the page no longer mentions ${what} (${mention}); drop it from this guard with the sentence`);
+  }
+  assert.ok(!text.includes('PGP in it'), 'the page again says the private key shape matches PGP keys');
+});
+
 // ------------------------------------------- the guard's own self-check
 
 test('self-check: a command that is not dispatched, a stray subcommand, a stray flag and a stray check id are each reported', () => {
@@ -361,6 +427,17 @@ test('self-check: a command that is not dispatched, a stray subcommand, a stray 
   assert.equal(commandProblems(['brain-kit lint --nope'], dispatched).length, 1);
   assert.equal(commandProblems(['brain-kit doctor --only no-such-check'], dispatched).length, 1);
   assert.equal(commandProblems(['brain-kit watermark reopen transcripts # brain-kit nonsense'], dispatched).length, 0, 'a shell comment is not a command');
+});
+
+test('self-check: a stray last-run.json field and a stray log event are each reported, and the right ones are not', () => {
+  const page = (field, event) => [
+    '- `last-run.json`, the last round: `exit`, `reason`, `denials`, `isolation`, `proposed`, `leftovers`, `' + field + '`.',
+    '- `logs/curate-YYYY-MM-DD.log`, one line per event: `model_result`, `cleanup`, `' + event + '`.',
+  ].join('\n');
+  assert.deepEqual(citedRecordProblems(page('warnings', 'exit')), []);
+  assert.equal(citedRecordProblems(page('noSuchField', 'exit')).length, 1);
+  assert.equal(citedRecordProblems(page('warnings', 'no_such_event')).length, 1);
+  assert.equal(citedRecordProblems('nothing here').length, 1);
 });
 
 test('self-check: a stray key, check id, path and link are each reported, and the right ones are not', () => {
