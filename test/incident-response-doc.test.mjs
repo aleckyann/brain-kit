@@ -339,6 +339,8 @@ test('the nine sections are there, in the order a person under stress needs them
   assert.deepEqual(headings.map(([n]) => n), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
   const words = ['first minutes', 'secret is in a commit', 'checks', 'personal data', 'public', 'curator did something', 'pull request', 'flaw in the kit', 'After the incident'];
   headings.forEach(([n, title], index) => assert.ok(title.includes(words[index]), `section ${n} is "${title}", expected it to be about "${words[index]}"`));
+  const text = read(PAGE);
+  assert.ok(text.indexOf('\n## Appendix') > text.indexOf('\n## 9. '), 'the appendix must come after section 9, so the nine sections stay a sequence of actions');
 });
 
 test('the rule of the first minutes puts rotation before the rewrite and the rewrite before telling people', () => {
@@ -349,6 +351,39 @@ test('the rule of the first minutes puts rotation before the rewrite and the rew
   const tell = section.indexOf('Tell people');
   assert.ok(rotate !== -1 && rewrite !== -1 && tell !== -1, 'section 1 lost one of its three steps');
   assert.ok(rotate < rewrite && rewrite < tell, 'section 1 no longer says: rotate, then rewrite, then tell');
+});
+
+// Orders that decide whether a step helps or destroys something. Each is a
+// place where the page was once wrong in exactly this way (review of the
+// first round, B1 and B2; of the second, N-S2 and N-S3).
+function sectionOf(text, from, to) {
+  const start = text.indexOf(from);
+  const end = text.indexOf(to, start + 1);
+  assert.ok(start !== -1 && end !== -1, `the page lost the headings "${from}" or "${to}"`);
+  return text.slice(start, end);
+}
+
+test('the destructive steps keep the order that makes them safe', () => {
+  const text = read(PAGE);
+  const before = (section, first, second, why) => {
+    const a = section.indexOf(first);
+    const b = section.indexOf(second);
+    assert.ok(a !== -1 && b !== -1, `lost "${first}" or "${second}": ${why}`);
+    assert.ok(a < b, `"${first}" must come before "${second}": ${why}`);
+  };
+  const five = sectionOf(text, '## 5. ', '## 6. ');
+  before(five, "/forks'", 'gh repo edit --visibility', 'making a repository private detaches the forks and erases the stars, so the lists are saved first');
+  before(five, "/stargazers'", 'gh repo edit --visibility', 'same');
+  const twoA = sectionOf(text, '### 2a. ', '### 2b. ');
+  before(twoA, 'git add <file>', 'git commit --amend', 'an amend without the add leaves the secret in the commit');
+  const twoB = sectionOf(text, '### 2b. ', '### 2c. ');
+  before(twoB, 'git fetch --prune', 'expire the reflog', 'a remote-tracking ref keeps the commit alive through the garbage collection');
+  const twoC = sectionOf(text, '### 2c. ', '#### Where a copy can hide');
+  before(twoC, 'git for-each-ref refs/remotes/', 'git push --force --mirror origin', '--mirror publishes every ref it finds, refs/remotes/ included');
+  before(twoC, 'git push --force --mirror origin', 'Then turn the branch protection back on', 'the protection comes back on after the push, not before it');
+  before(twoC, 'git status', 'mv vault vault-old', 'uncommitted work is looked at before the old clone is moved');
+  before(twoC, 'mv vault vault-old', 'delete the moved-aside old clone', 'the old clone is moved aside, and deleted only after doctor is green');
+  before(twoC, 'brain-kit doctor', 'delete the moved-aside old clone', 'same');
 });
 
 test('every brain-kit command the page types is dispatched, with a subcommand and flags its usage lists', () => {

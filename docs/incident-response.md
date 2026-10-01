@@ -113,22 +113,28 @@ it as exposed: rotate it now ([section 1](#1-the-rule-of-the-first-minutes)).
    secret. GitHub says it helps only where rotating the credential cannot remove the risk, so
    support may decline for a secret you have already rotated. That is one more reason to rotate
    first.
-4. If the pull request came from the curator, look at how it was made, because the machine that
-   made it keeps different things:
+4. **Clean every clone that fetched the branch:** yours, the curator's machine, anyone's. A
+   `git fetch` makes a remote-tracking ref (`refs/remotes/origin/<branch>`) that keeps the
+   commit alive after the host has deleted the branch, and the page's own first command,
+   `git fetch --prune`, makes one. In each clone run `git fetch --prune`, then check that
+   `git branch -r --contains <hash>` prints nothing. Only then expire the reflog and collect
+   garbage, as in step 4 of 2a: while that ref exists, the commit survives them.
+5. **If the pull request came from the curator,** its machine keeps different things depending
+   on how the proposal was made. This is the one place the page says it; sections 6 and 7 point
+   here.
    - **A scheduled round** puts the files it proposed back to the default branch's content
      when it ends, and makes no local ref. Check that `leftovers` in `last-run.json` is
-     empty. The pushed commit then survives only as an object in that vault's `.git`, which
-     nothing refers to, until git prunes it. Drop it now by expiring the reflog and collecting
-     garbage, as in step 4 of 2a.
+     empty. The pushed commit stays in that vault's `.git` as an object until step 4 and the
+     garbage collection have run there.
    - **A `propose` outside a round** (an interactive session, the morning briefing) leaves the
      files modified in the working tree and makes a local ref that keeps the commit. Put the
      files back: `git restore -- <path>` for a tracked file, delete a new one. List the refs
      with `git for-each-ref refs/brain-kit/proposed/` and delete the one of that branch with
      `git update-ref -d <ref>`. The ref is named after the branch, with each `/` turned into
-     `-`. Then expire the reflog and collect garbage, as in step 4 of 2a.
-5. Find out why the push was not refused. `brain-kit doctor --only hooks-path` says whether this
-   clone runs the push gate at all, and [section 3](#3-what-the-kits-own-checks-catch-and-miss)
-   says what the gate does not see.
+     `-`. Then do step 4 and the garbage collection.
+6. Find out why the push was not refused. `brain-kit doctor --only hooks-path` says whether this
+   clone runs the push gate at all, and the
+   [appendix](#appendix-what-the-secret-checks-match-and-miss) says what the gate does not see.
 
 ### 2c. The commit is in the default branch
 
@@ -179,48 +185,74 @@ it as exposed: rotate it now ([section 1](#1-the-rule-of-the-first-minutes)).
    tells you). Set it, and the gate scans the commits the push sends, which after a rewrite are
    all of them.
 5. Allow the force push. Branch protection on the default branch normally refuses it: in the
-   host's settings, allow force pushes on that branch for the minutes you need, then turn the
-   protection back on. Push under your own identity, never the curator's (`git.agent_identity`);
-   the hook refuses that identity on the default branch.
-6. Look at what you are about to publish. `--mirror` makes the remote match this clone and
-   pushes every ref it finds, so `git for-each-ref` must list `refs/heads/` and `refs/tags/`
-   (and `refs/pull/`, which the host will refuse) and no `refs/remotes/`: a `refs/remotes/` ref
-   would publish the old history again. Then push, the way GitHub documents it:
+   host's settings, allow force pushes on that branch now, and turn the protection back on right
+   after the push in step 6. Push under your own identity, never the curator's
+   (`git.agent_identity`); the hook refuses that identity on the default branch.
+6. Push, from the clone the rewrite produced and from no other. `git push --force --mirror
+   origin` makes the remote match this clone exactly. It deletes on the remote every ref this
+   clone lacks, so a branch pushed after the clone was made would be lost (step 2 asked everyone
+   to stop pushing; keep it that way until this push is done), and it publishes every ref it
+   finds here. Check, in this folder (`vault-clean`, not your old working clone, where you may
+   find yourself after the host's settings page):
+
+   ```bash
+   git log --all --oneline -G'<shape>'   # must print nothing
+   git for-each-ref refs/remotes/        # must print nothing
+   ```
+
+   If the first prints commits, stop: this is not the rewritten clone, or the rewrite is not
+   finished. If only the second prints refs, they are this clone's remote-tracking refs, which
+   `--mirror` would publish on the host; the first check has shown they hold no leak. Remove
+   them, and run the second check again:
+
+   ```bash
+   git for-each-ref --format='%(refname)' refs/remotes/ | xargs -n 1 git update-ref --no-deref -d
+   ```
+
+   When both checks print nothing, push, the way GitHub documents it:
 
    ```bash
    git push --force --mirror origin
    ```
 
    If the push lists `refs/pull/...` refs as rejected, the host does not let you change them;
-   only support can (step 8).
+   only support can (step 8). Then turn the branch protection back on.
 7. Close every open pull request and delete the branches they came from. The host keeps the
    old commits behind each pull request, and the curator will propose again. Every clone and
    every fork still has the old history, and so do the host's pull request references. A
    `git pull` in an old clone would merge the old history back, and the next push would
-   publish the secret again. Tell each holder to delete the clone and clone again, and each
-   fork's owner to delete the fork. A collaborator who has a branch made from the old history
-   must rebase it onto the new history, not merge.
+   publish the secret again. Tell each holder to save any uncommitted work, then delete the
+   clone and clone again, and each fork's owner to delete the fork. A collaborator who has a
+   branch made from the old history must rebase it onto the new history, not merge.
 8. Ask the host's support for the garbage collection and the cache purge, as in step 3 of 2b.
    For this rewrite send them the repository, the number of pull requests it changed
    (`grep -c '^refs/pull/.*/head$' .git/filter-repo/changed-refs`), the "First Changed
    Commit(s)" the tool printed (also in `.git/filter-repo/first-changed-commits`), and the list
    of orphaned LFS objects if the run printed one. Support may decline if rotating the secret
    already removes the risk, as in step 3 of 2b.
-9. Put the curator back, on the machine where the rounds run. Delete the old clone first: it
-   holds the old history, and `brain-kit machine register --from` refuses while the old
-   clone is still there. Then clone the vault again, best at the same path: the curator's state
-   (its logs, its marks) is kept under a name made from that path, so nothing needs registering.
-   At another path, run `brain-kit machine register --from <old path>` in the new clone once the
-   old one is gone. In the new clone run `git config core.hooksPath .githooks` (a fresh clone has
-   no gate), then `brain-kit doctor` and `brain-kit schedule install`.
+9. Put the curator back, on the machine where the rounds run. The old clone there may hold the
+   only copy of uncommitted notes, stashes, and the files a session's `propose` left modified,
+   so do not delete it yet.
+   - In the old clone run `git status` and `git stash list`, and copy out what you want to
+     keep. Check what you copy for the secret.
+   - Move the old clone aside: `mv vault vault-old` (use your own folder names). That is all
+     `brain-kit machine register --from` asks for, since it refuses while the vault is still at
+     the old path.
+   - Clone the vault again, best at the same path: the curator's state (its logs, its marks) is
+     kept under a name made from that path, so nothing needs registering. At another path, run
+     `brain-kit machine register --from <old path>` in the new clone.
+   - In the new clone run `git config core.hooksPath .githooks` (a fresh clone has no gate),
+     then `brain-kit doctor` and `brain-kit schedule install`.
+   - When `brain-kit doctor` is green on the new clone, delete the moved-aside old clone. It
+     holds the old history.
 
 #### Where a copy can hide
 
 Go through this list after any rewrite. A copy in one of these places survives it.
 
 - Forks of the repository (the host's fork list), and clones on other machines, in backups and
-  in sync folders. Delete the old clone on the curator's machine too, with any
-  `refs/brain-kit/proposed/*` refs it holds.
+  in sync folders. The old clone on the curator's machine too, with any
+  `refs/brain-kit/proposed/*` refs it holds: delete it once step 9 says it is safe to.
 - Pull request descriptions and comments, issues, and the e-mail and chat notifications that
   quoted them.
 - CI logs, caches and artifacts. Delete the runs and the caches on the host.
@@ -246,72 +278,15 @@ Go through this list after any rewrite. A copy in one of these places survives i
 
 ## 3. What the kit's own checks catch and miss
 
-The kit checks for secrets in two places that share the same shapes: the `secrets` rule of
+The kit checks for secrets in two places that share six key shapes: the `secrets` rule of
 `brain-kit lint`, and the push gate, which applies them to what a push carries. Both are
-pattern scanners. Read this section before you trust a clean result.
-
-**What they match.** The six shapes in `src/leak.mjs`, and every regular expression you add to
-`privacy.secret_patterns` in `brain-kit.config.json`. Matching ignores case.
-
-- A private key header: the line that opens a PEM key (with or without RSA, OPENSSH, EC or DSA
-  in it).
-- A GitHub classic token (starts with ghp_) and a GitHub fine-grained token (starts with
-  github_pat_).
-- An Anthropic API key (starts with sk-ant-).
-- An AWS access key id (AKIA followed by 16 capital letters or digits).
-- A Slack token (starts with xoxb-, xoxa-, xoxp-, xoxr- or xoxs-).
-
-A finding names the file, the line and the pattern. It never prints the matched text.
-
-**Where they run.**
-
-- `brain-kit lint`, when you run it. It reads every file git tracks or would add, dot-files such
-  as `.env` included and files git ignores left out, every line, as the working tree stands now.
-  It reads no history. Fenced code in a note is read too, because a secret in an example is
-  still a secret. It skips the paths in `lint.secrets.exclude_paths`. By default a match is an
-  error and the run exits 1.
-- `brain-kit propose`. Before it pushes, it runs `validate` and `lint --base worktree` on the
-  tree the pull request would hold, and stops with exit 1 on a failure. The curator's model
-  publishes only through it.
-- The vault's pre-push hook, `.githooks/pre-push` (from `templates/githooks/pre-push`). It runs
-  `validate`, then `lint --base all`, then `brain-kit push-gate`, which scans everything the
-  push carries: every commit it sends (file contents, file names, message, author, committer
-  and raw headers), annotated tags, and the names of the references the push writes or
-  deletes. It never prints what matched. `brain-kit init` installs the hook; `init --adopt` does
-  unless a hook of yours is already there; `brain-kit update --install-hook` does later.
-- CI: the kit ships no CI for your vault. This repository's own CI runs the test suite, which
-  scans the kit's own files for the same shapes. A check nobody can skip would be
-  `brain-kit lint --base all` as a required status check on your host. You would set that up
-  yourself; the kit does not. [SECURITY.md](../SECURITY.md) explains why a client-side hook
-  cannot be that check.
-
-**What they cannot see.**
-
-- A file they do not read: one git ignores, one over 100 MiB (reported as unread, never as
-  clean), the inside of a submodule or a nested repository, and anything compressed,
-  encrypted or binary (an archive, an office document, most PDFs).
-- A value written another way: encoded in base64, split across a line break, or written with
-  spaces between the letters. [SECURITY.md](../SECURITY.md) records the measurements.
-- A secret that none of the six shapes describes. Tried against `brain-kit lint`, these are
-  not matched: the header of an armored PGP private key (it ends in PRIVATE KEY BLOCK), the
-  header of an encrypted PKCS#8 key (it says ENCRYPTED PRIVATE KEY), GitHub tokens that start
-  with gho_, ghs_, ghu_ or ghr_, an AWS secret access key (it has no prefix), and a key from a
-  vendor not in the list (a Stripe live key, for example). Nor is a password, a database
-  address with the password in it, or a signed token. Add a regular expression for each to
-  `privacy.secret_patterns`, for example `gh[ousr]_[A-Za-z0-9]{36}` for the four GitHub token
-  kinds. `brain-kit doctor --only config-valid` checks that each one compiles. Never put the
-  secret itself in that list: `lint` reports an entry that has the shape of a real credential.
-- A push that skipped the gate. `git push --no-verify` skips it, so does a clone where
-  `core.hooksPath` is not set, and so does an edited hook. The gate runs on your machine.
-- History, for `lint`: it reads the working tree only. The gate reads only what one push
-  carries. A secret already on the remote from before the gate was installed is found by
-  neither; search for it with `git log --all --oneline -G'<shape>'`.
-- A secret that is not in a file: a pull request comment, an issue, a CI log, the model
-  provider's side.
-- Personal data. A name or a diagnosis has no shape; see [section 4](#4-a-third-partys-personal-data-is-in-the-vault).
+pattern scanners.
 
 **A clean result is not proof.** It means that no known shape was found in the files that were
 read. It does not mean the vault holds no secret. Rotate on facts, not on a green `lint`.
+
+The [appendix](#appendix-what-the-secret-checks-match-and-miss) lists what they match, where they
+run and what they cannot see. Read it before you trust a clean result.
 
 ## 4. A third party's personal data is in the vault
 
@@ -467,9 +442,8 @@ request with content you did not expect, or ran a command you did not allow.
      `--keep-stream` (or `keep_stream` in `machine.json`). Without it the round keeps no
      record of what the model ran, only of what it was denied and what it proposed.
    - In the repository: the branches that start with `git.branch_prefix` (`bot/` by default),
-     `git for-each-ref refs/brain-kit/proposed/` (one local ref for each `propose` made outside
-     a round, by a session or the briefing; a scheduled round makes none, and what it proposed is
-     in `proposed` of `last-run.json`),
+     `git for-each-ref refs/brain-kit/proposed/` (step 5 of 2b says which proposals leave one;
+     what a scheduled round proposed is in `proposed` of `last-run.json`),
      `git log --format='%h %an %ae %s' <default branch>` to see what was committed under
      `git.agent_identity`, and the pull requests on the host.
    - The scheduler's own log. For systemd:
@@ -535,16 +509,10 @@ request with content you did not expect, or ran a command you did not allow.
 4. The next round runs at the next window in `curate.schedule` (09:30, 14:00 and 20:00 by
    default). To see what it would do first, run `brain-kit curate --check`, which stops before
    the model.
-5. A scheduled round already put its proposed files back when it ended and made no local ref;
-   the pushed commit is an unreferenced object in the vault's `.git` until git prunes it.
-   If the content must be gone from the machine now, expire the reflog and collect garbage, as
-   in step 4 of 2a.
-6. A `propose` made outside a round (a session, the briefing) leaves its files modified in the
-   working tree until the next `brain-kit sync` (every round runs it) puts them back, and a
-   local ref that keeps the commit. If the content must be gone now, run
-   `git restore -- <path>`, delete the ref with
-   `git update-ref -d refs/brain-kit/proposed/<branch with / turned into ->`, and expire the
-   reflog and collect garbage, as in step 4 of 2a.
+5. If the content of the closed pull request must be gone from the machines now, do steps 4 and
+   5 of [2b](#2b-the-commit-is-on-a-branch-or-in-a-pull-request): `git fetch --prune` in every
+   clone first, then the clean-up on the curator's machine, which differs for a scheduled round
+   and for a `propose` made outside one.
 
 ## 8. A flaw in the kit itself
 
@@ -568,3 +536,69 @@ you in an incident, can be an ordinary issue on the same terms.
    (a vulnerability goes to the advisory in section 8). The kit's own practice is the one to
    copy: each incident gets one regression test under `test/incidents/` and one entry in
    [incidents.md](incidents.md).
+
+## Appendix: what the secret checks match and miss
+
+This is the detail behind [section 3](#3-what-the-kits-own-checks-catch-and-miss): the `secrets`
+rule of `brain-kit lint`, and the push gate, which applies the same shapes to what a push
+carries.
+
+**What they match.** The six shapes in `src/leak.mjs`, and every regular expression you add to
+`privacy.secret_patterns` in `brain-kit.config.json`. Matching ignores case.
+
+- A private key header: the line that opens a PEM key (with or without RSA, OPENSSH, EC or DSA
+  in it).
+- A GitHub classic token (starts with ghp_) and a GitHub fine-grained token (starts with
+  github_pat_).
+- An Anthropic API key (starts with sk-ant-).
+- An AWS access key id (AKIA followed by 16 capital letters or digits).
+- A Slack token (starts with xoxb-, xoxa-, xoxp-, xoxr- or xoxs-).
+
+A finding names the file, the line and the pattern. It never prints the matched text.
+
+**Where they run.**
+
+- `brain-kit lint`, when you run it. It reads every file git tracks or would add, dot-files such
+  as `.env` included and files git ignores left out, every line, as the working tree stands now.
+  It reads no history. Fenced code in a note is read too, because a secret in an example is
+  still a secret. It skips the paths in `lint.secrets.exclude_paths`. By default a match is an
+  error and the run exits 1.
+- `brain-kit propose`. Before it pushes, it runs `validate` and `lint --base worktree` on the
+  tree the pull request would hold, and stops with exit 1 on a failure. The curator's model
+  publishes only through it.
+- The vault's pre-push hook, `.githooks/pre-push` (from `templates/githooks/pre-push`). It runs
+  `validate`, then `lint --base all`, then `brain-kit push-gate`, which scans everything the
+  push carries: every commit it sends (file contents, file names, message, author, committer
+  and raw headers), annotated tags, and the names of the references the push writes or
+  deletes. It never prints what matched. `brain-kit init` installs the hook; `init --adopt` does
+  unless a hook of yours is already there; `brain-kit update --install-hook` does later.
+- CI: the kit ships no CI for your vault. This repository's own CI runs the test suite, which
+  scans the kit's own files for the same shapes. A check nobody can skip would be
+  `brain-kit lint --base all` as a required status check on your host. You would set that up
+  yourself; the kit does not. [SECURITY.md](../SECURITY.md) explains why a client-side hook
+  cannot be that check.
+
+**What they cannot see.**
+
+- A file they do not read: one git ignores, one over 100 MiB (reported as unread, never as
+  clean), the inside of a submodule or a nested repository, and anything compressed,
+  encrypted or binary (an archive, an office document, most PDFs).
+- A value written another way: encoded in base64, split across a line break, or written with
+  spaces between the letters. [SECURITY.md](../SECURITY.md) records the measurements.
+- A secret that none of the six shapes describes. Tried against `brain-kit lint`, these are
+  not matched: the header of an armored PGP private key (it ends in PRIVATE KEY BLOCK), the
+  header of an encrypted PKCS#8 key (it says ENCRYPTED PRIVATE KEY), GitHub tokens that start
+  with gho_, ghs_, ghu_ or ghr_, an AWS secret access key (it has no prefix), and a key from a
+  vendor not in the list (a Stripe live key, for example). Nor is a password, a database
+  address with the password in it, or a signed token. Add a regular expression for each to
+  `privacy.secret_patterns`, for example `gh[ousr]_[A-Za-z0-9]{36}` for the four GitHub token
+  kinds. `brain-kit doctor --only config-valid` checks that each one compiles. Never put the
+  secret itself in that list: `lint` reports an entry that has the shape of a real credential.
+- A push that skipped the gate. `git push --no-verify` skips it, so does a clone where
+  `core.hooksPath` is not set, and so does an edited hook. The gate runs on your machine.
+- History, for `lint`: it reads the working tree only. The gate reads only what one push
+  carries. A secret already on the remote from before the gate was installed is found by
+  neither; search for it with `git log --all --oneline -G'<shape>'`.
+- A secret that is not in a file: a pull request comment, an issue, a CI log, the model
+  provider's side.
+- Personal data. A name or a diagnosis has no shape; see [section 4](#4-a-third-partys-personal-data-is-in-the-vault).
