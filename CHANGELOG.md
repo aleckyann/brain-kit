@@ -35,6 +35,17 @@ kit's own output. These are the fixes in the code and the messages (both languag
 - `doctor` writes its report in the vault's language, as `validate`, `lint`, the hooks and
   `prompt` do: the `lang` of `brain-kit.config.json`. Outside a vault, with a configuration
   it cannot read or with a language the kit has no pack for, the locale still decides.
+- `init` writes `sources.transcripts.include_projects` with the one project that is the new
+  vault itself (the name Claude Code gives the directory of the vault's own path, from one
+  function, `claudeProjectName`), so the first `doctor` has nothing to fail on. Only into an
+  empty list, only while a round reads transcripts, never `"all"`, and nothing for a path
+  too long to be named as it is spelt. `init --adopt` does the same.
+- `init` ends with the commands that lead to a first pull request, in order and in five
+  lines, and runs none of them: `gh auth status` (then `gh auth login` if it says no),
+  `gh repo create <name> --private --source . --push` (with the repository answered, or the
+  vault's folder name, as the default name) and `claude` in the vault. Printed only over a
+  vault whose checks passed and, when init committed, whose commit was made; not for an
+  adopted vault, which has a repository of its own.
 - `propose` in a repository with no remote of the name it reads the default branch from no
   longer says "the default branch is published to remote origin" as if something had set it
   up. It says the repository has no remote called that, and how to create one:

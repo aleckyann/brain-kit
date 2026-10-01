@@ -275,6 +275,7 @@
   "init.committed": "Primeiro commit feito, como as respostas pediram.",
   "init.commit_failed": "brain-kit init: o vault está escrito, mas o primeiro commit falhou: {detail}",
   "init.no_commit": "Nenhum commit foi feito: o primeiro commit é seu. Olhe o vault e depois faça o commit com git add -A e git commit.",
+  "init.next_steps": "Depois do primeiro commit, a partir de {dir} e nesta ordem (o init não executa nada disso):\n  1. gh auth status, e se o gh não estiver logado: gh auth login\n  2. gh repo create {name} --private --source . --push\n  3. claude, para abrir o Claude Code no vault\nO nome depois de create vem das suas respostas ou da pasta do vault; use outro se preferir.",
   "init.checking": "Verificando o vault novo com brain-kit validate e brain-kit lint --base all:",
   "init.gitignore_header": "Escrito pelo brain-kit init. Arquivos locais da máquina, que nunca pertencem ao histórico do vault.",
   "init.gitignore_dependencies": "Dependências: instaladas por máquina, nunca versionadas.",
