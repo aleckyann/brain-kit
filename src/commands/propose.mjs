@@ -74,8 +74,9 @@
 //      writes nothing. That means asking the remote what it publishes (a
 //      read-only `git ls-remote`, the question the fetch of step 7 starts
 //      with, judged by the same code: nothing published, the base missing,
-//      or no answer, which the dry run says it could not verify) and, last,
-//      asking gh whether it is logged in (`gh auth status`, the one thing
+//      or no answer, which the dry run says it could not verify), asking each
+//      push url which branches it holds (to name the branch the real run
+//      would make) and, last, asking gh whether it is logged in (`gh auth status`, the one thing
 //      that would make the real run publish its branch and then end with
 //      exit 3 and no pull request). No fetch, so no reference moves and no
 //      object is written.
@@ -499,9 +500,12 @@ async function proposeUnderLock({ root, cwd, config, parsed, io, t, env, now, wa
     // What the real run would stop on before it writes anything, said as it
     // says it; then the one thing it would find out only after publishing.
     refuseUnlessPublished(t, remote, base, publishedBranch(root, remote, { branch: base, env }), { dry: true });
+    // The name the real run would push to (a read-only ls-remote of each push
+    // url, as it asks), so the plan names the branch that would be made.
+    const branch = freeBranch(root, t, env, stamped, urls, pinned);
     const program = gitConfig.pr_command;
     refuseUnlessGhLoggedIn(root, t, env, program);
-    io.stdout.write(`${t('propose.dry_run', { files: names, urls, base, branch: stamped, title, origin, remote, program })}\n`);
+    io.stdout.write(`${t('propose.dry_run', { files: names, urls, base, branch, title, origin, remote, program })}\n`);
     return EXIT.OK;
   }
 

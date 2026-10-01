@@ -16,7 +16,9 @@ kit's own output. These are the fixes in the code and the messages (both languag
   `git ls-remote`, judged by the same function as the real run's fetch, so it refuses with
   the same sentence and the same exit code 1) and `gh auth status`, and refuses with exit 3
   when `gh` is absent or logged out, naming `gh auth login`. A remote that cannot be asked is
-  said to be unverified, exit 1, never "Would propose". It still writes nothing.
+  said to be unverified, exit 1, never "Would propose". It also names the branch the real run
+  would make (with `-2` when a push url already holds the stamped one). It still writes
+  nothing.
 - `doctor` has a new check, `gh-auth` (after `gh-present`): it runs `gh auth status` and
   fails, naming `gh auth login`, when `gh` is installed but holds no login. Until now a
   logged-out `gh` read `ok` and the first `propose` ended exit 3 with the branch pushed and

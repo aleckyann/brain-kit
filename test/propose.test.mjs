@@ -603,6 +603,19 @@ test('--dry: the remote is judged before gh, so a vault with both problems is to
   assert.deepEqual(world.ghCalls(), [], 'gh was not asked');
 });
 
+test('--dry names the branch the real run would push to: the stamped name, with -2 when a push url already holds it', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  git(world.elsewhere, ['push', '-q', 'origin', `HEAD:refs/heads/${BRANCH}`]);
+  const run = await propose(world, ['A', '--only', 'notes/a.md', '--dry']);
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.equal(run.stdout, line('propose.dry_run', { files: ['notes/a.md'], urls: [world.remote], base: 'main', branch: `${BRANCH}-2`, title: 'curate: A', origin: 'main', remote: 'origin', program: 'gh' }));
+  // And it is the one the real run uses.
+  const real = await propose(world, ['A', '--only', 'notes/a.md']);
+  assert.equal(real.code, EXIT.OK, real.stderr);
+  assert.ok(world.remoteSha(`refs/heads/${BRANCH}-2`));
+});
+
 test('--dry: with everything the real run needs in place it prints the plan, having asked the remote what it publishes and gh whether it is logged in, and nothing else', async () => {
   const world = makeProposeWorld();
   world.write('notes/a.md', note('A'));
