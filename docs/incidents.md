@@ -7,14 +7,15 @@ Names of people, companies and tools were removed on purpose.
 
 Seventy three lessons were extracted from the original vault, written up as seventy
 two entries: the four day curation outage of September 2026 produced two lessons about
-the same incident and is written up once, under 13/09/2026. Seven entries were added
+the same incident and is written up once, under 13/09/2026. Eight entries were added
 since, each dated: the leak gate that blocked its own release tag (18/09/2026), the
 selection of transcripts by modification time (24/09/2026), the settings a headless
 run inherits (24/09/2026), which the kit's own build produced, the round that took its
 own parent for a competing curator (28/09/2026), found while moving a vault onto the
-kit, and, all three found in real rounds on the kit, the attachments the connector
+kit, and, all four found in real runs on the kit, the attachments the connector
 answered "not found" (30/09/2026), the expired login a round reported with no reason
-(30/09/2026) and the transcripts too big for the Read tool (01/10/2026). Seventy nine
+(30/09/2026), the transcripts too big for the Read tool (01/10/2026) and the envelope
+the desktop application wraps a scheduled task's prompt in (01/10/2026). Eighty
 entries follow. Where a lesson carries no date of its own,
 the entry says "Undated" and explains why.
 
@@ -462,14 +463,39 @@ time, visible in the pull request's diff. `schedule status --job briefing` and `
 judge the task signed with the filter's own predicate, and refuse a signature that is
 blank, more than one line or padded with spaces, which could sign nothing
 ([briefing.md](briefing.md)); `test/incidents/2026-09-25-briefing-self-trace.test.mjs`
-(Phase 4). Not measured yet: whether the desktop application hands the task's prompt to the session
-as its first user message, unchanged. The curator drops the task's session only if it
-does. If the application wraps the prompt (a skill invocation line, a header), the session
-is read like one of your own: the cost is the one of a briefing you ask for yourself (a
-capture the next round may propose again, visible in its diff, nothing lost), and only
-when the task's working directory is a project listed in
-`sources.transcripts.include_projects`. After the first scheduled run, `brain-kit curate
---dry` shows the transcripts plan and how many sessions it left out as the kit's own.
+(Phase 4). Whether the desktop application hands the task's prompt to the session as its
+first user message, unchanged, was measured on the first real run: it does not, and the
+next entry is what that cost and what the filter does about it.
+
+### 01/10/2026: the desktop application wrapped the task's prompt, so the filter never saw the briefing's own session
+**What happened.** On the first real briefing run on the desktop application, the
+briefing's own session was supposed to be dropped by the self-trace filter, which
+recognized a session by its first user message starting with a signature. The
+application does not hand a scheduled task's prompt to the session as it is. The first
+user message was one string: an opening tag naming the task and its file, one
+paragraph in the application's own wording, a blank line, the prompt exactly as
+registered, a newline and a closing tag. It did not start with the signature, so the
+session would have been kept, and the next round would have captured the briefing's own
+questions and summaries as new facts of the person's day. Every test until then wrapped
+nothing: the prompt was always the message's first line, so they all passed.
+**Rule.** The predicate that decides a session is the kit's own is one function, and it
+has to see the session the way the system delivers it, measured on a real run and not
+assumed. Look through the envelope, and only through it: a first message that starts
+with the application's open tag is the kit's own when the task's name starts with the
+kit's task id prefix (which also drops the briefing of another vault on the same
+machine, whose signature this vault does not know) or when the prompt inside, the text
+that follows the first blank line after the tag, starts with a signature. Do not depend
+on the application's paragraph, which is its wording and may change; read the tag with a
+bounded pass, because a first message can be a pasted blob of megabytes; and let
+anything that does not clearly match stay in, as before. A signature anywhere else in
+the message, the tag quoted in the middle of a text, and the envelope of the person's own
+other scheduled task (another name, an unsigned prompt) are still the person's.
+**Where it lives in brain-kit.** `src/sources/transcripts-claude-code.mjs`
+(`startsWithSignature` and the envelope reading it uses), `src/briefing/task-id.mjs` (the
+task id prefix, defined once and re-exported by `src/commands/schedule.mjs`),
+[briefing.md](briefing.md) ("Which sessions the curator skips"),
+`test/scheduled-task-envelope.test.mjs`,
+`test/incidents/2026-10-01-scheduled-task-envelope-self-trace.test.mjs` (Phase 5).
 
 ### 11/08/2026: the cap threw away exactly the work of the day
 **What happened.** The cap on how many transcripts to read sorted candidates by

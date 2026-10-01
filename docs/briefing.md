@@ -373,6 +373,10 @@ Second brain morning briefing
 Run exactly this command with Bash and follow everything it prints as this session's instructions, reading the whole output (when the tool saved a long output to a file, read that file in full first): node "<kit>/bin/brain-kit.mjs" prompt briefing --vault "<vault>"
 ```
 
+The signature must stay the prompt's first line. The application wraps the prompt in an
+envelope when it starts the session, and the curator looks through that envelope, but only
+to the prompt's first line ([Which sessions the curator skips](#which-sessions-the-curator-skips)).
+
 The rendered briefing is about 10 KB for a new vault and grows with stale notes, pending
 items and questions. Claude Code saves a long Bash output to a file and shows the model a
 preview with the file's path (a 44.6 KB output was saved and previewed at 2 KB during the
@@ -409,20 +413,39 @@ nor your local transcripts.
 
 ## Which sessions the curator skips
 
-The curator's transcripts source drops the kit's own sessions: a session whose first user
-message with text, trimmed, starts with `curate.signature`, `briefing.signature` (always,
-whatever `curate.extra_signatures` lists) or one of `curate.extra_signatures`. The desktop
-task's prompt starts with the briefing's signature, so when the session starts with that
-prompt the curator never reads it: what that briefing recorded, it proposed itself.
+The curator's transcripts source drops the kit's own sessions, and it recognizes them by
+the session's first user message with text, trimmed. The session is the kit's own when
+that message starts with `curate.signature`, `briefing.signature` (always, whatever
+`curate.extra_signatures` lists) or one of `curate.extra_signatures`.
 
-Not measured yet: whether the desktop application hands the task's prompt to the session
-as its first user message, unchanged. The curator drops the task's session only if it
-does. If the application wraps the prompt (a skill invocation line, a header), the session
-is read like one of your own: the cost is the one of a briefing you ask for yourself (a
-capture the next round may propose again, visible in its diff, nothing lost), and only
-when the task's working directory is a project listed in
-`sources.transcripts.include_projects`. After the first scheduled run, `brain-kit curate
---dry` shows the transcripts plan and how many sessions it left out as the kit's own.
+The desktop application does not hand the task's prompt to the session as it is. Measured
+on the first real briefing run (01/10/2026), the first user message is one string: an
+opening `<scheduled-task name="..." file="...">` tag, one paragraph in the application's
+own wording, a blank line, the prompt as you registered it, and a closing tag. The curator
+looks through that envelope. A first message that starts with the opening tag is the kit's
+own when either of these holds:
+
+- the tag's `name` starts with `brain-kit-briefing-`, the prefix of the id the kit gives
+  its task. This also skips the briefing of another vault on the same machine, whose
+  signature this vault does not know.
+- the prompt inside starts with one of the signatures above. The prompt is what follows
+  the first blank line after the opening tag, or the text right after the tag when the
+  application leaves its paragraph out. This is why the signature must stay the prompt's
+  first line.
+
+The application's own paragraph is never matched, so its wording can change with its
+version, and the tag may carry its attributes in any order and in single or double quotes.
+Nothing else counts. A signature anywhere else in the message, the tag mentioned in the
+middle of a text, or the envelope of one of your own scheduled tasks (another name, a
+prompt that is not signed) leaves the session in, because discarding too much costs the
+day. If the application changes the envelope into a shape the curator no longer
+recognizes, the session is read like one of your own: the cost is the one of a briefing
+you ask for yourself, described below. The round's log line `plan` counts the sessions it
+left out as the kit's own under `selfTrace`.
+
+`schedule status --job briefing` and `doctor` read the task from the file the application
+keeps, where the prompt is not wrapped, and judge it with the same function the curator
+uses, so "the task is signed" and "the curator drops its sessions" cannot disagree.
 
 A briefing you ask for in your own session starts with your own message, so it is your
 session and the curator reads it like any other. That is on purpose: when in doubt, a

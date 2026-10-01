@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+### The curator sees through the envelope the desktop application wraps a task's prompt in (01/10/2026)
+
+- On the first real briefing run on the desktop application, the session's first user
+  message was not the task's prompt: the application wraps it in an envelope (an opening
+  `<scheduled-task name="..." file="...">` tag, one paragraph of its own wording, a blank
+  line, the prompt as registered, a closing tag). The self-trace filter compared the start
+  of the message with the signatures, so it kept the briefing's own session, and the next
+  round would have read it back as the person's work
+  ([docs/incidents.md](docs/incidents.md), 01/10/2026). Every test had passed because none
+  wrapped the prompt.
+- `startsWithSignature`, still the one predicate the curator, `schedule status --job
+  briefing` and `doctor` share, now looks through the envelope. A first message that
+  starts with the opening tag is the kit's own when the tag's `name` starts with
+  `brain-kit-briefing-` (this also drops the briefing of another vault on the same machine,
+  whose signature this vault does not know) or when the prompt inside, the text after the
+  first blank line that follows the tag (or right after the tag when the application leaves
+  its paragraph out), starts with one of the signatures. The paragraph's wording is never
+  matched, attributes may come in any order with single or double quotes, and the closing
+  tag may be missing. Nothing else counts: a signature anywhere else in the message, the
+  tag quoted in the middle of a text and the envelope of the person's own other scheduled
+  task (another name, an unsigned prompt) leave the session in. The tag is read in one
+  bounded pass over the first 16 KB of the message, so a first message of megabytes costs
+  nothing, and a tag that is not finished inside it is no envelope.
+- The signature must still be the prompt's first line ([docs/briefing.md](docs/briefing.md),
+  "Which sessions the curator skips", now says what was measured instead of "not measured
+  yet"). `schedule status` and `doctor` read the task from its file, where the prompt is
+  not wrapped, and say what they said before.
+- The task id prefix `brain-kit-briefing-` is defined once, in `src/briefing/task-id.mjs`,
+  and `src/commands/schedule.mjs` re-exports it.
+
 ## 0.0.5 (tagged `v0.0.5`, not on npm)
 
 ### The model reads a digest of each transcript, never the transcript (01/10/2026)
