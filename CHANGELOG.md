@@ -79,6 +79,12 @@
   English fragments the stranger listed: "best effort" is now "de melhor esforço", "overlay de
   prompt" is described as a prompt of the vault's own, "tarball" is the `.tgz` file, and
   `verified` is glossed where `verify` stamps it.
+- The `setup` skill, in both languages, and its eval criteria no longer say that the doctor
+  refuses to run outside a vault and so runs only after `init`: that stopped being true when
+  the doctor learned to check the machine there. Step 3 now runs `doctor` from a folder that
+  is not a vault as the machine check (the "no vault found" line it prints is expected), and
+  the doctor after `init` and the final one stay as they were. The test that pinned the old
+  sentence now pins the three runs, in order.
 
 ## 0.0.8 (tagged `v0.0.8`, not on npm)
 

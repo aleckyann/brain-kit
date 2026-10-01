@@ -668,7 +668,8 @@ const SKILL_SENTENCES = {
       'gh repo create <name> --private --source <dir> --push',
       'Without `--push` the remote is empty and `propose` cannot work',
       '`claude --version`',
-      'refuses to run outside a vault',
+      'Then run `{{kit}} doctor` from a folder that is not a vault yet',
+      'that is expected here, not a problem',
       '{{kit}} doctor <dir>',
       'a repository with no commit has nothing to push',
       'If that folder already has a `brain-kit.config.json`, it is a vault that was set up before, usually on another machine and cloned here: `init` and `init --adopt` both refuse it, so skip steps 5 to 10 and go to step 11.',
@@ -679,7 +680,8 @@ const SKILL_SENTENCES = {
       'gh repo create <nome> --private --source <dir> --push',
       'Sem o `--push` o remoto fica vazio e o `propose` não consegue funcionar',
       '`claude --version`',
-      'recusa rodar fora de um vault',
+      'Depois rode o `{{kit}} doctor` numa pasta que ainda não é um vault',
+      'isso é esperado aqui, não é problema',
       '{{kit}} doctor <dir>',
       'um repositório sem commit não tem o que enviar',
       'Se essa pasta já tem um `brain-kit.config.json`, é um vault configurado antes, em geral em outra máquina e clonado aqui: o `init` e o `init --adopt` recusam esse vault, então pule os passos 5 a 10 e vá para o passo 11.',
@@ -744,14 +746,28 @@ test('the curate-session skill quotes the real start of the propose refusal for 
   }
 });
 
-test('the setup skill no longer runs the doctor before a vault exists, and still ends with it', () => {
+// The doctor checks the machine when it runs outside a vault (phase 6, 0.0.9), so the setup skill
+// runs it three times: as the machine check before any vault exists, after `init`, and at the end.
+// It used to say the opposite ("it refuses to run outside a vault, so it runs after init"), which
+// is false now; the skills, the eval criteria and this test were the five places that said so.
+test('the setup skill runs the doctor outside a vault as the machine check, again after init, and once more at the end', () => {
   for (const lang of ['en', 'pt-BR']) {
     const body = read(`lang/${lang}/skills/setup.md`);
     const machine = body.slice(body.indexOf('\n1. '), body.indexOf('\n4. '));
-    assert.doesNotMatch(machine, /(Run|Rode) `\{\{kit\}\} doctor/, `${lang}: the machine checks run before any vault exists`);
+    assert.match(machine, /(run|rode)( o)? `\{\{kit\}\} doctor`/i, `${lang}: the machine check runs the doctor before any vault exists`);
+    assert.match(machine, lang === 'en' ? /from a folder that is not a vault yet/ : /numa pasta que ainda não é um vault/, `${lang}: from outside a vault`);
+    assert.match(machine, lang === 'en' ? /checks only this machine/ : /confere só esta máquina/, `${lang}: where it checks only the machine`);
+    assert.doesNotMatch(body, /refuses to run outside a vault|recusa rodar fora de um vault|runs after `init`, in step 9|roda depois do `init`, no passo 9/, `${lang}: the old claim is gone`);
+    const runs = body.split('{{kit}} doctor').length - 1;
+    assert.equal(runs, 3, `${lang}: the doctor runs three times (${runs})`);
+    assert.ok(body.indexOf('{{kit}} doctor') < body.indexOf('--from-answers <'), `${lang}: the first run is before init`);
     assert.ok(body.indexOf('--from-answers <') < body.indexOf('{{kit}} doctor <dir>'), `${lang}: the doctor runs after init`);
     assert.ok(body.indexOf('{{kit}} doctor <dir>') < body.lastIndexOf('{{kit}} doctor'), `${lang}: and once more at the end`);
     assert.ok(!/gh repo create <(name|nome)> --private --source <dir>(?! --push)/.test(body), `${lang}: every repository command pushes`);
+    // What the eval judge is told to expect is the same story (nothing pinned it, and it went stale).
+    const criteria = read(`evals/setup-${lang}/graders/criteria.md`);
+    assert.doesNotMatch(criteria, /refuses outside a vault|recusa fora de um vault|without running the kit's `doctor` yet|sem rodar o `doctor` do kit ainda/, `${lang}: the criteria still say the doctor is not run yet`);
+    assert.match(criteria, lang === 'en' ? /then the kit's `doctor` from a folder that is not a vault, as the machine check/ : /e depois o `doctor` do kit numa pasta que não é um vault, como conferência da máquina/, `${lang}: the criteria expect the machine check`);
   }
 });
 
