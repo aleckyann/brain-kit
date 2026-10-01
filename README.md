@@ -12,9 +12,11 @@
 > `watermark import`, a bridge to a legacy `flock` lock, and rounds with no cost, turn or
 > time limit when the configuration asks for none. Phase 5 is in progress: the reference vault
 > this kit was extracted from now runs its configuration, CI, push gate and Stop hook from
-> the kit, and its scheduled curator switches over after a three-day shadow. The tag
-> `v0.0.2` is the version it installs; the package on npm is still the Phase 0 skeleton.
-> Follow the repository for the first usable release.
+> the kit, and since 01/10/2026 its scheduled curator runs on the kit too (its legacy timer
+> is disabled) and its morning briefing runs as a desktop task; what is still open before
+> the phase ends is in the Status table below. Every version from 0.0.2 on is a git tag
+> only: the package on npm is still the Phase 0 skeleton, and the 0.1.0 release on npm is
+> Phase 6, which has not started.
 
 A second brain in plain markdown, in the Open Knowledge Format (OKF) v0.2, kept by an
 AI agent that reads it through an index, feeds it every day from your own work (session
@@ -247,17 +249,21 @@ line `plan` counts the sessions it left out as the kit's own, under `selfTrace`;
 ## Installing a fixed version
 
 A vault you depend on should run a fixed version of the kit, not whatever the default
-branch holds today. The tag `v0.0.2` is the first such version. `npm i -g
-github:aleckyann/brain-kit#v0.0.2` installs it where npm may fetch git packages; where
-it may not (npm refuses with `EALLOWGIT`), pack the tag yourself, install the tarball,
-and keep the unpacked copy for the plugin:
+branch holds today. Every version from 0.0.2 on is a git tag, and the latest tag is the
+one to install. The list of versions, and what each one did, is in the
+[CHANGELOG](CHANGELOG.md) and on the Releases page of the repository.
+`npm i -g github:aleckyann/brain-kit#<tag>` installs a tag where npm may fetch git
+packages; where it may not (npm refuses with `EALLOWGIT`), pack the tag yourself, install
+the tarball, and keep the unpacked copy for the plugin. The first lines below find the
+latest tag, so nothing in them names a version:
 
 ```bash
 git clone https://github.com/aleckyann/brain-kit.git
-mkdir -p ~/.local/share/brain-kit/v0.0.2
-git -C brain-kit archive v0.0.2 | tar -x -C ~/.local/share/brain-kit/v0.0.2
-cd ~/.local/share/brain-kit/v0.0.2 && npm pack && npm i -g ./second-brain-kit-0.0.2.tgz
-claude plugin marketplace add ~/.local/share/brain-kit/v0.0.2
+TAG=$(git -C brain-kit describe --tags --abbrev=0)
+mkdir -p ~/.local/share/brain-kit/$TAG
+git -C brain-kit archive $TAG | tar -x -C ~/.local/share/brain-kit/$TAG
+cd ~/.local/share/brain-kit/$TAG && npm pack && npm i -g ./second-brain-kit-${TAG#v}.tgz
+claude plugin marketplace add ~/.local/share/brain-kit/$TAG
 claude plugin install brain-kit@brain-kit --scope user
 ```
 
@@ -295,9 +301,12 @@ marketplace. Inside a vault:
 | 2 | Scheduled curator over local transcripts, scheduler templates | done |
 | 3 | Calendar and meeting-notes sources (best effort by design) | done |
 | 4 | Morning briefing | done |
-| 5 | Migration of the original vault onto the kit (5a, what a migrating vault needs: done, tagged `v0.0.2`) | in progress |
-| 6 | 0.1.0 release | planned |
+| 5 | Migration of the original vault onto the kit | in progress. Done: 5a (what a migrating vault needs, since 0.0.2); the vault's scheduled curator moved from its legacy scripts to the kit on 01/10/2026 (a systemd user timer at 09:30 with retries at 14:00 and 20:00, the legacy timer disabled) and its first real rounds were supervised; the model reads a text digest of each transcript (0.0.5); the morning briefing runs as a desktop application task and ran for the first time on 01/10/2026, and since 0.0.6 the curator recognises its session through the envelope the application wraps around the task's prompt. Open for the exit of the phase: five curator rounds and three briefings without an unexplained failure, the cleanup of the legacy scripts after seven stable days, and the first `verify` |
+| 6 | 0.1.0 release on npm | planned, not started; it needs `docs/incident-response.md`, `examples/minimal-vault` and a run by an external adopter, none of which exists yet |
 | 7 | Other forges, other harnesses, more sources, each only when a second real case needs it | planned |
+
+The latest tag is `v0.0.6`. Every version from 0.0.2 on is a git tag only: the package
+`second-brain-kit` on npm still has only 0.0.1, the Phase 0 skeleton.
 
 Phase 1 is built in five slices:
 

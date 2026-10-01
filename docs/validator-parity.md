@@ -112,11 +112,12 @@ findings).
 
 **Improvement**: an adopter who wants a directory like this excluded now
 configures it once, explicitly, rather than depending on a name this project
-happened to hard-code for one vault. The reference vault itself has not yet
-set `validate.ignore_paths` for this, because it has no configuration file for
-this kit at all yet (adopting one is a later slice); this run's own
-configuration deliberately did not add that entry either, specifically so this
-comparison would show the gap rather than configure it away.
+happened to hard-code for one vault. On the date of this run the reference
+vault itself had not set `validate.ignore_paths` for this, because it had no
+configuration file for this kit at all then (adopting one was a later slice,
+part of Phase 5); this run's own configuration deliberately did not add that
+entry either, specifically so this comparison would show the gap rather than
+configure it away.
 
 ### Defect 4: the walk had no shared implementation and no test
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- The READMEs and the documentation were brought to the stage of 0.0.6 (01/10/2026): the
+  status of each phase and the point Phase 5 has reached, the tag and npm situation (every
+  version from 0.0.2 on is a git tag only; npm has only the 0.0.1 skeleton), an install
+  snippet that resolves the latest tag instead of naming a version, and two sentences
+  that spoke of work as still to come after it had landed (`SECURITY.md` and
+  `docs/validator-parity.md`).
+
 ## 0.0.6 (tagged `v0.0.6`, not on npm)
 
 ### The curator sees through the envelope the desktop application wraps a task's prompt in (01/10/2026)

@@ -13,9 +13,11 @@
 > precisa: o `watermark import`, uma ponte para uma trava `flock` legada e rodadas sem teto
 > de custo, de turnos ou de tempo quando a configuração não pede nenhum. A fase 5 está em
 > andamento: o vault de referência de onde este kit saiu já roda a configuração, o CI, o
-> gate de push e o hook Stop pelo kit, e o curador agendado dele troca depois de três dias
-> de shadow. A tag `v0.0.2` é a versão que ele instala; o pacote no npm ainda é o esqueleto
-> da fase 0. Acompanhe o repositório para a primeira versão usável.
+> gate de push e o hook Stop pelo kit, e, desde 01/10/2026, o curador agendado dele também
+> roda pelo kit (o timer legado está desativado) e o briefing matinal dele roda como tarefa
+> do aplicativo para desktop; o que ainda falta para a fase terminar está na tabela de
+> Status abaixo. Toda versão a partir da 0.0.2 é só uma tag do git: o pacote no npm ainda é
+> o esqueleto da fase 0, e a publicação 0.1.0 no npm é a fase 6, que não começou.
 
 Um segundo cérebro em markdown puro, no Open Knowledge Format (OKF) v0.2, mantido por um
 agente de IA que o lê por um índice, o alimenta todo dia a partir do seu próprio trabalho
@@ -256,17 +258,21 @@ detalhes.
 ## Instalando uma versão fixa
 
 Um vault do qual você depende deve rodar uma versão fixa do kit, e não o que o branch
-padrão tiver hoje. A tag `v0.0.2` é a primeira. `npm i -g github:aleckyann/brain-kit#v0.0.2`
-a instala onde o npm pode baixar pacotes de git; onde não pode (o npm recusa com
-`EALLOWGIT`), empacote a tag você mesmo, instale o tarball e guarde a cópia
-desempacotada para o plugin:
+padrão tiver hoje. Toda versão a partir da 0.0.2 é uma tag do git, e a tag mais recente é a
+que se instala. A lista das versões, e o que cada uma fez, está no
+[CHANGELOG](CHANGELOG.md) e na página de Releases do repositório.
+`npm i -g github:aleckyann/brain-kit#<tag>` instala uma tag onde o npm pode baixar pacotes
+de git; onde não pode (o npm recusa com `EALLOWGIT`), empacote a tag você mesmo, instale o
+tarball e guarde a cópia desempacotada para o plugin. As primeiras linhas abaixo descobrem
+a tag mais recente, então nenhuma delas cita uma versão:
 
 ```bash
 git clone https://github.com/aleckyann/brain-kit.git
-mkdir -p ~/.local/share/brain-kit/v0.0.2
-git -C brain-kit archive v0.0.2 | tar -x -C ~/.local/share/brain-kit/v0.0.2
-cd ~/.local/share/brain-kit/v0.0.2 && npm pack && npm i -g ./second-brain-kit-0.0.2.tgz
-claude plugin marketplace add ~/.local/share/brain-kit/v0.0.2
+TAG=$(git -C brain-kit describe --tags --abbrev=0)
+mkdir -p ~/.local/share/brain-kit/$TAG
+git -C brain-kit archive $TAG | tar -x -C ~/.local/share/brain-kit/$TAG
+cd ~/.local/share/brain-kit/$TAG && npm pack && npm i -g ./second-brain-kit-${TAG#v}.tgz
+claude plugin marketplace add ~/.local/share/brain-kit/$TAG
 claude plugin install brain-kit@brain-kit --scope user
 ```
 
@@ -304,9 +310,12 @@ A pasta `evals/` traz um caso de `claude plugin eval` por skill e idioma; veja
 | 2 | Curador agendado sobre transcripts locais, templates de agendamento | concluída |
 | 3 | Fontes de agenda e notas de reunião (best effort por desenho) | concluída |
 | 4 | Briefing matinal | concluída |
-| 5 | Migração do vault original para o kit (5a, o que um vault em migração precisa: concluída, tag `v0.0.2`) | em andamento |
-| 6 | Publicação 0.1.0 | planejada |
+| 5 | Migração do vault original para o kit | em andamento. Feito: a 5a (o que um vault em migração precisa, desde a 0.0.2); o curador agendado do vault saiu dos scripts legados para o kit em 01/10/2026 (um timer de usuário do systemd às 09:30 com novas tentativas às 14:00 e às 20:00, o timer legado desativado) e as primeiras rodadas reais foram acompanhadas; o modelo lê um extrato em texto de cada transcript (0.0.5); o briefing matinal roda como tarefa do aplicativo para desktop e rodou pela primeira vez em 01/10/2026, e desde a 0.0.6 o curador reconhece a sessão dele pelo envelope que o aplicativo põe em volta do prompt da tarefa. Falta para a fase terminar: cinco rodadas do curador e três briefings sem falha inexplicada, a limpeza dos scripts legados depois de sete dias estáveis e o primeiro `verify` |
+| 6 | Publicação 0.1.0 no npm | planejada, não começou; precisa de `docs/incident-response.md`, `examples/minimal-vault` e de uma execução por um adotante externo, e nenhum dos três existe ainda |
 | 7 | Outras forjas, outros harnesses, mais fontes, cada um só quando um segundo caso real precisar | planejada |
+
+A tag mais recente é a `v0.0.6`. Toda versão a partir da 0.0.2 é só uma tag do git: o
+pacote `second-brain-kit` no npm continua com apenas a 0.0.1, o esqueleto da fase 0.
 
 A fase 1 é construída em cinco fatias:
 
