@@ -29,9 +29,39 @@
 //     covered and `overCap` says so: curate refuses to run the model.
 //     Every ceiling announces itself.
 // And one rule of the prompt: a transcript is sampled from its end, never
-// read whole ("reading a transcript whole blew the context"), so the plan
-// carries where the last 64 KB begin, as a byte offset and as the number
-// of the line that holds that byte (the Read tool takes a line offset).
+// read whole ("reading a transcript whole blew the context"). The plan
+// still carries where the last 64 KB begin (sampleFrom, sampleLine), but
+// the model no longer reads a transcript at all (01/10/2026, the first real
+// round on a real vault: sessions of 386 to 512 KB of JSONL with enormous
+// lines, which the Read tool refuses whole over 256 KB and in slices over
+// 25 000 tokens, so the source could never be proven read). It reads a
+// DIGEST of each kept transcript instead, which this module writes from
+// the same parser and the same window before the model starts:
+//   - only the user and assistant lines whose own timestamp falls inside
+//     the plan's window (the covered days), in order of time, one line
+//     each, `[HH:MM user] <text>` (`[DD/MM HH:MM user]` when the window
+//     spans more than one day), the time on the vault's wall clock;
+//   - only their text: the string content of a user line, the `text`
+//     blocks of a content array; never a tool use, a tool result or a
+//     thinking block; never a line the harness marks as its own (isMeta,
+//     isCompactSummary), nor a text block that starts with one of the
+//     harness's wrappers (HARNESS_PREFIXES). A wrapper quoted inside normal
+//     text keeps its message: in doubt, include;
+//   - whitespace and control characters folded to single spaces, each
+//     message cut at DIGEST_LIMITS.messageChars with a visible ` [...]`,
+//     and the whole kept under DIGEST_LIMITS, keeping the END (the most
+//     recent messages) when the window holds more; the first line names
+//     the session, the window, the time zone, how many messages the window
+//     held and how many the digest keeps, and every cut, in the vault's
+//     language.
+// DIGEST_LIMITS is a technical bound of the Read tool (256 KB, 25 000
+// tokens, 2 000 lines by default, long lines cut), never a policy: a digest
+// at its largest is about 41 000 characters on at most 801 lines, so at
+// most 123 000 bytes (UTF-8 spends at most 3 bytes per UTF-16 unit), and
+// about 23 700 tokens even at 2 characters per token with Read's line
+// numbers counted (test/transcript-digests.test.mjs proves the worst
+// case). Reading a digest whole is what proves the transcript read; the
+// raw file is no longer granted, nor counted.
 //
 // A file is scanned in fixed-size chunks, line by line, never loaded
 // whole: an active session can be hundreds of megabytes and is exactly
@@ -85,10 +115,10 @@
 // a day nobody read. Any other value lists no project (`no_projects`).
 import * as fs from 'node:fs';
 import { homedir } from 'node:os';
-import { join, sep } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { createTranslator } from '../lang.mjs';
-import { addDays, localDay, startOfDay } from '../guards/watermark.mjs';
+import { addDays, localDay, startOfDay, wallClock } from '../guards/watermark.mjs';
 import { unsafeRuleCharacters } from '../curate/rule-path.mjs';
 
 export const SAMPLE_BYTES = 64 * 1024;
@@ -96,6 +126,22 @@ export const MTIME_SLACK_MS = 15 * 60 * 1000;
 export const DEFAULT_LIMITS = Object.freeze({ chunkBytes: 256 * 1024, maxLineChars: 32 * 1024 * 1024 });
 // The one value of include_projects that is not a list.
 export const ALL_PROJECTS = 'all';
+
+// The bounds of one digest (see the header): each message's text is cut at
+// `messageChars`, and the message lines, newlines included, hold at most
+// `totalChars` characters and `messages` lines. The first line, the
+// header, comes on top of them and stays under 1 000 characters.
+export const DIGEST_LIMITS = Object.freeze({ messageChars: 1800, totalChars: 40000, messages: 800 });
+// What a message cut at messageChars ends with.
+export const DIGEST_CUT_MARK = '[...]';
+
+// What the harness injects into a session as if the person had typed it: a
+// text block that starts with one of these (after leading whitespace) is
+// not the person's or the assistant's own text.
+export const HARNESS_PREFIXES = Object.freeze([
+  '<system-reminder>', '<command-name>', '<command-message>', '<command-args>', '<command-stdout>', '<local-command-',
+  '<task-notification>', '<user-prompt-submit-hook>', '<bash-stdout>', '<bash-stderr>', 'Caveat:',
+]);
 
 const MESSAGE_TYPES = new Set(['user', 'assistant', 'system', 'attachment']);
 
@@ -259,12 +305,8 @@ function scanFile(path, size, sampleFrom, window, starts, signatures, io, limits
   function judge(raw) {
     if (raw.trim() === '') return;
     lines += 1;
-    let line;
-    try {
-      line = JSON.parse(raw);
-    } catch {
-      return;
-    }
+    const line = parseLine(raw);
+    if (line === undefined) return;
     parsed += 1;
     if (line === null || typeof line !== 'object' || !MESSAGE_TYPES.has(line.type)) return;
     if (line.type === 'user' || line.type === 'assistant') conversation += 1;
@@ -275,11 +317,10 @@ function scanFile(path, size, sampleFrom, window, starts, signatures, io, limits
         selfTrace = startsWithSignature(content, signatures);
       }
     }
-    if (typeof line.timestamp !== 'string') return;
-    const at = Date.parse(line.timestamp);
+    const at = instantOf(line);
     if (Number.isNaN(at)) return;
     anyTimestamp = true;
-    if (at < from || at >= to) return;
+    if (!inWindow(at, from, to)) return;
     let index = starts.length - 1;
     while (index > 0 && at < starts[index]) index -= 1;
     const span = perDay.get(index);
@@ -290,6 +331,49 @@ function scanFile(path, size, sampleFrom, window, starts, signatures, io, limits
     }
   }
 
+  // Newlines strictly before sampleFrom, counted on bytes: 0x0a never
+  // occurs inside a multi-byte UTF-8 sequence.
+  function countSample(chunk, position) {
+    if (position >= sampleFrom) return;
+    const end = Math.min(chunk.length, sampleFrom - position);
+    let index = chunk.indexOf(NEWLINE);
+    while (index !== -1 && index < end) {
+      sampleLine += 1;
+      index = chunk.indexOf(NEWLINE, index + 1);
+    }
+  }
+
+  forEachLine(path, size, io, limits, judge, countSample);
+  return { perDay, anyTimestamp, lines, parsed, conversation, selfTrace, sampleLine };
+}
+
+// One line of a transcript as JSON: the parsed value (null included), or
+// undefined when it does not parse.
+function parseLine(raw) {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+}
+
+// A message line's instant in ms, NaN when its `timestamp` is missing or
+// does not parse.
+function instantOf(line) {
+  return typeof line.timestamp === 'string' ? Date.parse(line.timestamp) : Number.NaN;
+}
+
+// The window is [from, to): a message at `from` is in, one at `to` is out.
+function inWindow(at, from, to) {
+  return at >= from && at < to;
+}
+
+// Every line of the first `size` bytes of `path`, in order, read in chunks
+// of limits.chunkBytes and decoded as UTF-8 (a character split across two
+// chunks is joined), never the whole file at once; a line longer than
+// limits.maxLineChars is skipped whole, like a malformed one. `onChunk`,
+// when given, sees each chunk's bytes and their position first.
+function forEachLine(path, size, io, limits, onLine, onChunk = null) {
   const fd = io.openSync(path, 'r');
   try {
     const decoder = new StringDecoder('utf8');
@@ -301,22 +385,13 @@ function scanFile(path, size, sampleFrom, window, starts, signatures, io, limits
       const n = io.readSync(fd, buffer, 0, Math.min(buffer.length, size - position), position);
       if (n === 0) break;
       const chunk = buffer.subarray(0, n);
-      // Newlines strictly before sampleFrom, counted on bytes: 0x0a never
-      // occurs inside a multi-byte UTF-8 sequence.
-      if (position < sampleFrom) {
-        const end = Math.min(n, sampleFrom - position);
-        let index = chunk.indexOf(NEWLINE);
-        while (index !== -1 && index < end) {
-          sampleLine += 1;
-          index = chunk.indexOf(NEWLINE, index + 1);
-        }
-      }
+      if (onChunk !== null) onChunk(chunk, position);
       position += n;
       const parts = (carry + decoder.write(chunk)).split('\n');
       carry = parts.pop();
       for (const part of parts) {
         if (skipping) skipping = false;
-        else judge(part);
+        else onLine(part);
       }
       if (carry.length > limits.maxLineChars) {
         carry = '';
@@ -324,11 +399,180 @@ function scanFile(path, size, sampleFrom, window, starts, signatures, io, limits
       }
     }
     const rest = carry + decoder.end();
-    if (!skipping) judge(rest);
+    if (!skipping) onLine(rest);
   } finally {
     io.closeSync(fd);
   }
-  return { perDay, anyTimestamp, lines, parsed, conversation, selfTrace, sampleLine };
+}
+
+// --- digests ----------------------------------------------------------------
+
+// Whether a text block is the harness's own, by how it starts.
+function isHarnessText(text) {
+  const head = text.trimStart();
+  return HARNESS_PREFIXES.some((prefix) => head.startsWith(prefix));
+}
+
+// Whitespace and control characters, folded to one space.
+function fold(text) {
+  return text.replace(/[\s\p{Cc}]+/gu, ' ').trim();
+}
+
+// The text a digest keeps of a user or assistant line's content: a string
+// is one block, an array contributes its `text` blocks (never tool_use,
+// tool_result, thinking or images), each block the harness wrote dropped,
+// the rest folded and joined with a space. '' when nothing is left.
+function messageText(content) {
+  let blocks = [];
+  if (typeof content === 'string') blocks = [content];
+  else if (Array.isArray(content)) blocks = content.filter((block) => block?.type === 'text' && typeof block.text === 'string').map((block) => block.text);
+  return blocks.filter((text) => !isHarnessText(text)).map(fold).filter((text) => text !== '').join(' ');
+}
+
+// The messages of a digest: every user and assistant line of the first
+// `size` bytes of `path` whose own timestamp falls in [from, to), with
+// text, in order of time (ties in file order). Each keeps its folded
+// length and only as much of its text as a line can show, so a pasted blob
+// costs no more memory than the cap.
+function digestMessages(path, size, from, to, io, limits) {
+  const messages = [];
+  forEachLine(path, size, io, limits, (raw) => {
+    if (raw.trim() === '') return;
+    const line = parseLine(raw);
+    if (line === null || typeof line !== 'object' || (line.type !== 'user' && line.type !== 'assistant')) return;
+    if (line.isMeta === true || line.isCompactSummary === true) return;
+    const at = instantOf(line);
+    if (Number.isNaN(at) || !inWindow(at, from, to)) return;
+    const text = messageText(line.message?.content);
+    if (text === '') return;
+    const cap = DIGEST_LIMITS.messageChars;
+    messages.push({ at, role: line.type, length: text.length, text: text.length > cap ? text.slice(0, cap) : text, order: messages.length });
+  });
+  return messages.sort((a, b) => a.at - b.at || a.order - b.order);
+}
+
+// A usable time zone for the digest's clock: the given one when the
+// platform knows it, UTC otherwise (the header then says UTC).
+function clockZone(tz) {
+  if (typeof tz !== 'string' || tz === '') return 'UTC';
+  try {
+    wallClock(0, tz);
+    return tz;
+  } catch {
+    return 'UTC';
+  }
+}
+
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+// One message as its digest line: `[HH:MM role] text`, the date in front
+// of the time when the window spans more than one day, the text cut at
+// messageChars (never inside a surrogate pair) with the cut mark.
+function messageLine(message, tz, withDate) {
+  const w = wallClock(message.at, tz);
+  const time = `${withDate ? `${pad2(w.d)}/${pad2(w.m)} ` : ''}${pad2(w.h)}:${pad2(w.min)}`;
+  let text = message.text;
+  if (message.length > DIGEST_LIMITS.messageChars) {
+    let end = DIGEST_LIMITS.messageChars;
+    const code = text.charCodeAt(end - 1);
+    if (code >= 0xd800 && code <= 0xdbff) end -= 1;
+    text = `${text.slice(0, end)} ${DIGEST_CUT_MARK}`;
+  }
+  return `[${time} ${message.role}] ${text}`;
+}
+
+// The digest of one kept file over the plan's window: its text, and what
+// the plan and the round report about it. Sampled from the end: the most
+// recent lines that fit DIGEST_LIMITS are kept, and the first N messages
+// (with M characters of text) that did not fit are said in the header.
+function buildDigest(t, file, window, tz, withDate, io, limits) {
+  const messages = digestMessages(file.path, file.bytes, Date.parse(window.from), Date.parse(window.to), io, limits);
+  // From the newest back, while the next older line still fits.
+  const keptLines = [];
+  let budget = DIGEST_LIMITS.totalChars;
+  for (let index = messages.length - 1; index >= 0 && keptLines.length < DIGEST_LIMITS.messages; index -= 1) {
+    const line = messageLine(messages[index], tz, withDate);
+    if (line.length + 1 > budget) break;
+    budget -= line.length + 1;
+    keptLines.push(line);
+  }
+  keptLines.reverse();
+  const kept = keptLines.length;
+  const first = messages.length - kept;
+  const cutMessages = first;
+  const cutChars = messages.slice(0, first).reduce((sum, message) => sum + message.length, 0);
+  const held = messages.length;
+  const { session, project } = file;
+  const { from, to } = window;
+  let header;
+  if (cutMessages > 0) {
+    const cut = t('sources.transcripts.digest_cut', { messages: cutMessages, chars: cutChars });
+    header = t('sources.transcripts.digest_header_cut', { session, project, from, to, timezone: tz, held, kept, cut });
+  } else {
+    header = t('sources.transcripts.digest_header', { session, project, from, to, timezone: tz, held, kept });
+  }
+  const body = [header, ...keptLines];
+  return { text: `${body.join('\n')}\n`, held, kept, cutMessages, cutChars, lines: body.length };
+}
+
+// Gives every kept file of `plan` its digest, named `<NN>-<session>.txt`
+// under `dir` in the plan's order (newest first): `file.digest` holds its
+// path and counts, and the texts go in the plan's non-enumerable
+// `digestTexts` ([{ path, text }]), which writeDigests writes and no log,
+// report or JSON copy of the plan ever carries. A file that cannot be read
+// again for its digest leaves the offer for `unreadable`, as a file the
+// scan could not read does: a day the round cannot hand the model whole
+// stays open.
+function attachDigests(plan, { dir, t, tz, io, limits }) {
+  const zone = clockZone(tz);
+  const withDate = plan.daysCovered.length > 1;
+  const width = Math.max(2, String(plan.files.length).length);
+  const texts = [];
+  const kept = [];
+  plan.files.forEach((file, index) => {
+    const path = join(dir, `${String(index + 1).padStart(width, '0')}-${file.session}.txt`);
+    let digest;
+    try {
+      digest = buildDigest(t, file, plan.window, zone, withDate, io, limits);
+    } catch {
+      plan.dropped.unreadable += 1;
+      plan.unreadable.push({ path: file.path, project: file.project, bytes: file.bytes });
+      return;
+    }
+    texts.push({ path, text: digest.text });
+    kept.push({ ...file, digest: { path, held: digest.held, kept: digest.kept, cutMessages: digest.cutMessages, cutChars: digest.cutChars, lines: digest.lines } });
+  });
+  plan.files = kept;
+  plan.unreadable.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  plan.digestDir = dir;
+  Object.defineProperty(plan, 'digestTexts', { value: texts, enumerable: false });
+}
+
+// Writes the digests of `plan` (attachDigests): their directory created
+// with mode 0700 (and its parent, when missing), each file created anew
+// with mode 0600, never over an existing one. Returns how many it wrote.
+// The caller removes the directory when the round ends.
+export function writeDigests(plan) {
+  const texts = plan?.digestTexts;
+  if (!Array.isArray(texts) || texts.length === 0 || typeof plan.digestDir !== 'string') return 0;
+  const dir = plan.digestDir;
+  const parent = dirname(dir);
+  fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
+  fs.chmodSync(parent, 0o700);
+  fs.mkdirSync(dir, { mode: 0o700 });
+  fs.chmodSync(dir, 0o700);
+  for (const { path, text } of texts) {
+    const fd = fs.openSync(path, 'wx', 0o600);
+    try {
+      fs.fchmodSync(fd, 0o600);
+      fs.writeFileSync(fd, text);
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+  return texts.length;
 }
 
 // The short identifier a capture names its session by: Claude Code names
@@ -351,14 +595,23 @@ function renderPromptBlock(t, plan) {
   const lines = [];
   for (const problem of plan.problems) lines.push(problemLine(t, problem, plan.root));
   if (plan.files.length) {
-    lines.push(t('sources.transcripts.heading', {
-      count: plan.files.length, from: plan.window.from, to: plan.window.to, sample: SAMPLE_BYTES / 1024,
-    }));
+    lines.push(t('sources.transcripts.heading', { count: plan.files.length, from: plan.window.from, to: plan.window.to }));
+    // Each file by its digest, never by its own path: the transcript is
+    // not readable in the round, only its digest is.
     for (const file of plan.files) {
-      lines.push(t('sources.transcripts.file_line', {
-        session: file.session, path: file.path, project: file.project, firstAt: file.firstAt, lastAt: file.lastAt,
-        bytes: file.bytes, sampleLine: file.sampleLine,
-      }));
+      const digest = file.digest;
+      if (digest === undefined) {
+        lines.push(t('sources.transcripts.file_line_no_digest', { session: file.session, project: file.project, firstAt: file.firstAt, lastAt: file.lastAt }));
+      } else if (digest.cutMessages > 0) {
+        const cut = t('sources.transcripts.digest_cut', { messages: digest.cutMessages, chars: digest.cutChars });
+        lines.push(t('sources.transcripts.file_line_cut', {
+          session: file.session, digest: digest.path, project: file.project, firstAt: file.firstAt, lastAt: file.lastAt, kept: digest.kept, held: digest.held, cut,
+        }));
+      } else {
+        lines.push(t('sources.transcripts.file_line', {
+          session: file.session, digest: digest.path, project: file.project, firstAt: file.firstAt, lastAt: file.lastAt, kept: digest.kept, held: digest.held,
+        }));
+      }
     }
   } else if (!plan.misconfigured && !plan.unreadable.some((entry) => entry.directory === true)) {
     // Not said while a project directory could not be listed: its
@@ -418,10 +671,15 @@ function daysOf(window, config) {
 //           from/to and config.vault.timezone when absent).
 //   home:   the home directory `~` stands for (tests); os.homedir() when
 //           absent.
+//   digestDir: the absolute directory this round's digests go in (curate
+//           names one per round). When given, every kept file gets its
+//           digest (attachDigests), built in memory: nothing is written
+//           here; writeDigests writes them. Without it the plan offers its
+//           files with no digest, which no round can read.
 //   io, limits: tests only. `io` replaces openSync/readSync/closeSync
 //           used by the scan (to inject a read error); `limits` replaces
 //           DEFAULT_LIMITS (small chunks to cross chunk boundaries).
-function collect({ window, config, machine, home = homedir(), io = fs, limits = DEFAULT_LIMITS }) {
+function collect({ window, config, machine, home = homedir(), digestDir, io = fs, limits = DEFAULT_LIMITS }) {
   const settings = config?.sources?.transcripts ?? {};
   const root = expandHome(machine?.transcripts_dir ?? join('~', '.claude', 'projects'), home);
   const all = settings.include_projects === ALL_PROJECTS;
@@ -574,14 +832,28 @@ function collect({ window, config, machine, home = homedir(), io = fs, limits = 
     misconfigured,
   };
   const t = createTranslator(config?.lang ?? 'en');
+  if (typeof digestDir === 'string') attachDigests(plan, { dir: digestDir, t, tz: window.timezone ?? config?.vault?.timezone, io, limits });
   plan.promptBlock = renderPromptBlock(t, plan);
   return plan;
 }
 
+// Whether a Read's input covers the whole digest: no offset past its first
+// line, and no limit short of its last.
+function wholeRead(input, lines) {
+  const offset = input?.offset ?? null;
+  const limit = input?.limit ?? null;
+  return (offset === null || Number(offset) <= 1) && (limit === null || Number(limit) >= lines);
+}
+
 // readEvidence(record, plan): a kept file counts as read when the round
-// record holds a Read tool use whose input `file_path` is exactly the
-// file's path and whose tool result is not an error. Record shape read
-// here: { toolUses: [{ id, name, input }], toolResults: [{ toolUseId, isError }] }.
+// record holds a Read tool use whose input `file_path` is exactly the path
+// of the file's DIGEST, whose input reads it whole (wholeRead: a digest is
+// small enough to be read whole, and a slice of it is not the transcript),
+// and whose tool result is not an error. A Read of the transcript's own
+// path never counts (01/10/2026): the round does not grant it, and the
+// digest is what the model was handed. A kept file with no digest can never
+// be read. `read` counts transcripts, as before the digests. Record shape
+// read here: { toolUses: [{ id, name, input }], toolResults: [{ toolUseId, isError }] }.
 // The source counts as read only when EVERY kept file was read (ruling
 // R13, 24/09/2026): a day read in part stays open, and the round's report
 // says "read x of y", so the next round reads it again instead of closing
@@ -604,13 +876,17 @@ function readEvidence(record, plan) {
     answered.add(result.toolUseId);
     if (result.isError) failed.add(result.toolUseId);
   }
-  const readPaths = new Set();
+  const reads = new Map();
   for (const use of record?.toolUses ?? []) {
     if (use?.name !== 'Read' || !answered.has(use.id) || failed.has(use.id)) continue;
-    if (typeof use.input?.file_path === 'string') readPaths.add(use.input.file_path);
+    const path = use.input?.file_path;
+    if (typeof path !== 'string') continue;
+    if (!reads.has(path)) reads.set(path, []);
+    reads.get(path).push(use.input);
   }
   const expected = plan.files.length + (plan.unreadable?.length ?? 0);
-  const read = plan.files.filter((file) => readPaths.has(file.path)).length;
+  const read = plan.files.filter((file) => typeof file.digest?.path === 'string'
+    && (reads.get(file.digest.path) ?? []).some((input) => wholeRead(input, file.digest.lines))).length;
   return { read, expected, ok: read === expected };
 }
 

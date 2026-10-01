@@ -58,12 +58,13 @@ once broke a real routine.
 
 1. **The vault and its machine file.** No `machine.json`, or an invalid one: exit 2.
 2. **`--dry` stops here.** It prints the window, the sources and each one's days, the
-   files each source would offer, the launch mode with every user rule that refuses
-   connector mode, the full command line of the model and the cost cap, reading the
-   configuration as it is in the working tree now, unsynced. It takes no lock and writes
-   nothing.
+   files each source would offer and how many digests a round would write for them, the
+   launch mode with every user rule that refuses connector mode, the full command line of
+   the model and the cost cap, reading the configuration as it is in the working tree now,
+   unsynced. It takes no lock and writes nothing, no digest included.
 3. **The vault lock.** Another writer holds it (a `propose` of yours, another round): exit
-   75 naming the holder. With `paths.legacy_lock` set, the legacy lock too
+   75 naming the holder. Once it holds the lock, a round (never `--check`) removes the
+   digests a round killed outright left behind. With `paths.legacy_lock` set, the legacy lock too
    ([below](#moving-from-a-legacy-lock)): held, exit 75 naming the file; unusable, exit 1.
    `last-run.json` records a held lock as `lock_held` and every other refusal of this step
    (a legacy lock that cannot be used, a file system without hard links, a vault that is
@@ -108,7 +109,11 @@ once broke a real routine.
     a first open day that alone passes the cap: exit 4 before the model, naming the day and
     the counts. A window whose offered sources are all local and hold nothing advances the
     marks and exits 0 without calling the model; a connector source never counts as empty
-    that way, since an empty day of a calendar is a listing still to prove.
+    that way, since an empty day of a calendar is a listing still to prove. Each transcript
+    the plan keeps is given a digest, built in memory ([below](#what-the-model-reads-of-a-transcript));
+    the model is granted those digests, never the transcripts. A state directory whose path
+    holds a character no read rule can name exactly (`* ? [ ] { } ( ) \ ,`, from a vault
+    folder named `Notes (old)`, say): exit 1 (`digest_dir_unsafe`) before the model.
 12. **The launch mode.** With a connector source to read, the round reads your Claude Code
     user settings and mirrors every allow rule in them as a deny: connector mode, unless a
     rule refuses it, in which case every connector source gets the state
@@ -116,7 +121,8 @@ once broke a real routine.
     one, the isolated mode ([security.md](security.md), [connectors.md](connectors.md)).
     **`--check` stops here.** It prints the plan, the mode, every rule that refused it,
     the command line, the round's three limits and the prompt's size.
-13. **The model.** The round says its three limits. The cost cap: `curate.budget_usd`, the
+13. **The model.** The round writes the digests, says every one it had to cut, and then
+    its three limits. The cost cap: `curate.budget_usd`, the
     default of 5 USD when the key is left out, or none when it is `null`, in which case the
     command line carries no `--max-budget-usd` at all. The turn limit: `curate.max_turns`,
     the default of 100 when the key is left out, or none when it is `null` (no
@@ -161,7 +167,9 @@ once broke a real routine.
     default) never changes it, read or not.
 17. **The watermark** advances, only on exit 0 or 3, each source through its own last day
     (below).
-18. **Always:** `last-run.json` is written, the log gets its last line, the lock is released
+18. **Always:** the round's digests are removed (unless the stream is kept), on a failure,
+    an exit 4 or a signal as on a success; `last-run.json` is written, the log gets its last
+    line, the lock is released
     (the model's process group is already dead), and `machine.notify_command` runs on any
     non-zero exit, with the reason as its last argument, and once more for each
     best-effort connector source whose state changed since the last round.
@@ -201,6 +209,39 @@ What each platform does with a window missed while the machine was off or asleep
 now (the directories `install` added for `brain-kit` and `gh` are taken from the installed
 entry, not from the shell `status` runs in), asks the scheduler whether the entry is enabled, and prints the next three fire times
 and the last round's summary, both as DD/MM/YYYY HH:MM on the machine's clock.
+
+## What the model reads of a transcript
+
+A session transcript is JSON, one line per event, and most of its bytes are tool results:
+real ones run to hundreds of kilobytes, with single lines of more than a hundred, which the
+Read tool refuses whole over 256 KB and in slices over 25 000 tokens
+([incidents.md](incidents.md), 01/10/2026). So the model never reads one. Before it starts,
+the round writes a digest of each transcript its plan keeps, one small text file each, and
+hands the model those:
+
+- only the messages whose own time falls inside the source's window (the days the round
+  covers, never the file's modification time), in order of time;
+- only what the person and the assistant wrote: a user message's text and the assistant's
+  text blocks, never a tool call, a tool result or a thinking block, and never what Claude
+  Code adds on its own (a message it marks as its own, a compact summary, a block that
+  starts with `<system-reminder>`, `<command-name>`, `<local-command-`, `<task-notification>`,
+  `Caveat:` and the like; a message that only quotes such a tag keeps it);
+- one line per message, `[HH:MM user] <text>` or `[HH:MM assistant] <text>`, the time on
+  the vault's clock (`[DD/MM HH:MM ...]` when the window spans more than one day), its
+  whitespace folded to single spaces;
+- each message cut at 1 800 characters with ` [...]`, and the whole kept within 40 000
+  characters and 800 messages, keeping the most recent ones;
+- a first line naming the session and its project, the window, the time zone, how many
+  messages the window held and how many the digest keeps, and every cut, in the vault's
+  language.
+
+Those bounds are the Read tool's, not a policy: the largest digest they allow is under
+125 000 bytes and, counted at a pessimistic 2 characters per token with Read's line numbers,
+under 24 000 tokens, so it is always read whole. A transcript whose window holds no text at
+all still gets its digest, which says so. The digests live in a folder of the state
+directory only you can read ([security.md](security.md), "The digests"), and the round
+removes them when it ends; `--dry` writes none and says how many a round would write, and
+`--check` writes none either.
 
 ## The watermark
 
@@ -305,11 +346,14 @@ fixes it.
 
 What counts as read has limits, by design:
 
-- One successful Read of a transcript counts as reading it, even of a single line. The
-  prompt tells the model to sample a long transcript from its end and then in slices,
-  never whole; the evidence proves the model opened the file, not how much of it it read.
-- The Read tool truncates very long lines. A session line holding a huge tool result is
-  read cut short.
+- A transcript counts as read when the model read its digest whole, in one successful
+  Read with no offset past the first line and no limit short of the last. A Read or a Grep
+  of the transcript itself never counts, and the round does not grant it. The evidence
+  proves the model was handed every word of the digest, not that it weighed each one.
+- A digest is sampled from the end. When the window held more than a digest carries, the
+  oldest messages of the window are left out, the digest's first line says how many and how
+  many characters, the round says it on its output and in `last-run.json`, and the day still
+  closes once the digest is read: no later round reads those messages.
 - The model may write only inside the vault, and never into the kit's own files there
   ([security.md](security.md)). The leftovers check sees the files git tracks or would
   track: a file the model wrote into a path the vault's `.gitignore` ignores is not
@@ -432,7 +476,10 @@ The log is `logs/curate-YYYY-MM-DD.log`, one file per day, one line per event:
 configured), `source_warning`, `source_no_day` (a source with no open day of its own),
 `source_blocked` (a connector source a user rule blocked, with the rule), `source_waiting`
 (the meeting notes left out because the calendar is not read, with its state), `plan`,
-`model_start` and `model_end` (one of each per launch, with its number and, on
+`digests` (how many digests were written, and the counts of each one cut, never their
+text), `digests_swept` (the digests of a round killed outright, removed by the next one),
+`digests_not_removed` and `digests_not_swept` (a folder that could not be removed, with
+the error code), `model_start` and `model_end` (one of each per launch, with its number and, on
 `model_start`, its mode), `connectors` (each connector's state in a launch's first event),
 `relaunch` (the sources the second launch goes without, and why), `model_result` (the
 denials and the isolation verdict), `connector_state_changed`, `cleanup`, `watermark` (with
@@ -443,9 +490,10 @@ said when a run failed goes in the `reason`: the last line of its standard error
 error result's text, kept to its first 300 characters on one line with the round's token
 hidden.
 `brain-kit curate --keep-stream` (or `keep_stream: true` in `machine.json`) also keeps the
-model's raw output next to the log; that file does contain what the model read, so keep it
-only while you debug. Logs older than `log_retention_days` (in `machine.json`, default 30)
-are removed at the end of each round.
+model's raw output next to the log, and the round's digests beside it
+(`logs/curate-<instant>-<hex>.digests/`); both do contain what the model read, so keep
+them only while you debug. Logs, kept streams and kept digests older than
+`log_retention_days` (in `machine.json`, default 30) are removed at the end of each round.
 
 `brain-kit doctor` reads all of this for you: the last round (with a warning for a round
 that exited 0 in seconds without a model turn, which is a dead round reported as a

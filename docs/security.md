@@ -113,7 +113,7 @@ The allowlist, and nothing else, because `dontAsk` denies everything it does not
 | Rule | Why |
 |---|---|
 | `Read(./**)`, `Glob(./**)`, `Grep(./**)` | reading the vault |
-| `Read(//<file>)`, one per transcript the plan lists | reading exactly the sessions the round offers, never their folder |
+| `Read(//<file>)`, one per digest the round writes | reading exactly the digest of each session the round offers, never a transcript, never a folder |
 | `Edit(./**)`, `Write(./**)` | writing notes, inside the vault only |
 | `ToolSearch` | loading a connector's deferred tools; it reads no file |
 | `Bash("<kit>" validate:*)`, `Bash("<kit>" lint:*)`, `Bash("<kit>" propose:*)` | the three kit commands the prompt uses, by the kit's absolute path |
@@ -154,30 +154,37 @@ allowed `node <kit> propose` form, and `dontAsk` already denies every other `nod
 
 ## What limits reading
 
-Reads are scoped to the vault and to the transcripts a round offers. Measured: with
-`Read(./**)` plus `Read(//<absolute folder>/**)` allowed, a read of `/etc/hostname` was
-denied while the vault and that folder were readable; with `Glob(./**)` and `Grep(./**)`,
-a Glob in `/etc` and a Grep of `/etc/hosts` were denied and both worked inside the vault;
-and `Read(//<folder with a space>/<accented name>.jsonl)` allowed that exact file and
-denied its sibling. So a round allows reading exactly the transcript files its plan lists,
-one rule per file: a session of the same project that the plan left out stays unreadable.
+Reads are scoped to the vault and to the digests of the transcripts a round offers.
+Measured: with `Read(./**)` plus `Read(//<absolute folder>/**)` allowed, a read of
+`/etc/hostname` was denied while the vault and that folder were readable; with
+`Glob(./**)` and `Grep(./**)`, a Glob in `/etc` and a Grep of `/etc/hosts` were denied and
+both worked inside the vault; and `Read(//<folder with a space>/<accented name>.jsonl)`
+allowed that exact file and denied its sibling. So a round allows reading exactly the
+digest files it writes, one rule per file, and no transcript at all: since 01/10/2026 the
+model is handed a digest of each session instead ([incidents.md](incidents.md)), and a
+session the plan kept is as unreadable to it as one the plan left out.
 
 A transcript whose path holds a character whose meaning inside a rule is not measured
-(`* ? [ ] { } ( ) \ ,` or a control character) is never turned into a rule: the round
-stops before the model (exit 4), naming the file, since renaming it or its folder is the
-fix (spaces and accents are fine), and `brain-kit machine set transcripts_dir` refuses such
-a folder.
+(`* ? [ ] { } ( ) \ ,` or a control character) is still never offered: the round stops
+before the model (exit 4), naming the file, since renaming it or its folder is the fix
+(spaces and accents are fine), and `brain-kit machine set transcripts_dir` refuses such a
+folder. A state directory whose path holds one (a vault folder named `Notes (old)` gives
+its name to the state directory) cannot hold a digest the round could grant: the round
+stops before the model with exit 1 (`digest_dir_unsafe`), naming the folder.
 
 Within that, what limits how much the model reads is not the permission system:
 
 - **`include_projects`.** Only the Claude Code projects your configuration lists are ever
   offered to the model, and only the sessions whose messages fall inside the round's
-  window. The plan in the prompt names each file, how large it is and where to start
-  reading it. `"all"` in place of the list is the one way to offer every project, and only
-  because the configuration says so ([scheduling.md](scheduling.md)); the transcripts a
-  round reads are still only the sessions of the window, each named in the plan.
-- **The prompt.** It tells the model to sample a long transcript from its end and then in
-  slices, never whole, and states what it may not carry into the vault.
+  window. The plan in the prompt names each session by its digest. `"all"` in place of the
+  list is the one way to offer every project, and only because the configuration says so
+  ([scheduling.md](scheduling.md)); the sessions a round reads are still only those of the
+  window, each named in the plan.
+- **The digest.** The kit, not the model, decides how much of a session the model sees:
+  only the messages of the window, only the person's and the assistant's own text, each
+  message within 1 800 characters and the whole within 40 000, sampled from the end (below).
+- **The prompt.** It tells the model to read each digest whole and nothing else of the
+  transcripts, and states what it may not carry into the vault.
 - **The cost ceiling.** Every round runs with `--max-turns` (`curate.max_turns`, default
   100) and `--max-budget-usd` (`curate.budget_usd`, default 5 USD); a configuration that
   leaves either key out still gets its default. A cap is a number above 0 (a whole number
@@ -268,6 +275,36 @@ What this mode leaves open, on purpose or because it is not measured:
 refuse the mode, the states of a connector, and `brain-kit doctor --probe`, which launches
 this mode, kills it at its first event and reports each connector's state without a round.
 
+## The digests
+
+What the model reads of a session, written by the round before the model starts
+([scheduling.md](scheduling.md), "What the model reads of a transcript"):
+
+- **What one holds.** The words you and the assistant wrote to each other in that session
+  inside the round's window, one line per message with its time, and a first line naming
+  the session, its project, the window and every cut. Never a tool call or its result,
+  never a thinking block, never a block Claude Code injects (system reminders, slash
+  command wrappers, local command output, task notifications, caveats, compact summaries).
+  That is less than the transcript holds, and still private: it is what you said.
+- **Where it lives.** In a folder of its own per round, `digests/<instant>-<hex>/` under
+  the vault's state directory (`BRAIN_KIT_STATE_DIR`, or
+  `~/.local/state/brain-kit/<vault name>-<hash>/`), one file per session,
+  `<NN>-<session>.txt`. Never inside the vault, never in git.
+- **Who can read it.** Your user: each file is created with mode 0600, in a folder of mode
+  0700, inside the state directory, itself 0700. The round's model is granted each file by
+  its exact path, and nothing else outside the vault.
+- **When it is deleted.** When the round ends, whatever its end: a success, a failure, an
+  exit 4, a signal the round handles. A round killed outright (SIGKILL, a power cut) cannot
+  delete anything; the next round deletes what it left, as soon as it holds the vault lock,
+  before it does anything else. `--dry` and `--check` write none. With `--keep-stream` (or
+  `keep_stream: true` in `machine.json`) the digests are written beside the kept stream
+  instead, `logs/curate-<instant>-<hex>.digests/`, with the same modes, and stay until the
+  logs' retention (`log_retention_days`, 30 days by default) removes them with the stream.
+- **What leaves the folder.** Nothing of a digest's text: the log carries only how many
+  digests were written and, for one that was cut, its session and its counts, and the
+  round's output and the warnings of `last-run.json` say the same cut in words. The
+  notification never mentions them.
+
 ## What the logs hold
 
 The round's log in the state directory holds one line per event: which step ran, how long
@@ -281,8 +318,9 @@ ended (an expired login, an API error), which is the text of an error result, ke
 first 300 characters on one line with the round's token hidden. A run that ends normally
 carries the model's final text in a result that is not an error, and that text is never
 written. The one exception is opt-in: `--keep-stream` (or `keep_stream: true` in
-`machine.json`) keeps the model's raw output beside the log, and that file contains what
-the model read. It is written with owner-only permissions; keep it only while you debug.
+`machine.json`) keeps the model's raw output beside the log, and the round's digests with
+it, and those contain what the model read. They are written with owner-only permissions;
+keep them only while you debug.
 
 ## When a round is stopped
 

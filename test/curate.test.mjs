@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { constants as osConstants } from 'node:os';
 import { roundBudget, roundTimeoutMinutes, roundTurns, runCurate } from '../src/commands/curate.mjs';
 import { runModel } from '../src/harness/claude-code.mjs';
@@ -50,6 +50,13 @@ function traces(w) {
 }
 
 const NONE = { network: false, fetched: false, snapshot: false, cli: false, model: false };
+
+// Whether a prompt offers the transcript at `file`: its session (the first 8
+// characters of its name) on a line of the transcripts block, which names
+// the session's digest and never the transcript itself (01/10/2026).
+function offers(prompt, file) {
+  return prompt.includes(`session ${basename(file).slice(0, 8)}: `);
+}
 
 // A fake action that writes the token the model was handed to a file.
 function tokenAction(file) {
@@ -347,7 +354,7 @@ test('a model whose text merely mentions a failed login is never auth_expired: a
 
 test('a model that exits 0 without reading the listed transcript exits 4 and the day stays open', () => {
   const w = makeCurateWorld();
-  w.scenario({ rewrite: { toolUses: [] } });
+  w.scenario({ rewrite: { readGranted: false } });
   const r = w.curate();
   assert.equal(r.status, EXIT.SOURCE_UNREAD, r.stderr);
   assert.match(w.lastRun().reason, /transcripts \(0\/1\)/);
@@ -1005,7 +1012,7 @@ test('a turn limit of 0 or a fraction, and a time limit of 0 or below or above 3
 const PINNED_TOOLS = 'Read,Glob,Grep,Edit,Write,Bash,ToolSearch';
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-test('the round\'s argv pins the built-in tools, disables skills, and allows reading only the vault and the plan\'s transcripts, a space and an accent kept', () => {
+test('the round\'s argv pins the built-in tools, disables skills, and allows reading only the vault and the digest of each transcript the plan keeps, never a transcript itself', () => {
   const w = makeCurateWorld();
   // The transcripts tree, under a directory with a space and an accent.
   const root = join(w.base, 'Sessões de estudo');
@@ -1019,12 +1026,17 @@ test('the round\'s argv pins the built-in tools, disables skills, and allows rea
   const tenDaysAgo = new Date(Date.now() - 10 * DAY_MS);
   utimesSync(old, tenDaysAgo, tenDaysAgo);
   w.setMachine({ transcripts_dir: root });
-  w.scenario({ rewrite: { toolUses: [{ name: 'Read', input: { file_path: kept, offset: 1 } }] } });
-  // --dry prints the argument vector the round would pass, read rule included.
+  const digestRule = new RegExp(`^Read\\(//${w.state.slice(1)}/digests/[0-9TZ-]+-[0-9a-f]{8}/01-aaaaaaaa\\.txt\\)$`);
+  // --dry prints the argument vector the round would pass, the digest's
+  // read rule included, and writes no digest.
   const dry = w.curate(['--dry']);
   assert.equal(dry.status, EXIT.OK, dry.stderr);
-  assert.ok(dry.stdout.includes(JSON.stringify(`Read(//${kept.slice(1)})`)), dry.stdout);
+  const commandLine = dry.stdout.split('\n').find((line) => line.startsWith('Command: '));
+  const dryArgv = JSON.parse(commandLine.slice(commandLine.indexOf('[')));
+  assert.ok(dryArgv.some((rule) => digestRule.test(rule)), dry.stdout);
+  assert.equal(dry.stdout.includes(kept), false, 'the transcript itself is not granted');
   assert.ok(dry.stdout.includes(JSON.stringify(PINNED_TOOLS)), dry.stdout);
+  assert.deepEqual(w.digestDirs(), []);
   const r = w.curate();
   assert.equal(r.status, EXIT.OK, r.stderr);
   assert.deepEqual(w.lastRun().sources.transcripts, { kept: 1, read: 1, advanced: true, noTimestamp: 0 });
@@ -1033,10 +1045,16 @@ test('the round\'s argv pins the built-in tools, disables skills, and allows rea
   assert.equal(argv[argv.indexOf('--tools') + 1], PINNED_TOOLS);
   const allowed = argv.slice(argv.indexOf('--allowedTools') + 1, argv.indexOf('--disallowedTools'));
   const reads = allowed.filter((rule) => /^(Read|Glob|Grep)\b/.test(rule));
-  assert.deepEqual(reads, ['Read(./**)', 'Glob(./**)', 'Grep(./**)', `Read(//${kept.slice(1)})`]);
+  assert.deepEqual(reads.slice(0, 3), ['Read(./**)', 'Glob(./**)', 'Grep(./**)']);
+  assert.equal(reads.length, 4);
+  assert.match(reads[3], digestRule);
   assert.ok(allowed.includes('ToolSearch'));
+  assert.equal(JSON.stringify(argv).includes(kept), false, 'a session the plan kept is readable only through its digest');
   assert.equal(JSON.stringify(argv).includes('bbbbbbbb-1111'), false, 'a session the plan left out is not readable');
-  assert.equal(JSON.stringify(argv).includes(`${projectDir}/**`), false, 'the project directory is not readable as a whole');
+  assert.equal(JSON.stringify(argv).includes(root), false, 'nothing under the transcripts directory is readable');
+  // The model read the digest it was granted, and the round removed it.
+  assert.deepEqual(w.reads().map((read) => [read.isError, digestRule.test(`Read(/${read.path})`)]), [[false, true]]);
+  assert.deepEqual(w.digestDirs(), []);
 });
 
 test('a stream whose init lists a built-in tool beyond the pinned set, or lacks one, is killed at once and exits 1, the day open', () => {
@@ -1143,7 +1161,9 @@ test('the prompt carries the parameters block: the day as DD/MM/YYYY, the window
   const [y, m, d] = utcDay(-1).split('-');
   assert.match(prompt, new RegExp(`Days to curate: ${d}/${m}/${y} \\(time zone UTC\\)`));
   assert.match(prompt, /Window: from \d{4}-\d{2}-\d{2}T00:00:00\.000Z/);
-  assert.ok(prompt.includes(w.transcript));
+  assert.ok(offers(prompt, w.transcript));
+  assert.equal(prompt.includes(w.transcript), false, 'the transcript is offered by its digest, never by its own path');
+  assert.match(prompt, new RegExp(`session aaaaaaaa: ${w.state}/digests/[0-9TZ-]+-[0-9a-f]{8}/01-aaaaaaaa\\.txt \\(project ${PROJECT}, `));
   assert.match(prompt, /Limits: transcripts=20/);
   assert.ok(prompt.includes('The kit command: "'));
   const signature = w.config.curate.signature;
@@ -1168,8 +1188,17 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT', ...RARER]) {
     const { spawn } = await import('node:child_process');
     const w = makeCurateWorld();
     const pidFile = join(w.base, 'fake-claude.pid');
-    // The fake writes its own pid (the parent of this action), then sleeps.
-    w.scenario({ actions: [{ run: [process.execPath, '-e', `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.ppid))`] }], delayMs: 60000 });
+    const seen = join(w.base, 'digests-seen.json');
+    const digestsRoot = join(w.state, 'digests');
+    // The fake notes the round's digests, writes its own pid (the parent of
+    // this action), then sleeps.
+    w.scenario({
+      actions: [
+        { run: [process.execPath, '-e', `const fs = require('node:fs'); fs.writeFileSync(${JSON.stringify(seen)}, JSON.stringify(fs.readdirSync(${JSON.stringify(digestsRoot)})))`] },
+        { run: [process.execPath, '-e', `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.ppid))`] },
+      ],
+      delayMs: 60000,
+    });
     assert.equal(w.machine.claude_bin, FAKE);
     const child = spawn(process.execPath, [BIN, 'curate'], { cwd: w.vault, env: w.env, stdio: 'ignore' });
     const exited = new Promise((resolve) => child.on('exit', (code, sig) => resolve({ code, sig })));
@@ -1188,6 +1217,8 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT', ...RARER]) {
     assert.equal(last.reasonCode, 'interrupted');
     assert.ok(last.reason.includes(signal), 'the reason names the signal');
     assert.deepEqual(w.roundFiles(), [], 'the lock is released');
+    assert.equal(JSON.parse(readFileSync(seen, 'utf8')).length, 1, 'the digests were there while the model ran');
+    assert.deepEqual(w.digestDirs(), [], 'and are gone with the round');
     assert.equal(w.watermark(), null);
     assert.equal(w.notifications().length, 1);
   });
@@ -1247,7 +1278,7 @@ test('more open days than a round reads: it curates the oldest, advances only th
   // A session ten days old, the only one inside the first round's window.
   const old = join(w.projects, PROJECT, 'bbbbbbbb-1111-4222-8333-444444444444.jsonl');
   writeFileSync(old, `${JSON.stringify({ type: 'user', timestamp: `${utcDay(-10)}T12:00:00.000Z`, message: { role: 'user', content: 'An older session' } })}\n`);
-  w.scenario({ rewrite: { toolUses: [{ name: 'Read', input: { file_path: old, offset: 1 } }] } });
+  w.scenario();
   const r = w.curate();
   assert.equal(r.status, EXIT.OK, r.stderr);
   const last = w.lastRun();
@@ -1259,8 +1290,9 @@ test('more open days than a round reads: it curates the oldest, advances only th
   assert.deepEqual(w.watermark(), { transcripts: utcDay(-4) }, 'the mark stops at the last day read');
   const prompt = readFileSync(w.files.stdinFile, 'utf8');
   assert.match(prompt, /3 newer open day\(s\) are left for the next round/);
-  assert.ok(prompt.includes(old));
-  assert.equal(prompt.includes(w.transcript), false, 'yesterday\'s session is outside this round\'s window');
+  assert.ok(offers(prompt, old));
+  assert.equal(offers(prompt, w.transcript), false, 'yesterday\'s session is outside this round\'s window');
+  assert.deepEqual(w.reads().map((read) => read.isError), [false], 'the one digest the round granted was read');
 
   w.scenario();
   const next = w.curate();
@@ -1302,7 +1334,7 @@ test('a CLI killed by a signal after printing a successful stream is a failed ro
 
 test('a result whose subtype is not success is a failed round even when is_error is false (review M1)', () => {
   const w = makeCurateWorld();
-  w.scenario({ stream: join(STREAMS, 'max-turns.jsonl'), rewrite: { toolUses: [{ name: 'Read', input: { file_path: w.transcript } }], finalText: 'x\nBRAIN_KIT_SOURCES: transcripts=ok', replace: [['"is_error":true', '"is_error":false']] }, exitCode: 0 });
+  w.scenario({ stream: join(STREAMS, 'max-turns.jsonl'), rewrite: { readGranted: true, finalText: 'x\nBRAIN_KIT_SOURCES: transcripts=ok', replace: [['"is_error":true', '"is_error":false']] }, exitCode: 0 });
   const r = w.curate();
   assert.equal(r.status, EXIT.FAILURE, r.stderr);
   assert.match(w.lastRun().reason, /error_max_turns/);
@@ -1439,8 +1471,8 @@ test('the reviewer\'s C1 reproduction: 5 + 10 + 10 sessions and a cap of 20 cove
   const second = daySessions(w, '2026-09-27', 10, 'b');
   const third = daySessions(w, '2026-09-28', 10, 'c');
   const all = [...first, ...second, ...third];
-  // A model that reads every file the plan could list.
-  w.scenario({ rewrite: { toolUses: all.map((path) => ({ name: 'Read', input: { file_path: path, offset: 1 } })) } });
+  // A model that reads every digest the round hands it.
+  w.scenario();
   const r = await curateInProcess(w, [], { now: AFTER_28 });
   assert.equal(r.status, EXIT.OK, r.stderr);
   const last = w.lastRun();
@@ -1454,8 +1486,9 @@ test('the reviewer\'s C1 reproduction: 5 + 10 + 10 sessions and a cap of 20 cove
   assert.match(w.logText(), /days_deferred/);
   assert.deepEqual(w.watermark(), { transcripts: '2026-09-27' }, 'the mark stops at the last covered day');
   const prompt = readFileSync(w.files.stdinFile, 'utf8');
-  for (const path of [...first, ...second]) assert.ok(prompt.includes(path), path);
-  for (const path of third) assert.equal(prompt.includes(path), false, 'a deferred day\'s session is not offered');
+  for (const path of [...first, ...second]) assert.ok(offers(prompt, path), path);
+  for (const path of third) assert.equal(offers(prompt, path), false, 'a deferred day\'s session is not offered');
+  assert.equal(all.some((path) => prompt.includes(path)), false, 'no transcript is named by its own path');
   assert.match(prompt, /1 more open day\(s\) \(28\/09\/2026\) are left for the next round/);
 
   const next = await curateInProcess(w, [], { now: AFTER_28 });
@@ -1470,7 +1503,7 @@ test('a first open day holding more transcripts than the cap exits 4 before the 
   const w = makeCurateWorld();
   writeFileSync(join(w.state, 'watermark.json'), JSON.stringify({ sources: { transcripts: '2026-09-25' } }));
   const paths = daySessions(w, '2026-09-26', 21, 'a');
-  w.scenario({ rewrite: { toolUses: paths.map((path) => ({ name: 'Read', input: { file_path: path } })) } });
+  w.scenario();
   const r = await curateInProcess(w, [], { now: AFTER_28 });
   assert.equal(r.status, EXIT.SOURCE_UNREAD, r.stderr);
   const last = w.lastRun();
@@ -1581,10 +1614,10 @@ const PROPOSE_NOTE = (w) => [{ write: { path: 'notes/reading.md', content: note(
 
 // The fake's stream in connector mode: the isolated fixture with the init
 // event a connector-mode round sees (the servers and their tools), the
-// transcript read unless `read` is false, and the given tool uses.
+// digest of each transcript read unless `read` is false, and the given
+// tool uses.
 function connectorRewrite(w, { servers = connectorServers(), tools = CONNECTOR_TOOLS, uses = [], read = true, finalText } = {}) {
-  const readTranscript = read ? [{ name: 'Read', input: { file_path: w.transcript, offset: 1 } }] : [];
-  return { mcpServers: servers, tools, toolUses: [...readTranscript, ...uses], finalText };
+  return { mcpServers: servers, tools, readGranted: read, toolUses: uses, finalText };
 }
 
 // The allow and deny lists of an argument vector.
@@ -1647,7 +1680,7 @@ test('phase 3 criterion: the calendar needs authentication at init; the model is
   w.scenario({
     launches: [
       needsAuth,
-      { actions: PROPOSE_NOTE(w), rewrite: { toolUses: [{ name: 'Read', input: { file_path: w.transcript, offset: 1 } }], finalText: 'Round done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable' } },
+      { actions: PROPOSE_NOTE(w), rewrite: { readGranted: true, finalText: 'Round done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable' } },
     ],
   });
   const started = Date.now();
@@ -1707,7 +1740,7 @@ for (const [label, servers, state] of [
     w.scenario({
       launches: [
         { rewrite: { mcpServers: servers, tools: BUILTINS }, delayMs: 60000 },
-        { actions: PROPOSE_NOTE(w), rewrite: { toolUses: [{ name: 'Read', input: { file_path: w.transcript, offset: 1 } }], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable' } },
+        { actions: PROPOSE_NOTE(w), rewrite: { readGranted: true, finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable' } },
       ],
     });
     const started = Date.now();
@@ -1767,7 +1800,7 @@ for (const rule of [`${CALENDAR_PREFIX}*`, 'mcp__claude_ai_Google_Calendar']) {
     const w = makeCurateWorld({ config: withConnectors() });
     w.userSettings({ permissions: { allow: [rule] } });
     const y = utcDay(-1);
-    w.scenario({ actions: PROPOSE_NOTE(w), rewrite: { toolUses: [{ name: 'Read', input: { file_path: w.transcript, offset: 1 } }], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable meeting_notes=unavailable' } });
+    w.scenario({ actions: PROPOSE_NOTE(w), rewrite: { readGranted: true, finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable meeting_notes=unavailable' } });
     const r = w.curate();
     assert.equal(r.status, EXIT.OK, r.stderr);
     const launches = w.launches();
@@ -1828,8 +1861,8 @@ test('per-source windows (decision D5): a calendar mark two days behind the tran
   assert.deepEqual(last.window.days, [d3, d2, y]);
   assert.deepEqual(last.window.sources, { transcripts: [y], calendar: [d3, d2, y] });
   let prompt = readFileSync(w.files.stdinFile, 'utf8');
-  assert.equal(prompt.includes(old), false, 'the transcripts are not offered a day they already covered');
-  assert.ok(prompt.includes(w.transcript));
+  assert.equal(offers(prompt, old), false, 'the transcripts are not offered a day they already covered');
+  assert.ok(offers(prompt, w.transcript));
   assert.ok(prompt.includes(`"startTime":"${dayStart(d3)}"`), 'the calendar is listed from its own first day');
   assert.ok(prompt.includes(`Days for this source: ${shownDay(y)}; its window runs from ${dayStart(y)}`), 'the transcripts are told their own days');
 
@@ -1843,7 +1876,7 @@ test('per-source windows (decision D5): a calendar mark two days behind the tran
   assert.equal('transcripts' in last.sources, false, 'a source with no day of its own is not collected');
   prompt = readFileSync(w.files.stdinFile, 'utf8');
   assert.ok(prompt.includes('`BRAIN_KIT_SOURCES: calendar=<ok|empty|failed|unavailable>`'), 'nor offered');
-  assert.equal(prompt.includes(w.transcript), false);
+  assert.equal(offers(prompt, w.transcript), false);
 });
 
 test('per-source windows, the other way round: the transcripts two days behind the calendar; --check shows the calendar listed from its own first day only', () => {
@@ -1972,7 +2005,7 @@ test('final review I2: the calendar needs authentication at the first init: the 
   w.scenario({
     launches: [
       { rewrite: { mcpServers: connectorServers({ calendar: 'needs-auth', drive: 'connected' }), tools: [...BUILTINS, ...DRIVE_TOOLS] }, delayMs: 60000 },
-      { actions: PROPOSE_NOTE(w), rewrite: { toolUses: [{ name: 'Read', input: { file_path: w.transcript, offset: 1 } }], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable meeting_notes=unavailable' } },
+      { actions: PROPOSE_NOTE(w), rewrite: { readGranted: true, finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable meeting_notes=unavailable' } },
     ],
   });
   const r = w.curate();
@@ -2044,7 +2077,7 @@ test('a required connector source that is unavailable leaves the round exit 4 af
   w.scenario({
     launches: [
       { rewrite: { mcpServers: connectorServers({ calendar: 'needs-auth', drive: null }) }, delayMs: 60000 },
-      { actions: PROPOSE_NOTE(w), rewrite: { toolUses: [{ name: 'Read', input: { file_path: w.transcript, offset: 1 } }], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable' } },
+      { actions: PROPOSE_NOTE(w), rewrite: { readGranted: true, finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable' } },
     ],
   });
   const r = w.curate();
@@ -2067,12 +2100,11 @@ test('include_projects "all": a round offers the sessions of every project direc
   writeFileSync(second, `${JSON.stringify(user('Ana fixed the build', noon))}\n`);
   mkdirSync(join(w.projects, '-tmp-scratch'));
   writeFileSync(join(w.projects, '-tmp-scratch', 'cccccccc-1111-4222-8333-444444444444.jsonl'), `${JSON.stringify(user('a scratch session', noon))}\n`);
-  const reads = [w.transcript, second].map((file_path) => ({ name: 'Read', input: { file_path, offset: 1 } }));
-  w.scenario({ actions: PROPOSE_NOTE(w), rewrite: { toolUses: reads } });
+  w.scenario({ actions: PROPOSE_NOTE(w) });
   const r = w.curate();
   assert.equal(r.status, EXIT.OK, r.stderr);
   const prompt = readFileSync(w.files.stdinFile, 'utf8');
-  assert.ok(prompt.includes(w.transcript) && prompt.includes(second), 'both projects are offered');
+  assert.ok(offers(prompt, w.transcript) && offers(prompt, second), 'both projects are offered');
   assert.equal(prompt.includes('-tmp-scratch'), false, 'a directory a pattern covers is no project');
   assert.deepEqual(w.lastRun().sources.transcripts, { kept: 2, read: 2, advanced: true, noTimestamp: 0 });
   assert.deepEqual(w.watermark(), { transcripts: utcDay(-1) });
@@ -2255,7 +2287,7 @@ test('a hook in the stream of a launch stopped for a relaunch, after the init ev
   w.scenario({
     launches: [
       { rewrite: { mcpServers: connectorServers({ calendar: 'needs-auth', drive: null }), hookAfterInit: true } },
-      { actions: PROPOSE_NOTE(w), rewrite: { toolUses: [{ name: 'Read', input: { file_path: w.transcript, offset: 1 } }], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable' } },
+      { actions: PROPOSE_NOTE(w), rewrite: { readGranted: true, finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable' } },
     ],
   });
   const r = w.curate();
@@ -2282,7 +2314,7 @@ test('days past the transcripts\' cap are left for the transcripts\' next round 
   const now = new Date('2026-09-29T12:00:00.000Z');
   writeFileSync(join(w.state, 'watermark.json'), JSON.stringify({ sources: { transcripts: '2026-09-25', calendar: '2026-09-25' } }));
   const sessions = ['2026-09-26', '2026-09-27'].flatMap((day, i) => daySessions(w, day, 1, String(i + 1)));
-  w.scenario({ rewrite: connectorRewrite(w, { read: false, uses: [{ name: 'Read', input: { file_path: sessions[0], offset: 1 } }, listEvents(dayStart('2026-09-26'), dayStart('2026-09-29'))], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=empty' }) });
+  w.scenario({ rewrite: connectorRewrite(w, { uses: [listEvents(dayStart('2026-09-26'), dayStart('2026-09-29'))], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=empty' }) });
   const r = await curateInProcess(w, [], { now });
   assert.equal(r.status, EXIT.OK, r.stderr);
   const last = w.lastRun();
@@ -2290,7 +2322,8 @@ test('days past the transcripts\' cap are left for the transcripts\' next round 
   assert.deepEqual(last.deferredDays, ['2026-09-27', '2026-09-28']);
   assert.deepEqual(w.watermark(), { transcripts: '2026-09-26', calendar: '2026-09-28' });
   const prompt = readFileSync(w.files.stdinFile, 'utf8');
-  assert.equal(prompt.includes(sessions[1]), false, 'a deferred transcripts day is not offered');
+  assert.ok(offers(prompt, sessions[0]));
+  assert.equal(offers(prompt, sessions[1]), false, 'a deferred transcripts day is not offered');
   assert.ok(prompt.includes(`"startTime":"${dayStart('2026-09-26')}","endTime":"${dayStart('2026-09-29')}"`), 'the calendar is offered its own days');
 });
 
@@ -2299,7 +2332,7 @@ test('each launch is checked in its own mode: an isolated relaunch whose init ev
   w.scenario({
     launches: [
       { rewrite: { mcpServers: connectorServers({ calendar: 'needs-auth', drive: null }) }, delayMs: 60000 },
-      { rewrite: { mcpServers: connectorServers({ calendar: 'needs-auth', drive: null }), toolUses: [{ name: 'Read', input: { file_path: w.transcript, offset: 1 } }], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable' }, delayMs: 60000 },
+      { rewrite: { mcpServers: connectorServers({ calendar: 'needs-auth', drive: null }), readGranted: true, finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable' }, delayMs: 60000 },
     ],
   });
   const started = Date.now();
@@ -2355,7 +2388,7 @@ test('review C1: a calendar stuck since 16/09 never takes the transcripts\' days
   w.scenario({
     launches: [
       { rewrite: { mcpServers: connectorServers({ calendar: 'needs-auth', drive: null }) }, delayMs: 60000 },
-      { actions: PROPOSE_NOTE(w), rewrite: { toolUses: [session, w.transcript].map((file_path) => ({ name: 'Read', input: { file_path, offset: 1 } })), finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable' } },
+      { actions: PROPOSE_NOTE(w), rewrite: { readGranted: true, finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable' } },
     ],
   });
   const r = await curateInProcess(w, [], { now });
@@ -2367,7 +2400,7 @@ test('review C1: a calendar stuck since 16/09 never takes the transcripts\' days
   assert.equal(r.stderr.includes('transcripts reads through'), false, 'nothing remains for the transcripts');
   assert.deepEqual(w.watermark(), { transcripts: '2026-09-24', calendar: '2026-09-16' });
   assert.equal(w.ghCalls().filter((call) => call.args[1] === 'create').length, 1, 'the pull request is born');
-  assert.ok(w.launches()[1].stdin.includes(session));
+  assert.ok(offers(w.launches()[1].stdin, session));
 });
 
 test('review C1: each source is clipped to its own oldest seven days, and a source ahead reads its own days whatever the one behind', async () => {
@@ -2408,7 +2441,7 @@ test('review I2: with the calendar configured, the meeting notes close a day onl
   w.scenario({
     launches: [
       { rewrite: { mcpServers: connectorServers({ calendar: 'needs-auth', drive: 'connected' }), tools: [...BUILTINS, ...DRIVE_TOOLS] }, delayMs: 60000 },
-      { actions: PROPOSE_NOTE(w), rewrite: { toolUses: [{ name: 'Read', input: { file_path: w.transcript, offset: 1 } }], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable meeting_notes=unavailable' } },
+      { actions: PROPOSE_NOTE(w), rewrite: { readGranted: true, finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable meeting_notes=unavailable' } },
     ],
   });
   let r = w.curate();
@@ -2583,7 +2616,7 @@ test('final review I3: a user write rule anchored at the settings folder (`/x`) 
 test('final review I2: meeting notes unavailable on their own account keep their own reason: a bare Bash blocks both sources, and the notes are blocked, not waiting, their mark held by their own evidence', () => {
   const w = makeCurateWorld({ config: withConnectors() });
   w.userSettings({ permissions: { allow: ['Bash'] } });
-  w.scenario({ actions: PROPOSE_NOTE(w), rewrite: { toolUses: [{ name: 'Read', input: { file_path: w.transcript, offset: 1 } }], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable meeting_notes=unavailable' } });
+  w.scenario({ actions: PROPOSE_NOTE(w), rewrite: { readGranted: true, finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable meeting_notes=unavailable' } });
   const r = w.curate();
   assert.equal(r.status, EXIT.OK, r.stderr);
   const last = w.lastRun();

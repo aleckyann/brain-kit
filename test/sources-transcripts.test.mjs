@@ -12,7 +12,7 @@ import { validateSource } from '../src/sources/index.mjs';
 import { allProjects, exclusionPatterns, projectEntryKind, transcriptsSource, DEFAULT_LIMITS, SAMPLE_BYTES } from '../src/sources/transcripts-claude-code.mjs';
 import {
   FROM, TO, NOW, INSIDE, WEEKS_AGO, PROJECT, OTHER_PROJECT,
-  assistant, customTitle, lastPrompt, makeWorld, mode, paths, system, toolResult, user, userBlocks,
+  assistant, customTitle, digestOf, lastPrompt, makeWorld, mode, paths, system, toolResult, user, userBlocks,
 } from './helpers/transcripts-world.mjs';
 
 test('the transcripts source implements the source interface', () => {
@@ -149,7 +149,7 @@ test('"all" with a project directory that cannot be listed names it and reads th
     assert.equal(plan.misconfigured, false);
     assert.match(plan.promptBlock, new RegExp(`The project ${OTHER_PROJECT} exists under .* but could not be listed, so none of its transcripts was read, and no day of this source closes until it can be listed\\.`));
     assert.deepEqual(plan.unreadable, [{ path: locked, project: OTHER_PROJECT, bytes: 0, directory: true }]);
-    assert.equal(transcriptsSource.readEvidence(record([{ path: kept }]), plan).ok, false);
+    assert.equal(transcriptsSource.readEvidence(record([{ path: digestOf(plan, kept) }]), plan).ok, false);
   } finally {
     chmodSync(locked, 0o755);
   }
@@ -284,7 +284,7 @@ test('a symlinked project the round cannot follow is unread, under "all" and und
         assert.deepEqual(plan.problems, [{ code: 'project_unreadable', detail: '-home-ana-linked' }], what);
         assert.deepEqual(plan.unreadable, [{ path: link, project: '-home-ana-linked', bytes: 0, directory: true }], what);
         assert.equal(plan.misconfigured, false, what);
-        assert.equal(transcriptsSource.readEvidence(record([{ path: kept }]), plan).ok, false, `${what}: never read while it stays so`);
+        assert.equal(transcriptsSource.readEvidence(record([{ path: digestOf(plan, kept) }]), plan).ok, false, `${what}: never read while it stays so`);
       } finally {
         restore?.();
       }
@@ -525,12 +525,14 @@ test('a scan in tiny chunks gives the same plan as the default, across multi-byt
   const expected = world.collect();
   for (const chunkBytes of [1, 7, 4093]) {
     const plan = transcriptsSource.collect({
-      window: { from: FROM, to: TO }, config: world.config, machine: world.machine, now: NOW,
+      window: { from: FROM, to: TO }, config: world.config, machine: world.machine, now: NOW, digestDir: world.digestDir,
       limits: { chunkBytes, maxLineChars: DEFAULT_LIMITS.maxLineChars },
     });
     assert.deepEqual(plan.files, expected.files, `chunkBytes ${chunkBytes}`);
     assert.deepEqual(plan.dropped, expected.dropped, `chunkBytes ${chunkBytes}`);
+    assert.deepEqual(plan.digestTexts, expected.digestTexts, `chunkBytes ${chunkBytes}: the same digest, character for character`);
   }
+  assert.ok(expected.digestTexts[0].text.includes(`${'ç'.repeat(700)} 119`), 'multi-byte text survives the chunk boundaries whole');
   assert.equal(expected.dropped.selfTrace, 2);
   assert.equal(expected.files[0].firstAt, '2026-09-23T09:00:00.000Z');
   assert.equal(expected.files[0].lastAt, '2026-09-23T20:00:00.000Z');
@@ -615,7 +617,7 @@ test('an unlistable project or transcripts directory is a problem, never an exce
     assert.match(plan.promptBlock, /could not be listed/);
     // Ruling R-A4: unread, so the source is never read while it stays so.
     assert.deepEqual(plan.unreadable, [{ path: locked, project: OTHER_PROJECT, bytes: 0, directory: true }]);
-    assert.deepEqual(transcriptsSource.readEvidence(record([{ path: kept }]), plan), { read: 1, expected: 2, ok: false });
+    assert.deepEqual(transcriptsSource.readEvidence(record([{ path: digestOf(plan, kept) }]), plan), { read: 1, expected: 2, ok: false });
   } finally {
     chmodSync(locked, 0o755);
   }
@@ -667,7 +669,7 @@ test('a transcript the round would offer whose path no read rule can name is lis
   assert.match(plan.promptBlock, /its path holds \( \), which no read permission can name exactly/);
   assert.equal(plan.promptBlock.includes('could not be read (an I/O error'), false, 'not reported as an I/O error');
   // The evidence still expects them: the day cannot close while they wait.
-  const record = { toolUses: [{ id: 't1', name: 'Read', input: { file_path: ok } }], toolResults: [{ toolUseId: 't1', isError: false }] };
+  const record = { toolUses: [{ id: 't1', name: 'Read', input: { file_path: digestOf(plan, ok) } }], toolResults: [{ toolUseId: 't1', isError: false }] };
   assert.deepEqual(transcriptsSource.readEvidence(record, plan), { read: 1, expected: 4, ok: false });
 });
 
@@ -693,25 +695,28 @@ test('every transcript of an included project whose folder name holds such a cha
   assert.deepEqual(plan.unreadable.map((f) => [f.path, f.project, f.unsafe]), [[inside, project, ['(', ')']]]);
 });
 
-test('the prompt block lists each file with project, window span, size and sample offset, and only non-zero counters', () => {
+test('the prompt block lists each file by its digest, with project, window span and the digest\'s counts, never the transcript\'s own path, and only non-zero counters', () => {
   const world = makeWorld({ exclude: ['/skip-'] });
   const file = world.write(PROJECT, 'a.jsonl', [user('Ana asks', '2026-09-23T10:00:00.000Z'), assistant('ok', '2026-09-23T11:00:00.000Z')]);
   world.write(PROJECT, 'old.jsonl', [user('long ago', WEEKS_AGO)]);
   const plan = world.collect();
-  const line = plan.promptBlock.split('\n').find((l) => l.includes(file));
+  const digest = digestOf(plan, file);
+  assert.equal(digest, join(world.digestDir, '01-a.txt'));
+  const line = plan.promptBlock.split('\n').find((l) => l.includes(digest));
   assert.ok(line, plan.promptBlock);
   assert.ok(line.includes(PROJECT));
   assert.ok(line.includes('2026-09-23T10:00:00.000Z'));
   assert.ok(line.includes('2026-09-23T11:00:00.000Z'));
-  assert.ok(line.includes(String(plan.files[0].bytes)));
-  assert.ok(line.endsWith(`sampleLine ${plan.files[0].sampleLine})`), 'the line is labelled sampleLine, the word the prompt uses');
-  assert.doesNotMatch(line, /\bbyte \d/, 'no byte offset a model could pass to Read as a line offset');
+  assert.ok(line.endsWith('the digest keeps 2 of 2 messages)'), line);
+  assert.equal(plan.promptBlock.includes(file), false, 'the transcript itself is never named: it is not readable');
+  assert.doesNotMatch(plan.promptBlock, /sampleLine|offset as/, 'no offset to pass: a digest is read whole');
   assert.match(plan.promptBlock, /1 transcripts? left out because no message falls inside the window/);
   assert.doesNotMatch(plan.promptBlock, /cap of/);
   assert.doesNotMatch(plan.promptBlock, /exclude_path_patterns/);
   assert.doesNotMatch(plan.promptBlock, /own runs/);
-  assert.match(plan.promptBlock, /never the whole file/);
-  assert.match(plan.promptBlock, /Every time here is UTC/);
+  assert.match(plan.promptBlock, /Read each digest whole, with Read and no offset or limit: reading the digest is reading the transcript/);
+  assert.match(plan.promptBlock, /It is sampled from the end/);
+  assert.match(plan.promptBlock, /Every time in this block is UTC/);
   assert.doesNotMatch(plan.promptBlock, /not opened/);
 });
 
@@ -724,8 +729,11 @@ test('each kept file carries its session, the first 8 characters of its file nam
   assert.equal(byPath[uuid].session, '3f2a9c1e');
   assert.equal(byPath[short].session, 'abc');
   const lines = plan.promptBlock.split('\n');
-  assert.ok(lines.some((l) => l.startsWith(`session 3f2a9c1e: ${uuid} `)), plan.promptBlock);
-  assert.ok(lines.some((l) => l.startsWith(`session abc: ${short} `)), plan.promptBlock);
+  assert.ok(lines.some((l) => l.startsWith(`session 3f2a9c1e: ${digestOf(plan, uuid)} `)), plan.promptBlock);
+  assert.ok(lines.some((l) => l.startsWith(`session abc: ${digestOf(plan, short)} `)), plan.promptBlock);
+  // The digest is named after the session, newest first.
+  assert.equal(digestOf(plan, short), join(world.digestDir, '01-abc.txt'));
+  assert.equal(digestOf(plan, uuid), join(world.digestDir, '02-3f2a9c1e.txt'));
 });
 
 test('an empty window says so in the prompt block', () => {
@@ -751,32 +759,66 @@ test('the prompt block renders in pt-BR with no placeholder left', () => {
 function record(reads) {
   const toolUses = [];
   const toolResults = [];
-  reads.forEach(({ path, isError = false, name = 'Read' }, index) => {
+  reads.forEach(({ path, isError = false, name = 'Read', input = {} }, index) => {
     const id = `toolu_${index}`;
-    toolUses.push({ id, name, input: { file_path: path } });
+    toolUses.push({ id, name, input: { file_path: path, ...input } });
     toolResults.push({ toolUseId: id, isError });
   });
   return { toolUses, toolResults };
 }
 
-test('readEvidence counts a kept file as read only by a successful Read of exactly its path', () => {
+test('readEvidence counts a kept file as read only by a successful Read of exactly its digest\'s path', () => {
   const world = makeWorld();
   const a = world.write(PROJECT, 'a.jsonl', [user('Ana asks', INSIDE)]);
   const b = world.write(PROJECT, 'b.jsonl', [user('Ana asks again', INSIDE)]);
   const plan = world.collect();
+  const [da, db] = [digestOf(plan, a), digestOf(plan, b)];
   assert.deepEqual(transcriptsSource.readEvidence(record([]), plan), { read: 0, expected: 2, ok: false });
-  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: a, isError: true }]), plan), { read: 0, expected: 2, ok: false });
-  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: `${a}.bak` }]), plan), { read: 0, expected: 2, ok: false });
-  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: a, name: 'Grep' }]), plan), { read: 0, expected: 2, ok: false });
-  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: a }, { path: a }]), plan), { read: 1, expected: 2, ok: false });
-  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: a }, { path: b }]), plan), { read: 2, expected: 2, ok: true });
+  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: da, isError: true }]), plan), { read: 0, expected: 2, ok: false });
+  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: `${da}.bak` }]), plan), { read: 0, expected: 2, ok: false });
+  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: da, name: 'Grep' }]), plan), { read: 0, expected: 2, ok: false });
+  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: da }, { path: da }]), plan), { read: 1, expected: 2, ok: false });
+  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: da }, { path: db }]), plan), { read: 2, expected: 2, ok: true });
+});
+
+test('readEvidence never counts a Read or a Grep of a transcript\'s own path (01/10/2026): only its digest proves it read', () => {
+  const world = makeWorld();
+  const a = world.write(PROJECT, 'a.jsonl', [user('Ana asks', INSIDE)]);
+  const b = world.write(PROJECT, 'b.jsonl', [user('Ana asks again', INSIDE)]);
+  const plan = world.collect();
+  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: a }, { path: b }]), plan), { read: 0, expected: 2, ok: false });
+  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: a, name: 'Grep' }, { path: b, name: 'Grep' }]), plan), { read: 0, expected: 2, ok: false });
+  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: a, input: { offset: 1, limit: 15 } }, { path: digestOf(plan, b) }]), plan), { read: 1, expected: 2, ok: false });
+  // A plan collected with no digest folder offers files nobody can read.
+  const bare = transcriptsSource.collect({ window: { from: FROM, to: TO }, config: world.config, machine: world.machine, now: NOW });
+  assert.equal(bare.files.length, 2);
+  assert.ok(bare.files.every((file) => file.digest === undefined));
+  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: a }, { path: b }]), bare), { read: 0, expected: 2, ok: false });
+  assert.match(bare.promptBlock, /no digest was prepared for it, so it cannot be read in this round/);
+});
+
+test('readEvidence counts only a whole read of a digest: an offset past its first line, or a limit short of its last, is a slice', () => {
+  const world = makeWorld();
+  const a = world.write(PROJECT, 'a.jsonl', [user('Ana asks', INSIDE), assistant('Ana gets an answer', INSIDE), user('Ana thanks', INSIDE)]);
+  const plan = world.collect();
+  const digest = plan.files[0].digest;
+  assert.equal(digest.lines, 4, 'the header and three messages');
+  const read = (input) => transcriptsSource.readEvidence(record([{ path: digestOf(plan, a), input }]), plan).read;
+  assert.equal(read({}), 1);
+  assert.equal(read({ offset: 1 }), 1);
+  assert.equal(read({ offset: 0 }), 1);
+  assert.equal(read({ offset: 1, limit: 4 }), 1);
+  assert.equal(read({ limit: 2000 }), 1);
+  assert.equal(read({ offset: 2 }), 0, 'the header left out');
+  assert.equal(read({ limit: 3 }), 0, 'the last message left out');
+  assert.equal(read({ offset: 'x' }), 0, 'an offset that is not a number proves nothing');
 });
 
 test('readEvidence never counts a Read whose tool result never came back (final review M7)', () => {
   const world = makeWorld();
   const a = world.write(PROJECT, 'a.jsonl', [user('Ana asks', INSIDE)]);
   const plan = world.collect();
-  const unanswered = { toolUses: [{ id: 'toolu_1', name: 'Read', input: { file_path: a } }], toolResults: [] };
+  const unanswered = { toolUses: [{ id: 'toolu_1', name: 'Read', input: { file_path: digestOf(plan, a) } }], toolResults: [] };
   assert.deepEqual(transcriptsSource.readEvidence(unanswered, plan), { read: 0, expected: 1, ok: false });
 });
 
@@ -785,9 +827,10 @@ test('readEvidence is ok only when every kept file was read: one of two leaves t
   const a = world.write(PROJECT, 'a.jsonl', [user('Ana asks', INSIDE)]);
   const b = world.write(PROJECT, 'b.jsonl', [user('Ana asks again', INSIDE)]);
   const plan = world.collect();
-  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: b }]), plan), { read: 1, expected: 2, ok: false });
-  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: b }, { path: a, isError: true }]), plan), { read: 1, expected: 2, ok: false });
-  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: b }, { path: a }]), plan), { read: 2, expected: 2, ok: true });
+  const [da, db] = [digestOf(plan, a), digestOf(plan, b)];
+  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: db }]), plan), { read: 1, expected: 2, ok: false });
+  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: db }, { path: da, isError: true }]), plan), { read: 1, expected: 2, ok: false });
+  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: db }, { path: da }]), plan), { read: 2, expected: 2, ok: true });
 });
 
 test('readEvidence is never ok while the plan lists an unreadable file, even with every kept file read', () => {
@@ -796,7 +839,7 @@ test('readEvidence is never ok while the plan lists an unreadable file, even wit
   world.write(PROJECT, 'bad.jsonl', ['not json at all']);
   const plan = world.collect();
   assert.equal(plan.unreadable.length, 1);
-  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: a }]), plan), { read: 1, expected: 2, ok: false });
+  assert.deepEqual(transcriptsSource.readEvidence(record([{ path: digestOf(plan, a) }]), plan), { read: 1, expected: 2, ok: false });
   const only = makeWorld();
   only.write(PROJECT, 'bad.jsonl', ['not json at all']);
   assert.deepEqual(transcriptsSource.readEvidence(record([]), only.collect()), { read: 0, expected: 1, ok: false });

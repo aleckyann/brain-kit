@@ -2395,12 +2395,18 @@ test('round-scope: every allow rule the vault adds that reads or writes outside 
 
 test('round-scope: in connector mode a user read rule the round records instead of denying is named, with the settings file', async () => {
   const fx = setup({ config: connectorConfig() });
-  // A read rule over the vault, and one over the transcripts folder a round could list from (ruling R-F2); one
-  // disjoint from both is mirrored as a deny and not named.
-  const env = userSettings(fx, { permissions: { allow: ['Read(//etc/**)', 'Read(//**)', 'Glob(~/.claude/projects/**)', 'Bash(rtk curl *)'] } });
+  // A read rule over the vault, and one over the folder a round's digests go in (ruling R-F2), are named; one
+  // disjoint from both is mirrored as a deny and not named, and since 01/10/2026 that includes one over the
+  // transcripts folder, which a round no longer reads (it reads the digests).
+  const digests = `Grep(//${fx.stateDir.slice(1)}/digests/**)`;
+  const env = userSettings(fx, { permissions: { allow: ['Read(//etc/**)', 'Read(//**)', digests, 'Glob(~/.claude/projects/**)', 'Bash(rtk curl *)'] } });
   let { report } = await doctor(fx, ['--only', 'round-scope'], { env });
   const c = assertCheck(report, 'round-scope', 'warn', 'doctor.round_scope.user_reads');
-  assert.deepEqual(c.params, { rules: ['Read(//**)', 'Glob(~/.claude/projects/**)'], files: [join(env.CLAUDE_CONFIG_DIR, 'settings.json')] });
+  assert.deepEqual(c.params, { rules: ['Read(//**)', digests], files: [join(env.CLAUDE_CONFIG_DIR, 'settings.json')] });
+  // So is one over the log folder, where a round that keeps its stream keeps its digests.
+  const logs = `Read(//${fx.stateDir.slice(1)}/logs/**)`;
+  ({ report } = await doctor(fx, ['--only', 'round-scope'], { env: userSettings(fx, { permissions: { allow: [logs] } }) }));
+  assert.deepEqual(assertCheck(report, 'round-scope', 'warn', 'doctor.round_scope.user_reads').params.rules, [logs]);
   // Connector mode refused (a bare Bash): the round runs isolated, and the
   // read rule reaches nothing.
   const refused = userSettings(fx, { permissions: { allow: ['Read(//etc/**)', 'Bash'] } });

@@ -41,7 +41,7 @@ test('a round whose calendar connector is disabled: the state is named in the ou
       { rewrite: { mcpServers: connectorServers({ calendar: null, drive: null }) }, delayMs: 60000 },
       {
         actions: [{ write: { path: 'notes/reading.md', content: note('Reading') } }, w.proposeAction('notes/reading.md')],
-        rewrite: { toolUses: [{ name: 'Read', input: { file_path: w.transcript, offset: 1 } }], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable' },
+        rewrite: { readGranted: true, finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable' },
       },
     ],
   });

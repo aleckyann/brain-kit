@@ -21,6 +21,14 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 //   QUESTIONS_LOG open questions the curator raised but could not resolve on
 //                 its own; kept apart from the run log because it is read on
 //                 its own by the briefing, independent of any single run.
+//   DIGEST_DIR    directory holding, while a round runs, one directory of
+//                 that round's transcript digests (the text the model reads
+//                 in place of each transcript, src/sources/
+//                 transcripts-claude-code.mjs). The round deletes its own on
+//                 every exit it can handle, and the next round deletes
+//                 whatever a round killed outright left there. A round with
+//                 --keep-stream writes its digests next to its stream in
+//                 LOG_DIR instead, where they age out with the logs.
 //
 // There is no lock and no snapshot here, on purpose. A state directory is
 // chosen by the caller's environment (BRAIN_KIT_STATE_DIR, XDG_STATE_HOME),
@@ -34,6 +42,7 @@ export const STATE_FILES = Object.freeze({
   LAST_RUN: 'last-run.json',
   LOG_DIR: 'logs',
   QUESTIONS_LOG: 'questions.log',
+  DIGEST_DIR: 'digests',
 });
 
 // A relative XDG_STATE_HOME is ignored, as the XDG Base Directory

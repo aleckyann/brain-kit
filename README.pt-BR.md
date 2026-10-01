@@ -150,7 +150,7 @@ consegue agir pelos próprios `validate`, `lint` e `propose` do kit. A rodada te
 pull request contra o seu vault. O modelo roda isolado das suas próprias configurações do
 Claude Code: nenhum arquivo de configuração seu ou do projeto é carregado, nenhum hook,
 nenhum servidor MCP, nenhuma skill e nenhuma ferramenta nativa além das sete de que ele
-precisa; ele lê só o vault e os transcripts que a rodada lista, e tudo o que as regras da
+precisa; ele lê só o vault e um extrato de cada transcript que a rodada lista, e tudo o que as regras da
 própria rodada não permitem é negado. A rodada confere o isolamento pelo primeiro evento
 da CLI e para o modelo se ele não se confirmar. Os passos rodam numa ordem fixa e testada (lock, rede, sync, e só então a
 configuração já sincronizada), e toda forma de uma rodada falhar termina com uma saída

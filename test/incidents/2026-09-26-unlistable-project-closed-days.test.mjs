@@ -66,9 +66,9 @@ for (const [label, include, bothRead] of [
     } finally {
       chmodSync(dir, 0o755);
     }
-    // Listable again: the next round reads its sessions and only then closes the day.
+    // Listable again: the next round reads its sessions (their digests) and only then closes the day.
     const kept = bothRead ? [w.transcript, session] : [session];
-    w.scenario({ actions: propose(w), rewrite: { toolUses: kept.map((file_path) => ({ name: 'Read', input: { file_path, offset: 1 } })) } });
+    w.scenario({ actions: propose(w) });
     const fixed = w.curate();
     assert.equal(fixed.status, EXIT.OK, fixed.stderr);
     assert.deepEqual(w.watermark(), { transcripts: utcDay(-1) });
@@ -99,10 +99,10 @@ test('under include_projects "all", a symlinked project the round cannot follow 
   mkdirSync(volume, { recursive: true });
   const name = 'eeeeeeee-1111-4222-8333-444444444444.jsonl';
   writeFileSync(join(volume, name), `${JSON.stringify(user('Ana wrote the plan', `${utcDay(-1)}T15:00:00.000Z`))}\n`);
-  const kept = [w.transcript, join(link, name)];
-  w.scenario({ actions: propose(w), rewrite: { toolUses: kept.map((file_path) => ({ name: 'Read', input: { file_path, offset: 1 } })) } });
+  w.scenario({ actions: propose(w) });
   const fixed = w.curate();
   assert.equal(fixed.status, EXIT.OK, fixed.stderr);
   assert.deepEqual(w.watermark(), { transcripts: utcDay(-1) });
   assert.deepEqual(w.lastRun().sources.transcripts, { kept: 2, read: 2, advanced: true, noTimestamp: 0 });
+  assert.equal(w.reads().filter((read) => !read.isError).length, 2, 'both digests read: the linked session\'s and the other project\'s');
 });

@@ -145,8 +145,8 @@ configuration lists, selected by the time of their messages, and gives them to a
 that can act only through the kit's own `validate`, `lint` and `propose`. The round ends
 with a pull request against your vault. The model runs isolated from your own Claude Code
 settings: no settings file of yours or of the project is loaded, no hook, no MCP server,
-no skill and no built-in tool beyond the seven it needs; it reads only the vault and the
-transcripts the round lists, and everything its own rules do not allow is denied. The
+no skill and no built-in tool beyond the seven it needs; it reads only the vault and a
+digest of each transcript the round lists, and everything its own rules do not allow is denied. The
 round checks the isolation from the CLI's first event and stops the model if it does not
 hold. The steps run in one
 fixed, tested order (lock, network, sync, then the configuration as synced), and every way

@@ -22,10 +22,22 @@
 //       "hookEvent": true,                  a hook_started event before init
 //       "hookAfterInit": true,              a PreToolUse hook_started event right after init
 //       "dropInit": true,
-//       "toolUses": [{ "name", "input", "isError", "content" }],  added before
-//                                           the result; `content` is the tool
-//                                           result's text (a connector answers
-//                                           JSON text), "ok" or "error" by default
+//       "toolUses": [{ "name", "input", "isError", "content", "emulate" }],
+//                                           added before the result; `content` is
+//                                           the tool result's text (a connector
+//                                           answers JSON text), "ok" or "error" by
+//                                           default; a Read with "emulate": true is
+//                                           answered as Claude Code's Read answers
+//                                           it: denied when no Read rule of the
+//                                           --allowedTools allows its path, and
+//                                           otherwise ./read-tool.mjs (missing,
+//                                           over 256 KB whole, 25 000 tokens a slice)
+//       "readGranted": true | ["text", ...], a Read, emulated, of every exact
+//                                           file a `Read(//<path>)` rule of the
+//                                           --allowedTools grants (or of those
+//                                           whose path holds one of the texts),
+//                                           added before `toolUses`: what a model
+//                                           that reads what it is handed does
 //       "finalText": "...",                 an assistant text and result.result
 //       "dropResult": true,
 //       "appendLines": ["raw line", ...]
@@ -38,6 +50,9 @@
 //                                           --version), fields laid over the
 //                                           scenario's own, the last entry
 //                                           repeating for later launches
+//     "readLog": "<path>",                  one JSON line per emulated Read:
+//                                           { path, isError, content, text, mode,
+//                                           dirMode }, `text` the file's own text
 //     "launchCountFile": "<path>",          how many model launches ran so far
 //     "launchLog": "<path>"                 one JSON line per model launch:
 //                                           { launch, argv, stdin }
@@ -50,9 +65,10 @@
 // an argument. The actions run with this process's own environment, so a
 // variable the caller set for `claude` reaches them, as it does for the
 // commands a real model runs through Bash.
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, normalize } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { emulateRead } from './read-tool.mjs';
 
 const argv = process.argv.slice(2);
 const scenarioPath = process.env.FAKE_CLAUDE_SCENARIO;
@@ -120,6 +136,59 @@ for (const action of scenario.actions ?? []) {
   }
 }
 
+// The exact files the --allowedTools grant with a `Read(//<path>)` rule (a
+// rule with a wildcard, such as a folder's `/**`, is not one), as Read uses
+// of each, emulated: all of them for `true`, those whose path holds one of
+// the texts for a list.
+function grantedReads(which) {
+  if (which !== true && !Array.isArray(which)) return [];
+  return allowedRules()
+    .map((rule) => /^Read\(\/\/(.+)\)$/.exec(rule)?.[1])
+    .filter((path) => path !== undefined && !path.includes('*'))
+    .map((path) => `/${path}`)
+    .filter((path) => which === true || which.some((text) => path.includes(text)))
+    .map((path) => ({ name: 'Read', input: { file_path: path }, emulate: true }));
+}
+
+// The rules after --allowedTools, up to the next option.
+function allowedRules() {
+  const at = argv.indexOf('--allowedTools');
+  if (at === -1) return [];
+  const rules = [];
+  for (const arg of argv.slice(at + 1)) {
+    if (arg.startsWith('--')) break;
+    rules.push(arg);
+  }
+  return rules;
+}
+
+// Whether an emulated Read of `path` is allowed, the way `dontAsk` decides
+// it for the rules a round passes: inside the working directory
+// (`Read(./**)`), an exact file (`Read(//<path>)`), or under a folder
+// (`Read(//<folder>/**)`). Anything else is denied, as the real CLI denies it.
+function readAllowed(path) {
+  if (typeof path !== 'string') return false;
+  return allowedRules().some((rule) => {
+    if (rule === 'Read(./**)') return path.startsWith(`${process.cwd()}/`);
+    const scope = /^Read\(\/\/(.+)\)$/.exec(rule)?.[1];
+    if (scope === undefined) return false;
+    if (scope.endsWith('/**')) return path.startsWith(`/${scope.slice(0, -2)}`);
+    return !scope.includes('*') && path === `/${scope}`;
+  });
+}
+
+// A file's mode and its folder's, as octal permission bits, or null.
+function modes(path) {
+  const of = (p) => {
+    try {
+      return (statSync(p).mode & 0o777).toString(8);
+    } catch {
+      return null;
+    }
+  };
+  return { mode: of(path), dirMode: of(dirname(path)) };
+}
+
 function buildStream() {
   if (!scenario.stream) return [];
   let text = readFileSync(scenario.stream, 'utf8');
@@ -147,11 +216,18 @@ function buildStream() {
     const at = events.findIndex((e) => e.type === 'result');
     return at === -1 ? events.length : at;
   };
-  (rw.toolUses ?? []).forEach((use, i) => {
+  [...grantedReads(rw.readGranted), ...(rw.toolUses ?? [])].forEach((use, i) => {
     const id = `toolu_fake_added_${i + 1}`;
     const assistant = { type: 'assistant', message: { id: `msg_fake_added_${i + 1}`, type: 'message', role: 'assistant', content: [{ type: 'tool_use', id, name: use.name, input: use.input }] }, parent_tool_use_id: null, session_id: session };
-    const content = typeof use.content === 'string' ? use.content : (use.isError ? 'error' : 'ok');
-    const user = { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: use.isError === true, content }] }, parent_tool_use_id: null, session_id: session };
+    let isError = use.isError === true;
+    let content = typeof use.content === 'string' ? use.content : (isError ? 'error' : 'ok');
+    if (use.emulate === true && use.name === 'Read') {
+      const answer = readAllowed(use.input?.file_path) ? emulateRead(use.input) : { isError: true, content: 'Permission to use Read has been denied.', text: null };
+      isError = answer.isError;
+      content = answer.content;
+      if (scenario.readLog) appendFileSync(scenario.readLog, `${JSON.stringify({ path: use.input.file_path, isError, content: isError ? content : null, text: answer.text, ...modes(use.input.file_path) })}\n`);
+    }
+    const user = { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: isError, content }] }, parent_tool_use_id: null, session_id: session };
     events.splice(resultAt(), 0, assistant, user);
   });
   if (rw.finalText !== undefined) {

@@ -1,5 +1,58 @@
 # Changelog
 
+## Unreleased
+
+### The model reads a digest of each transcript, never the transcript (01/10/2026)
+
+- A round now writes a digest of each transcript its plan keeps before the model starts,
+  and hands the model those instead of the transcripts
+  ([docs/incidents.md](docs/incidents.md), 01/10/2026: on the first real round on a real
+  vault, transcripts of 386 to 512 KB with lines of more than 100 KB were refused by the
+  Read tool whole and in slices, the required source could never be proven read, and the
+  round exited 4). A digest holds only the messages whose own time falls inside the
+  source's window, in order of time, one line each (`[HH:MM user] <text>`,
+  `[HH:MM assistant] <text>`, the date in front when the window spans several days, on the
+  vault's clock): a user message's text and the assistant's text blocks, never a tool call,
+  a tool result or a thinking block, and never the harness's own text (a line Claude Code
+  marks as its own, a compact summary, a block that starts with `<system-reminder>`,
+  `<command-name>`, `<local-command-`, `<task-notification>`, `Caveat:` and the like). Each
+  message is cut at 1 800 characters with ` [...]`, and the whole kept within 40 000
+  characters and 800 messages, keeping the most recent ones; its first line names the
+  session, the project, the window, the time zone, how many messages the window held and
+  how many it keeps, and every cut (`cut: the first N messages and M characters were left
+  out`, in the vault's language). The largest digest those bounds allow is under 125 000
+  bytes and 24 000 tokens at a pessimistic 2 characters per token, so it is always read
+  whole.
+- The round grants `Read(//<digest>)` for each digest and no longer grants any transcript.
+  A transcript counts as read when its digest was read whole, in one successful Read with
+  no offset past its first line and no limit short of its last; a Read or a Grep of the
+  transcript itself never counts. `last-run.json` still says how many transcripts of how
+  many were read, in the same terms.
+- The digests live in `digests/<instant>-<hex>/` in the state directory, each file 0600 in
+  a folder of 0700, and are deleted when the round ends, on a failure, an exit 4 or a
+  signal as on a success; the next round deletes what a round killed outright left, as
+  soon as it holds the lock. With `--keep-stream` they are written beside the kept stream
+  (`logs/curate-<instant>-<hex>.digests/`) and age out with the logs. No digest text goes
+  into the log, `last-run.json` or a notification: the log says how many were written and
+  the counts of each one cut, and the round says each cut on its output and among the
+  warnings. `--dry` writes none and says how many a round would write; `--check` writes
+  none.
+- A state directory whose path holds a character no read rule can name exactly (a vault
+  folder named `Notes (old)` gives its name to the state directory) stops the round before
+  the model with exit 1, `digest_dir_unsafe`, naming the folder and how to move it.
+- `doctor`'s `round-scope` and `connectors` checks now take the digest folders, not the
+  transcripts folder, as the round's own reads when they mirror the person's user rules,
+  as a round does.
+- The curate prompt's rule `sample-from-end`, in both languages, now speaks of the digests:
+  the kit already sampled each transcript from its end, the model reads each digest whole
+  with no offset or limit, and reading the digest is reading the transcript. The
+  transcripts block of the parameters says the same and lists each session by its digest.
+  No contract marker was added or removed, so an overlay that passes `prompt --check`
+  still does. A vault with its own curate overlay gets the new block, which the kit
+  writes, but not the rule's new wording: copy it by hand into the overlay's
+  `sample-from-end` paragraph, or the overlay keeps telling the model to read a transcript
+  from a `sampleLine` it is no longer given.
+
 ## 0.0.4 (tagged `v0.0.4`, not on npm)
 
 ### A document the connector answers "not found" for (30/09/2026)

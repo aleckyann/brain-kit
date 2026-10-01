@@ -73,7 +73,7 @@ test('calling ensureStateDir twice is harmless', () => {
 });
 
 test('STATE_FILES names every file the later slices will write, and nothing collides', () => {
-  const expectedKeys = ['WATERMARK', 'LAST_RUN', 'LOG_DIR', 'QUESTIONS_LOG'];
+  const expectedKeys = ['WATERMARK', 'LAST_RUN', 'LOG_DIR', 'QUESTIONS_LOG', 'DIGEST_DIR'];
   for (const key of expectedKeys) {
     assert.equal(typeof STATE_FILES[key], 'string', `STATE_FILES.${key} must be a string`);
     assert.ok(STATE_FILES[key].length > 0, `STATE_FILES.${key} must not be empty`);

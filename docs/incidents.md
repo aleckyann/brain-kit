@@ -7,14 +7,15 @@ Names of people, companies and tools were removed on purpose.
 
 Seventy three lessons were extracted from the original vault, written up as seventy
 two entries: the four day curation outage of September 2026 produced two lessons about
-the same incident and is written up once, under 13/09/2026. Six entries were added
+the same incident and is written up once, under 13/09/2026. Seven entries were added
 since, each dated: the leak gate that blocked its own release tag (18/09/2026), the
 selection of transcripts by modification time (24/09/2026), the settings a headless
 run inherits (24/09/2026), which the kit's own build produced, the round that took its
 own parent for a competing curator (28/09/2026), found while moving a vault onto the
-kit, and, both found in real rounds on the kit, the attachments the connector answered
-"not found" (30/09/2026) and the expired login a round reported with no reason
-(30/09/2026). Seventy eight entries follow. Where a lesson carries no date of its own,
+kit, and, all three found in real rounds on the kit, the attachments the connector
+answered "not found" (30/09/2026), the expired login a round reported with no reason
+(30/09/2026) and the transcripts too big for the Read tool (01/10/2026). Seventy nine
+entries follow. Where a lesson carries no date of its own,
 the entry says "Undated" and explains why.
 
 ## Format and links
@@ -673,6 +674,35 @@ own evidence, a listing that covers the whole window with every page
 through the days it read (`src/commands/curate.mjs`),
 `test/incidents/2026-08-20-calendar-partial-read.test.mjs` (Phase 3).
 
+### 01/10/2026: the transcripts were too big to read, so the day could never close
+**What happened.** On the first real round on a real vault, the required transcripts
+source counted a transcript as read only when the model's Read of the file returned
+without error. Every test had used tiny transcripts. The real ones were 386 to 512 KB of
+JSON lines, most of it tool results on single lines of more than a hundred kilobytes, and
+the Read tool refuses a whole file over 256 KB and a slice over 25 000 tokens, even one of
+15 lines. The model tried, was refused, and fell back to searching the files, which
+gave it the person's messages and counted for nothing. The round recorded 1 of 8
+transcripts read, exited 4 and moved no mark, after costing 3.88 USD and opening a pull
+request anyway. A required source that can never be proven read makes the unattended
+curator unusable on real data. The setup it replaced had read transcripts through a JSON
+command line tool, which the kit's isolation rightly does not grant.
+**Rule.** Arithmetic in code, judgement in the model. Do not loosen the proof of reading
+or widen what the model may run: make what it must read small enough to be read. The kit
+writes a digest of each transcript before the model starts, with only what the person and
+the assistant wrote inside the window, in order of time, and never a tool result, a
+thought or the harness's own text; it cuts each message and the whole to bounds proven
+under the tool's limits, keeps the most recent messages, and says every cut. The model is
+granted the digests and not the transcripts, a whole read of a digest is what proves its
+transcript read, and the digests are deleted when the round ends. Test with data the size
+of the real thing.
+**Where it lives in brain-kit.** `src/sources/transcripts-claude-code.mjs` (the digest,
+`DIGEST_LIMITS`, `writeDigests`, and the evidence that counts only a whole read of a
+digest), `src/commands/curate.mjs` (the digest folder, the grants, the cut warnings, the
+removal on every end and of what a killed round left), the curate prompt's rule
+`sample-from-end`, [security.md](security.md) ("The digests"),
+`test/transcript-digests.test.mjs`, `test/curate-digests.test.mjs`,
+`test/incidents/2026-10-01-transcripts-too-big-to-read.test.mjs` (Phase 5).
+
 ### Undated: the acceptance criterion demanded facts no round could produce
 **What happened.** The first run of the external sources landed on a Sunday with zero
 events, which exposed that the acceptance criterion required four facts that no round
@@ -1169,12 +1199,13 @@ up criterion as a required field) (Phase 1).
 in up to 20 of them. Reading them in full exhausted the context before the round
 reached its third stage. The rule was set during prompt calibration, so it carries no
 incident date.
-**Rule.** A large transcript is sampled from the end and then in slices, never read
-whole. Video recordings and full transcriptions are never downloaded. Cost and privacy
-are rules in the prompt, not left to the model's good sense.
-**Where it lives in brain-kit.** `src/sources/transcripts-claude-code.mjs` (the plan
-gives each transcript's size and the line to start reading from, near its end, and caps
-how many are offered), the curate prompt, `--max-turns` and `--max-budget-usd` on every
+**Rule.** A large transcript is sampled from the end, never read whole; since 01/10/2026
+the kit does the sampling itself, into a digest the model reads whole (entry above).
+Video recordings and full transcriptions are never downloaded. Cost and privacy are
+rules in the prompt and the kit's code, not left to the model's good sense.
+**Where it lives in brain-kit.** `src/sources/transcripts-claude-code.mjs` (the digest of
+each transcript, sampled from its end and bounded, and the cap on how many are offered),
+the curate prompt, `--max-turns` and `--max-budget-usd` on every
 round unless the owner sets `curate.max_turns` or `curate.budget_usd` to null for no cap
 (Phase 2; null since Phase 5a); for meeting
 notes, the source's prompt block, which checks an attached document's metadata first and

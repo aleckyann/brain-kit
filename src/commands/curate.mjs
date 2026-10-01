@@ -34,13 +34,20 @@
 //       window ends at the last covered day; nothing in the window:
 //       advance vacuously and exit 0 (never a source whose plan found
 //       nothing to read because nothing is there: it failed, and keeps
-//       its day open even as a best-effort source, ruling R-A9)
+//       its day open even as a best-effort source, ruling R-A9); the
+//       transcripts plan carries a digest of each kept transcript, built in
+//       memory, and the model is granted those digests, never the
+//       transcripts (01/10/2026); a digest folder whose path no read rule
+//       can name: exit 1 before the model
 //   12. the launch mode (decisions D1 and D3): with a connector source to
 //       read, the person's user settings are read and mirrored; connector
 //       mode unless a rule refuses it (every connector source is then
 //       blocked_by_user_rules, and the round runs isolated); --check: print
 //       the plan, the mode, the round's limits and the prompt's size, exit 0
-//   13. run the model, with no --max-budget-usd when curate.budget_usd is
+//   13. write the digests (mode 0600, in a folder of mode 0700 under the
+//       state directory, src/state.mjs DIGEST_DIR; beside the stream in the
+//       log folder with --keep-stream), saying each one cut short; then
+//       run the model, with no --max-budget-usd when curate.budget_usd is
 //       null (roundBudget), no --max-turns when curate.max_turns is null
 //       (roundTurns), and killed after curate.timeout_minutes when that is
 //       a number, never otherwise (roundTimeoutMinutes: exit 1, timed_out);
@@ -58,14 +65,18 @@
 //       not opened 3; otherwise 0. A best-effort source never changes it.
 //   17. advance each source's watermark through its own last day, only on
 //       0 or 3
-//   18. always: remove the round record, write last-run.json, append the
-//       log, release the lock (the model's process group already dead) and
-//       run machine.notify_command on any non-zero exit, and once when a
-//       best-effort connector source's state changed since the last round
+//   18. always: remove the round record and the round's digests (unless
+//       the stream is kept), write last-run.json, append the log, release
+//       the lock (the model's process group already dead) and run
+//       machine.notify_command on any non-zero exit, and once when a
+//       best-effort connector source's state changed since the last round.
+//       Digests a round killed outright left behind are removed by the next
+//       round, as soon as it holds the lock
 //
 // The log (logs/curate-<date>.log in the state directory) holds one line
 // per event, never a tool result, the model's final text or anything read
-// from a transcript, and never the round's token. What the CLI itself said
+// from a transcript (a digest's text included: only how many digests were
+// written and each cut's counts), and never the round's token. What the CLI itself said
 // on a failed run goes in the reason (step 16): the last line of its
 // standard error, and the start of an error result's text, its own word on
 // why the run ended. --check and --dry write no last-run.json: a round that
@@ -106,8 +117,10 @@ import {
 import { buildArgv, runModel, unscopedRules } from '../harness/claude-code.mjs';
 import { errorText, isLoginFailure } from '../harness/stream.mjs';
 import { allowedTools, disallowedTools, KIT_SUBCOMMANDS, kitCommand } from '../curate/tools.mjs';
+import { unsafeRuleCharacters } from '../curate/rule-path.mjs';
 import { blockingMessage, mirrorUserRules, userSettingsFiles } from '../curate/user-rules.mjs';
 import { SOURCES } from '../sources/index.mjs';
+import { writeDigests } from '../sources/transcripts-claude-code.mjs';
 import { syncUnderLock } from './sync.mjs';
 import { parseRoundRecord, roundRecordPath } from './propose.mjs';
 import { proposedMatch, restoreMatching } from '../guards/proposed.mjs';
@@ -384,15 +397,53 @@ function computeWindow(stateDir, sources, now, tz) {
 
 // Each source collected over its own window: from the start of its first
 // day to the end of its last, with its own days. A source with no day in
-// the round is never collected.
-function collectPlans(sources, days, config, machine, env, now, tz) {
+// the round is never collected. `digestDir` is where the transcripts
+// source names its digests (built in memory; writeDigests writes them).
+function collectPlans(sources, days, config, machine, env, now, tz, digestDir) {
   const plans = {};
   const home = env.HOME || undefined;
   for (const source of sources) {
     const own = days[source.id];
-    plans[source.id] = source.collect({ window: { from: startOfDay(own[0], tz), to: startOfDay(addDays(own.at(-1), 1), tz), days: own, timezone: tz }, config, machine, now, ...(home ? { home } : {}) });
+    plans[source.id] = source.collect({ window: { from: startOfDay(own[0], tz), to: startOfDay(addDays(own.at(-1), 1), tz), days: own, timezone: tz }, config, machine, now, digestDir, ...(home ? { home } : {}) });
   }
   return plans;
+}
+
+// The instant of a round as its kept files name it: the stream's
+// `curate-<stamp>.stream.jsonl`, and its kept digests.
+function roundStamp(now) {
+  return now.toISOString().replace(/[:.]/g, '-');
+}
+
+// The folder one round's digests go in (src/state.mjs, DIGEST_DIR): one of
+// its own under digests/, removed when the round ends; with the stream
+// kept, beside it in logs/ (`curate-<stamp>-<hex>.digests`), where the
+// logs' retention removes it with the stream. The random part keeps two
+// rounds of the same instant apart.
+function digestDirFor(stateDir, now, keep) {
+  const id = `${roundStamp(now)}-${randomBytes(4).toString('hex')}`;
+  return keep ? join(stateDir, STATE_FILES.LOG_DIR, `curate-${id}.digests`) : join(stateDir, STATE_FILES.DIGEST_DIR, id);
+}
+
+// What a round killed outright (SIGKILL, a power cut) left in DIGEST_DIR,
+// removed by the next round as soon as it holds the vault lock: no round
+// is running then, so nothing there is any round's own. A DIGEST_DIR that
+// is a link or a file is removed itself, never followed.
+function sweepDigests(stateDir) {
+  const dir = join(stateDir, STATE_FILES.DIGEST_DIR);
+  let st;
+  try {
+    st = lstatSync(dir);
+  } catch {
+    return 0;
+  }
+  if (!st.isDirectory()) {
+    rmSync(dir, { force: true });
+    return 1;
+  }
+  const names = readdirSync(dir);
+  for (const name of names) rmSync(join(dir, name), { recursive: true, force: true });
+  return names.length;
 }
 
 // The days a source with a whole-day cap (plan.daysCovered, C1 of the
@@ -497,12 +548,30 @@ function renderParameters(t, { window, tz, plans, sources, days, config, deferre
   return lines.join('\n');
 }
 
-// The files outside the vault the model may read: every file a local
-// source's plan lists, each one by its exact path (ruling R-A2 of
-// 24/09/2026), never its folder, so a session the plan left out stays
-// unreadable.
+// The files outside the vault the model may read: the digest of every file
+// a local source's plan lists, each one by its exact path (ruling R-A2 of
+// 24/09/2026), never its folder, and never the transcript itself
+// (01/10/2026: least privilege; the model is handed the digest), so a
+// session the plan left out stays unreadable, and so does every one it
+// kept.
 function readFilesOf(sources, plans) {
-  return sources.filter((source) => source.kind === 'local').flatMap((source) => (plans[source.id]?.files ?? []).map((file) => file.path));
+  return sources.filter((source) => source.kind === 'local')
+    .flatMap((source) => (plans[source.id]?.files ?? []).map((file) => file.digest?.path).filter((path) => typeof path === 'string'));
+}
+
+// The digest folder of a round whose plans grant a digest whose path holds
+// a character no read rule can carry (src/curate/rule-path.mjs), with
+// those characters: { dir, characters }; null when every one can be
+// named. A digest's own name is `<NN>-<session>.txt`, the session a prefix
+// of a file name the plan already refuses such characters in, so it is
+// the state directory's path that holds them (a vault folder named
+// `Notes (old)`, say).
+function unsafeDigestDir(sources, plans) {
+  for (const path of readFilesOf(sources, plans)) {
+    const characters = unsafeRuleCharacters(path);
+    if (characters.length > 0) return { dir: path.slice(0, path.lastIndexOf(sep)), characters: characters.join(' ') };
+  }
+  return null;
 }
 
 // The round's allow and deny lists in isolated mode. The deny list also
@@ -860,7 +929,7 @@ export async function runCurate(argv, io, t, deps = {}) {
   const claudeBin = expandHome(machine.claude_bin, env);
 
   // 2. --dry: a read-only preview, from the working tree as it is.
-  if (parsed.dry) return dryRun({ root, stateDir, machine, claudeBin, io, env, now });
+  if (parsed.dry) return dryRun({ root, stateDir, machine, claudeBin, io, env, now, keepStream: parsed.keepStream || machine.keep_stream === true });
 
   // The round's own state, filled as it goes and written at the end.
   // The last round's record, read before this one can write its own: the
@@ -882,6 +951,12 @@ export async function runCurate(argv, io, t, deps = {}) {
   let recordFile = null;
   let keepRecord = false;
   let interrupted = null;
+  // The model's raw output, and with it the round's digests, are kept
+  // only on request (--keep-stream, or keep_stream in machine.json).
+  const keepStream = parsed.keepStream || machine.keep_stream === true;
+  // This round's digest folder (step 11), removed in the `finally` below
+  // whatever the round's end, unless the stream is kept.
+  const digestDir = digestDirFor(stateDir, now, keepStream);
   const controller = new AbortController();
   const onSignal = (signal) => {
     interrupted = signal;
@@ -925,10 +1000,31 @@ export async function runCurate(argv, io, t, deps = {}) {
       if (!keepRecord) rmSync(recordFile, { force: true });
       rmSync(`${recordFile}.lock`, { force: true });
     }
+    // The digests hold what the person wrote: gone on every end this
+    // process sees, a failure, an exit 4 and a signal included. A folder
+    // that cannot be removed is logged, never allowed to keep the lock.
+    if (!keepStream) {
+      try {
+        rmSync(digestDir, { recursive: true, force: true });
+      } catch (error) {
+        log('digests_not_removed', { code: error.code ?? null });
+      }
+    }
   }
   return finishRound({ run, io, log, stateDir, machine, env, started, lock, writeLastRun: !parsed.check, check: parsed.check, notices });
 
   async function roundUnderLock() {
+    // Digests a round killed outright left behind (step 18). Never in a
+    // --check, which writes none.
+    if (!parsed.check) {
+      try {
+        const swept = sweepDigests(stateDir);
+        if (swept > 0) log('digests_swept', { count: swept });
+      } catch (error) {
+        log('digests_not_swept', { code: error.code ?? null });
+      }
+    }
+
     // 4. The network.
     onStep('network');
     const minWaitMs = networkMinWait(root);
@@ -1102,7 +1198,7 @@ export async function runCurate(argv, io, t, deps = {}) {
     for (const source of active) {
       if (days[source.id].length === 0) log('source_no_day', { source: source.id, mark: computed.marks[source.id] ?? null });
     }
-    const plans = collectPlans(offered, days, config, machine, env, now, tz);
+    const plans = collectPlans(offered, days, config, machine, env, now, tz, digestDir);
     for (const source of offered) {
       const plan = plans[source.id];
       run.sources[source.id] = sourceEntry(source, plan);
@@ -1203,6 +1299,11 @@ export async function runCurate(argv, io, t, deps = {}) {
     // 12. The launch mode: connector mode for the connector sources the
     // person's rules allow, isolated otherwise (decisions D1 and D3).
     const connectorDenies = [...new Set(active.filter((s) => s.kind === 'connector').flatMap((s) => s.toolRules(config).deny))];
+    // The digests the model is granted, each by its exact path: a folder
+    // whose path no rule can name exactly could not be granted without
+    // granting more, so the model is not started on it.
+    const unsafeDigests = unsafeDigestDir(offered, plans);
+    if (unsafeDigests !== null) return fail(EXIT.FAILURE, 'digest_dir_unsafe', t('curate.digest_dir_unsafe', { dir: unsafeDigests.dir, characters: unsafeDigests.characters }));
     const readFiles = readFilesOf(offered, plans);
     // Sources the round offers but cannot read this time (id -> state), and
     // the connector state each launch saw (id -> { state, observedPrefix }).
@@ -1282,8 +1383,7 @@ export async function runCurate(argv, io, t, deps = {}) {
     // 13. The model: one launch, and once more without what the first
     // one's init event showed unavailable (decision D4). Never a third.
     onStep('model');
-    const keepStream = parsed.keepStream || machine.keep_stream === true;
-    const streamFile = keepStream ? join(stateDir, STATE_FILES.LOG_DIR, `curate-${now.toISOString().replace(/[:.]/g, '-')}.stream.jsonl`) : null;
+    const streamFile = keepStream ? join(stateDir, STATE_FILES.LOG_DIR, `curate-${roundStamp(now)}.stream.jsonl`) : null;
     let out = null;
     let isolationAbort = null;
     let launchMode = choice.mode;
@@ -1293,6 +1393,21 @@ export async function runCurate(argv, io, t, deps = {}) {
     const minutes = roundTimeoutMinutes(config);
     const timeoutMs = deps.roundTimeoutMs ?? (minutes === null ? null : minutes * 60 * 1000);
     if (!nothingLeft()) {
+      // The digests the prompt names, written only now that a model is
+      // about to read them (never by --check or --dry), each cut said.
+      for (const source of offered.filter((s) => s.kind === 'local')) {
+        const plan = plans[source.id];
+        const written = writeDigests(plan);
+        if (written === 0) continue;
+        const cut = plan.files.filter((file) => file.digest.cutMessages > 0);
+        log('digests', { source: source.id, written, cut: cut.map((file) => ({ session: file.session, kept: file.digest.kept, held: file.digest.held, messages: file.digest.cutMessages, chars: file.digest.cutChars })) });
+        for (const file of cut) {
+          const what = t('sources.transcripts.digest_cut', { messages: file.digest.cutMessages, chars: file.digest.cutChars });
+          const text = t('curate.digest_cut', { source: source.id, session: file.session, kept: file.digest.kept, held: file.digest.held, cut: what });
+          run.warnings.push(text);
+          io.stderr.write(`${text}\n`);
+        }
+      }
       io.stdout.write(`${t('curate.model_start', { days: window.days.map(shown).join(', ') })}\n`);
       for (const line of limitLines(t, config)) io.stdout.write(`${line}\n`);
       run.budgetUsd = roundBudget(config);
@@ -1660,9 +1775,11 @@ function lastLine(text) {
 // Step 18: last-run.json, the log's last line, the lock, the notification.
 // The model's process group is already dead: runModel kills it before it
 // resolves, so no child of the round outlives the lock.
-// The round's own files in logs/ (its dated log and a kept stream), and
-// nothing else, older than machine.log_retention_days (30 by default).
+// The round's own files in logs/ (its dated log, a kept stream and the
+// folder of digests kept with it), and nothing else, older than
+// machine.log_retention_days (30 by default).
 const OWN_LOG_FILE = /^curate-(?:\d{4}-\d{2}-\d{2}\.log|[0-9TZ-]+\.stream\.jsonl)$/;
+const OWN_DIGEST_DIR = /^curate-[0-9TZ-]+-[0-9a-f]{8}\.digests$/;
 const DEFAULT_LOG_RETENTION_DAYS = 30;
 
 function pruneLogs(stateDir, machine, now = Date.now()) {
@@ -1676,10 +1793,13 @@ function pruneLogs(stateDir, machine, now = Date.now()) {
   }
   const limit = now - days * 24 * 60 * 60 * 1000;
   for (const name of names) {
-    if (!OWN_LOG_FILE.test(name)) continue;
+    const file = OWN_LOG_FILE.test(name);
+    if (!file && !OWN_DIGEST_DIR.test(name)) continue;
     try {
       const st = lstatSync(join(dir, name));
-      if (st.isFile() && st.mtimeMs < limit) rmSync(join(dir, name), { force: true });
+      if (st.mtimeMs >= limit) continue;
+      if (file && st.isFile()) rmSync(join(dir, name), { force: true });
+      else if (!file && st.isDirectory()) rmSync(join(dir, name), { recursive: true, force: true });
     } catch {
       // A file that went away or cannot be read is left to the next round.
     }
@@ -1719,7 +1839,7 @@ function finishRound({ run, io, log, stateDir, machine, env, started, lock, writ
 }
 
 // Step 2.
-function dryRun({ root, stateDir, machine, claudeBin, io, env, now }) {
+function dryRun({ root, stateDir, machine, claudeBin, io, env, now, keepStream }) {
   const config = loadConfig(root);
   // The preview speaks the vault's language, as the round it previews does.
   const t = createTranslator(SUPPORTED_LANGS.includes(config.lang) ? config.lang : 'en');
@@ -1765,7 +1885,9 @@ function dryRun({ root, stateDir, machine, claudeBin, io, env, now }) {
   for (const id of [...unknownRequired, ...unknownBestEffort]) io.stdout.write(`${t('curate.source_skipped', { source: id })}\n`);
   for (const source of off) io.stdout.write(`${t('curate.check_source_off', { source: source.id, problems: problemText(offProblems(source, config, now, tz)) || '-' })}\n`);
   const offered = active.filter((source) => days[source.id].length > 0);
-  const plans = collectPlans(offered, days, config, machine, env, now, tz);
+  // The digests are built in memory to name them as the round would; a dry
+  // run writes none.
+  const plans = collectPlans(offered, days, config, machine, env, now, tz, digestDirFor(stateDir, now, keepStream));
   for (const source of offered) {
     const over = plans[source.id].overCap;
     if (over) io.stdout.write(`${t('curate.dry_cap_exceeded', { day: shown(over.day), count: over.files, cap: plans[source.id].cap, setting: `${CONFIG_FILENAME} curate.caps.${source.id}` })}\n`);
@@ -1775,6 +1897,11 @@ function dryRun({ root, stateDir, machine, claudeBin, io, env, now }) {
     io.stdout.write(`${t('curate.dry_days_deferred', { last: shown(capped.last), count: capped.deferred.length, days: capped.deferred.map(shown).join(', '), setting, cap: capped.cap })}\n`);
   }
   const connectorDenies = [...new Set(active.filter((s) => s.kind === 'connector').flatMap((s) => s.toolRules(config).deny))];
+  const unsafeDigests = unsafeDigestDir(offered, plans);
+  if (unsafeDigests !== null) {
+    io.stderr.write(`${t('curate.digest_dir_unsafe', { dir: unsafeDigests.dir, characters: unsafeDigests.characters })}\n`);
+    return EXIT.FAILURE;
+  }
   const readFiles = readFilesOf(offered, plans);
   let choice = chooseMode({ config, root, env, readFiles, candidates: offered.filter((s) => s.kind === 'connector'), connectorDenies });
   const blocked = choice.blocked;
@@ -1793,6 +1920,8 @@ function dryRun({ root, stateDir, machine, claudeBin, io, env, now }) {
   for (const [id, entry] of blocked) io.stdout.write(`${t('curate.source_blocked', { source: id, reason: blockedMessage(t, SOURCES[id], config, entry) })}\n`);
   if (waiting !== null) io.stdout.write(`${t('curate.source_waiting', { source: notes, calendar: cal, state: waiting })}\n`);
   for (const line of sourceLines(t, { active, plans, days, unavailable, config, blocks: false })) io.stdout.write(`${line}\n`);
+  const digests = readFiles.length;
+  if (digests > 0) io.stdout.write(`${t('curate.dry_digests', { count: digests })}\n`);
   const argv = modelArgv(config, machine, choice.tools, choice.mode);
   io.stdout.write(`${t('curate.check_argv', { bin: claudeBin, argv: JSON.stringify(argv) })}\n`);
   for (const line of limitLines(t, config)) io.stdout.write(`${line}\n`);

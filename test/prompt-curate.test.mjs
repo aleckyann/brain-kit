@@ -210,6 +210,24 @@ for (const lang of LANGS) {
     }
   });
 
+  // 01/10/2026 (docs/incidents.md): real transcripts were too big for the
+  // Read tool, so the rule that told the model to sample them from a line
+  // offset could never be followed. The model now reads each transcript's
+  // digest, which the kit already sampled from the end, whole: the same
+  // marker, new words, no offset to pass.
+  test(`${lang}: sample-from-end hands the model the digests, read whole, and never the transcripts or an offset`, () => {
+    const text = rendered(lang);
+    const at = text.indexOf('<!-- rule:sample-from-end -->');
+    assert.notEqual(at, -1);
+    const paragraph = text.slice(at, text.indexOf('\n\n', at));
+    const expected = {
+      en: [/through their digests/, /already sampled it from its end/, /keeps the most recent messages, and its first line says how many were left out/, /Read each digest whole, with Read and no offset or limit/, /reading it is reading the transcript, and the transcript file itself is not readable/],
+      'pt-BR': [/pelos extratos delas/, /já a amostrou a partir do fim/, /guarda as mensagens mais recentes, e a primeira linha dele diz quantas ficaram de fora/, /Leia cada extrato inteiro, com o Read e sem offset nem limit/, /ler o extrato é ler a transcrição, e o arquivo da transcrição em si não pode ser lido/],
+    }[lang];
+    for (const pattern of expected) assert.match(paragraph, pattern, `${lang}: ${pattern}`);
+    assert.doesNotMatch(paragraph, /sampleLine/, `${lang}: no line offset is handed out any more`);
+  });
+
   // 30/09/2026 (docs/incidents.md): two attachments came back "not found",
   // the rule named only a permission reason, and the model reported the
   // whole meeting-notes source failed, so its mark did not move. The same

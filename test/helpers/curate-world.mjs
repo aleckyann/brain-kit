@@ -118,6 +118,7 @@ export function makeCurateWorld({ machine: machineExtra = {}, config: editConfig
     recordFile: join(markers, 'claude-runs.jsonl'),
     launchLog: join(markers, 'claude-launches.jsonl'),
     launchCountFile: join(markers, 'claude-launch-count'),
+    readLog: join(markers, 'claude-reads.jsonl'),
   };
   const machine = {
     vault_id: 'vault-00000000',
@@ -148,17 +149,21 @@ export function makeCurateWorld({ machine: machineExtra = {}, config: editConfig
     CLAUDE_CONFIG_DIR: claudeConfig,
   };
 
-  // The scenario of a round that reads the transcript and reports it. A
-  // new scenario starts the launch count again.
+  // The scenario of a round that reads what it is handed (the digest of
+  // every transcript the round grants, `readGranted`) and reports it. A
+  // round that must not read sets `readGranted: false`. A new scenario
+  // starts the launch count and the reads log again.
   function scenario(fields = {}) {
     const { rewrite = {}, ...rest } = fields;
     rmSync(files.launchCountFile, { force: true });
     rmSync(files.launchLog, { force: true });
+    rmSync(files.readLog, { force: true });
     const value = {
       ...files,
       stream: join(STREAMS, 'isolated-run.jsonl'),
       rewrite: {
-        toolUses: [{ name: 'Read', input: { file_path: transcript, offset: 1 } }],
+        readGranted: true,
+        toolUses: [],
         finalText: 'Round done.\nBRAIN_KIT_SOURCES: transcripts=ok',
         ...rewrite,
       },
@@ -198,6 +203,21 @@ export function makeCurateWorld({ machine: machineExtra = {}, config: editConfig
     // One entry per model launch of the last scenario: { launch, argv, stdin }.
     launches() {
       return existsSync(files.launchLog) ? readFileSync(files.launchLog, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
+    },
+    // One entry per Read the fake answered as the real tool would, while
+    // the model ran: { path, isError, content, text, mode, dirMode }.
+    reads() {
+      return existsSync(files.readLog) ? readFileSync(files.readLog, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
+    },
+    // Every digest folder left in the state directory: digests/<round>/
+    // and logs/curate-<round>.digests/.
+    digestDirs() {
+      const out = [];
+      const live = join(state, 'digests');
+      if (existsSync(live)) for (const name of readdirSync(live)) out.push(join(live, name));
+      const logs = join(state, 'logs');
+      if (existsSync(logs)) for (const name of readdirSync(logs)) if (name.endsWith('.digests')) out.push(join(logs, name));
+      return out;
     },
     // `brain-kit curate` as a scheduler runs it, a process of its own.
     curate(args = [], extraEnv = {}) {

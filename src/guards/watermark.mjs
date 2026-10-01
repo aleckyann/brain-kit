@@ -90,7 +90,10 @@ function formatterFor(tz) {
   return f;
 }
 
-function wallClock(ms, tz) {
+// The wall clock of `tz` at instant `ms`: { y, m, d, h, min, s }. Throws a
+// RangeError for a name that is not a time zone. The transcripts source
+// stamps each line of a digest with it.
+export function wallClock(ms, tz) {
   const parts = {};
   for (const p of formatterFor(tz).formatToParts(new Date(ms))) parts[p.type] = p.value;
   return {

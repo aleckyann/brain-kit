@@ -274,13 +274,14 @@ What connector mode cannot switch off:
   and the round keeps none for them.
 - **Some user rules that allow reads widen what the model can read.** A read rule (`Read`,
   `Glob`, `Grep`, `LS`) whose scope is disjoint from the vault and from every read the round
-  itself allows (the transcripts its plan lists, a read rule of
+  itself allows (the digests of the transcripts its plan lists, a read rule of
   `curate.allowed_tools_extra`) is mirrored like any other. A bare one, or one whose scope
   overlaps the vault or those reads, is never mirrored, because the deny would take the
   round's own reads: one that reaches outside the vault is recorded as widening reads
   (`userRules.widenedReads` in `last-run.json`), and `brain-kit doctor` names it (check
-  `round-scope`; doctor judges against the whole transcripts folder, so it may name a rule
-  a round would mirror). Scope such rules to what you need.
+  `round-scope`; doctor judges against the whole of the state directory's `digests/` and
+  `logs/` folders, where a round's digests go, so it may name a rule a round would
+  mirror). Scope such rules to what you need.
 - **Not measured, so not relied on:** `permissions.additionalDirectories` in your user
   settings, managed or policy settings (loaded in both modes), the older per-project
   `allowedTools` in `~/.claude.json`, and the user settings that are not permissions: your
@@ -415,4 +416,6 @@ The evidence is the record of the calls the model made, and some things are not 
   (so "the search found two, opened none, reported empty" keeps the day open). A source
   reported `ok` closes its day however many of the documents found were opened: how many a
   round opens is never a condition.
-- How much of a document the model read: opening it counts, as opening a transcript does.
+- How much of a document the model read: opening it counts. A transcript is read through
+  its digest, which is small enough that only a whole read of it counts
+  ([scheduling.md](scheduling.md), "What the model reads of a transcript").

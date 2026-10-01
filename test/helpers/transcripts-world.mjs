@@ -5,6 +5,7 @@
 // assistant, system and attachment lines carry an ISO `timestamp`;
 // last-prompt, custom-title and mode lines carry none), with neutral
 // content.
+import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { KIT_ROOT } from '../../src/version.mjs';
@@ -122,13 +123,31 @@ export function makeWorld({
     return file;
   }
 
-  function collect(window = { from: FROM, to: TO }) {
-    return transcriptsSource.collect({ window, config, machine, now: NOW });
+  // The folder a round would name its digests in (built in memory by
+  // collect, written only by writeDigests).
+  const digestDir = join(tmp, 'state', 'digests', 'round');
+
+  function collect(window = { from: FROM, to: TO, timezone: TIMEZONE }) {
+    return transcriptsSource.collect({ window, config, machine, now: NOW, digestDir });
   }
 
-  return { tmp, root, config, machine, write, collect };
+  return { tmp, root, config, machine, digestDir, write, collect };
 }
 
 export function paths(plan) {
   return plan.files.map((file) => file.path);
+}
+
+// The digest path of the kept transcript at `path`.
+export function digestOf(plan, path) {
+  const file = plan.files.find((f) => f.path === path);
+  assert.ok(file?.digest, `no digest for ${path}`);
+  return file.digest.path;
+}
+
+// The text of the digest of the kept transcript at `path`, as writeDigests
+// would write it.
+export function digestText(plan, path) {
+  const at = digestOf(plan, path);
+  return plan.digestTexts.find((d) => d.path === at).text;
 }

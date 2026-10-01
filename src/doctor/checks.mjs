@@ -1441,19 +1441,18 @@ function configuredSafe(source, config) {
 // connector sources curate.sources lists (the required ones first), those
 // that are on, and the round's own choice of launch mode for them
 // (chooseMode, in src/commands/curate.mjs: the person's user settings read
-// and mirrored exactly as a round does). Doctor lists no transcript: it
-// hands the transcripts folder instead as the round's read root, so a user
-// read rule overlapping any transcript a round could list counts as
-// widening reads here, where a round would mirror one disjoint from the
-// files it lists that day (ruling R-F2): doctor may warn where a round
-// mirrors, never the reverse.
-function transcriptsRoot(ctx) {
-  const read = ctx.machine();
-  const machine = read.ok && isObject(read.value) ? read.value : {};
-  const home = ctx.env.HOME || homedir();
-  const configured = typeof machine.transcripts_dir === 'string' ? machine.transcripts_dir : join('~', '.claude', 'projects');
-  const root = expandHome(configured, ctx.env);
-  return isAbsolute(root) && isAbsolute(home) && unsafeRuleCharacters(root).length === 0 ? [root] : [];
+// and mirrored exactly as a round does). Doctor writes no digest: it hands
+// the folders a round's digests go in instead as the round's read roots
+// (the state directory's digests/ and, for a round that keeps its stream,
+// logs/), so a user read rule overlapping any digest a round could write
+// counts as widening reads here, where a round would mirror one disjoint
+// from the files it writes that day (ruling R-F2): doctor may warn where a
+// round mirrors, never the reverse. Since 01/10/2026 a round reads the
+// digests, never the transcripts, so a rule over the transcripts folder
+// alone is mirrored by the round and here alike.
+function digestRoots(ctx) {
+  const roots = [STATE_FILES.DIGEST_DIR, STATE_FILES.LOG_DIR].map((name) => join(ctx.stateDir, name));
+  return roots.filter((root) => isAbsolute(root) && unsafeRuleCharacters(root).length === 0);
 }
 
 function connectorsPlan(ctx) {
@@ -1469,7 +1468,7 @@ function connectorsPlan(ctx) {
     .map((item) => SOURCES[item]);
   const on = listed.filter((source) => configuredSafe(source, config));
   const connectorDenies = [...new Set(on.flatMap((source) => source.toolRules(config).deny))];
-  const choice = on.length === 0 ? null : chooseMode({ config, root: ctx.root, env: ctx.env, readFiles: transcriptsRoot(ctx), candidates: on, connectorDenies });
+  const choice = on.length === 0 ? null : chooseMode({ config, root: ctx.root, env: ctx.env, readFiles: digestRoots(ctx), candidates: on, connectorDenies });
   return { config, required, listed, on, choice };
 }
 

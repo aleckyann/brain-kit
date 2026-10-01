@@ -29,7 +29,7 @@ test('a calendar configured with the wrong tool prefix: the relaunched prompt na
       { rewrite: { mcpServers: connectorServers({ calendar: 'connected', drive: null }), tools: [...PINNED_TOOLS, ...CALENDAR_TOOLS] }, delayMs: 60000 },
       {
         actions: [{ write: { path: 'notes/reading.md', content: note('Reading') } }, w.proposeAction('notes/reading.md')],
-        rewrite: { toolUses: [{ name: 'Read', input: { file_path: w.transcript, offset: 1 } }], finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable' },
+        rewrite: { readGranted: true, finalText: 'Done.\nBRAIN_KIT_SOURCES: transcripts=ok calendar=unavailable' },
       },
     ],
   });
