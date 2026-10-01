@@ -139,8 +139,8 @@ real Node 22 showed the code already supported.
   table the CLI runs, the two commands its usage leaves out (`scan-blobs`, `push-gate`) are
   never offered, and a suggestion is a sentence: nothing it names is run.
 - Every command that cannot run outside a vault now ends its "no vault found" message with
-  the same two sentences: "If you already have a vault, go into its folder (cd <folder>) or
-  pass -C <folder>. To create a new one: brain-kit init <dir>." Five commands said "To
+  the same two sentences: "If you already have a vault, go into its folder (`cd <folder>`) or
+  pass `-C <folder>`. To create a new one: `brain-kit init <dir>`." Five commands said "To
   create one" and eight said nothing, and the common case is a person who has a vault and
   forgot to `cd` into it, whom "to create one" sent to make a second. `machine register
   --new` keeps its own account of `--new` and takes the first sentence. A test walks both
@@ -208,7 +208,7 @@ real Node 22 showed the code already supported.
 - `init` asks for a "short id" where it asked for a "handle", and offers the one the name just
   typed makes (found in the walkthrough). The question that
   names the person who signs their approvals was "Handle, lowercase letters, digits and dashes,
-  used as human:<handle>", and it offered the system user's name even after the person had typed
+  used as `human:<handle>`", and it offered the system user's name even after the person had typed
   theirs ("ana" for "Ana Souza"). It now reads "Short id (lowercase letters, digits and hyphens)
   that signs your approvals" (in Portuguese, "Apelido curto (minúsculas, números e hífen), que
   assina as suas aprovações"), and the offer follows the name: lower case, accents folded, anything

@@ -300,6 +300,148 @@ test('changelog-order: 0.0.10 sits above 0.0.9 (numeric order), and a prerelease
   onlyId(rn.checkInputs(inputs({ version: '0.0.10', changelog: upside, readmes: readmesFor('0.0.10') })), 'changelog-order');
 });
 
+// -------------------------------------------------------- changelog-raw-html
+//
+// The CHANGELOG section of the version becomes the body of the GitHub Release, and GitHub
+// reads text that looks like an HTML tag as HTML: a placeholder like <folder> is an unknown
+// element, which its sanitizer drops, so "go into its folder (cd <folder>)" reached the
+// Release as "(cd )" (the final review of 0.0.9, M5). The check judges the section of the
+// version being released, outside code fences and inline code spans, and it is not asked
+// about older sections: they are history.
+
+function rawHtml(body, { sections = null, unreleased = null } = {}) {
+  const list = sections ?? [[V, '', body], ['0.0.6', '', '- Older.']];
+  return rn.checkInputs(inputs({ changelog: changelog({ unreleased, sections: list }) }));
+}
+
+test('changelog-raw-html: a placeholder in angle brackets outside code is refused, and the message names the section, the first text and its line', () => {
+  const problem = onlyId(rawHtml('- Go into its folder (cd <folder>) or pass -C <dir>.'), 'changelog-raw-html');
+  assert.match(problem.message, /"## 0\.0\.7"/);
+  assert.match(problem.message, /"<folder>"/);
+  assert.match(problem.message, /line 5\b/);
+  assert.match(problem.message, /2 in all/);
+  assert.match(problem.message, /backticks/);
+  assert.equal(rn.formatProblem(problem).includes('\n'), false, 'one line');
+});
+
+test('changelog-raw-html: a single offence does not say "in all", and the line is the line of the offence', () => {
+  const problem = onlyId(rawHtml('- Fine.\n- Fine too.\n- Then comes used as human:<handle>.'), 'changelog-raw-html');
+  assert.match(problem.message, /"<handle>"/);
+  assert.match(problem.message, /line 7\b/);
+  assert.doesNotMatch(problem.message, /in all/);
+});
+
+test('changelog-raw-html: every shape of tag is refused: <word>, <word attr>, </word>, <word/> and <!--', () => {
+  for (const [text, shown] of [
+    ['an <b>open</b> tag', '<b>'],
+    ['a closing </folder> tag', '</folder>'],
+    ['an <a href="x" title=\'y\'>attribute</a>', '<a href="x" title=\'y\'>'],
+    ['a flag attribute <input disabled> here', '<input disabled>'],
+    ['self closing <br/> and <br /> too', '<br/>'],
+    ['hidden <!-- comment --> here', '<!--'],
+    ['a tag split over a line<span\n  class="x"> break', '<span class="x">'],
+    ['no space before it:a<b>c', '<b>'],
+  ]) {
+    const problem = onlyId(rawHtml(`- ${text}.`), 'changelog-raw-html');
+    assert.ok(problem.message.includes(`"${shown}"`), `${text}: ${problem.message}`);
+  }
+});
+
+test('changelog-raw-html: the same text inside an inline code span is fine, with one or several backticks', () => {
+  assert.deepEqual(rawHtml('- Use `cd <folder>` or `-C <dir>`, and `brain-kit init <dir>`.'), []);
+  assert.deepEqual(rawHtml('- A span with a backtick inside: ``a ` <folder> b`` and ```<dir>```.'), []);
+  assert.deepEqual(rawHtml('- Closing tags and comments too: `</folder>`, `<br/>`, `<!-- x -->`.'), []);
+});
+
+test('changelog-raw-html: a code span that runs across the lines of one paragraph is judged as one span, not line by line', () => {
+  assert.deepEqual(rawHtml('- Go into the folder (`cd\n  <folder>`) first, or pass\n  `-C\n  <dir>` to the command.'), []);
+  // The span closes on the second line, and what follows it is prose again.
+  const problem = onlyId(rawHtml('- Start `cd\n  <folder>` and then <dir> after it.'), 'changelog-raw-html');
+  assert.match(problem.message, /"<dir>"/);
+  assert.match(problem.message, /line 6\b/);
+});
+
+test('changelog-raw-html: a fenced block is code, of either fence character, and prose after it is judged again', () => {
+  assert.deepEqual(rawHtml(['- Run:', '', `${FENCE}bash`, 'cd <folder>', 'brain-kit init <dir>', FENCE, '', '~~~', '<b>', '~~~'].join('\n')), []);
+  const problem = onlyId(rawHtml(['- Run:', '', FENCE, 'cd <folder>', FENCE, '', 'Then pass -C <dir>.'].join('\n')), 'changelog-raw-html');
+  assert.match(problem.message, /"<dir>"/);
+});
+
+test('changelog-raw-html: an autolink is not a tag, and neither is a "<" followed by a space or a digit or a sign', () => {
+  assert.deepEqual(rawHtml('- See <https://example.com/a?b=c> and <ana@example.com> and <mailto:ana@example.com>.'), []);
+  assert.deepEqual(rawHtml('- When a < b and c <d, or 3 <4, 1<2, a <= b, x -> y, y <- x, <> and <3 hearts.'), []);
+  assert.deepEqual(rawHtml('- A path <path/to/file> is not a tag either, nor is Map<string, number>.'), []);
+  assert.deepEqual(rawHtml('- A lone "<" at the end of a line <\n  and the next.'), []);
+});
+
+test('changelog-raw-html: a backslash-escaped "<" is text, and so is an entity', () => {
+  assert.deepEqual(rawHtml('- Escaped: \\<folder> and &lt;dir&gt;.'), []);
+  // An escaped backtick opens no code span, so what follows it is judged.
+  onlyId(rawHtml('- Escaped \\` backtick, then <dir>, then another \\` one.'), 'changelog-raw-html');
+});
+
+test('changelog-raw-html: only the section of the version is judged, not older ones nor Unreleased', () => {
+  assert.deepEqual(rawHtml('- Fine.', { sections: [[V, '', '- Fine.'], ['0.0.6', '', '- Older, with <folder> in it.']] }), []);
+  assert.deepEqual(rawHtml('- Fine.', { unreleased: '- Pending, with <dir> in it.' }), []);
+  // The section being released is judged wherever it stands.
+  const problem = onlyId(rawHtml('', { sections: [[V, '', '- Now with <folder>.'], ['0.0.6', '', '- Older, with <dir>.']] }), 'changelog-raw-html');
+  assert.match(problem.message, /"<folder>"/);
+  assert.doesNotMatch(problem.message, /<dir>/);
+});
+
+test('changelog-raw-html: the section ends at the next heading, so a tag below it is the next section\'s business', () => {
+  const text = ['# Changelog', '', '## 0.0.7', '', '- Fine.', '', '### Part two', '', '- Still the section, <b>.', '', '## 0.0.6', '', '- Older <i>.', ''].join('\n');
+  const problem = onlyId(rn.checkInputs(inputs({ changelog: text })), 'changelog-raw-html');
+  assert.match(problem.message, /"<b>"/);
+  assert.match(problem.message, /line 9\b/);
+});
+
+test('changelog-raw-html: a backtick that never closes stays inside its own paragraph, so it hides nothing in the next bullet', () => {
+  // Bullets are blocks of their own even with no blank line between them, and so are headings and table rows.
+  onlyId(rawHtml('- First has one stray ` backtick.\n- Second has a <folder> here and a ` of its own.'), 'changelog-raw-html');
+  onlyId(rawHtml('1. First has one stray ` backtick.\n2. Second has a <folder> here and a ` of its own.'), 'changelog-raw-html');
+  onlyId(rawHtml('### A stray ` here\nThen <folder> and ` too.'), 'changelog-raw-html');
+  onlyId(rawHtml('| a ` | b |\n| <folder> | ` |'), 'changelog-raw-html');
+  onlyId(rawHtml('- First `opens\n\n- Second <folder> `closes`.'), 'changelog-raw-html');
+  // And a balanced span in a bullet does not leak into the next one.
+  assert.deepEqual(rawHtml('- A `<folder>` span.\n- Another `<dir>` span.'), []);
+});
+
+test('changelog-raw-html: a CHANGELOG that cannot be read, or ends in an open fence, is changelog-section\'s to say, with no second complaint', () => {
+  assert.deepEqual(rn.checkChangelogRawHtml(null, V), []);
+  assert.deepEqual(rn.checkChangelogRawHtml(undefined, V), []);
+  const open = ['# Changelog', '', '## 0.0.7', '', '- Has <folder> in it.', '', '~~~', 'never closed', ''].join('\n');
+  onlyId(rn.checkInputs(inputs({ changelog: open })), 'changelog-section');
+  // No section of the version, no text to judge.
+  onlyId(rn.checkInputs(inputs({ changelog: changelog({ sections: [['0.0.6', '', '- Older <b>.']] }) })), 'changelog-section');
+});
+
+test('changelog-raw-html: through the command, one line with the id and exit 1; the same text in backticks passes; notes does not run it', () => {
+  const bad = changelog({ sections: [[V, '', '- Go into its folder (cd <folder>).'], ['0.0.6', '', '- Older.']] });
+  const result = cli(scratch({ changelogText: bad }), ['check']);
+  assert.equal(result.status, 1);
+  const lines = result.stdout.trimEnd().split('\n');
+  assert.equal(lines.length, 1, result.stdout);
+  assert.match(lines[0], /^changelog-raw-html: .*"<folder>"/);
+  const good = changelog({ sections: [[V, '', '- Go into its folder (`cd <folder>`).'], ['0.0.6', '', '- Older.']] });
+  assert.deepEqual(cli(scratch({ changelogText: good }), ['check']), { status: 0, stdout: 'release check ok\n', stderr: '' });
+  // `check` is what the Release workflow and `npm test` run; `notes` builds the body from the section and judges only the section's presence.
+  const notes = cli(scratch({ changelogText: bad }), ['notes', '--version', V]);
+  assert.equal(notes.status, 0);
+  assert.equal(notes.stdout, '- Go into its folder (cd <folder>).\n');
+});
+
+test('changelog-raw-html: every id the script reports is in the table of docs/releasing.md and in the script header', () => {
+  const ids = [...new Set([...SCRIPT_SOURCE.matchAll(/(?:const id = |problem\()'([a-z]+(?:-[a-z]+)*)'/g)].map((match) => match[1]))];
+  assert.ok(ids.includes('changelog-raw-html') && ids.length >= 10, ids.join(', '));
+  const docs = readFileSync(join(KIT_ROOT, 'docs', 'releasing.md'), 'utf8');
+  const header = SCRIPT_SOURCE.slice(0, SCRIPT_SOURCE.indexOf("import { execFileSync }"));
+  for (const id of ids) {
+    assert.ok(docs.includes(`| \`${id}\` |`), `docs/releasing.md has no row for ${id}`);
+    assert.ok(header.includes(id), `the header of scripts/release-notes.mjs does not name ${id}`);
+  }
+});
+
 // ------------------------------------------------------------- status-stamp
 
 test('status-stamp: a README without the stamp, and the message names the file', () => {

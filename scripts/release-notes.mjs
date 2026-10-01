@@ -14,13 +14,29 @@
 // re-read for). Without --tag it runs on every `npm test` and in CI on every
 // push; with --tag it also judges the tag the Release workflow was started
 // by. Each problem is one line, `<check id>: <what is wrong and the fix>`,
-// and the ids are stable: tests and the maintainer checklist name them.
+// and the ids are stable: tests and the maintainer checklist name them. They
+// are package-version, changelog-section, changelog-order, changelog-raw-html,
+// status-stamp, status-latest-tag, install-literals, tag-version,
+// tag-annotated and unreleased-empty; docs/releasing.md says what each one
+// refuses.
 //
 // The CHANGELOG is read line by line with a few simple rules, no markdown
 // library: a heading is a line of at most three spaces, one or two `#`, a
 // space and a text, outside a fenced code block. A fence opens with three or
 // more backticks or tildes and closes with at least as many of the same
 // character.
+//
+// changelog-raw-html reads the section of the version in package.json the way
+// GitHub reads a Release body: text that looks like an HTML tag (`<word>`,
+// `<word attr>`, `</word>`, `<!--`) is HTML there, and its sanitizer drops an
+// element it does not know, so a placeholder such as `<folder>` vanishes from
+// the notes (the final review of 0.0.9). Code fences and inline code spans are
+// skipped, and a span may run across the lines of one paragraph, so the
+// section is judged by paragraph: a blank line, a list item, a heading, a
+// quote line or a table row starts a new one, which keeps a stray backtick
+// from reaching into the next bullet. An autolink (`<https://...>`,
+// `<name@example.com>`), a backslash escape and a `<` that no tag starts are
+// not offences. Older sections are history and are not judged.
 //
 // Git is only ever started with an argument array, never a shell string, and
 // a tag name is looked up only after it was shown to be `v` plus a semver
@@ -252,6 +268,118 @@ export function checkChangelogOrder(text) {
   return problems;
 }
 
+// What GitHub reads as an HTML tag in a Release body: an opening or a closing
+// tag, with attributes or without, and a comment. The name is a letter and then
+// letters, digits or hyphens, and it is followed by a space, a slash or the end
+// of the tag. So "<folder>", "</folder>", "<br/>" and "<a href="x">" are tags,
+// while "<path/to/file>", "Map<string, number>", "a < b", "<3" and an autolink
+// ("<https://example.com>", "<ana@example.com>") are not.
+const HTML_TAG_RE = /<\/?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?\/?>|<!--/g;
+// A line that starts a block of its own: a list item, a heading, a quote line,
+// a table row. A paragraph also ends at a blank line and at a code fence, and
+// a heading or a table row is a block of that one line.
+const BLOCK_START_RE = /^\s*(?:[-*+]\s|\d{1,9}[.)]\s|#{1,6}(?:\s|$)|>|\|)/;
+const ONE_LINE_BLOCK_RE = /^\s{0,3}#{1,6}(?:\s|$)|^\s*\|/;
+const SHOWN_CHARS = 80;
+
+// `source` with every inline code span and every backslash escape replaced by
+// spaces (a line break stays one), so that what a pattern finds in the result
+// is outside code and an offset means the same place in `source`. A code span
+// opens with a run of backticks and closes with the next run of exactly as
+// many, wherever it is in the paragraph; a run with no such partner is text.
+function blankCode(source) {
+  const blank = (part) => part.replace(/[^\n]/g, ' ');
+  let out = '';
+  let at = 0;
+  while (at < source.length) {
+    const char = source[at];
+    if (char === '\\' && /[!-/:-@[-`{-~]/.test(source[at + 1] ?? '')) {
+      out += '  ';
+      at += 2;
+    } else if (char !== '`') {
+      out += char;
+      at += 1;
+    } else {
+      let size = 1;
+      while (source[at + size] === '`') size += 1;
+      let close = -1;
+      for (let probe = at + size; probe < source.length && close === -1;) {
+        if (source[probe] !== '`') {
+          probe += 1;
+          continue;
+        }
+        let run = 1;
+        while (source[probe + run] === '`') run += 1;
+        if (run === size) close = probe;
+        probe += run;
+      }
+      if (close === -1) {
+        out += source.slice(at, at + size);
+        at += size;
+      } else {
+        out += blank(source.slice(at, close + size));
+        at = close + size;
+      }
+    }
+  }
+  return out;
+}
+
+// The paragraphs of some scanned lines, code fences left out.
+function proseBlocks(items) {
+  const blocks = [];
+  let current = null;
+  for (const item of items) {
+    if (item.fenced || item.text.trim() === '') {
+      current = null;
+      continue;
+    }
+    if (current === null || BLOCK_START_RE.test(item.text)) {
+      current = [];
+      blocks.push(current);
+    }
+    current.push(item);
+    if (ONE_LINE_BLOCK_RE.test(item.text)) current = null;
+  }
+  return blocks;
+}
+
+export function checkChangelogRawHtml(text, version) {
+  const id = 'changelog-raw-html';
+  if (text === null || text === undefined) return [];
+  const { entries, unclosedAt } = parseChangelog(text);
+  // changelog-section says a fence that never closes, and everything after it
+  // would be read as code here.
+  if (unclosedAt !== null) return [];
+  const entry = entries.find((candidate) => candidate.kind === 'version' && candidate.version === version);
+  if (!entry) return [];
+  const items = scanLines(text);
+  const section = [];
+  for (const item of items.slice(items.findIndex((candidate) => candidate.line === entry.line) + 1)) {
+    if (!item.fenced && HEADING_RE.test(item.text.trimEnd())) break;
+    section.push(item);
+  }
+  const found = [];
+  for (const block of proseBlocks(section)) {
+    const prose = blankCode(block.map((item) => item.text).join('\n'));
+    for (const match of prose.matchAll(HTML_TAG_RE)) {
+      let offset = 0;
+      let line = block[0].line;
+      for (const item of block) {
+        line = item.line;
+        if (match.index < offset + item.text.length + 1) break;
+        offset += item.text.length + 1;
+      }
+      const shown = match[0].replace(/\s+/g, ' ');
+      found.push({ line, shown: shown.length > SHOWN_CHARS ? `${shown.slice(0, SHOWN_CHARS - 3)}...` : shown });
+    }
+  }
+  if (found.length === 0) return [];
+  const [first] = found;
+  const count = found.length > 1 ? `, ${found.length} in all` : '';
+  return [problem(id, `the "${entry.heading}" section of CHANGELOG.md has "${first.shown}" outside code (line ${first.line}${count}); GitHub reads it as an HTML tag and drops it from the Release body, so put it in backticks together with the command it belongs to, as in \`cd <folder>\``)];
+}
+
 export function checkUnreleasedEmpty(text) {
   if (text === null || text === undefined) return [];
   return parseChangelog(text).entries
@@ -390,6 +518,7 @@ export function checkInputs({ version, changelog, readmes = {}, tag, tagInfo }) 
   const problems = [
     ...checkChangelogSection(changelog, version),
     ...checkChangelogOrder(changelog),
+    ...checkChangelogRawHtml(changelog, version),
     ...README_FILES.flatMap((file) => checkStatusStamp(file, readmes[file], version)),
     ...README_FILES.flatMap((file) => checkStatusLatestTag(file, readmes[file], version)),
     ...README_FILES.flatMap((file) => checkInstallLiterals(file, readmes[file])),
