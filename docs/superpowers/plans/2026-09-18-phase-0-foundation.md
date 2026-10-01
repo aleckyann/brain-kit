@@ -1685,20 +1685,7 @@ Expected: FAIL (files missing).
   "homepage": "https://github.com/aleckyann/brain-kit",
   "repository": "https://github.com/aleckyann/brain-kit",
   "license": "MIT",
-  "keywords": ["second-brain", "okf", "knowledge-base", "curation", "pull-request", "markdown"],
-  "userConfig": {
-    "vault_dir": {
-      "type": "directory",
-      "title": "Default vault directory",
-      "description": "Vault used by brain-kit skills when the current directory is not a vault. Leave empty to require running inside the vault."
-    },
-    "lang": {
-      "type": "string",
-      "title": "Language",
-      "description": "Language for skill bodies and messages outside a vault (pt-BR or en). Inside a vault, brain-kit.config.json wins.",
-      "default": "pt-BR"
-    }
-  }
+  "keywords": ["second-brain", "okf", "knowledge-base", "curation", "pull-request", "markdown"]
 }
 ```
 
@@ -1781,7 +1768,7 @@ Then: `chmod +x hooks/run-hook.cmd`
 - [ ] **Step 7: Run the tests to verify they pass**
 
 Run: `npm test`
-Expected: all PASS, including `claude plugin validate --strict .` (the CLI is installed on this machine). If validate reports warnings about `userConfig` fields, remove the offending field rather than loosening `--strict`.
+Expected: all PASS, including `claude plugin validate --strict .` (the CLI is installed on this machine). If validate reports a warning about a manifest field, remove the offending field rather than loosening `--strict`.
 
 - [ ] **Step 8: Smoke-load the plugin in a real session (one cheap model call)**
 

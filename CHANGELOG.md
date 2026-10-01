@@ -16,6 +16,52 @@
   directory, runs the real CLI over it, and fails when `validate` or `lint` finds anything, when
   a note carries `verified`, or when the folder holds an absolute path, an address outside
   example.com or a `.git` entry.
+- The READMEs (English and Portuguese) now show the path from a clean machine to the first
+  pull request, which no document did: a person who followed only the README in a clean
+  room found everything else fast and stopped at "what do I do after `init`". There is a
+  new section, "Your first vault", right after the install: `gh auth login`, install the
+  kit and the plugin, `brain-kit init ~/my-brain` (it asks its questions in a terminal;
+  `--from-answers <file>` and `--yes` are for where there is none), the first commit,
+  `gh repo create my-brain --private --source . --push` (private because the vault holds
+  notes about people; with `--push` because a repository created without it is empty and
+  `propose` cannot work), `brain-kit doctor` and what a healthy result looks like (the
+  warnings about the scheduled curator are fine at that point), Claude Code in the vault,
+  one fact in the log, `brain-kit propose "<summary>" --only <path>`, and the merge on
+  GitHub. Three of its commands are the ones `init` prints at its end.
+- The READMEs also open with what the kit is, and the phase history that filled their first
+  lines moved to the Status section with every fact kept; the Requirements come before the
+  install; the commands after the install are written `brain-kit ...`, with one sentence
+  on how to run from a clone without installing; the install snippet packs with
+  `npm pack --silent` (it printed about 200 `npm notice` lines) and says what to do when
+  `npm i -g` fails with `EACCES` (`npm config set prefix ~/.local`); and
+  `BRAIN_KIT_LANG` is documented next to `init --lang`.
+- The `setup` skill (both languages) creates the repository with
+  `gh repo create <name> --private --source <dir> --push` after the first commit, and says
+  that without `--push` the remote is empty and `propose` cannot work. Its machine checks
+  (Node, git, a logged-in `gh`, `claude`) no longer include the `doctor`, which refuses to
+  run outside a vault and so checked nothing before the vault existed; the `doctor` runs
+  after `init`, and again at the end.
+- The `curate-session` skill (both languages) no longer stops when `sync` postpones because
+  the working tree has uncommitted changes: that is exactly the state of a session that
+  edited notes, and the `Stop` hook sends the session to this skill only then. If that is
+  the only reason and every file `sync` lists is the session's own, the skill goes on,
+  because `propose` fetches the base itself; any other refusal still stops it.
+- The plugin manifest no longer declares `userConfig.lang`. Nothing read it (the language
+  comes from `BRAIN_KIT_LANG`, `LC_ALL`, `LC_MESSAGES` and `LANG`, and a vault's own), yet
+  its default was `pt-BR`, its description promised an effect, and installing the plugin
+  printed "1 userConfig option not yet set" and told the person to configure it. The
+  plugin has no options now; `claude plugin validate --strict` still passes.
+- The npm package now ships the documents its own README and messages point to:
+  `docs/scheduling.md`, `docs/connectors.md`, `docs/briefing.md`, `docs/security.md`,
+  `docs/testing.md` and `docs/validator-parity.md` (the README inside the package cited
+  five of them, the `doctor` and the curator cited `docs/connectors.md`, and none was
+  there). A new test fails when a shipped file cites a `docs/` file the package does not ship;
+  the release checklist and `docs/superpowers/` stay maintainer-only, and the CHANGELOG now
+  links the checklist by its address on GitHub.
+- `test/stranger-docs.test.mjs` pins all of this: the order and content of the READMEs
+  (and that the two say the same), the sentences added to the two skills in both languages,
+  the manifest without options, and the packaged-docs guard. The grading criteria of the
+  `setup` eval follow the skill's new order.
 
 ## 0.0.7 (tagged `v0.0.7`, not on npm)
 
@@ -58,7 +104,8 @@ with its CHANGELOG section. It is the first version published by the new release
   before the check, because `actions/checkout` rewrites a pushed annotated tag as a
   lightweight one. The tag and the token reach the shell only through `env`. A re-run of the job edits the Release instead of creating a second one. It
   does not wait for CI, and attaches nothing.
-- `docs/releasing.md` is the maintainer checklist (six version fields, the CHANGELOG as the
+- [`releasing.md`](https://github.com/aleckyann/brain-kit/blob/main/docs/releasing.md), in the
+  repository's docs folder, is the maintainer checklist (six version fields, the CHANGELOG as the
   specification, the Status re-read and re-stamp, annotated tag, what to do when the
   workflow fails), and `CONTRIBUTING.md` points to it. None of the new files is in the npm
   package.
