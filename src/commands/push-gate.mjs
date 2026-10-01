@@ -610,10 +610,13 @@ export function withoutUserinfo(url) {
 //
 // A stream that CLOSES without ending or failing is refused too. Nothing
 // says it delivered everything, and a promise left pending here settles
-// nothing at all: the maintainer's gate happened to exit 13 on it (the
-// top-level await in bin/brain-kit.mjs), and a caller without that await
-// would have exited 0. A close after the end is the ordinary order and
-// changes nothing, since the promise has already resolved.
+// nothing at all. bin/brain-kit.mjs awaits the whole command at its top
+// level, so Node ends such a process with exit code 13 ("unsettled top-level
+// await") and the pre-push hook refuses the push; a caller without that
+// await would have exited 0 (test/node-guard.test.mjs holds the launcher to
+// it). Rejecting here is the check, and the 13 only the net under it. A close
+// after the end is the ordinary order and changes nothing, since the promise
+// has already resolved.
 export function readAllBytes(stream) {
   return new Promise((resolve, reject) => {
     if (!stream || stream.isTTY) return resolve(Buffer.alloc(0));
