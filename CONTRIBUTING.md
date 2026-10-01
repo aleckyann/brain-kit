@@ -14,3 +14,6 @@
   working tree; pointing `core.hooksPath` at `.githooks` does not work on purpose. The
   gate stays quiet on a clean push and names its snapshot when that snapshot is stale or
   when it refuses, so a line from it is a line worth reading. See SECURITY.md.
+- Releasing: no tag without its CHANGELOG section and a re-stamped Status section in both
+  READMEs, and the tag is annotated. `node scripts/release-notes.mjs check` and `npm test`
+  enforce it; the checklist is in [docs/releasing.md](docs/releasing.md).

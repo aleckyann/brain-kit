@@ -8,6 +8,34 @@
   snippet that resolves the latest tag instead of naming a version, and two sentences
   that spoke of work as still to come after it had landed (`SECURITY.md` and
   `docs/validator-parity.md`).
+- Every tag now carries its specification, and the documentation cannot fall behind a
+  release (01/10/2026). Until 0.0.6 there was no GitHub Release at all, the newest tag was
+  lightweight (no message), and nothing related the version in `package.json` to the
+  CHANGELOG or to the READMEs, which is how the READMEs still described the stage of 0.0.2
+  four releases later. `scripts/release-notes.mjs` (maintainer tooling, not in the
+  package) runs eight checks, each with a stable id: `changelog-section` (exactly one
+  `## <version>` heading, with text, at most 120000 characters), `changelog-order` (version
+  headings strictly descending, each once, `## Unreleased` once and only above them),
+  `status-stamp`, `status-latest-tag`, `install-literals` and, only for a tag,
+  `tag-version`, `tag-annotated` and `unreleased-empty`.
+- `test/release-docs.test.mjs` tests each check against hand-built fixtures and runs the
+  checks, without a tag, over the repository's own files, so they run on every `npm test`
+  and in CI on every push. An ordinary commit passes them; a version bump that left the
+  CHANGELOG heading, the READMEs' stamp or their latest-tag sentence behind does not. The
+  forcing function is the stamp: both READMEs carry `<!-- status-reviewed: 0.0.6 -->` right
+  under their Status heading, and bumping the version fails the suite until a person has
+  re-read that section and changed the stamp. No fenced code block of either README may
+  name a literal tag or tarball (the install snippets resolve the latest tag themselves).
+- `.github/workflows/release.yml` publishes the GitHub Release when a tag `v*` is pushed:
+  it runs the checks on the tag (which must be annotated, with a subject), takes the
+  CHANGELOG section of the version as the body with a last line `Full diff` to the previous
+  tag, and uses the tag's subject as the title. The tag and the token reach the shell only
+  through `env`. A re-run of the job edits the Release instead of creating a second one. It
+  does not wait for CI, and attaches nothing.
+- `docs/releasing.md` is the maintainer checklist (six version fields, the CHANGELOG as the
+  specification, the Status re-read and re-stamp, annotated tag, what to do when the
+  workflow fails), and `CONTRIBUTING.md` points to it. None of the new files is in the npm
+  package.
 
 ## 0.0.6 (tagged `v0.0.6`, not on npm)
 
