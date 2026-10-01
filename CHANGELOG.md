@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.6 (tagged `v0.0.6`, not on npm)
 
 ### The curator sees through the envelope the desktop application wraps a task's prompt in (01/10/2026)
 
