@@ -25,8 +25,17 @@
   named, a broken link or a file in its place, and a typo beside it still refuse. A vault that
   lists its project by name (every vault `init` made in 0.0.8) keeps working where it was made,
   exactly as before, and nothing rewrites its configuration; on a second machine it still fails
-  until you replace that entry with `"{vault}"` (see "Before the first round" in
-  `docs/scheduling.md`). The schema already took any string in the list, so it is unchanged:
+  until you replace that entry with `"{vault}"`, through a pull request like any other change
+  (`brain-kit propose "<summary>" --only brain-kit.config.json`, merge it, then `brain-kit sync`;
+  see "Before the first round" in `docs/scheduling.md`). Every machine that opens the vault needs
+  this kit or a newer one before that: an older kit reads `"{vault}"` as the name of a project, so
+  its `doctor` fails `include-projects` and says to fix the names in `brain-kit.config.json` (the
+  failure this entry removes, brought back by that advice) and its rounds refuse, and in a vault
+  whose entry was changed by hand `kit_version` stays 0.0.8, so its `kit-version` check says ok and
+  nothing points at the cause. Run `brain-kit update` first, which sets `kit_version` in the
+  configuration to the running kit's version (that one value, in the working tree) and refreshes the
+  kit's own files you have not edited: an older kit then warns in `kit-version` and `manifest-valid`
+  and refuses `update`. The schema already took any string in the list, so it is unchanged:
   `"{vault}"` validates, and a bare string other than `"all"` is still refused.
 - `doctor` and `curate` no longer send a person to the shared configuration to fix a name that
   only differs by machine. The empty-list message of `include-projects` offers `"{vault}"` first

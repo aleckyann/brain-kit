@@ -200,6 +200,23 @@ for (const [label, prepare, setting, extraEnv] of GUARDS) {
   });
 }
 
+test('the vault\'s own project missing under CLAUDE_CONFIG_DIR beside a project that is there: the round goes on, reads that one and warns, exit 0 (the doctor warns and exits 0 too)', () => {
+  const w = makeCurateWorld({ config: (c) => { entry(c); c.sources.transcripts.include_projects = ['{vault}', '-home-ana-brain']; } });
+  w.setMachine({ transcripts_dir: undefined });
+  // The default projects folder holds the world's other project, with its session, and not the vault's.
+  const folder = join(w.env.HOME, '.claude', 'projects');
+  mkdirSync(join(folder, '-home-ana-brain'), { recursive: true });
+  writeFileSync(join(folder, '-home-ana-brain', 'bbbbbbbb-1111-4222-8333-444444444444.jsonl'), readFileSync(w.transcript));
+  const me = at(w, w.vault, w.state);
+  const dry = me.curate(['--dry']);
+  assert.equal(dry.status, EXIT.OK, dry.stdout + dry.stderr);
+  assert.match(dry.stdout, /Source transcripts: 1 file\(s\) in the window/);
+  assert.ok(dry.stdout.includes(en('sources.transcripts.problem_own_project_missing', { project: me.own, token: '{vault}', root: folder })), dry.stdout);
+  const r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.deepEqual(w.lastRun().sources.transcripts, { kept: 1, read: 1, advanced: true, noTimestamp: 0 });
+});
+
 test('a vault made before the entry, its configuration naming machine 1\'s project, run on a clone at another path: the round\'s diagnosis is today\'s, with the way out added; on machine 1 nothing changes', () => {
   const w = makeCurateWorld();
   const a = at(w, w.vault, w.state);

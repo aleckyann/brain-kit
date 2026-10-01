@@ -270,6 +270,28 @@ test('the empty list in Portuguese offers the same entry first and the same "all
   assert.match(c.message, /Before the first round/);
 });
 
+// --- "all" over a folder with no project --------------------------------------------
+
+test('"all" over a projects folder that holds no project: the message offers {vault} for this vault\'s own, on every machine, beside naming the others, in both languages', async () => {
+  const en = machine({ include: 'all' });
+  mkdirSync(en.projects, { recursive: true });
+  const c = await check(en);
+  assert.equal(c.status, 'fail');
+  assert.equal(c.messageKey, 'doctor.include_projects.all_empty');
+  assert.equal(c.code, 1);
+  assert.equal(c.params.token, '{vault}');
+  assert.match(c.message, /Point machine\.json at the directory that holds your Claude Code projects, or list the projects instead: /);
+  assert.ok(c.message.includes('list the projects instead: ["{vault}"] for this vault\'s own, on every machine, and other projects by name.'), c.message);
+  assert.ok(!c.message.includes('list the projects by name'), 'the form that depends on the machine is no longer the only one offered');
+
+  const pt = machine({ include: 'all', lang: 'pt-BR' });
+  mkdirSync(pt.projects, { recursive: true });
+  const p = await check(pt);
+  assert.equal(p.messageKey, 'doctor.include_projects.all_empty');
+  assert.ok(p.message.includes('liste os projetos no lugar: ["{vault}"] para o do próprio vault, em qualquer máquina, e os outros projetos pelo nome.'), p.message);
+  assert.doesNotMatch(p.message.replaceAll('{vault}', ''), /\{\w+\}/, p.message);
+});
+
 // --- the guards of a new vault, for the entry -----------------------------------
 
 test('the guards hold for the entry as they did for its name: a named projects folder that is not there, one moved by CLAUDE_CONFIG_DIR, a broken link and a file all fail; and none of them says to edit the shared configuration', async () => {
@@ -321,6 +343,28 @@ test('the guards hold for the entry as they did for its name: a named projects f
   }
 });
 
+test('the vault\'s own project missing under CLAUDE_CONFIG_DIR beside a project that is there is a warning and exit 0, as the round goes on and reads that one; alone it fails', async () => {
+  const m = machine({ include: ['{vault}', '-home-ana-code'] });
+  mkdirSync(join(m.projects, '-home-ana-code'), { recursive: true });
+  const moved = (who) => ({ env: { CLAUDE_CONFIG_DIR: join(who.top, 'elsewhere') } });
+  const c = await check(m, moved(m));
+  assert.equal(c.status, 'warn', JSON.stringify(c));
+  assert.equal(c.messageKey, 'doctor.include_projects.own_missing');
+  assert.equal(c.code, 0, 'a state the round goes on from is not a failed check');
+  assert.equal(c.params.project, m.own);
+  assert.match(c.message, /CLAUDE_CONFIG_DIR/);
+  assert.doesNotMatch(c.message, /brain-kit\.config\.json|include_projects|Fix the names/, c.message);
+  // The same machine with nothing moved: the vault's own project only waits.
+  isOk(await check(m), 'doctor.include_projects.some_waiting');
+  // Nothing else to read: the round would refuse, and so does the check.
+  const alone = machine({ include: ['{vault}'] });
+  mkdirSync(alone.projects, { recursive: true });
+  const failed = await check(alone, moved(alone));
+  assert.equal(failed.status, 'fail', JSON.stringify(failed));
+  assert.equal(failed.messageKey, 'doctor.include_projects.own_missing');
+  assert.equal(failed.code, 1);
+});
+
 test('a project of the entry that cannot be read is a failure with the permissions advice, as for any name', { skip: process.getuid?.() === 0 ? 'root reads any directory' : false }, async () => {
   const m = machine({ include: ['{vault}'] });
   const dir = join(m.projects, m.own);
@@ -370,4 +414,41 @@ test('a vault whose project cannot be named from its path: the entry stands for 
   c = await check(pt);
   assert.equal(c.messageKey, 'doctor.include_projects.vault_unnamed');
   assert.doesNotMatch(c.message.replaceAll('{vault}', ''), /\{\w+\}/, c.message);
+});
+
+// --- the doc the messages cite --------------------------------------------------------
+
+// One section of a markdown file, whitespace folded so a line break is no obstacle.
+function section(file, heading) {
+  const text = readFileSync(join(KIT_ROOT, file), 'utf8');
+  const start = text.indexOf(`\n${heading}\n`);
+  assert.ok(start !== -1, `${file} has no "${heading}"`);
+  const end = text.indexOf('\n## ', start + heading.length + 2);
+  return text.slice(start, end === -1 ? undefined : end).replace(/\s+/g, ' ');
+}
+
+test('docs/scheduling.md says how a vault made by an earlier init switches to {vault}: the new kit on every machine first, then a pull request and sync, never a commit on the default branch', () => {
+  const text = section('docs/scheduling.md', '## Before the first round');
+  const update = text.indexOf('brain-kit update');
+  const propose = text.indexOf('brain-kit propose "<summary>" --only brain-kit.config.json');
+  assert.ok(update !== -1 && propose !== -1, 'both commands are named');
+  assert.ok(update < propose, 'the kit is brought up to date before the entry is changed');
+  assert.ok(text.indexOf('brain-kit sync', propose) > propose, 'sync comes after the pull request is merged');
+  assert.match(text, /merge the pull request/);
+  assert.doesNotMatch(text, /commit it like any other change/, 'a commit on the default branch makes sync refuse later');
+  assert.match(text, /every machine that opens the vault needs a kit that knows `"\{vault\}"`/);
+  assert.match(text, /Run `brain-kit update` with the new kit before you touch the entry/);
+  assert.match(text, /an older kit reads it as the name of a project/i);
+  assert.match(text, /`brain-kit update` sets `kit_version` in `brain-kit\.config\.json` to the running kit's version/);
+  assert.match(text, /an older kit then warns in `kit-version` and `manifest-valid`/i);
+  assert.match(text, /a vault whose entry was changed by hand keeps its old `kit_version`/);
+});
+
+test('the changelog says the same about the kit: every machine needs this one before the entry, and update raises kit_version', () => {
+  const text = section('CHANGELOG.md', '## Unreleased');
+  assert.match(text, /every machine that opens the vault needs this kit or a newer one/i);
+  assert.match(text, /an older kit reads `"\{vault\}"` as the name of a project/);
+  assert.match(text, /`brain-kit update` first, which sets `kit_version`/);
+  assert.match(text, /`brain-kit propose "<summary>" --only brain-kit\.config\.json`/);
+  assert.doesNotMatch(text, /commit it like any other change/);
 });

@@ -2418,7 +2418,7 @@ test('include-projects: "all" over a transcripts directory with no project left 
   const fx = setup({ config: configWith((c) => { c.sources.transcripts.include_projects = 'all'; c.sources.transcripts.exclude_path_patterns = ['-home-ana-']; }) });
   let r = await doctor(fx, ['--only', 'include-projects']);
   const c = assertCheck(r.report, 'include-projects', 'fail', 'doctor.include_projects.all_empty');
-  assert.deepEqual(c.params, { key: 'sources.transcripts.include_projects', file: join(fx.root, 'brain-kit.config.json'), root: join(fx.home, '.claude', 'projects') });
+  assert.deepEqual(c.params, { key: 'sources.transcripts.include_projects', file: join(fx.root, 'brain-kit.config.json'), root: join(fx.home, '.claude', 'projects'), token: '{vault}' });
   assert.match(c.message, /is "all", but .* holds no project directory today/);
   assert.equal(r.code, EXIT.FAILURE);
   const bare = setup({ config: configWith((c) => { c.sources.transcripts.include_projects = 'all'; }), machine: { transcripts_dir: '~/empty' } });

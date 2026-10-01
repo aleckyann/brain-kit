@@ -409,7 +409,7 @@
   "doctor.include_projects.some_waiting": "{count} project(s) found under {root}; {projects}: no sessions yet (no Claude Code session has run there), read as soon as one does",
   "doctor.include_projects.ok": "{count} project(s) listed, each found under {root}",
   "doctor.include_projects.all": "all ({count} project(s) today) under {root}",
-  "doctor.include_projects.all_empty": "{key} in {file} is \"all\", but {root} holds no project directory today once sources.transcripts.exclude_path_patterns is applied, so no round reads a transcript or closes a day of theirs, and with the transcripts required every round refuses to run. Point machine.json at the directory that holds your Claude Code projects, or list the projects by name.",
+  "doctor.include_projects.all_empty": "{key} in {file} is \"all\", but {root} holds no project directory today once sources.transcripts.exclude_path_patterns is applied, so no round reads a transcript or closes a day of theirs, and with the transcripts required every round refuses to run. Point machine.json at the directory that holds your Claude Code projects, or list the projects instead: [\"{token}\"] for this vault's own, on every machine, and other projects by name.",
   "doctor.watermark.bad_timezone": "vault.timezone \"{timezone}\" in {file} is not a time zone, so no day can be counted.",
   "doctor.watermark.unreadable": "{file} cannot be read ({detail}): every round stops on it. Repair it, or remove it (the next round then reads only yesterday) and set each source back with brain-kit watermark set <source> <YYYY-MM-DD>.",
   "doctor.watermark.future": "the mark of {source} is {day}, a day that has not ended, so rounds refuse to run. Bring it back: {command}",
