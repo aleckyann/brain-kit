@@ -10,6 +10,10 @@ privacy on the write path), and `docs/security.md` says what isolates the curato
 Report a vulnerability through a private security advisory on GitHub (Security tab of the
 repository). Do not open a public issue for a secret or a leak.
 
+If a secret or someone's personal data is already in a vault, or the curator did something it
+should not have, follow [docs/incident-response.md](docs/incident-response.md): rotate the
+secret first, rewrite the history second, tell people third.
+
 ## The push gate, and what it does not cover
 
 This repository runs its own pre-push gate against a personal pattern list that lives

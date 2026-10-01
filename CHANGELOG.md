@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- `docs/incident-response.md` exists. It says what to do, in order (rotate first, rewrite the
+  history second, tell people third), when a secret or a third party's personal data is in a
+  vault, when the repository was public, and when the curator did something it should not
+  have. It ships in the package, `SECURITY.md` points to it, and
+  `test/incident-response-doc.test.mjs` fails when a command, flag, path, configuration key or
+  `doctor` check id it names is renamed or removed.
+
 ## 0.0.7 (tagged `v0.0.7`, not on npm)
 
 No command does anything different in this version. It makes the documentation and the
