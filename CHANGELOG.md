@@ -132,42 +132,56 @@
   the same line and exits 0, because a Claude Code hook that fails breaks the session it runs in.
   No old Node was at hand, so the tests make the real launcher believe it runs on Node 22 with a
   preload, and scan the guard for syntax an old Node cannot parse.
+- A Node older than the supported minimum now gets one clear sentence and exit code 2, instead of
+  whatever that Node does with the code (found when a first-time user ran the README on a clean
+  machine). The sentence is in your language, names the Node it found and says where to get a
+  supported one. The launcher, `bin/brain-kit.mjs`, imports only a small guard
+  (`src/node-guard.mjs`: no imports, and no syntax an old Node cannot parse), asks it, and loads
+  the CLI with a dynamic `import()` only when the Node is supported. The language is chosen as
+  every other message of the kit is (`BRAIN_KIT_LANG`, then `LC_ALL`, `LC_MESSAGES` and `LANG`),
+  and a version string it cannot read never blocks. This also refuses a Node that happened to run
+  the kit before: every command exits 2 with the sentence, the push gate refuses every push, and
+  the Claude Code hooks stand down, until a supported Node is first on PATH. The one exception is
+  `brain-kit hook ...`: it prints the same line to stderr and exits 0, because a Claude Code hook
+  that fails breaks the session it runs in.
 - `brain-kit doctor` outside a vault is now the check of the machine, where it only said "no
-  vault found" and checked nothing (the first reviewer's m2, the second's F24; the README says it
-  tells whether "this machine and this vault are ready", and nothing could be run before `init`).
-  It runs the checks that read no vault: Node, git, `brain-kit` on PATH, `gh` and its login (asked
-  about github.com, since there is no origin to read), and the `claude` on PATH (does it run, is
-  it the real CLI, not a launcher stub). Its heading says that only the machine is checked, and
-  it ends with the same "no vault found ... To create one: brain-kit init <dir>" sentence as
-  before. The report is compact or `--verbose` as inside a vault, `--json` has the same shape with
-  `vault: null`, and `--only` may name only those checks: one that reads a vault, or `--probe`,
-  is a usage error that runs nothing. One behaviour change: the exit code outside a vault is no
-  longer 2 but 0, or 1 when one of those checks fails (a warning never changes it).
+  vault found" and checked nothing (found when a first-time user ran the README on a clean
+  machine; the README says it tells whether "this machine and this vault are ready", and nothing
+  could be run before `init`). It runs the checks that read no vault: Node, git, `brain-kit` on
+  PATH, `gh` and its login (asked about github.com, since there is no origin to read), and the
+  `claude` on PATH (does it run, is it the real CLI, not a launcher stub). Its heading says that
+  only the machine is checked, and it ends with the same "no vault found ... To create one:
+  brain-kit init <dir>" sentence as before. The report is compact or `--verbose` as inside a
+  vault, `--json` has the same shape with `vault: null`, and `--only` may name only those checks:
+  one that reads a vault, or `--probe`, is a usage error that runs nothing. One behaviour change:
+  the exit code outside a vault is no longer 2 but 0, or 1 when one of those checks fails (a
+  warning never changes it).
 - `brain-kit doctor` now puts what needs attention first, and prints three lines instead of 34
-  when everything is fine (the first reviewer's m9, the second's F12). The default text report is
-  the heading, the lines of the checks that are not `ok` (every warning and every failure, each
-  as it was printed and in the same order), one line saying how many `ok` checks it left out and
-  how to see them ("31 checks ok not listed; use --verbose to list them"), and the summary line.
-  `--verbose` (or `-v`) prints the full list as it always did. `--json` is unchanged and still
-  lists every check, so the tools that read it see no difference, and the exit codes are
-  unchanged. A check that is not `ok` is never left out of the compact report.
+  when everything is fine (found when a first-time user ran the README on a clean machine). The
+  default text report is the heading, the lines of the checks that are not `ok` (every warning and
+  every failure, each as it was printed and in the same order), one line saying how many `ok`
+  checks it left out and how to see them ("31 checks ok not listed; use --verbose to list them"),
+  and the summary line. `--verbose` (or `-v`) prints the full list as it always did. `--json` is
+  unchanged and still lists every check, so the tools that read it see no difference, and the exit
+  codes are unchanged. A check that is not `ok` is never left out of the compact report.
 - The `claude-isolation-flags` line of `doctor` no longer names a Claude Code version. It said
   `--max-turns` is not in the help of "Claude Code 2.1.281" on a machine that had 2.1.286; it now
-  says "the installed version", in both languages (the second reviewer's F18).
+  says "the installed version", in both languages (found when a first-time user ran the README on a
+  clean machine).
 - `init` asks for a "short id" where it asked for a "handle", and offers the one the name just
-  typed makes (the second reviewer's F10). The question that names the person who signs their
-  approvals was "Handle, lowercase letters, digits and dashes, used as human:<handle>", and it
-  offered the system user's name even after the person had typed theirs ("ana" for "Ana Souza").
-  It now reads "Short id (lowercase letters, digits and hyphens) that signs your approvals" (in
-  Portuguese, "Apelido curto (minúsculas, números e hífen), que assina as suas aprovações"), and
-  the offer follows the name: lower case, accents folded, anything else a hyphen, so "Ana
-  Conceição" is offered `ana-conceicao`, and the system user's when nothing usable is left. The same
-  holds for `--yes` with a name in the answers file and no handle. The key stays `handle`, in the
-  answers file and in the configuration.
+  typed makes (found when a first-time user ran the README on a clean machine). The question that
+  names the person who signs their approvals was "Handle, lowercase letters, digits and dashes,
+  used as human:<handle>", and it offered the system user's name even after the person had typed
+  theirs ("ana" for "Ana Souza"). It now reads "Short id (lowercase letters, digits and hyphens)
+  that signs your approvals" (in Portuguese, "Apelido curto (minúsculas, números e hífen), que
+  assina as suas aprovações"), and the offer follows the name: lower case, accents folded, anything
+  else a hyphen, so "Ana Conceição" is offered `ana-conceicao`, and the system user's when nothing
+  usable is left. The same holds for `--yes` with a name in the answers file and no handle. The
+  key stays `handle`, in the answers file and in the configuration.
 - `init` run through a pipe says which question has no answer by its name, not by its internal
-  key (the second reviewer's F22): `no answer for "Language"`, `sem resposta para "Idioma"`, where
-  it said `"lang"`. The retry of a bad answer and the "input ended" message name the question the
-  same way.
+  key (found when a first-time user ran the README on a clean machine): `no answer for
+  "Language"`, `sem resposta para "Idioma"`, where it said `"lang"`. The retry of a bad answer and
+  the "input ended" message name the question the same way.
 - `init` on a new vault prints one line when `validate` and `lint` find nothing, where it printed
   both full reports, about 45 lines of rule names (the second reviewer's F11): "brain-kit
   validate and brain-kit lint --base all checked the new vault: nothing found." Clean means each
@@ -240,6 +254,13 @@
   English fragments the stranger listed: "best effort" is now "de melhor esforço", "overlay de
   prompt" is described as a prompt of the vault's own, "tarball" is the `.tgz` file, and
   `verified` is glossed where `verify` stamps it.
+  both full reports, about 40 lines of rule names (found when a first-time user ran the README on
+  a clean machine): "brain-kit validate and brain-kit lint --base all checked the new vault:
+  nothing found." Clean means each exits 0, wrote nothing to stderr and ended its report with its
+  own clean verdict (not the ones for stale notes, skipped rules or warnings only). When either
+  says anything else, `init` prints exactly what it printed before, under the same heading, in the
+  same order and on the same streams. `init --adopt` still prints both reports. `validate` and
+  `lint` are unchanged.
 
 ## 0.0.8 (tagged `v0.0.8`, not on npm)
 
