@@ -125,6 +125,18 @@
 // directory reads nothing and says so (`all_empty`), and the round refuses,
 // as it does for a list none of whose projects is there, rather than close
 // a day nobody read. Any other value lists no project (`no_projects`).
+//
+// One entry of the list is not a name: VAULT_PROJECT, "{vault}" (the second
+// stranger's F1/D2, 01/10/2026). It stands for the project Claude Code names
+// for THIS vault's folder ON THIS MACHINE. The name of a clone's project
+// depends on the clone's path, and the configuration travels to every machine
+// that clones the vault, so a name written out was right on the machine that
+// wrote it and a project that is not there on every other. resolveIncludeProjects
+// is the one place the entry becomes a name, and every reader of the list goes
+// through it (this source, doctor's include-projects). The entry is the vault's
+// own project and nothing broader: where the vault's path cannot be named
+// (claudeProjectName) it stands for nothing, and the plan says so
+// (`vault_unnamed`) instead of reading another project.
 import * as fs from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, sep } from 'node:path';
@@ -139,6 +151,13 @@ export const MTIME_SLACK_MS = 15 * 60 * 1000;
 export const DEFAULT_LIMITS = Object.freeze({ chunkBytes: 256 * 1024, maxLineChars: 32 * 1024 * 1024 });
 // The one value of include_projects that is not a list.
 export const ALL_PROJECTS = 'all';
+// The one entry of the list that is not a project name: the vault's own
+// project, whatever the path of the clone on this machine. A project
+// directory is named with letters, digits and dashes only (claudeProjectName),
+// so no directory of the transcripts folder can ever be called this. No other
+// token exists: any other string between braces is a name that will not be
+// found.
+export const VAULT_PROJECT = '{vault}';
 
 // The bound of one digest (ruling R-D1 of fix round 1, 01/10/2026). Read
 // prints a file numbered, each line behind its number and a separator, and
@@ -249,6 +268,46 @@ export function claudeProjectName(absolutePath) {
   return name.length <= MAX_PROJECT_NAME_CHARS ? name : null;
 }
 
+// The name of the project of the vault at `vaultRoot` on THIS machine, or
+// null. Claude Code names a project after the folder its sessions run in, so
+// this is the name of the vault's real path: a link, a trailing slash and a
+// dot-dot are followed first, as they are in the working directory of a
+// process. Null for a root that is not a path to something that exists, and
+// for a path claudeProjectName has no name for (too long, or not absolute):
+// the caller says so rather than guess another project. Everything that needs
+// the vault's own project asks here: the entry VAULT_PROJECT
+// (resolveIncludeProjects) and the project that may wait for its first
+// session (waitingProjectName).
+export function vaultProjectName(vaultRoot) {
+  if (typeof vaultRoot !== 'string' || vaultRoot === '') return null;
+  try {
+    return claudeProjectName(fs.realpathSync(vaultRoot));
+  } catch {
+    return null;
+  }
+}
+
+// The list `sources.transcripts.include_projects` holds, as THIS machine
+// reads it: each VAULT_PROJECT becomes vaultProjectName(vaultRoot) (and is
+// left out when that is null), every other entry stays as written, and a
+// name that comes up twice is listed once. The one place the entry is
+// resolved. What is not a list resolves to no project: "all" is not a list
+// and is the caller's to handle first, and neither is the bare string
+// "{vault}", which the schema refuses.
+export function resolveIncludeProjects(list, vaultRoot) {
+  if (!Array.isArray(list)) return [];
+  const own = list.includes(VAULT_PROJECT) ? vaultProjectName(vaultRoot) : null;
+  const names = [];
+  for (const entry of list) {
+    if (entry === VAULT_PROJECT) {
+      if (own !== null && !names.includes(own)) names.push(own);
+    } else if (!names.includes(entry)) {
+      names.push(entry);
+    }
+  }
+  return names;
+}
+
 // The listed project that is allowed to have no folder yet, or null: the
 // vault's own, whose folder Claude Code makes only when a session first runs
 // in the vault. `doctor` and the round read the same answer, so they cannot
@@ -261,11 +320,7 @@ export function waitingProjectName({ vaultRoot, machine, env }) {
   const named = typeof machine?.transcripts_dir === 'string' && machine.transcripts_dir !== '';
   const moved = typeof env?.CLAUDE_CONFIG_DIR === 'string' && env.CLAUDE_CONFIG_DIR !== '';
   if (moved && !named) return null;
-  try {
-    return claudeProjectName(fs.realpathSync(vaultRoot));
-  } catch {
-    return null;
-  }
+  return vaultProjectName(vaultRoot);
 }
 
 // What a name under the transcripts root is (ruling R-A7, 26/09/2026):
@@ -871,7 +926,9 @@ export function sessionId(fileName) {
 }
 
 function problemLine(t, problem, root) {
-  if (problem.code === 'no_projects') return t('sources.transcripts.problem_no_projects');
+  if (problem.code === 'no_projects') return t('sources.transcripts.problem_no_projects', { token: VAULT_PROJECT });
+  if (problem.code === 'vault_unnamed') return t('sources.transcripts.problem_vault_unnamed', { token: VAULT_PROJECT, dir: problem.detail });
+  if (problem.code === 'own_project_missing') return t('sources.transcripts.problem_own_project_missing', { project: problem.detail, token: VAULT_PROJECT, root });
   if (problem.code === 'all_empty') return t('sources.transcripts.problem_all_empty', { root });
   if (problem.code === 'root_missing') return t('sources.transcripts.problem_root_missing', { root });
   if (problem.code === 'root_unreadable') return t('sources.transcripts.problem_root_unreadable', { root });
@@ -976,14 +1033,28 @@ function daysOf(window, config) {
 //           with no sessions, not a misconfiguration: the plan names it in
 //           `waiting` and offers nothing from it. A name that is not it, an
 //           empty list, a root that cannot be listed stay what they were.
+//   vaultRoot: the vault's folder, which the entry VAULT_PROJECT of the list
+//           stands for the project of (resolveIncludeProjects). Without it
+//           the entry stands for nothing (`vault_unnamed`), as it does for a
+//           folder whose project cannot be named.
 //   io, limits: tests only. `io` replaces openSync/readSync/closeSync
 //           used by the scan (to inject a read error); `limits` replaces
 //           DEFAULT_LIMITS (small chunks to cross chunk boundaries).
-function collect({ window, config, machine, home = homedir(), digestDir, waiting = null, io = fs, limits = DEFAULT_LIMITS }) {
+function collect({ window, config, machine, home = homedir(), digestDir, waiting = null, vaultRoot, io = fs, limits = DEFAULT_LIMITS }) {
   const settings = config?.sources?.transcripts ?? {};
   const root = expandHome(machine?.transcripts_dir ?? join('~', '.claude', 'projects'), home);
   const all = settings.include_projects === ALL_PROJECTS;
-  const named = Array.isArray(settings.include_projects) ? [...new Set(settings.include_projects)] : [];
+  // The list as this machine reads it: {vault} is the project of the vault at
+  // `vaultRoot` here, and nothing else about the list changes.
+  const named = resolveIncludeProjects(settings.include_projects, vaultRoot);
+  // The project the entry stands for, when the list has the entry. A vault
+  // whose project cannot be named here (`unnamed`) has nothing for the entry to
+  // stand for, and an empty list of such a vault has no entry to offer in its
+  // place: both say so, instead of "no project is listed".
+  const entry = Array.isArray(settings.include_projects) && settings.include_projects.includes(VAULT_PROJECT);
+  const vaultProject = vaultProjectName(vaultRoot);
+  const own = entry ? vaultProject : null;
+  const unnamed = vaultProject === null && (entry || (typeof vaultRoot === 'string' && !all && named.length === 0));
   const patterns = exclusionPatterns(config);
   const capValue = config?.curate?.caps?.transcripts;
   const cap = Number.isInteger(capValue) && capValue >= 0 ? capValue : Infinity;
@@ -999,8 +1070,11 @@ function collect({ window, config, machine, home = homedir(), digestDir, waiting
   const names = (all || named.length > 0) && rootExists ? listDir(root) : null;
   // The projects that have no sessions yet, which is not a problem: see `waiting`.
   const waitingNames = [];
-  if (!all && named.length === 0) problems.push({ code: 'no_projects', detail: '' });
-  else if (!rootExists) {
+  if (unnamed) problems.push({ code: 'vault_unnamed', detail: typeof vaultRoot === 'string' ? vaultRoot : '' });
+  if (!all && named.length === 0) {
+    // A vault with no project to name was said above; nothing else is listed.
+    if (!unnamed) problems.push({ code: 'no_projects', detail: '' });
+  } else if (!rootExists) {
     // The default folder is absent on a machine where Claude Code never ran a
     // session, and only the vault's own project is listed: nothing to read yet.
     // A folder named on purpose, a broken link or a file there is not that.
@@ -1023,7 +1097,10 @@ function collect({ window, config, machine, home = homedir(), digestDir, waiting
         problems.push({ code: 'project_unreadable', detail: project });
         unreadable.push({ path: dir, project, bytes: 0, directory: true });
       } else if (entries === undefined && project === waiting && !all && kind === 'gone') waitingNames.push(project);
-      else if (entries === undefined) problems.push({ code: 'project_missing', detail: project });
+      // The vault's own project, which the entry stands for, missing where
+      // nothing may wait for it: the place to fix is where Claude Code keeps its
+      // projects (machine.json), never a name in the shared configuration.
+      else if (entries === undefined) problems.push({ code: kind === 'gone' && project === own ? 'own_project_missing' : 'project_missing', detail: project });
       else present.push({ project, entries });
     }
   }

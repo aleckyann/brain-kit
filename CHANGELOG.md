@@ -1,5 +1,50 @@
 # Changelog
 
+## Unreleased
+
+- A new vault no longer fails `doctor` on a second machine: `brain-kit init` now writes the
+  vault's own Claude Code project in a form that is right on every machine that clones it. 0.0.8
+  made `init` write `sources.transcripts.include_projects` with that project named the way Claude
+  Code names a project folder (the vault's absolute path with every character that is not a
+  letter or a digit turned into a dash). That name goes into `brain-kit.config.json`, which is
+  versioned and travels to every machine that clones the vault, and it depends on the path of the
+  clone: on a second machine whose clone is elsewhere (`/Users/ana/my-brain` against
+  `/home/ana/my-brain`) the listed project did not exist, `doctor` failed `include-projects` with
+  `machine set transcripts_dir` as its advice, which does not help, and once the projects folder
+  existed it said to fix the names in the shared file, which would have pointed the first machine
+  at the second machine's path and stopped its curator from reading its own sessions.
+  `include_projects` now takes the entry `"{vault}"`: the project Claude Code names for THIS
+  vault's folder ON THIS MACHINE. One function (`resolveIncludeProjects`) turns it
+  into a name, and the round and `doctor` both read the list through it; the real path is used
+  (a link, a trailing slash), and a vault whose path Claude Code shortens (over 200 characters)
+  has no `{vault}`, which `doctor` and the round say instead of reading another project. `init`
+  and `init --adopt` write `["{vault}"]` (still nothing when the transcripts source is off, still
+  never `"all"`). What a new vault's list already did holds for the entry as it did for the
+  name: a project with no sessions yet is `ok` in `doctor` and an empty window for the round, and
+  a projects folder named on purpose that is missing, `CLAUDE_CONFIG_DIR` set with no folder
+  named, a broken link or a file in its place, and a typo beside it still refuse. A vault that
+  lists its project by name (every vault `init` made in 0.0.8) keeps working where it was made,
+  exactly as before, and nothing rewrites its configuration; on a second machine it still fails
+  until you replace that entry with `"{vault}"` (see "Before the first round" in
+  `docs/scheduling.md`). The schema already took any string in the list, so it is unchanged:
+  `"{vault}"` validates, and a bare string other than `"all"` is still refused.
+- `doctor` and `curate` no longer send a person to the shared configuration to fix a name that
+  only differs by machine. The empty-list message of `include-projects` offers `"{vault}"` first
+  ("the project of this vault, on whatever machine it is opened") and explains `"all"` second.
+  When the project the entry stands for is missing and nothing may wait for it (Claude Code keeps
+  its projects somewhere the kit was not told about, `CLAUDE_CONFIG_DIR`), the message points at
+  `machine.json` and the projects folder (`doctor`'s new `own_missing`; the round's new
+  `own_project_missing`, whose refusal names `machine.json transcripts_dir` as the setting to
+  fix instead of the configuration). For a name written out there is no way to tell a typo from
+  another machine's project, so those messages keep their diagnosis and gain one sentence: if
+  this vault is also used on another machine, use `{vault}` instead of a project name so the same
+  configuration works on both (`doctor`'s `root_missing`, `all_missing` and `some_missing`, and
+  `curate`'s refusal). `root_missing` keeps its text and its key and carries the sentence after
+  its command only when a name is written out and the default projects folder is absent, which
+  is a machine where Claude Code never ran. A vault whose own project cannot be named has its own
+  messages (`vault_unnamed`, `some_unnamed`) in place of "the list is empty" and "a project is
+  missing".
+
 ## 0.0.8 (tagged `v0.0.8`, not on npm)
 
 A first-time user can now go from a clean machine to a first pull request with what the kit

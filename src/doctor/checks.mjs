@@ -70,7 +70,7 @@ import { installedRoundPath, readBriefingTask, ROUND_COMMANDS, roundPath, runSch
 // asks: its reading of briefing.blocks and of the question queue.
 import { blockProblemLine, briefingSetting, validateBriefingBlocks } from '../briefing/blocks.mjs';
 import { queueFile, readQueue } from '../briefing/questions.mjs';
-import { ALL_PROJECTS, allProjects, claudeProjectName, exclusionPatterns, projectEntryKind, signatureProblems, waitingProjectName } from '../sources/transcripts-claude-code.mjs';
+import { ALL_PROJECTS, VAULT_PROJECT, allProjects, exclusionPatterns, projectEntryKind, resolveIncludeProjects, signatureProblems, vaultProjectName, waitingProjectName } from '../sources/transcripts-claude-code.mjs';
 import { authorizationWhy, calendarsListedTwice } from '../sources/calendar-google.mjs';
 // The same kind of cycle with curate.mjs, which imports expandHome from
 // here: the connectors check asks the round's own choice of launch mode
@@ -1032,6 +1032,17 @@ function claudeIsolationFlags(ctx) {
 // counted as the source resolves it (allProjects), now: the next round
 // resolves it again, so the count is today's.
 //
+// The list is read as THIS machine reads it (resolveIncludeProjects): the
+// entry {vault} is the project Claude Code names for this vault's folder
+// here, so one configuration is right on every clone and machine. The check
+// must never send a person to the shared configuration to correct a name that
+// only differs by machine: the project the entry stands for is never listed
+// among the names to fix, and where it is missing and nothing may wait for it
+// the place to look is the folder Claude Code keeps its projects in
+// (machine.json). A name written out has no such answer (it may be another
+// machine's project, and there is no way to know), so its messages keep their
+// diagnosis and add the way out (useVaultEntry).
+//
 // One missing project is not a fault: the vault's own (the one `init` lists
 // for a new vault). Claude Code makes a project's folder when a session first
 // runs there, so until a session has run in the vault the folder is not
@@ -1057,16 +1068,25 @@ function includeProjects(ctx) {
   }
   const listed = config.sources?.transcripts?.include_projects;
   const all = listed === ALL_PROJECTS;
-  let projects = [...new Set(Array.isArray(listed) ? listed.filter((p) => typeof p === 'string' && p !== '') : [])];
+  // The list as this machine reads it: {vault} is the project of this vault's folder here.
+  let projects = resolveIncludeProjects(listed, ctx.root).filter((p) => typeof p === 'string' && p !== '');
   const configured = machineObject(ctx)?.transcripts_dir;
   const named = typeof configured === 'string' && configured !== '';
   const root = expandHome(named ? configured : DEFAULT_TRANSCRIPTS_DIR, ctx.env);
   const own = vaultsOwnProject(ctx);
+  // The entry is listed: it stands for `own`, or for nothing when this vault's
+  // project cannot be named from its path.
+  const entry = Array.isArray(listed) && listed.includes(VAULT_PROJECT);
+  const unnamed = entry && own === null;
   // The one listed project that may have no folder yet, from the function the
   // round reads too: null when Claude Code keeps its projects elsewhere.
   const waitable = waitingProjectName({ vaultRoot: ctx.root, machine: machineObject(ctx), env: ctx.env });
   if (!all && projects.length === 0) {
-    return { id, status: 'fail', messageKey: 'doctor.include_projects.empty', params: { file, key, root, project: own ?? '<project>', doc: INCLUDE_PROJECTS_DOC } };
+    // No project to name for this vault: the entry is no way out, and the list says it.
+    if (own === null) {
+      return { id, status: 'fail', messageKey: 'doctor.include_projects.vault_unnamed', params: { file, key, root, token: VAULT_PROJECT, dir: ctx.root, doc: INCLUDE_PROJECTS_DOC } };
+    }
+    return { id, status: 'fail', messageKey: 'doctor.include_projects.empty', params: { file, key, root, token: VAULT_PROJECT, project: own, doc: INCLUDE_PROJECTS_DOC } };
   }
   const waitingOnly = !all && waitable !== null && projects.every((project) => project === waitable);
   if (!isDirectory(root)) {
@@ -1075,7 +1095,14 @@ function includeProjects(ctx) {
     if (waitingOnly && !named && !somethingAt(root)) {
       return { id, status: 'ok', messageKey: 'doctor.include_projects.no_sessions_yet', params: { projects, root } };
     }
-    return { id, status: 'fail', messageKey: 'doctor.include_projects.root_missing', params: { root, command: SET_TRANSCRIPTS_COMMAND } };
+    // The default folder is not there and a name is written out: on a machine
+    // where Claude Code never ran, that name may be another machine's project,
+    // and the usual advice does not help. The message is today's, with the way
+    // out after its command.
+    const command = !named && projects.some((project) => project !== own)
+      ? { messageKey: 'doctor.include_projects.command_with_way_out', params: { command: SET_TRANSCRIPTS_COMMAND, hint: useVaultEntry() } }
+      : SET_TRANSCRIPTS_COMMAND;
+    return { id, status: 'fail', messageKey: 'doctor.include_projects.root_missing', params: { root, command } };
   }
   let names;
   try {
@@ -1118,11 +1145,23 @@ function includeProjects(ctx) {
   const waiting = missing.filter((project) => project === waitable && !all);
   const lost = missing.filter((project) => !waiting.includes(project));
   const found = projects.length - missing.length;
-  if (lost.length > 0 && found === 0) {
-    return { id, status: 'fail', messageKey: 'doctor.include_projects.all_missing', params: { projects: missing, root, file, key, doc: INCLUDE_PROJECTS_DOC } };
+  // The project the entry stands for, missing where nothing may wait for it
+  // (Claude Code keeps its projects somewhere this kit was not told about), is
+  // not a name in the file to correct: it is told apart, and said with where to look.
+  const ownLost = entry && own !== null && lost.includes(own);
+  const fixable = ownLost ? lost.filter((project) => project !== own) : lost;
+  const shown = entry && own !== null ? missing.filter((project) => project !== own) : missing;
+  if (fixable.length > 0 && found === 0) {
+    return { id, status: 'fail', messageKey: 'doctor.include_projects.all_missing', params: { projects: shown, root, file, key, doc: INCLUDE_PROJECTS_DOC, hint: useVaultEntry() } };
   }
-  if (lost.length > 0) {
-    return { id, status: 'warn', messageKey: 'doctor.include_projects.some_missing', params: { projects: lost, root, file, key } };
+  if (fixable.length > 0) {
+    return { id, status: 'warn', messageKey: 'doctor.include_projects.some_missing', params: { projects: fixable, root, file, key, hint: useVaultEntry() } };
+  }
+  if (ownLost) {
+    return { id, status: found === 0 ? 'fail' : 'warn', messageKey: 'doctor.include_projects.own_missing', params: { project: own, root, token: VAULT_PROJECT, command: SET_TRANSCRIPTS_COMMAND } };
+  }
+  if (unnamed) {
+    return { id, status: 'warn', messageKey: 'doctor.include_projects.some_unnamed', params: { key, file, token: VAULT_PROJECT, dir: ctx.root } };
   }
   if (waiting.length > 0 && found === 0) {
     return { id, status: 'ok', messageKey: 'doctor.include_projects.no_sessions_yet', params: { projects: waiting, root } };
@@ -1134,15 +1173,19 @@ function includeProjects(ctx) {
   return { id, status: 'ok', messageKey: 'doctor.include_projects.ok', params: { count: projects.length, root } };
 }
 
-// The name Claude Code gives the vault's own project, or null when it cannot
-// be told (the vault's real path is unreadable, or too long to be named as
-// the path spells it).
+// The name Claude Code gives the vault's own project on this machine, or null
+// when it cannot be told (the vault's real path is unreadable, or too long to
+// be named as the path spells it).
 function vaultsOwnProject(ctx) {
-  try {
-    return claudeProjectName(ctx.realRoot());
-  } catch {
-    return null;
-  }
+  return vaultProjectName(ctx.root);
+}
+
+// The sentence that says how one configuration serves every machine, added to
+// the messages about a name that is not there: a name written out may be the
+// project of the vault on another machine, and the entry {vault} is right on
+// both (src/sources/transcripts-claude-code.mjs, VAULT_PROJECT).
+function useVaultEntry() {
+  return { messageKey: 'sources.transcripts.use_vault_token', params: { token: VAULT_PROJECT } };
 }
 
 // True when anything at all is at `path`, a link that leads nowhere included.

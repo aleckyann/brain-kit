@@ -125,7 +125,7 @@ import { allowedTools, disallowedTools, KIT_SUBCOMMANDS, kitCommand } from '../c
 import { unsafeRuleCharacters } from '../curate/rule-path.mjs';
 import { blockingMessage, mirrorUserRules, userSettingsFiles } from '../curate/user-rules.mjs';
 import { SOURCES } from '../sources/index.mjs';
-import { waitingProjectName, writeDigests } from '../sources/transcripts-claude-code.mjs';
+import { VAULT_PROJECT, waitingProjectName, writeDigests } from '../sources/transcripts-claude-code.mjs';
 import { syncUnderLock } from './sync.mjs';
 import { parseRoundRecord, roundRecordPath } from './propose.mjs';
 import { proposedMatch, restoreMatching } from '../guards/proposed.mjs';
@@ -409,11 +409,13 @@ function collectPlans(sources, days, config, machine, env, now, tz, digestDir, r
   const home = env.HOME || undefined;
   // The listed project that may have no folder yet (the vault's own), the
   // same answer `doctor` reads: a project with no sessions, not a
-  // misconfiguration. Only the transcripts source reads it.
+  // misconfiguration. Only the transcripts source reads it. That source is
+  // also handed the vault's folder, whose project the entry {vault} of
+  // include_projects stands for.
   const waiting = waitingProjectName({ vaultRoot: root, machine, env });
   for (const source of sources) {
     const own = days[source.id];
-    plans[source.id] = source.collect({ window: { from: startOfDay(own[0], tz), to: startOfDay(addDays(own.at(-1), 1), tz), days: own, timezone: tz }, config, machine, now, digestDir, waiting, ...(home ? { home } : {}) });
+    plans[source.id] = source.collect({ window: { from: startOfDay(own[0], tz), to: startOfDay(addDays(own.at(-1), 1), tz), days: own, timezone: tz }, config, machine, now, digestDir, waiting, vaultRoot: root, ...(home ? { home } : {}) });
   }
   return plans;
 }
@@ -511,9 +513,12 @@ function networkMinWait(root) {
   }
 }
 
-// The setting a person fixes for each misconfiguration code.
+// The setting a person fixes for each misconfiguration code. The vault's own
+// project missing under the entry {vault} is the folder Claude Code keeps its
+// projects in, never a name in the shared configuration: the entry is right on
+// every machine, the folder it is looked for in is this machine's.
 function settingFor(code) {
-  if (code === 'root_missing' || code === 'root_unreadable') return 'machine.json transcripts_dir';
+  if (code === 'root_missing' || code === 'root_unreadable' || code === 'own_project_missing') return 'machine.json transcripts_dir';
   return `${CONFIG_FILENAME} sources.transcripts.include_projects`;
 }
 
@@ -543,9 +548,12 @@ function offRequiredText(t, source, problems) {
 }
 
 function misconfiguredText(t, source, plan, problems) {
-  const codes = plan.problems.filter((p) => ['no_projects', 'root_missing', 'root_unreadable', 'project_missing'].includes(p.code));
+  const codes = plan.problems.filter((p) => ['no_projects', 'root_missing', 'root_unreadable', 'project_missing', 'own_project_missing', 'vault_unnamed'].includes(p.code));
   const setting = settingFor(codes[0]?.code ?? 'no_projects');
-  return t('curate.source_misconfigured', { source: source.id, setting, problems });
+  const text = t('curate.source_misconfigured', { source: source.id, setting, problems });
+  // A name written out that is not there may be another machine's project: the
+  // way out is the entry that is the vault's own on every machine.
+  return plan.problems.some((p) => p.code === 'project_missing') ? `${text} ${t('sources.transcripts.use_vault_token', { token: VAULT_PROJECT })}` : text;
 }
 
 // What a round would refuse over, in its own order and with its own

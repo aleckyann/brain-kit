@@ -37,7 +37,6 @@ import { EXIT } from '../src/exit-codes.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { MANIFEST_PATH, readManifest } from '../src/manifest.mjs';
 import { completeDefaults } from '../src/init/config.mjs';
-import { claudeProjectName } from '../src/sources/transcripts-claude-code.mjs';
 import { inferConfig, monthOffset, readDefaults, writeAdoption } from '../src/init/adopt.mjs';
 import { runInit } from '../src/commands/init.mjs';
 import { MATCH_REMEDY } from '../src/commands/scan-blobs.mjs';
@@ -195,7 +194,7 @@ for (const c of CASES) {
     assert.equal(config.kit_version, kitVersion());
     assert.equal(config.owner.handle, ANSWERS[c.lang].handle);
     assert.equal(config.actors.human, `human:${ANSWERS[c.lang].handle}`);
-    assert.deepEqual(config, completeDefaults(inferConfig(join(FIXTURES, c.fixture), { lang: c.lang }).config, ANSWERS[c.lang], { kitVersion: kitVersion(), project: claudeProjectName(realpathSync(copy.vault)) }));
+    assert.deepEqual(config, completeDefaults(inferConfig(join(FIXTURES, c.fixture), { lang: c.lang }).config, ANSWERS[c.lang], { kitVersion: kitVersion(), project: '{vault}' }));
 
     // The manifest: every file that was there, each seeded, and the gate,
     // managed; nothing under .git.
