@@ -6,18 +6,18 @@ próprio trabalho (as suas sessões do Claude Code, a agenda, as notas de reuni�
 altera o cérebro por pull request, um pedido de mudança que você lê no GitHub, e o seu merge,
 o clique que aprova o pedido, é a aprovação e a verificação.
 
-> **Comece aqui.** De uma máquina limpa até o seu primeiro pull request, o caminho leva cerca de
-> 30 minutos na primeira vez (os tempos abaixo são estimativas). Antes de começar, tenha o
-> Node.js 24 ou mais novo, o git, o `gh` (o aplicativo do GitHub para o terminal), o Claude Code
-> e uma conta no GitHub. O detalhe de cada passo está em [Seu primeiro vault](#seu-primeiro-vault).
+> **Comece aqui.** Com o Node.js 24 ou mais novo, o git, o `gh` (o aplicativo do GitHub para o
+> terminal), o Claude Code e uma conta no GitHub já prontos, o caminho até o seu primeiro pull
+> request leva cerca de 30 minutos na primeira vez: uns 10 de leitura e 21 nos passos abaixo.
+> São estimativas, não uma promessa. O detalhe de cada passo está em [Seu primeiro vault](#seu-primeiro-vault).
 >
 > 1. Instale o kit e o plugin colando o [trecho de instalação](#instalando-uma-versão-fixa) no terminal (2 min).
 > 2. Entre no GitHub com `gh auth login` ([passo 2](#passo-2), 3 min).
 > 3. Confira a máquina com `brain-kit doctor`, fora de qualquer vault ([passo 3](#passo-3), 1 min).
 > 4. Crie o vault com `brain-kit init ~/my-brain` ([passo 4](#passo-4), 3 min).
-> 5. Faça o primeiro commit com `git add -A` e `git commit` ([passo 5](#passo-5), 2 min).
+> 5. Faça o primeiro commit com `git add -A` e `git commit` ([passo 5](#passo-5), 3 min).
 > 6. Envie para o GitHub com `gh repo create my-brain --private --source . --push` ([passo 6](#passo-6), 1 min).
-> 7. Abra o primeiro pull request com `brain-kit propose` ([passos 7 a 10](#passo-7), 5 min) e aprove-o no GitHub ([passo 11](#passo-11)).
+> 7. Abra o primeiro pull request com `brain-kit propose` ([passos 7 a 10](#passo-7), 8 min) e aprove-o no GitHub ([passo 11](#passo-11)).
 
 **Palavras que você vai ver**
 
@@ -134,9 +134,11 @@ quando termina.
    ```
 
    Fora de um vault (você ainda não tem nenhum), o `doctor` confere só a máquina: o Node, o
-   git, o `gh` e o login dele, e o Claude Code. Ele sai com 0 quando nada falha, e uma linha
-   `falha` diz o que rodar para corrigi-la. Como ainda não há vault, ele usa o idioma do seu
-   sistema: se este estiver em inglês, as palavras saem como `fail` e `warn`.
+   git, o `gh` e o login dele, e o Claude Code. Está tudo certo quando a linha que começa com
+   `doctor:` termina em `0 falha(s)`. A mensagem "nenhum vault brain-kit encontrado", que vem
+   logo depois, é esperada: você ainda não tem vault. Uma linha `falha` diz o que rodar para
+   corrigi-la. Como ainda não há vault, ele usa o idioma do seu sistema: se este estiver em
+   inglês, as palavras saem como `fail` e `warn`, e a linha termina em `0 fail`.
 4. <a id="passo-4"></a>Crie o vault numa pasta nova ou vazia:
 
    ```bash
@@ -189,12 +191,12 @@ quando termina.
 
    A saída mostra só os avisos e as falhas, com a contagem das linhas `ok`
    (`brain-kit doctor --verbose` lista todas). Um resultado saudável não tem nenhuma linha
-   `falha` e sai com 0. Neste ponto, linhas `aviso` sobre o curador agendado (`watermark`, o
-   último dia lido; `last-run`, a última rodada; `schedule`, o agendamento; `notify`, o
-   comando de notificação; e `briefing`) estão bem: você ainda não configurou nenhum, e o
-   [docs/scheduling.md](docs/scheduling.md) trata disso quando você quiser que uma rodada
-   rode sozinha, num horário. Uma `falha` diz o que rodar para corrigi-la; a do `gh` diz
-   `gh auth login`.
+   `falha`: a última linha termina em `0 falha(s)`. Neste ponto, linhas `aviso` sobre o
+   curador agendado (`watermark`, o último dia lido; `last-run`, a última rodada; `schedule`,
+   o agendamento; `notify`, o comando de notificação; e `briefing`) estão bem: você ainda não
+   configurou nenhum, e o [docs/scheduling.md](docs/scheduling.md) trata disso quando você
+   quiser que uma rodada rode sozinha, num horário. Uma `falha` diz o que rodar para
+   corrigi-la; a do `gh` diz `gh auth login`.
 8. Abra o Claude Code dentro da pasta do vault (`cd ~/my-brain`, se você abriu outro
    terminal; o `init` imprime isto no fim):
 
@@ -230,8 +232,8 @@ quando termina.
     sem commit pelo mergeado e deixa o seu branch local em dia com o remoto, e o
     `brain-kit verify --pr <número>` carimba `verified` (verificada) nas notas que esse pull
     request alterou (a skill `approve` faz o mesmo). O log não é uma nota: para este primeiro
-    pull request, que mudou só o log, o `verify` diz que não há nada a carimbar e sai com 0;
-    isso é esperado.
+    pull request, que mudou só o log, o `verify` termina dizendo "nada a carimbar, e nada foi
+    escrito", sem erro; isso é esperado.
 
 A partir daqui, [O curador agendado](#o-curador-agendado) alimenta o vault com as suas
 sessões do Claude Code sem você pedir, e [O briefing matinal](#o-briefing-matinal) diz
@@ -241,8 +243,8 @@ toda manhã onde ele está.
 
 - `EACCES` ao instalar (o npm não pode gravar onde queria): use os comandos de [Se aparecer `EACCES`](#se-aparecer-eacces).
 - O `gh` pede login: rode `gh auth login` ([passo 2](#passo-2)) e tente de novo.
-- O `propose` reclama de branch, do endereço do GitHub (`origin`) ou de configuração: falta o primeiro commit ([passo 5](#passo-5)) e o envio ([passo 6](#passo-6)).
-- `command not found` (ou `comando não encontrado`) para o `brain-kit` depois de instalar: feche e abra o terminal; se continuar, refaça o PATH em [Se aparecer `EACCES`](#se-aparecer-eacces).
+- O `propose` pede o primeiro commit ([passo 5](#passo-5)) ou o `origin`, o endereço do GitHub ([passo 6](#passo-6)); se ele diz "Envie o branch padrão primeiro", o repositório já existe: rode `git push -u origin HEAD` (repetir o `gh repo create` falha).
+- `command not found` (ou `comando não encontrado`) para o `brain-kit` depois de instalar: o npm pode ter recusado no meio da saída, que termina em "Successfully installed" mesmo assim; siga o bloco [Se aparecer `EACCES`](#se-aparecer-eacces) inteiro, do começo.
 - O `doctor` diz `falha` no `gh-auth`: o login do `gh` venceu ou nunca foi feito; rode o comando que a linha mostra, `gh auth login --hostname github.com`.
 - Uma senha ou chave apareceu no vault: pare e siga o [docs/incident-response.md](docs/incident-response.md) (em inglês).
 
@@ -292,11 +294,21 @@ agendadas proporiam, cada uma, o mesmo dia. Na outra, use o vault à mão.
 O `brain-kit machine register --new` imprime estes passos também, mas com o `doctor` antes do
 `git config`: se você pular o passo 3, o `doctor` falha em `hooks-path` e diz o mesmo comando.
 
-Não edite o `brain-kit.config.json` para fazer o `doctor` calar: ele é o mesmo nas duas
-máquinas. Um vault novo registra o próprio projeto como `{vault}` em `include_projects`, que
-vale o caminho de cada máquina; por isso um clone em outra pasta não precisa de edição nenhuma.
-O [docs/scheduling.md](docs/scheduling.md#the-same-vault-on-a-second-machine) (em inglês) traz
-os detalhes, inclusive como mover as rodadas de uma máquina para a outra.
+Um vault criado por esta versão do `init` não precisa de edição nenhuma na segunda máquina,
+mesmo com o clone em outra pasta: ele lista o próprio projeto como `{vault}` em
+`include_projects`, que vale para a pasta do vault em cada máquina.
+
+Um vault criado antes da 0.0.9 lista o projeto pelo nome que ele tinha na primeira máquina, e o
+`doctor` da segunda dá `falha include-projects`. Não ponha no `brain-kit.config.json` o nome do
+projeto desta máquina para fazer o `doctor` calar: o arquivo é o mesmo nas duas máquinas, e a
+primeira deixaria de ler as próprias sessões. Em vez disso, troque o nome que está em
+`sources.transcripts.include_projects` por `"{vault}"`, proponha a mudança com
+`brain-kit propose "Usa {vault}" --only brain-kit.config.json`, faça o merge no GitHub e rode
+`brain-kit sync` nas duas máquinas; o `doctor` passa a terminar em `0 falha(s)`. O
+[docs/scheduling.md](docs/scheduling.md#before-the-first-round) (em inglês) explica isso na
+seção "Before the first round", e traz os
+[detalhes da segunda máquina](docs/scheduling.md#the-same-vault-on-a-second-machine), inclusive
+como mover as rodadas de uma máquina para a outra.
 
 ## O que há no repositório
 

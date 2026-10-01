@@ -9,7 +9,7 @@ Você está ajudando a pessoa a começar um segundo cérebro com o brain-kit, ou
 
 1. Rode `node --version`. Precisa ser 24 ou mais novo. Se for mais antigo, pare e avise.
 2. Rode `git --version` e `gh auth status`. Se o gh não estiver logado, peça para a pessoa rodar `gh auth login` no terminal dela. Nunca rode por ela, e nunca digite senha, token ou qualquer outra credencial no lugar dela.
-3. Rode `claude --version`. O Claude Code precisa estar instalado: o plugin e as sessões do vault rodam nele. Não rode o `{{kit}} doctor` ainda: ele confere um vault e recusa rodar fora de um vault, então ele roda depois do `init`, no passo 9.
+3. Rode `claude --version`. O Claude Code precisa estar instalado: o plugin e as sessões do vault rodam nele. Depois rode o `{{kit}} doctor` numa pasta que ainda não é um vault. Fora de um vault ele avisa que nenhum vault foi encontrado e confere só esta máquina (o Node, o git, o `gh` e o login dele, o Claude Code): isso é esperado aqui, não é problema. Ele sai com 0 quando nenhuma verificação falha; diga à pessoa quais verificações falharam ou deram aviso e o que fazer em cada uma. Ele não confere o vault em si: o `doctor` do passo 9 confere.
 
 ## Vault novo ou existente
 
