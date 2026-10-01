@@ -792,7 +792,7 @@ export const WATERMARK_BEHIND_WARN_DAYS = 3;
 // read green.
 export const DEAD_ROUND_MS = 20000;
 // Exits that say "not now" rather than "broken": degraded (3), network or
-// model unavailable (69), postponed (75).
+// model unavailable (69, but not an expired login), postponed (75).
 const SOFT_EXITS = Object.freeze([EXIT.DEGRADED, EXIT.UNAVAILABLE, EXIT.TEMPFAIL]);
 // A round that ended before the model, legitimately fast.
 const NO_MODEL_REASONS = Object.freeze(['up_to_date', 'nothing_to_curate']);
@@ -1118,7 +1118,9 @@ function lastRunCheck(ctx) {
     }
     return { id, status: 'ok', messageKey: 'doctor.last_run.ok', params: { at, seconds, turns, cost, reason } };
   }
-  if (SOFT_EXITS.includes(exit)) {
+  // An expired login exits 69 too, but no later window passes it on its
+  // own: it fails, and its reason says to log in again.
+  if (SOFT_EXITS.includes(exit) && run.reasonCode !== 'auth_expired') {
     return { id, status: 'warn', messageKey: 'doctor.last_run.soft', params: { at, exit, seconds, reason, logs } };
   }
   return { id, status: 'fail', messageKey: 'doctor.last_run.failed', params: { at, exit, seconds, reason, logs } };

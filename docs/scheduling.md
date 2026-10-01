@@ -151,7 +151,9 @@ once broke a real routine.
     is brought back to the default branch's content, so the next round does not stop on a
     dirty tree made by this one.
 16. **The exit code**, first match wins: isolation broken 1; interrupted or timed out 1;
-    the model failed 69 (an API or login error) or 1; a required source whose mark would
+    an expired login 69 (`auth_expired`, [below](#when-the-login-expires)); the model
+    failed 69 (an API error) or 1, the reason quoting the start of the CLI's error text
+    when the run ended in an error result; a required source whose mark would
     not advance 4 (a file not read, or no `BRAIN_KIT_SOURCES` line reporting it); a round
     record that cannot be read 1; anything still dirty 1; a pull request not opened 3
     (the reason names the branch and the `gh pr create --head <branch> --fill` that opens
@@ -392,7 +394,7 @@ What the bridge does not cover, by design:
 | 2 | Not a vault, or a bad setting | Fix `machine.json` or `brain-kit.config.json` as the message says, then `brain-kit doctor`. |
 | 3 | Proposed, but the pull request is not open | The commit and branch are pushed; from the vault, run the `gh pr create --head <branch> --fill` the reason names (check `gh auth status`). The mark advanced. |
 | 4 | A required source was not read | Only a source in `curate.sources.required` sets it; a best-effort one never does. The reason says which. A file that cannot be read (`source_unreadable`): fix its permissions, or add a pattern for it to `sources.transcripts.exclude_path_patterns`; `brain-kit watermark assume-covered` skips its days once you have looked. A project directory that cannot be listed, or a link to one the round cannot follow (into a directory it cannot enter, to a volume that is not mounted, a loop) (`source_unreadable` too, the reason names it): its sessions could be on any day, so skipping days does not clear it and every round stops there until you fix its permissions or take it out of `sources.transcripts.include_projects` (with `"all"`, a pattern covering the whole directory leaves it out). A first day over the cap (`cap_exceeded`): raise `curate.caps.transcripts` or exclude some projects. Otherwise `last-run.json` says how many files of how many were read, or that the model's last line did not report the source. The day stays open and the next round reads it. |
-| 69 | No network, or the model unavailable | Usually passes on its own at the next window. An authentication error means your Claude Code login expired: log in again. |
+| 69 | No network, or the model unavailable | Usually passes on its own at the next window, except `auth_expired`: your Claude Code login expired, and every window stops the same way until you log in again ([When the login expires](#when-the-login-expires)). |
 | 75 | Postponed | Another writer holds the vault lock or the legacy lock, or the tree is dirty (the files are listed). Commit, propose or discard them; the next window retries. A tree that stays dirty stops every round, so do not let it sit. |
 
 ## Reading last-run.json and the logs
@@ -436,7 +438,10 @@ configured), `source_warning`, `source_no_day` (a source with no open day of its
 denials and the isolation verdict), `connector_state_changed`, `cleanup`, `watermark` (with
 what the model reported, and the reason when the mark did not move), `exit`, `notify_state` (a state-change notification) and
 `notify_failed`. The log never holds what a tool returned, the model's final text, anything
-read from a transcript, a calendar or a document, or the round's token.
+read from a transcript, a calendar or a document, or the round's token. What the CLI itself
+said when a run failed goes in the `reason`: the last line of its standard error, and an
+error result's text, kept to its first 300 characters on one line with the round's token
+hidden.
 `brain-kit curate --keep-stream` (or `keep_stream: true` in `machine.json`) also keeps the
 model's raw output next to the log; that file does contain what the model read, so keep it
 only while you debug. Logs older than `log_retention_days` (in `machine.json`, default 30)
@@ -479,6 +484,31 @@ launchctl kill SIGTERM gui/$(id -u)/brain-kit-curate-<vault_id>   # on macOS
 Stopping it sends the round SIGTERM: it ends its model's whole process group, lets go of
 its locks, exits 1 (`interrupted`) and notifies. To keep a cap instead, set
 `curate.timeout_minutes` (60 is the kill every round had before phase 5a).
+
+## When the login expires
+
+A round runs Claude Code under your own login. When that login has expired and cannot be
+refreshed, the CLI still starts: it answers with a single line such as `Failed to
+authenticate: OAuth session expired and could not be refreshed` and ends with an error
+result, at no cost and in one turn (incident of 30/09/2026). The round reads a run as an
+expired login when its result is an error and the result's text holds `Failed to
+authenticate`, `OAuth session expired`, `could not be refreshed`, `Invalid API key` or
+`authentication_error` (in any case), or the result carries an `api_error_status` of 401.
+A model that only mentions one of these in a run that did not end in an error is never
+read as one.
+
+What the round does: it exits 69 with `reasonCode` `auth_expired`. Its `reason`, in the
+vault's language, quotes the first 300 characters of the CLI's text, says to log in again,
+and says the day is not lost. No watermark moves. `last-run.json` and the log record it,
+and `machine.notify_command` is called once with the reason. The round does not retry, and
+every later window stops the same way until you log in; `brain-kit doctor` reports such a
+last round as failed (`last-run`), never as a soft exit the next window passes. A login
+failure the CLI printed only on its standard error, with no result, is still
+`model_unavailable` (69 as well), and its reason names only the markers found.
+
+What you do: on the machine that runs the rounds, as the user they run as, run `claude` in
+a terminal and log in with `/login`. Then run `brain-kit curate` once by hand, or wait for
+the next window: it covers every day still open.
 
 ## When rounds seem to do nothing
 

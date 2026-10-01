@@ -19,7 +19,14 @@
 // unknown type or subtype is counted in `unknownTypes`, never fatal, and a
 // line that is not a JSON object is counted in `invalidLines`. Deciding
 // whether an unknown shape matters is the caller's job; this reader only
-// refuses to hide it.
+// refuses to hide it. A numeric `api_error_status` on the result, which no
+// measured stream carries, is kept as `apiErrorStatus` when present.
+//
+// A login that has expired does not fail the CLI's start: the round of
+// 30/09/2026 got an init event, one assistant text "Failed to authenticate:
+// OAuth session expired and could not be refreshed", and a result with
+// subtype success, is_error true, cost 0 and one turn, that same text in
+// `result`, and exit 1. isLoginFailure and errorText below read that shape.
 //
 // A claude.ai connector's tool result (the controller's capture of
 // 24/09/2026, test/fixtures/stream/connectors-connected.jsonl) carries its
@@ -165,6 +172,7 @@ export function createStreamParser() {
         numTurns: typeof event.num_turns === 'number' ? event.num_turns : null,
         terminalReason: typeof event.terminal_reason === 'string' ? event.terminal_reason : null,
         text: typeof event.result === 'string' ? event.result : null,
+        apiErrorStatus: Number.isInteger(event.api_error_status) ? event.api_error_status : null,
       };
       for (const d of Array.isArray(event.permission_denials) ? event.permission_denials.filter(isObject) : []) {
         addDenial(d.tool_name, d.tool_use_id, d.tool_input);
@@ -212,4 +220,45 @@ export function parseStream(lines) {
   const list = typeof lines === 'string' ? lines.split('\n') : lines;
   for (const line of list) parser.push(line);
   return parser.record();
+}
+
+// How much of an error result's text a round's reason carries.
+export const ERROR_TEXT_CHARS = 300;
+
+// An error result's own text, for a person: whitespace and control
+// characters folded into single spaces, trimmed, each string in `hide`
+// (the round's token) replaced by <hidden>, and cut to its first
+// ERROR_TEXT_CHARS characters. '' for a result that is not an error or
+// has no text. A result that is not an error carries the model's final
+// text, which is never shown; an error result's text is the CLI's own
+// word on why the run ended, and a reason that drops it says nothing
+// (the round of 30/09/2026 reported "-").
+export function errorText(result, hide = []) {
+  if (!isObject(result) || result.isError !== true || typeof result.text !== 'string') return '';
+  let text = result.text.replace(/[\s\u0000-\u001f\u007f]+/g, ' ').trim();
+  for (const secret of hide) {
+    if (typeof secret === 'string' && secret !== '') text = text.split(secret).join('<hidden>');
+  }
+  return [...text].slice(0, ERROR_TEXT_CHARS).join('').trim();
+}
+
+// The CLI's and the API's words for a login that no longer works, matched
+// in an error result's text with no regard to case.
+const LOGIN_FAILURE = Object.freeze([
+  /Failed to authenticate/i,
+  /OAuth session expired/i,
+  /could not be refreshed/i,
+  /Invalid API key/i,
+  /authentication_error/i,
+  /api_error_status\W{0,4}401\b/i,
+]);
+
+// Whether a result says the login has expired or is not valid: only a
+// result that is an error, by its text or by an api_error_status of 401.
+// A successful run whose final text mentions a login is never one.
+export function isLoginFailure(result) {
+  if (!isObject(result) || result.isError !== true) return false;
+  if (result.apiErrorStatus === 401) return true;
+  const text = typeof result.text === 'string' ? result.text : '';
+  return LOGIN_FAILURE.some((pattern) => pattern.test(text));
 }

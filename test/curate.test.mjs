@@ -253,6 +253,8 @@ test('an API or login error from the model is 69; another model failure is 1 nam
   });
   r = w.curate();
   assert.equal(r.status, EXIT.UNAVAILABLE, r.stderr);
+  assert.equal(w.lastRun().reasonCode, 'model_unavailable', 'a 401 with none of the login phrases is not auth_expired');
+  assert.match(w.lastRun().reason, /: API Error: 401 Invalid authentication credentials$/, 'an error result\'s own text is carried');
 
   // An event with no init is still an isolation failure, never a model one.
   w.scenario({ rewrite: { dropInit: true }, stderr: 'API Error: 401\n', exitCode: 1 });
@@ -277,6 +279,70 @@ test('an API or login error from the model is 69; another model failure is 1 nam
   assert.equal(r.status, EXIT.FAILURE, r.stderr);
   assert.match(w.lastRun().reason, /error_max_turns/);
   assert.equal(w.watermark(), null);
+});
+
+// docs/incidents.md, 30/09/2026: an expired login ends the run with a
+// result that is an error (test/fixtures/stream/auth-expired.jsonl; the
+// exact replay is test/incidents/2026-09-30-oauth-expired-round.test.mjs).
+const LOGIN_EXPIRED = 'Failed to authenticate: OAuth session expired and could not be refreshed';
+
+function authScenario(w, { replace = [], exitCode = 1, stderr } = {}) {
+  w.scenario({ stream: join(STREAMS, 'auth-expired.jsonl'), rewrite: { toolUses: [], finalText: undefined, replace }, exitCode, stderr });
+}
+
+test('an error result with an api_error_status of 401, or the CLI\'s "Invalid API key", is auth_expired too: exit 69, the text, one notification, no mark', () => {
+  for (const replace of [
+    [['"total_cost_usd":0,', '"total_cost_usd":0,"api_error_status":401,'], [LOGIN_EXPIRED, 'API Error: 401 Unauthorized']],
+    [[LOGIN_EXPIRED, 'Invalid API key · Please run /login']],
+  ]) {
+    const w = makeCurateWorld();
+    authScenario(w, { replace });
+    const said = replace.at(-1)[1];
+    const r = w.curate();
+    assert.equal(r.status, EXIT.UNAVAILABLE, r.stderr);
+    const last = w.lastRun();
+    assert.equal(last.reasonCode, 'auth_expired', said);
+    assert.ok(last.reason.includes(`(the CLI said: ${said})`), last.reason);
+    assert.match(last.reason, /log in again with \/login/);
+    assert.equal(w.watermark(), null);
+    assert.deepEqual(w.notifications().map((call) => call.at(-1)), [last.reason]);
+  }
+});
+
+test('an error result whose text matches no login phrase stays model_failed, exit 1, and now carries that text on one line instead of "-"', () => {
+  const w = makeCurateWorld();
+  authScenario(w, { replace: [[LOGIN_EXPIRED, 'The stream ended early\\n  after the first turn']] });
+  const r = w.curate();
+  assert.equal(r.status, EXIT.FAILURE, r.stderr);
+  const last = w.lastRun();
+  assert.equal(last.reasonCode, 'model_failed');
+  assert.ok(last.reason.endsWith('(result success, exit 1): The stream ended early after the first turn'), last.reason);
+  assert.equal(w.watermark(), null);
+  assert.deepEqual(w.notifications().map((call) => call.at(-1)), [last.reason]);
+
+  // A long text is cut at 300 characters, and the CLI's last stderr line
+  // still follows it.
+  authScenario(w, { replace: [[LOGIN_EXPIRED, 'z'.repeat(400)]], stderr: 'warning one\nlast warning\n' });
+  assert.equal(w.curate().status, EXIT.FAILURE);
+  assert.ok(w.lastRun().reason.endsWith(`: ${'z'.repeat(300)}; last warning`), w.lastRun().reason);
+});
+
+test('a model whose text merely mentions a failed login is never auth_expired: a successful round stays 0, a failed one that is not an error result stays model_failed and shows no text', () => {
+  const w = makeCurateWorld();
+  w.scenario({ rewrite: { finalText: `One session said: ${LOGIN_EXPIRED}. Invalid API key, authentication_error.\nBRAIN_KIT_SOURCES: transcripts=ok` } });
+  let r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.equal(w.lastRun().reasonCode, 'nothing_proposed');
+  assert.deepEqual(w.watermark(), { transcripts: utcDay(-1) });
+  assert.deepEqual(w.notifications(), []);
+
+  const f = makeCurateWorld();
+  f.scenario({ rewrite: { finalText: `One session said: ${LOGIN_EXPIRED}` }, exitCode: 1 });
+  r = f.curate();
+  assert.equal(r.status, EXIT.FAILURE, r.stderr);
+  assert.equal(f.lastRun().reasonCode, 'model_failed');
+  assert.ok(!f.lastRun().reason.includes('OAuth'), 'the final text of a run that is not an error result is never shown');
+  assert.equal(f.watermark(), null);
 });
 
 test('a model that exits 0 without reading the listed transcript exits 4 and the day stays open', () => {

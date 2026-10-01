@@ -275,10 +275,14 @@ the network took, how many files each source offered and how many were read, the
 mode and each connector's state, the model's exit, cost and turns, the names of the tools
 it was denied, what the cleanup restored. It never holds what a tool returned, the model's
 final text, anything read from a transcript, a calendar or a document, or the round's lock
-token. `last-run.json` follows the same rule. The one exception is opt-in: `--keep-stream`
-(or `keep_stream: true` in `machine.json`) keeps the model's raw output beside the log, and
-that file contains what the model read. It is written with owner-only permissions; keep it
-only while you debug.
+token. `last-run.json` follows the same rule. A failed run's reason holds what the CLI
+itself said: the last line of its standard error, and the CLI's own word on why the run
+ended (an expired login, an API error), which is the text of an error result, kept to its
+first 300 characters on one line with the round's token hidden. A run that ends normally
+carries the model's final text in a result that is not an error, and that text is never
+written. The one exception is opt-in: `--keep-stream` (or `keep_stream: true` in
+`machine.json`) keeps the model's raw output beside the log, and that file contains what
+the model read. It is written with owner-only permissions; keep it only while you debug.
 
 ## When a round is stopped
 

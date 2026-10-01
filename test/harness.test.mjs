@@ -9,7 +9,7 @@ import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildArgv, CONNECTOR_ARGS, ISOLATION_ARGS, MAX_TIMER_MS, ROUND_ENV, ROUND_TOOLS, runModel, unscopedRules } from '../src/harness/claude-code.mjs';
-import { parseStream } from '../src/harness/stream.mjs';
+import { ERROR_TEXT_CHARS, errorText, isLoginFailure, parseStream } from '../src/harness/stream.mjs';
 import { checkIsolation } from '../src/guards/isolation.mjs';
 import { checkCli } from '../src/guards/cli.mjs';
 import { createTranslator, REFERENCE_LANG } from '../src/lang.mjs';
@@ -197,7 +197,7 @@ test('parseStream reads the default run: permission mode auto, two hook events, 
   assert.deepEqual(r.denials, []);
   assert.deepEqual(r.result, {
     subtype: 'success', isError: false, costUsd: 0.3138986, numTurns: 6, terminalReason: 'completed',
-    text: r.result.text,
+    text: r.result.text, apiErrorStatus: null,
   });
   assert.match(r.result.text, /\nBRAIN_KIT_SOURCES: transcripts=ok$/);
   assert.deepEqual(r.unknownTypes, []);
@@ -268,6 +268,61 @@ test('parseStream reads a run that hit its turn limit as an error result', () =>
   assert.equal(r.result.text, null);
   assert.deepEqual(r.denials.map((d) => d.toolName), ['Bash', 'WebFetch']);
   assert.deepEqual(r.unknownTypes, []);
+});
+
+// docs/incidents.md, 30/09/2026: an expired login starts the CLI, prints
+// the failure as the only assistant text and ends with a result that is an
+// error under the subtype success, at cost 0 and one turn.
+const LOGIN_EXPIRED = 'Failed to authenticate: OAuth session expired and could not be refreshed';
+
+test('parseStream reads the expired login of 30/09/2026 as an error result with the CLI\'s text, and isLoginFailure and errorText read it', () => {
+  const r = parseStream(fixtureLines('auth-expired'));
+  assert.equal(r.init.permissionMode, 'dontAsk');
+  assert.deepEqual(r.toolUses, []);
+  assert.deepEqual(r.result, { subtype: 'success', isError: true, costUsd: 0, numTurns: 1, terminalReason: null, text: LOGIN_EXPIRED, apiErrorStatus: null });
+  assert.deepEqual(r.unknownTypes, []);
+  assert.equal(isLoginFailure(r.result), true);
+  assert.equal(errorText(r.result), LOGIN_EXPIRED);
+  const withStatus = parseStream([...fixtureLines('isolated-run').slice(0, 1), '{"type":"result","subtype":"success","is_error":true,"api_error_status":401,"result":"API Error: 401"}']);
+  assert.equal(withStatus.result.apiErrorStatus, 401);
+  assert.equal(parseStream(['{"type":"result","subtype":"success","is_error":true,"api_error_status":"401"}']).result.apiErrorStatus, null, 'a status that is not a number is not kept');
+});
+
+test('isLoginFailure: only a result that is an error, by one of the known phrases in any case or an api_error_status of 401', () => {
+  const error = (text, extra = {}) => ({ subtype: 'success', isError: true, costUsd: 0, numTurns: 1, terminalReason: null, text, apiErrorStatus: null, ...extra });
+  for (const text of [
+    LOGIN_EXPIRED, 'failed to AUTHENTICATE', 'oauth session expired', 'The token could not be refreshed', 'Invalid API key · Please run /login',
+    'API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"OAuth token has expired"}}', '{"api_error_status":401}', 'api_error_status: 401',
+  ]) assert.equal(isLoginFailure(error(text)), true, text);
+  assert.equal(isLoginFailure(error('API Error: 500', { apiErrorStatus: 401 })), true, 'the status alone says it');
+  assert.equal(isLoginFailure(error(null, { apiErrorStatus: 401 })), true);
+  for (const text of ['API Error: 401 Invalid authentication credentials', 'API Error: 529 Overloaded', '{"api_error_status":4010}', '{"api_error_status":500}', '', null]) {
+    assert.equal(isLoginFailure(error(text)), false, String(text));
+  }
+  assert.equal(isLoginFailure(error('Overloaded', { apiErrorStatus: 500 })), false);
+  // A run that is not an error never is one, whatever its text says.
+  assert.equal(isLoginFailure({ ...error(LOGIN_EXPIRED), isError: false }), false);
+  assert.equal(isLoginFailure({ ...error('x', { apiErrorStatus: 401 }), isError: false }), false);
+  assert.equal(isLoginFailure(null), false);
+  assert.equal(isLoginFailure(undefined), false);
+});
+
+test('errorText: an error result\'s text on one line, trimmed, a hidden string replaced, cut to 300 characters; nothing for a result that is not an error', () => {
+  const error = (text) => ({ subtype: 'success', isError: true, text });
+  assert.equal(errorText(error('  first line\n\tsecond\r\nthird\u0007 \n')), 'first line second third');
+  assert.equal(errorText(error('token abc123 seen, abc123 again'), ['abc123']), 'token <hidden> seen, <hidden> again');
+  assert.equal(errorText(error('x'.repeat(1000))).length, ERROR_TEXT_CHARS);
+  assert.equal(ERROR_TEXT_CHARS, 300);
+  // Cut by character, never inside one.
+  const cut = errorText(error('é'.repeat(299) + '\u{1F600}'.repeat(5)));
+  assert.equal([...cut].length, 300);
+  assert.ok(cut.endsWith('\u{1F600}'));
+  // The token is hidden before the cut, so no part of it survives at the edge.
+  const token = '0123456789abcdef0123456789abcdef';
+  assert.equal(errorText(error(`${'a '.repeat(140)}${token}`), [token]).includes('0123'), false);
+  assert.equal(errorText({ ...error('Round done.'), isError: false }), '', 'the final text of a run that is not an error is never shown');
+  assert.equal(errorText(error(null)), '');
+  assert.equal(errorText(null), '');
 });
 
 test('parseStream counts unknown types and subtypes and lines that are not JSON objects, and keeps reading', () => {
@@ -706,7 +761,7 @@ const CONNECTOR_TOOL_PREFIXES = ['mcp__claude_ai_Google_Calendar__', 'mcp__claud
 test('the stream fixtures carry no path of a real machine: no /home/ but /home/ana/, no /tmp/claude-, no -home-', () => {
   const files = readdirSync(FIXTURES).filter((f) => f.endsWith('.jsonl'));
   assert.deepEqual(files.sort(), [
-    'connectors-connected.jsonl', 'connectors-states.jsonl', 'default-run.jsonl', 'denied-run.jsonl', 'isolated-run.jsonl', 'max-turns.jsonl',
+    'auth-expired.jsonl', 'connectors-connected.jsonl', 'connectors-states.jsonl', 'default-run.jsonl', 'denied-run.jsonl', 'isolated-run.jsonl', 'max-turns.jsonl',
   ]);
   for (const file of files) {
     const text = readFileSync(join(FIXTURES, file), 'utf8');

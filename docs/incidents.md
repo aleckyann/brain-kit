@@ -7,13 +7,14 @@ Names of people, companies and tools were removed on purpose.
 
 Seventy three lessons were extracted from the original vault, written up as seventy
 two entries: the four day curation outage of September 2026 produced two lessons about
-the same incident and is written up once, under 13/09/2026. Four entries were added
+the same incident and is written up once, under 13/09/2026. Five entries were added
 since, each dated: the leak gate that blocked its own release tag (18/09/2026), the
 selection of transcripts by modification time (24/09/2026), the settings a headless
-run inherits (24/09/2026), which the kit's own build produced, and the round that took
+run inherits (24/09/2026), which the kit's own build produced, the round that took
 its own parent for a competing curator (28/09/2026), found while moving a vault onto the
-kit. Seventy six entries follow. Where a lesson carries no date of its own, the entry
-says "Undated" and explains why.
+kit, and the expired login a round reported with no reason (30/09/2026). Seventy seven
+entries follow. Where a lesson carries no date of its own, the entry says "Undated" and
+explains why.
 
 ## Format and links
 
@@ -587,6 +588,25 @@ exit code), `src/commands/curate.mjs` (an API or login error is exit 69, never 0
 `last-run.json` with duration, turns and cost, `brain-kit doctor` check `last-run` (a
 round that exits 0 in under 20 seconds without a model turn is reported as dead),
 `test/incidents/2026-08-21-expired-token.test.mjs` (Phase 2).
+
+### 30/09/2026: an expired login, reported as a model failure with no reason
+**What happened.** The CLI's login had expired and could not be refreshed. The round
+started the model, which printed the login failure as its only message and ended with a
+result marked as an error under the subtype `success`, at no cost and in one turn. The
+round recorded a generic model failure whose detail was an empty field: the CLI's own
+text was dropped, and nothing said what to do. An expired login was the failure that
+came back most often in that month, from 19 to 22/09, on 26/09 and on 30/09/2026, and
+each time it read like any other failed run. Unattended, a round that stops for a reason
+nobody can read stops again at every window, for days.
+**Rule.** An unattended round must say why it stopped. Keep the CLI's own error text in
+the reason. When that text says the login failed, say what to do (log in again), say
+that the day is not lost, notify once and leave every mark where it was. A login failure
+is not a model failure, and no retry fixes it: only a person can log in.
+**Where it lives in brain-kit.** `src/harness/stream.mjs` (`isLoginFailure`,
+`errorText`), `src/commands/curate.mjs` (step 16: exit 69, `auth_expired`, the error
+text in every model failure's reason), `brain-kit doctor` check `last-run` (an expired
+login fails, never reads as a soft exit), [scheduling.md](scheduling.md) ("When the
+login expires"), `test/incidents/2026-09-30-oauth-expired-round.test.mjs` (Phase 5a).
 
 ### 14/09/2026: the CLI binary was a 500 byte stub for two days
 **What happened.** At 15:49 on 14/09/2026 a reinstall did not run its post install
