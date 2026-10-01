@@ -24,8 +24,17 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: '24'
+      # On a tag push actions/checkout rewrites the pushed annotated tag as a
+      # lightweight one (upstream actions/checkout issue 290), and the check
+      # below reads the tag object, so the tag is fetched again as it is on
+      # the remote.
+      #
       # The tag and the token reach the shell only through env, never
       # through an expression written into the script text.
+      - name: Fetch the annotated tag object again
+        env:
+          TAG: ${{ github.ref_name }}
+        run: git fetch --force --no-tags origin "+refs/tags/$TAG:refs/tags/$TAG"
       - name: Check the tag, the CHANGELOG and the READMEs
         env:
           TAG: ${{ github.ref_name }}
@@ -39,11 +48,11 @@ jobs:
         run: |
           set -u
           NOTES="$RUNNER_TEMP/release-notes.md"
-          PREV=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$TAG^" 2>/dev/null || true)
+          PREV=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' "$TAG^" 2>/dev/null || true)
           node scripts/release-notes.mjs notes --version "${TAG#v}" --prev "$PREV" --repo "$REPO" > "$NOTES"
           TITLE=$(git for-each-ref "refs/tags/$TAG" --format='%(contents:subject)')
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "$TITLE" --notes-file "$NOTES" --verify-tag
+            gh release edit "$TAG" --title="$TITLE" --notes-file "$NOTES" --verify-tag
           else
-            gh release create "$TAG" --title "$TITLE" --notes-file "$NOTES" --verify-tag
+            gh release create "$TAG" --title="$TITLE" --notes-file "$NOTES" --verify-tag
           fi

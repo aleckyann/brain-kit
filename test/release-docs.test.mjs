@@ -21,7 +21,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 import { CLEAN_ENV, git, makeRepo, write } from './helpers/git-repo.mjs';
@@ -206,6 +206,22 @@ test('changelog-section: a section with a single non-blank line is enough', () =
   assert.deepEqual(rn.checkInputs(inputs({ changelog: text })), []);
 });
 
+test('changelog-section: a CHANGELOG that ends inside an unclosed code fence says so, not "no heading"', () => {
+  // The fence opens above the version heading, so every heading after it is hidden.
+  const hidden = ['# Changelog', '', '## Unreleased', '', FENCE + 'md', '- an example that never ends', '', '## 0.0.7', '', '- a', ''].join('\n');
+  const problem = onlyId(rn.checkInputs(inputs({ changelog: hidden })), 'changelog-section');
+  assert.match(problem.message, /unclosed code fence/);
+  assert.match(problem.message, /line 5/);
+  assert.doesNotMatch(problem.message, /rename/);
+  // The heading is found but a fence opened in its section never closes: still said, once.
+  const inside = ['# Changelog', '', '## 0.0.7', '', '- a', '', '~~~', 'text', ''].join('\n');
+  const again = onlyId(rn.checkInputs(inputs({ changelog: inside })), 'changelog-section');
+  assert.match(again.message, /unclosed code fence/);
+  assert.match(again.message, /line 7/);
+  // A closed fence is no problem.
+  assert.deepEqual(rn.checkInputs(inputs({ changelog: changelog({ sections: [[V, '', `${FENCE}\ncode\n${FENCE}`]] }) })), []);
+});
+
 test('changelog-section: the body may hold sub-headings and fenced headings and still counts as one section', () => {
   const body = ['### Part one', '', '- a', '', `${FENCE}md`, '## not a heading', FENCE].join('\n');
   assert.deepEqual(rn.checkInputs(inputs({ changelog: changelog({ sections: [[V, '', body], ['0.0.6', '', '- Older.']] }) })), []);
@@ -259,6 +275,22 @@ test('changelog-order: a version that appears twice (an older one, so changelog-
 test('changelog-order: headings in ascending order', () => {
   const text = changelog({ sections: [['0.0.6', '', '- a'], [V, '', '- b']] });
   onlyId(rn.checkInputs(inputs({ changelog: text })), 'changelog-order');
+});
+
+test('changelog-order: a level-two heading above the first version that is not exactly "## Unreleased" is refused, so its entries cannot slip past unreleased-empty', () => {
+  for (const heading of ['## Unreleased (next)', '## [Unreleased]', '## Unreleased:', '## Notes']) {
+    const text = ['# Changelog', '', heading, '', '- Left behind.', '', '## 0.0.7', '', '- a', '', '## 0.0.6', '', '- b', ''].join('\n');
+    const info = { type: 'tag', subject: 'brain-kit 0.0.7: x' };
+    // With and without a tag: it is the only problem, and it names the heading and its line.
+    for (const extra of [{}, { tag: 'v0.0.7', tagInfo: info }]) {
+      const problem = onlyId(rn.checkInputs(inputs({ changelog: text, ...extra })), 'changelog-order');
+      assert.ok(problem.message.includes(heading), `${heading}: ${problem.message}`);
+      assert.match(problem.message, /line 3/);
+    }
+  }
+  // The plain heading, with entries, is the normal state and stays clean.
+  const plain = ['# Changelog', '', '## Unreleased', '', '- Pending.', '', '## 0.0.7', '', '- a', ''].join('\n');
+  assert.deepEqual(rn.checkInputs(inputs({ changelog: plain })), []);
 });
 
 test('changelog-order: 0.0.10 sits above 0.0.9 (numeric order), and a prerelease sits below its release', () => {
@@ -773,6 +805,61 @@ test('the Release workflow never puts an expression inside a run block (the tag 
   assert.match(WORKFLOW, /GH_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);
 });
 
+// The steps of a workflow, each as its own text (a step starts at a line with a dash at the step indent).
+function workflowSteps(text) {
+  return text.split(/^(?=      - )/m).filter((chunk) => chunk.startsWith('      - '));
+}
+
+const FETCH_TAG = 'git fetch --force --no-tags origin "+refs/tags/$TAG:refs/tags/$TAG"';
+
+// On a tag push, actions/checkout fetches the tags in full (the annotated tag
+// object arrives), finds that the tag does not point at the pushed commit,
+// and then runs a second fetch of `+<sha>:refs/tags/<tag>`, which rewrites
+// the tag as a lightweight one (upstream actions/checkout#290). Every real
+// release would then be refused by tag-annotated. The workflow fetches the
+// tag object again before the check.
+test('the Release workflow fetches the annotated tag object again, after checkout and before the check, with TAG through env', () => {
+  const checkout = WORKFLOW.indexOf('actions/checkout@v5');
+  const fetch = WORKFLOW.indexOf(FETCH_TAG);
+  const check = WORKFLOW.indexOf('release-notes.mjs check --tag "$TAG"');
+  assert.ok(fetch >= 0, `no run block holds ${FETCH_TAG}`);
+  assert.ok(checkout >= 0 && checkout < fetch && fetch < check, 'order must be checkout, fetch of the tag, check');
+  const step = workflowSteps(WORKFLOW).find((candidate) => candidate.includes(FETCH_TAG));
+  assert.ok(step.includes('env:\n          TAG: ${{ github.ref_name }}\n'), 'TAG must come through env');
+  const block = runBlocks(WORKFLOW).find((candidate) => candidate.text.includes('git fetch'));
+  assert.equal(block.text, FETCH_TAG, 'the step runs exactly the fetch, with no expression in its text');
+});
+
+test('checkout flattens an annotated tag into a lightweight one, and the workflow step restores it (real git, local origin)', () => {
+  const base = realpathSync(makeTempDir('brain-kit-flatten-'));
+  git(base, ['init', '-q', '--bare', '-b', 'main', 'origin.git']);
+  git(base, ['init', '-q', '-b', 'main', 'work']);
+  const work = join(base, 'work');
+  write(work, 'a.txt', 'a\n');
+  git(work, ['add', 'a.txt']);
+  git(work, ['-c', 'commit.gpgSign=false', 'commit', '-q', '-m', 'the commit subject']);
+  tagCmd(work, ['-a', 'v0.0.7', '-m', 'brain-kit 0.0.7: did the thing']);
+  git(work, ['remote', 'add', 'origin', join(base, 'origin.git')]);
+  git(work, ['push', '-q', 'origin', 'main', '--tags']);
+  git(base, ['clone', '-q', 'origin.git', 'clone']);
+  const clone = join(base, 'clone');
+  const info = () => git(clone, ['for-each-ref', 'refs/tags/v0.0.7', '--format=%(objecttype)%09%(contents:subject)']).trim();
+  assert.equal(info(), 'tag\tbrain-kit 0.0.7: did the thing', 'precondition: a clone carries the annotated tag');
+  // What actions/checkout does after the full fetch of the tags.
+  const sha = git(clone, ['rev-parse', 'HEAD']).trim();
+  git(clone, ['tag', '-d', 'v0.0.7']);
+  git(clone, ['fetch', '-q', '--no-tags', 'origin', `+${sha}:refs/tags/v0.0.7`]);
+  assert.equal(info(), 'commit\tthe commit subject', 'the flattening fetch must reproduce the lightweight tag');
+  const flat = rn.checkInputs(inputs({ changelog: changelog({ unreleased: '' }), tag: 'v0.0.7', tagInfo: rn.readTagInfo('v0.0.7', clone) }));
+  assert.deepEqual(ids(flat), ['tag-annotated'], 'the gate refuses the flattened tag');
+  // The workflow step, run as written.
+  const block = runBlocks(WORKFLOW).find((candidate) => candidate.text.includes('git fetch'));
+  const cure = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', block.text], { cwd: clone, encoding: 'utf8', env: { ...CLEAN_ENV, TAG: 'v0.0.7' } });
+  assert.equal(cure.status, 0, cure.stderr);
+  assert.equal(info(), 'tag\tbrain-kit 0.0.7: did the thing', 'the step must restore the annotated tag and its subject');
+  assert.deepEqual(rn.checkInputs(inputs({ changelog: changelog({ unreleased: '' }), tag: 'v0.0.7', tagInfo: rn.readTagInfo('v0.0.7', clone) })), []);
+});
+
 test('the Release workflow: full-history checkout, Node 24, the check before the Release, create with --verify-tag, edit when it exists', () => {
   assert.match(WORKFLOW, /actions\/checkout@v5/);
   assert.match(WORKFLOW, /fetch-depth: 0/);
@@ -785,9 +872,10 @@ test('the Release workflow: full-history checkout, Node 24, the check before the
   const notes = WORKFLOW.indexOf('release-notes.mjs notes');
   const create = WORKFLOW.indexOf('gh release create');
   assert.ok(check >= 0 && notes > check && create > notes, 'order must be check, notes, create');
-  assert.match(WORKFLOW, /gh release create "\$TAG"[^\n]*--verify-tag/);
-  assert.match(WORKFLOW, /gh release edit "\$TAG"/);
-  assert.match(WORKFLOW, /git describe --tags --abbrev=0[^\n]*"\$TAG\^"/);
+  assert.match(WORKFLOW, /gh release create "\$TAG" --title="\$TITLE" --notes-file "\$NOTES" --verify-tag/);
+  assert.match(WORKFLOW, /gh release edit "\$TAG" --title="\$TITLE" --notes-file "\$NOTES" --verify-tag/);
+  // Only a three-part version tag can be the previous one, so `v1` or `v2.0` never reaches --prev.
+  assert.match(WORKFLOW, /git describe --tags --abbrev=0 --match 'v\[0-9\]\*\.\[0-9\]\*\.\[0-9\]\*' "\$TAG\^"/);
   assert.doesNotMatch(WORKFLOW, /gh release upload|upload-artifact/, 'nothing is attached to the Release');
 });
 
@@ -801,9 +889,17 @@ function publishStep() {
   return lines.map((line) => line.slice(indent)).join('\n');
 }
 
-function runPublish({ subject, tag = 'v0.0.7', exists = false }) {
+// `previous` false is the very first release (no earlier tag); `nearerTags`
+// are tags that sit between v0.0.6 and the release and are not versions.
+function runPublish({ subject, tag = 'v0.0.7', exists = false, previous = true, nearerTags = [] }) {
   const root = scratch();
-  tagCmd(root, ['-a', 'v0.0.6', '-m', 'brain-kit 0.0.6: the previous one']);
+  if (previous) tagCmd(root, ['-a', 'v0.0.6', '-m', 'brain-kit 0.0.6: the previous one']);
+  if (nearerTags.length > 0) {
+    write(root, 'middle.txt', 'middle\n');
+    git(root, ['add', 'middle.txt']);
+    git(root, ['-c', 'commit.gpgSign=false', 'commit', '-q', '-m', 'middle']);
+    for (const name of nearerTags) tagCmd(root, ['-a', name, '-m', `not a version: ${name}`]);
+  }
   write(root, 'later.txt', 'later\n');
   git(root, ['add', 'later.txt']);
   git(root, ['-c', 'commit.gpgSign=false', 'commit', '-q', '-m', 'later']);
@@ -843,7 +939,7 @@ test('the publishing step creates the Release with the annotated subject as titl
   assert.equal(calls.length, 2, JSON.stringify(calls));
   assert.deepEqual(calls[0].argv, ['release', 'view', 'v0.0.7']);
   const norm = calls[1].argv.map((arg) => (arg.startsWith(runnerTemp) ? '<notes>' : arg));
-  assert.deepEqual(norm, ['release', 'create', 'v0.0.7', '--title', 'brain-kit 0.0.7: did the thing', '--notes-file', '<notes>', '--verify-tag']);
+  assert.deepEqual(norm, ['release', 'create', 'v0.0.7', '--title=brain-kit 0.0.7: did the thing', '--notes-file', '<notes>', '--verify-tag']);
   assert.equal(calls[1].notes, '- Did the thing.\n\nFull diff: https://github.com/ana/brain-kit/compare/v0.0.6...v0.0.7\n');
 });
 
@@ -852,7 +948,7 @@ test('the publishing step is idempotent: a Release that already exists is edited
   assert.equal(result.status, 0, result.stderr);
   assert.equal(calls.length, 2, JSON.stringify(calls));
   const norm = calls[1].argv.map((arg) => (arg.startsWith(runnerTemp) ? '<notes>' : arg));
-  assert.deepEqual(norm, ['release', 'edit', 'v0.0.7', '--title', 'brain-kit 0.0.7: did the thing', '--notes-file', '<notes>', '--verify-tag']);
+  assert.deepEqual(norm, ['release', 'edit', 'v0.0.7', '--title=brain-kit 0.0.7: did the thing', '--notes-file', '<notes>', '--verify-tag']);
 });
 
 test('the publishing step passes a tag subject full of quotes, substitutions and newlines as data', () => {
@@ -864,7 +960,32 @@ test('the publishing step passes a tag subject full of quotes, substitutions and
   assert.equal(existsSync(canary), false, 'the tag subject was run as a command');
   const expected = `brain-kit 0.0.7: "quoted" 'single' $(touch ${canary}) \`touch ${canary}\` ; touch ${canary} # second line \${HOME} $TAG`;
   const create = calls.find((call) => call.argv[1] === 'create');
-  assert.equal(create.argv[create.argv.indexOf('--title') + 1], expected);
+  assert.equal(create.argv.filter((arg) => arg.startsWith('--title')).join('|'), `--title=${expected}`);
+});
+
+test('the publishing step keeps a subject that starts with a dash inside the --title argument, on create and on edit', () => {
+  const subject = '--notes injected -R other/repo --verify-tag';
+  for (const exists of [false, true]) {
+    const { result, calls } = runPublish({ subject, exists });
+    assert.equal(result.status, 0, result.stderr);
+    const call = calls.find((candidate) => candidate.argv[1] === (exists ? 'edit' : 'create'));
+    assert.equal(call.argv.filter((arg) => arg === '-R' || arg === '--notes' || arg === 'other/repo').length, 0, 'the subject was split into arguments');
+    assert.deepEqual(call.argv.filter((arg) => arg.startsWith('--title')), [`--title=${subject}`]);
+  }
+});
+
+test('the publishing step publishes the very first release: no previous tag, a Release body with no diff line', () => {
+  const { result, calls } = runPublish({ subject: 'brain-kit 0.0.7: the first one', previous: false });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(calls.map((call) => call.argv[1]), ['view', 'create']);
+  assert.equal(calls[1].notes, '- Did the thing.\n');
+  assert.doesNotMatch(calls[1].notes, /Full diff/);
+});
+
+test('the publishing step takes as previous tag only a three-part version tag, never v1 or v2.0 sitting nearer', () => {
+  const { result, calls } = runPublish({ subject: 'brain-kit 0.0.7: x', nearerTags: ['v1', 'v2.0'] });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(calls[1].notes, '- Did the thing.\n\nFull diff: https://github.com/ana/brain-kit/compare/v0.0.6...v0.0.7\n');
 });
 
 test('the publishing step passes a hostile tag name as data too', () => {

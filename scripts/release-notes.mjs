@@ -106,7 +106,9 @@ export function compareSemver(a, b) {
 // Splits a text into lines and marks the ones inside a fenced code block.
 // `fenced` is true for the fence lines themselves too; `delimiter` is true
 // for those, so a caller that reads the code skips the info string.
-function scanLines(text) {
+// `unclosedAt` is the line of a fence still open at the end of the text, or
+// null: everything after such a fence is code, headings included.
+function scanDocument(text) {
   const items = [];
   let open = null;
   text.split(/\r\n|\n/).forEach((raw, index) => {
@@ -120,13 +122,17 @@ function scanLines(text) {
     }
     // A backtick fence whose info string holds a backtick is inline code.
     if (fence !== null && !(fence[1][0] === '`' && fence[2].includes('`'))) {
-      open = { char: fence[1][0], size: fence[1].length };
+      open = { char: fence[1][0], size: fence[1].length, line };
       items.push({ text: raw, line, fenced: true, delimiter: true });
       return;
     }
     items.push({ text: raw, line, fenced: false, delimiter: false });
   });
-  return items;
+  return { items, unclosedAt: open === null ? null : open.line };
+}
+
+function scanLines(text) {
+  return scanDocument(text).items;
 }
 
 function trimBlankEdges(lines) {
@@ -141,11 +147,16 @@ function trimBlankEdges(lines) {
 
 // The level-two headings that name a version or Unreleased, in file order,
 // each with the text up to the next level-one or level-two heading. Any
-// other level-two heading ends a section and is not an entry.
+// other level-two heading ends a section and is not an entry; those are
+// listed apart as `strays`, because a heading that looks like Unreleased but
+// is not hides its entries from every other check. `unclosedAt` is the line
+// of a code fence the text never closes.
 export function parseChangelog(text) {
   const entries = [];
+  const strays = [];
   let current = null;
-  for (const item of scanLines(text)) {
+  const { items, unclosedAt } = scanDocument(text);
+  for (const item of items) {
     if (!item.fenced) {
       const heading = HEADING_RE.exec(item.text.trimEnd());
       if (heading) {
@@ -158,6 +169,8 @@ export function parseChangelog(text) {
           if (current) {
             Object.assign(current, { heading: item.text.trim(), line: item.line, lines: [] });
             entries.push(current);
+          } else {
+            strays.push({ heading: item.text.trim(), line: item.line });
           }
         }
         continue;
@@ -167,6 +180,8 @@ export function parseChangelog(text) {
   }
   return {
     entries: entries.map(({ lines, ...entry }) => ({ ...entry, body: trimBlankEdges(lines).join('\n') })),
+    strays,
+    unclosedAt,
   };
 }
 
@@ -174,7 +189,12 @@ export function checkChangelogSection(text, version) {
   const id = 'changelog-section';
   if (text === null || text === undefined) return [problem(id, 'CHANGELOG.md is missing or unreadable')];
   const heading = `## ${version}`;
-  const hits = parseChangelog(text).entries.filter((entry) => entry.kind === 'version' && entry.version === version);
+  const parsed = parseChangelog(text);
+  // Without this the next message would blame a heading the fence is hiding.
+  if (parsed.unclosedAt !== null) {
+    return [problem(id, `CHANGELOG.md ends inside an unclosed code fence opened at line ${parsed.unclosedAt}; every heading after it is read as code, close the fence`)];
+  }
+  const hits = parsed.entries.filter((entry) => entry.kind === 'version' && entry.version === version);
   if (hits.length === 0) {
     return [problem(id, `CHANGELOG.md has no "${heading}" heading; rename "## Unreleased" to "${heading} (tagged \`v${version}\`, not on npm)" and say in it what was done`)];
   }
@@ -195,12 +215,20 @@ export function checkChangelogOrder(text) {
   const id = 'changelog-order';
   if (text === null || text === undefined) return [];
   const problems = [];
-  const { entries } = parseChangelog(text);
+  const { entries, strays } = parseChangelog(text);
   const unreleased = entries.filter((entry) => entry.kind === 'unreleased');
   if (unreleased.length > 1) {
     problems.push(problem(id, `"## Unreleased" appears ${unreleased.length} times (lines ${unreleased.map((entry) => entry.line).join(', ')}); keep one`));
   }
   const firstVersion = entries.find((entry) => entry.kind === 'version');
+  // Above the first version heading only "## Unreleased" may stand. Anything
+  // else ("## [Unreleased]", "## Unreleased (next)", "## Unreleased:") is no
+  // entry, so what is written under it would pass unreleased-empty.
+  for (const stray of strays) {
+    if (!firstVersion || stray.line < firstVersion.line) {
+      problems.push(problem(id, `${quote(stray.heading)} (line ${stray.line}) sits above the first version heading but is not exactly "## Unreleased"; entries under it would escape the Unreleased check, rename it or move it`));
+    }
+  }
   for (const entry of unreleased) {
     if (firstVersion && entry.line > firstVersion.line) {
       problems.push(problem(id, `"## Unreleased" (line ${entry.line}) sits below "## ${firstVersion.version}" (line ${firstVersion.line}); it belongs above every version heading`));
