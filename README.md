@@ -139,7 +139,7 @@ when it finishes.
    vault). Either tell Claude something new, such as "Capture in the log that I started
    this vault today" (the `capture` skill writes the dated entry), or add it yourself: a
    `## YYYY-MM-DD` heading with today's date, and under it a line that starts with
-   `**Capture**`.
+   `**Capture**` (`**Captura**` in a Portuguese vault).
 10. Open the pull request. The `Stop` hook runs when Claude finishes a reply: it sees the
     changed file and asks Claude to validate, lint and propose it, which the
     `curate-session` skill does too when asked. To do it yourself:
@@ -151,10 +151,16 @@ when it finishes.
     `--only` names exactly the files to propose, and `propose` never moves your branch or
     your working tree. Add `--dry` first to see the plan: it refuses what the real run
     would refuse (no `gh`, not logged in, no `origin`, the default branch not published).
+    Leave the changed file uncommitted until the pull request is merged (step 11):
+    `propose` builds its commit on the side, and committing the same file on your default
+    branch makes `sync` refuse later, saying the branches have diverged.
 11. Merge the pull request on GitHub: your merge is the approval, and the only way the
-    vault changes. Then `brain-kit sync` brings your local branch level with the remote,
-    and `brain-kit verify --pr <number>` stamps `verified` on the notes that pull request
-    changed (the `approve` skill does the same).
+    vault changes. Then `brain-kit sync` replaces the file you left uncommitted with the
+    merged one and brings your local branch level with the remote, and
+    `brain-kit verify --pr <number>` stamps `verified` on the notes that pull request
+    changed (the `approve` skill does the same). The log is not a note, so for this first
+    pull request, which changed only the log, `verify` says there is nothing to stamp and
+    exits 0; that is expected.
 
 From here on, [The scheduled curator](#the-scheduled-curator) feeds the vault from your
 Claude Code sessions without you asking, and [The morning briefing](#the-morning-briefing)

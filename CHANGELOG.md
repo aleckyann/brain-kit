@@ -12,8 +12,10 @@
   notes about people; with `--push` because a repository created without it is empty and
   `propose` cannot work), `brain-kit doctor` and what a healthy result looks like (the
   warnings about the scheduled curator are fine at that point), Claude Code in the vault,
-  one fact in the log, `brain-kit propose "<summary>" --only <path>`, and the merge on
-  GitHub. Three of its commands are the ones `init` prints at its end.
+  one fact in the log (left uncommitted until the pull request is merged, or `sync` later
+  refuses with "diverged"), `brain-kit propose "<summary>" --only <path>`, and the merge on
+  GitHub, after which `verify` says there is nothing to stamp, because the log is not a
+  note. Three of its commands are the ones `init` prints at its end.
 - The READMEs also open with what the kit is, and the phase history that filled their first
   lines moved to the Status section with every fact kept; the Requirements come before the
   install; the commands after the install are written `brain-kit ...`, with one sentence
@@ -31,7 +33,11 @@
   the working tree has uncommitted changes: that is exactly the state of a session that
   edited notes, and the `Stop` hook sends the session to this skill only then. If that is
   the only reason and every file `sync` lists is the session's own, the skill goes on,
-  because `propose` fetches the base itself; any other refusal still stops it.
+  because `propose` fetches the base itself; any other refusal still stops it. If
+  `propose` then refuses because the base moved under the session's files ("These paths are
+  not the same at HEAD as at ..."), the skill stops and leaves the recovery (`git stash`,
+  `sync`, `git stash pop`, `propose` again) to the person, instead of looping between
+  `propose`, which names `sync`, and `sync`, which refuses on the dirty tree.
 - The plugin manifest no longer declares `userConfig.lang`. Nothing read it (the language
   comes from `BRAIN_KIT_LANG`, `LC_ALL`, `LC_MESSAGES` and `LANG`, and a vault's own), yet
   its default was `pt-BR`, its description promised an effect, and installing the plugin
