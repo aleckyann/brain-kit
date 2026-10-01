@@ -87,7 +87,7 @@ const FIRST_RUN = {
     machineCheck: /checks only the machine: Node, git, `gh` and its login, and Claude Code\. All is well when the line that starts with `doctor:` ends with `0 fail`/,
     noVaultMessage: /The message "no brain-kit vault found", which comes right after it, is expected/,
     healthy: /its last line ends with `0 fail`/,
-    handle: /handle/i,
+    handle: /At the "Short id" question \(the one that signs your approvals\)/,
     accept: /accept the suggestion/,
     doctorWords: { used: ['`fail`', '`warn`'], unused: ['`falha`', '`aviso`'] },
     compact: /only the warnings and the failures, with a count of the `ok` lines/,
@@ -147,7 +147,7 @@ const FIRST_RUN = {
     machineCheck: /confere só a máquina: o Node, o git, o `gh` e o login dele, e o Claude Code\. Está tudo certo quando a linha que começa com `doctor:` termina em `0 falha\(s\)`/,
     noVaultMessage: /A mensagem "nenhum vault brain-kit encontrado", que vem logo depois, é esperada/,
     healthy: /a última linha termina em `0 falha\(s\)`/,
-    handle: /Apelido curto/,
+    handle: /Na pergunta "Apelido curto" \(o nome curto que assina as suas aprovações\)/,
     accept: /aceite a sugestão/,
     doctorWords: { used: ['`falha`', '`aviso`'], unused: ['`fail`', '`warn`'] },
     compact: /só os avisos e as falhas, com a contagem das linhas `ok`/,
@@ -597,9 +597,16 @@ for (const [lang, spec] of Object.entries(READMES)) {
   test(`${spec.file}: step 4 says what to answer to the short-id question`, () => {
     const step = items(section(text, spec.first)).find((item) => item.startsWith('4. '));
     assert.ok(step, 'step 4');
-    assert.match(step, run.handle);
+    assert.match(norm(step), run.handle);
     assert.match(norm(step), run.accept);
     assert.match(step, /Enter/);
+    // The README names the question by the words on the screen (the final review of 0.0.9, M6): the
+    // label is the start of the prompt the pack prints, and the old word, "handle", is on no screen.
+    const pack = JSON.parse(read(`lang/${lang}/messages.json`));
+    const label = pack['init.label_handle'];
+    assert.ok(pack['init.ask_handle'].startsWith(label), `the prompt starts with its label: ${label}`);
+    assert.ok(norm(step).includes(`"${label}"`), `step 4 quotes the question as the screen shows it: "${label}"`);
+    if (lang === 'en') assert.doesNotMatch(step, /handle/i, 'no screen says "handle"');
   });
 
   test(`${spec.file}: the doctor step names the lines by the words on the screen, and says how to read the compact output`, () => {

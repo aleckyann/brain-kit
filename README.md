@@ -147,9 +147,9 @@ finishes.
    ```
 
    It asks seven questions, one at a time, and needs a terminal to ask them (if you try to feed
-   it the answers from another command, it refuses and writes nothing). At the question about
-   the handle (the short id that signs your approvals), accept the suggestion: just press
-   Enter. Where there is no terminal, `--from-answers <file>` reads the answers from a JSON
+   it the answers from another command, it refuses and writes nothing). At the "Short id"
+   question (the one that signs your approvals), accept the suggestion: just press Enter.
+   Where there is no terminal, `--from-answers <file>` reads the answers from a JSON
    file and `--yes` takes every default. `init` writes the skeleton and the push gate, runs
    `validate` and `lint` over it (they check that the vault follows the format and is healthy),
    says in a single line that it found nothing, and makes no commit. The repository question
