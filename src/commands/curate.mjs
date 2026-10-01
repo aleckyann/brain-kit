@@ -100,7 +100,7 @@ import { randomBytes } from 'node:crypto';
 import { homedir, constants as osConstants } from 'node:os';
 import { delimiter, join, resolve, sep } from 'node:path';
 import { EXIT } from '../exit-codes.mjs';
-import { CONFIG_FILENAME, ConfigError, loadConfig, loadMachine } from '../config.mjs';
+import { CONFIG_FILENAME, ConfigError, MACHINE_FILENAME, loadConfig, loadMachine } from '../config.mjs';
 import { createTranslator, SUPPORTED_LANGS } from '../lang.mjs';
 import { findVaultRoot } from '../vault.mjs';
 import { ensureStateDir, stateDirFor, STATE_FILES } from '../state.mjs';
@@ -969,7 +969,9 @@ export async function runCurate(argv, io, t, deps = {}) {
     machine = loadMachine(stateDir);
   } catch (error) {
     if (!(error instanceof ConfigError)) throw error;
-    const reason = t('curate.machine_invalid', { detail: error.message });
+    const reason = error.code === 'machine_missing'
+      ? t('curate.machine_missing', { file: join(stateDir, MACHINE_FILENAME) })
+      : t('curate.machine_invalid', { detail: error.message });
     io.stderr.write(`${reason}\n`);
     log('exit', { exit: EXIT.USAGE, reason: 'machine_invalid' });
     if (writesState) {

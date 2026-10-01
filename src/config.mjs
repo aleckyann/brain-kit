@@ -18,11 +18,15 @@ export const MACHINE_ONLY_KEYS = Object.freeze([
   'canonical_path', 'state_dir', 'paths', 'log_retention_days', 'keep_stream', 'briefing_task_id',
 ]);
 
+// `code`, when a caller needs to tell one failure from another to say it in
+// the person's language (a missing machine file is 'machine_missing'); the
+// message stays a diagnostic in English, as every ConfigError's does.
 export class ConfigError extends Error {
-  constructor(message, errors = []) {
+  constructor(message, errors = [], code = null) {
     super(errors.length ? `${message}\n  ${errors.join('\n  ')}` : message);
     this.name = 'ConfigError';
     this.errors = errors;
+    this.code = code;
   }
 }
 
@@ -220,7 +224,7 @@ export function loadConfig(vaultDir) {
 
 export function loadMachine(stateDir) {
   const file = join(stateDir, MACHINE_FILENAME);
-  if (!existsSync(file)) throw new ConfigError(`Machine file not found: ${file} (created by brain-kit init from phase 1 onward)`);
+  if (!existsSync(file)) throw new ConfigError(`Machine file not found: ${file}`, [], 'machine_missing');
   const machine = withoutRetiredPaths(readJson(file));
   const errors = validateMachine(machine);
   if (errors.length) throw new ConfigError(`Invalid ${file}`, errors);

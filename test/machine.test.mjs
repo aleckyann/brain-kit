@@ -192,6 +192,8 @@ test('show in a vault with no machine.json exits 1 and names the file it looked 
   assert.equal(r.stdout, '');
   assert.ok(r.stderr.includes(fx.machineFile), r.stderr);
   assert.match(r.stderr, /machine register --from/);
+  assert.match(r.stderr, /machine register --new/);
+  assert.doesNotMatch(r.stderr, /init --adopt/, 'a configured vault is not told to adopt itself');
 });
 
 test('show of a machine.json the schema rejects prints it and exits 1 with the errors', async () => {
