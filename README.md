@@ -406,7 +406,7 @@ marketplace. Inside a vault:
 
 ## Status
 
-<!-- status-reviewed: 0.0.7 -->
+<!-- status-reviewed: 0.0.8 -->
 
 | Phase | Content | State |
 |---|---|---|
@@ -416,10 +416,10 @@ marketplace. Inside a vault:
 | 3 | Calendar and meeting-notes sources (best effort by design) | done |
 | 4 | Morning briefing | done |
 | 5 | Migration of the original vault onto the kit | in progress. Done: 5a (what a migrating vault needs, since 0.0.2); the vault's scheduled curator moved from its legacy scripts to the kit on 01/10/2026 (a systemd user timer at 09:30 with retries at 14:00 and 20:00, the legacy timer disabled) and its first real rounds were supervised; the model reads a text digest of each transcript (0.0.5); the morning briefing runs as a desktop application task and ran for the first time on 01/10/2026, and since 0.0.6 the curator recognizes its session through the envelope the application wraps around the task's prompt. Open for the exit of the phase: five curator rounds and three briefings without an unexplained failure, the cleanup of the legacy scripts after seven stable days, and the first `verify` on the vault |
-| 6 | 0.1.0 release on npm | planned, not started; it needs `docs/incident-response.md`, `examples/minimal-vault` and a run by an external adopter, none of which exists yet |
+| 6 | 0.1.0 release on npm | in progress. Done: `docs/incident-response.md`, `examples/minimal-vault`, a walkthrough by a stranger on a clean machine (it found the gaps between `init` and the first pull request; 0.0.8 closed them, except a short list of small ones), and a GitHub Release with the CHANGELOG text for every tag. Open: a run by an external adopter (the 0.1.0 criterion: from a clean machine to a validated vault, the plugin installed, the hook active and a first pull request in under 30 minutes), and the exit of Phase 5 |
 | 7 | Other forges, other harnesses, more sources, each only when a second real case needs it | planned |
 
-The latest tag is `v0.0.7`. Every version from 0.0.2 on is a git tag only: the package
+The latest tag is `v0.0.8`. Every version from 0.0.2 on is a git tag only: the package
 `second-brain-kit` on npm still has only 0.0.1, the Phase 0 skeleton.
 
 The kit is under construction. Phase 1 is complete: the validator, the linter, the push
@@ -437,7 +437,7 @@ Phase 5 is in progress: the reference vault this kit was extracted from now runs
 configuration, CI, push gate and Stop hook from the kit, and since 01/10/2026 its
 scheduled curator runs on the kit too (its legacy timer is disabled) and its morning
 briefing runs as a desktop task; what is still open before the phase ends is in the table
-above. The 0.1.0 release on npm is Phase 6, which has not started.
+above. The 0.1.0 release on npm is Phase 6, which is in progress (see its row).
 
 Phase 1 is built in five slices:
 

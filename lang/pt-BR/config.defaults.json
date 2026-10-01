@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/aleckyann/brain-kit/main/schema/config.schema.json",
-  "kit_version": "0.0.7",
+  "kit_version": "0.0.8",
   "lang": "pt-BR",
   "okf_version": "0.2",
   "owner": {

@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.0.8 (tagged `v0.0.8`, not on npm)
+
+A first-time user can now go from a clean machine to a first pull request with what the kit
+prints and the README says. A reviewer who followed only the README on a clean machine found
+the places where the kit's own output misled them (a dry run that promised what the real run
+refused, a doctor that approved a logged-out `gh` and failed a new vault without saying how
+to fix it, a plugin option nothing read, a vault with its configuration that could not be set
+up on a second machine), and this version fixes them. It also adds the incident-response page
+and a small fictional example vault, both kept honest by tests.
 
 - The `SECURITY.md` that `init` writes into every vault now points to `docs/incident-response.md` (by its absolute address, since a vault does not hold the kit's
   docs), in both languages, because that is where the lint finding for a secret and the push

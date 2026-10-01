@@ -418,7 +418,7 @@ A pasta `evals/` traz um caso de `claude plugin eval` por skill e idioma; veja
 
 ## Status
 
-<!-- status-reviewed: 0.0.7 -->
+<!-- status-reviewed: 0.0.8 -->
 
 | Fase | Conteúdo | Estado |
 |---|---|---|
@@ -428,10 +428,10 @@ A pasta `evals/` traz um caso de `claude plugin eval` por skill e idioma; veja
 | 3 | Fontes de agenda e notas de reunião (best effort por desenho) | concluída |
 | 4 | Briefing matinal | concluída |
 | 5 | Migração do vault original para o kit | em andamento. Feito: a 5a (o que um vault em migração precisa, desde a 0.0.2); o curador agendado do vault saiu dos scripts legados para o kit em 01/10/2026 (um timer de usuário do systemd às 09:30 com novas tentativas às 14:00 e às 20:00, o timer legado desativado) e as primeiras rodadas reais foram acompanhadas; o modelo lê um extrato em texto de cada transcript (0.0.5); o briefing matinal roda como tarefa do aplicativo para desktop e rodou pela primeira vez em 01/10/2026, e desde a 0.0.6 o curador reconhece a sessão dele pelo envelope que o aplicativo põe em volta do prompt da tarefa. Falta para a fase terminar: cinco rodadas do curador e três briefings sem falha inexplicada, a limpeza dos scripts legados depois de sete dias estáveis e o primeiro `verify` no vault |
-| 6 | Publicação 0.1.0 no npm | planejada, não começou; precisa de `docs/incident-response.md`, `examples/minimal-vault` e de uma execução por um adotante externo, e nenhum dos três existe ainda |
+| 6 | Publicação 0.1.0 no npm | em andamento. Feito: `docs/incident-response.md`, `examples/minimal-vault`, uma caminhada de um estranho numa máquina limpa (ela achou as lacunas entre o `init` e o primeiro pull request; a 0.0.8 as fechou, menos uma lista curta de pequenas), e uma Release no GitHub com o texto do CHANGELOG para cada tag. Falta: uma execução por um adotante externo (o critério da 0.1.0: de uma máquina limpa a um vault validado, o plugin instalado, o hook ativo e o primeiro pull request em menos de 30 minutos) e a saída da fase 5 |
 | 7 | Outras forjas, outros harnesses, mais fontes, cada um só quando um segundo caso real precisar | planejada |
 
-A tag mais recente é a `v0.0.7`. Toda versão a partir da 0.0.2 é só uma tag do git: o
+A tag mais recente é a `v0.0.8`. Toda versão a partir da 0.0.2 é só uma tag do git: o
 pacote `second-brain-kit` no npm continua com apenas a 0.0.1, o esqueleto da fase 0.
 
 O kit está em construção. A fase 1 está concluída: o validador, o linter, os gates de push,
@@ -450,7 +450,7 @@ está em andamento: o vault de referência de onde este kit saiu já roda a conf
 CI, o gate de push e o hook Stop pelo kit, e, desde 01/10/2026, o curador agendado dele
 também roda pelo kit (o timer legado está desativado) e o briefing matinal dele roda como
 tarefa do aplicativo para desktop; o que ainda falta para a fase terminar está na tabela
-acima. A publicação 0.1.0 no npm é a fase 6, que não começou.
+acima. A publicação 0.1.0 no npm é a fase 6, que está em andamento (veja a linha dela).
 
 A fase 1 é construída em cinco fatias:
 
