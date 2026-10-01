@@ -142,7 +142,8 @@ imprime quando termina.
 9. Escreva um fato no log do vault, `memoria/log.md` (`memory/log.md` num vault em inglês).
    Ou conte algo novo ao Claude, como "Registre no log que comecei este vault hoje" (a
    skill `capture` escreve a entrada datada), ou acrescente você mesmo: um título
-   `## AAAA-MM-DD` com a data de hoje e, embaixo, uma linha que começa com `**Captura**`.
+   `## AAAA-MM-DD` com a data de hoje e, embaixo, uma linha que começa com `**Captura**`
+   (`**Capture**` num vault em inglês).
 10. Abra o pull request. O hook `Stop` roda quando o Claude termina uma resposta: ele vê o
     arquivo alterado e pede ao Claude que valide, rode o lint e proponha, o que a skill
     `curate-session` também faz quando pedida. Para fazer você mesmo:
@@ -154,11 +155,16 @@ imprime quando termina.
     `--only` nomeia exatamente os arquivos a propor, e o `propose` nunca mexe no seu branch
     nem na sua árvore de trabalho. Acrescente `--dry` antes para ver o plano: ele recusa o
     que a execução de verdade recusaria (sem `gh`, sem login, sem `origin`, branch padrão
-    não publicado).
+    não publicado). Deixe o arquivo alterado sem commit até o pull request ser mergeado
+    (passo 11): o `propose` monta o commit dele à parte, e fazer commit do mesmo arquivo no
+    seu branch padrão faz o `sync` recusar depois, dizendo que os branches divergiram.
 11. Faça o merge do pull request no GitHub: o seu merge é a aprovação, e a única forma de
-    o vault mudar. Depois o `brain-kit sync` deixa o seu branch local em dia com o remoto, e
-    o `brain-kit verify --pr <número>` carimba `verified` nas notas que esse pull request
-    alterou (a skill `approve` faz o mesmo).
+    o vault mudar. Depois o `brain-kit sync` troca o arquivo que você deixou sem commit
+    pelo mergeado e deixa o seu branch local em dia com o remoto, e o
+    `brain-kit verify --pr <número>` carimba `verified` nas notas que esse pull request
+    alterou (a skill `approve` faz o mesmo). O log não é uma nota: para este primeiro pull
+    request, que mudou só o log, o `verify` diz que não há nada a carimbar e sai com 0; isso
+    é esperado.
 
 A partir daqui, [O curador agendado](#o-curador-agendado) alimenta o vault com as suas
 sessões do Claude Code sem você pedir, e [O briefing matinal](#o-briefing-matinal) diz

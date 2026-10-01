@@ -173,6 +173,28 @@ for (const [lang, spec] of Object.entries(READMES)) {
     assert.ok(fencedBlocks(works).join('\n').includes('brain-kit init '));
   });
 
+  test(`${spec.file}: step 9 names the log marker of each language, the way the packs define them`, () => {
+    const marker = (code) => JSON.parse(read(`lang/${code}/config.defaults.json`)).taxonomy.log_markers.capture;
+    assert.deepEqual([marker('en'), marker('pt-BR')], ['Capture', 'Captura']);
+    const step = section(text, spec.first).split(/\n(?=\d+\. )/).find((item) => item.startsWith('9. '));
+    assert.ok(step, 'step 9');
+    assert.ok(step.includes('`**Capture**`') && step.includes('`**Captura**`'), 'both markers');
+    assert.ok(step.includes('`memory/log.md`') && step.includes('`memoria/log.md`'), 'both log paths');
+  });
+
+  test(`${spec.file}: the file stays uncommitted until the merge, and the first verify says nothing to stamp`, () => {
+    const steps = section(text, spec.first).split(/\n(?=\d+\. )/);
+    const propose = steps.find((item) => item.startsWith('10. '));
+    const merge = steps.find((item) => item.startsWith('11. '));
+    assert.ok(propose && merge, 'steps 10 and 11');
+    const words = lang === 'en'
+      ? { uncommitted: 'Leave the changed file uncommitted until the pull request is merged (step 11)', diverged: 'diverged', stamp: 'there is nothing to stamp and exits 0' }
+      : { uncommitted: 'Deixe o arquivo alterado sem commit até o pull request ser mergeado (passo 11)', diverged: 'divergiram', stamp: 'não há nada a carimbar e sai com 0' };
+    assert.ok(propose.replace(/\s+/g, ' ').includes(words.uncommitted), 'step 10 says to leave the file uncommitted');
+    assert.ok(propose.includes(words.diverged), 'step 10 says why');
+    assert.ok(merge.replace(/\s+/g, ' ').includes(words.stamp), 'step 11 says verify has nothing to stamp');
+  });
+
   test(`${spec.file}: says how the language is chosen`, () => {
     assert.ok(text.includes('BRAIN_KIT_LANG'));
     assert.ok(text.includes('init --lang'));
@@ -233,12 +255,20 @@ const SKILL_SENTENCES = {
       'every file it lists is one this session wrote or changed',
       '`propose` fetches the base itself',
       'If it refuses for any other reason',
+      'If it refuses with "These paths are not the same at HEAD as at ..."',
+      'the base moved while this session worked: stop, leave the files as they are and tell the person',
+      'The recovery is theirs (`git stash`, then `{{kit}} sync`, then `git stash pop`',
+      'Do not alternate `sync` and `propose`',
     ],
     'pt-BR': [
       'adia (saída 75) quando a árvore de trabalho tem mudanças sem commit',
       'todo arquivo que ele lista é um que esta sessão escreveu ou alterou',
       'o `propose` busca a base sozinho',
       'Se ele recusar por qualquer outro motivo',
+      'Se ele recusar com "Estes caminhos não estão iguais no HEAD e em ..."',
+      'a base andou enquanto esta sessão trabalhava: pare, deixe os arquivos como estão e diga isso à pessoa',
+      'A recuperação é dela (`git stash`, depois `{{kit}} sync`, depois `git stash pop`',
+      'Não alterne `sync` e `propose`',
     ],
   },
 };
@@ -251,6 +281,30 @@ for (const [skill, byLang] of Object.entries(SKILL_SENTENCES)) {
     });
   }
 }
+
+// Measured in a scratch repository: the remote gained a merged commit that touched
+// memory/log.md, the session appended to the same file on a stale HEAD, `sync` exited
+// 75 (dirty tree), `propose --only memory/log.md` exited 1 with propose.base_differs
+// and told the model to run `sync`, which exited 75 again. The skill names the message
+// it must recognise, so the quoted words must be the start of the real one (in the
+// Portuguese skill both: the CLI speaks the environment's language, not the vault's).
+test('the curate-session skill quotes the real start of the propose refusal for a moved base, in each language', () => {
+  const start = (lang, key) => JSON.parse(read(`lang/${lang}/messages.json`))[key];
+  const quoted = {
+    en: ['These paths are not the same at HEAD as at'],
+    'pt-BR': ['Estes caminhos não estão iguais no HEAD e em', 'These paths are not the same at HEAD as at'],
+  };
+  for (const [lang, fragments] of Object.entries(quoted)) {
+    const body = read(`lang/${lang}/skills/curate-session.md`);
+    const step7 = body.split('\n').find((line) => line.startsWith('7. '));
+    assert.ok(step7, `${lang}: step 7`);
+    for (const fragment of fragments) {
+      assert.ok(step7.includes(fragment), `${lang}: step 7 does not quote "${fragment}"`);
+      const owner = fragment.startsWith('These') ? 'en' : 'pt-BR';
+      assert.ok(start(owner, 'propose.base_differs').startsWith(fragment), `${owner}: propose.base_differs no longer starts with "${fragment}"`);
+    }
+  }
+});
 
 test('the setup skill no longer runs the doctor before a vault exists, and still ends with it', () => {
   for (const lang of ['en', 'pt-BR']) {
