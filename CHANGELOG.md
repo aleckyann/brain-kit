@@ -14,6 +14,17 @@
   the same line and exits 0, because a Claude Code hook that fails breaks the session it runs in.
   No old Node was at hand, so the tests make the real launcher believe it runs on Node 22 with a
   preload, and scan the guard for syntax an old Node cannot parse.
+- `brain-kit doctor` now puts what needs attention first, and prints three lines instead of 34
+  when everything is fine (the first reviewer's m9, the second's F12). The default text report is
+  the heading, the lines of the checks that are not `ok` (every warning and every failure, each
+  as it was printed and in the same order), one line saying how many `ok` checks it left out and
+  how to see them ("31 checks ok not listed; use --verbose to list them"), and the summary line.
+  `--verbose` (or `-v`) prints the full list as it always did. `--json` is unchanged and still
+  lists every check, so the tools that read it see no difference, and the exit codes are
+  unchanged. A check that is not `ok` is never left out of the compact report.
+- The `claude-isolation-flags` line of `doctor` no longer names a Claude Code version. It said
+  `--max-turns` is not in the help of "Claude Code 2.1.281" on a machine that had 2.1.286; it now
+  says "the installed version", in both languages (the second reviewer's F18).
 
 ## 0.0.8 (tagged `v0.0.8`, not on npm)
 

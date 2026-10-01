@@ -2,7 +2,7 @@
 // against the vault found from [dir] or the working directory, and
 // reports each one.
 //
-//   brain-kit doctor [dir] [--json] [--only <id,...>] [--probe]
+//   brain-kit doctor [dir] [--json] [--only <id,...>] [--probe] [--verbose | -v]
 //
 // Exit 0 when every check is ok or warn, 1 when any fails, 2 on a usage
 // error or when no vault is found. The report is written in the vault's own
@@ -13,6 +13,17 @@
 // language, the report falls back to the language the CLI's own translator
 // speaks (BRAIN_KIT_LANG, then the locale), which is also the language of
 // every message before a vault is found: the usage errors and "no vault".
+//
+// The text report is compact by default: the heading, the lines of the
+// checks that are not ok (every warning and every failure, each exactly as
+// the full report prints it, in the same order), one line saying how many ok
+// lines were left out and how to see them, and the summary. A healthy run
+// used to print 32 lines of jargon when the one thing a person needs is the
+// last (the first stranger's m9, the second's F12). `--verbose` (`-v`) is
+// the full list, as it always was, and `--json` is the full list in either
+// case: a consumer of the JSON, and the Stop hook and the briefing that read
+// checks, never see less than all of them. A status that is not ok is never
+// left out, whatever it is called.
 //
 // `--only` with an id no check has is a usage error, never a run of the
 // checks that do exist minus the typo: a person who asked for one check
@@ -65,7 +76,7 @@ export function renderMessage(t, messageKey, params = {}) {
 }
 
 function parseArgs(argv) {
-  const result = { dir: undefined, json: false, help: false, only: null, probe: false };
+  const result = { dir: undefined, json: false, help: false, only: null, probe: false, verbose: false };
   const addOnly = (value) => {
     const ids = String(value).split(',').map((id) => id.trim()).filter((id) => id !== '');
     if (ids.length === 0) return false;
@@ -76,6 +87,7 @@ function parseArgs(argv) {
     const arg = argv[i];
     if (arg === '--json') result.json = true;
     else if (arg === '--probe') result.probe = true;
+    else if (arg === '--verbose' || arg === '-v') result.verbose = true;
     else if (arg === '--help' || arg === '-h') result.help = true;
     else if (arg === '--only') {
       if (i + 1 >= argv.length || !addOnly(argv[i + 1])) return { error: 'only_value' };
@@ -184,15 +196,28 @@ export async function runDoctor(argv, io, t, deps = {}) {
     return exitCode;
   }
 
+  io.stdout.write(renderReport(reportT, { heading: reportT('doctor.heading', { vault: root }), results, counts, verbose: parsed.verbose }));
+  return exitCode;
+}
+
+// The human report. The columns are as wide as the widest of ALL the results,
+// listed or not, so a line is the same line in the compact report and in the
+// full one.
+function renderReport(reportT, { heading, results, counts, verbose }) {
   const width = Math.max(...results.map((r) => r.id.length));
   const labels = results.map((r) => statusLabel(reportT, r.status));
   const labelWidth = Math.max(...labels.map((label) => label.length));
-  let text = `${reportT('doctor.heading', { vault: root })}\n`;
+  let text = `${heading}\n`;
+  let left = 0;
   results.forEach((result, index) => {
+    if (!verbose && result.status === 'ok') {
+      left += 1;
+      return;
+    }
     const line = renderMessage(reportT, result.messageKey, result.params);
     text += `  ${labels[index].padEnd(labelWidth)}  ${result.id.padEnd(width)}  ${line}\n`;
   });
+  if (left > 0) text += `${reportT(left === 1 ? 'doctor.ok_hidden_one' : 'doctor.ok_hidden', { count: left })}\n`;
   text += `${reportT('doctor.summary', { ok: counts.ok, warn: counts.warn, fail: counts.fail })}\n`;
-  io.stdout.write(text);
-  return exitCode;
+  return text;
 }

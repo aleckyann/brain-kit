@@ -1888,10 +1888,10 @@ test('--json prints one parseable object on one line, carrying each check\'s mes
   assert.equal(report.exitCode, code);
 });
 
-test('the human report names every check, its status and message, and a summary line', async () => {
+test('the full human report (--verbose) names every check, its status and message, and a summary line', async () => {
   const fx = setup({ tools: { gh: 'absent' } });
   const f = fakeIo();
-  const code = await runDoctor([fx.root], f.io, t, { env: fx.env, cwd: fx.root, nodeVersion: '24.1.0' });
+  const code = await runDoctor([fx.root, '--verbose'], f.io, t, { env: fx.env, cwd: fx.root, nodeVersion: '24.1.0' });
   assert.equal(code, EXIT.OK);
   const out = f.stdout();
   assert.ok(out.includes(fx.root));
@@ -1901,11 +1901,132 @@ test('the human report names every check, its status and message, and a summary 
   assert.match(out, new RegExp(`${CHECK_IDS.length} ok, 1 warn, 0 fail`));
 });
 
+// --- the compact report (the first stranger's m9, the second's F12) ----------------
+//
+// A healthy run used to print 32 lines of jargon (core.hooksPath, 0700,
+// paths.legacy_lock, --max-turns) when the one thing a person needs is the
+// last line. The default now lists only what is not ok, then says how many
+// ok lines it left out and how to see them; --verbose (-v) is the full list;
+// --json is untouched.
+
+const lines = (out) => out.trimEnd().split('\n');
+const OK_LINE = /^ {2}ok +[a-z][a-z-]* {2}/;
+
+async function textReport(fx, argv = [], translator = t, extra = {}) {
+  const f = fakeIo();
+  const code = await runDoctor([fx.root, ...argv], f.io, translator, { env: fx.env, cwd: fx.root, ...extra });
+  return { code, out: f.stdout(), err: f.stderr(), lines: lines(f.stdout()) };
+}
+
+test('compact (the default): a ready vault prints the heading, one hint line with the count left out, and the summary', async () => {
+  const fx = setup();
+  const total = (await doctor(fx)).report.counts.ok;
+  assert.equal(total, CHECK_IDS.length + 1, 'every check ok in the fixture');
+  const r = await textReport(fx);
+  assert.equal(r.code, EXIT.OK);
+  assert.deepEqual(r.lines, [
+    `brain-kit doctor: ${fx.root}`,
+    `${total} checks ok not listed; use --verbose to list them`,
+    `doctor: ${total} ok, 0 warn, 0 fail`,
+  ]);
+  assert.equal(r.err, '');
+});
+
+test('compact: every warning and every failure is listed, exactly as the full report prints it and in the same order, and nothing else is', async () => {
+  const fx = setup({ tools: { gh: 'loggedOut', claude: 'absent' }, hook: 'absent' });
+  const json = (await doctor(fx)).report;
+  const bad = json.checks.filter((c) => c.status !== 'ok');
+  assert.ok(bad.some((c) => c.status === 'fail') && bad.some((c) => c.status === 'warn'), `the fixture must have both: ${bad.map((c) => `${c.status} ${c.id}`)}`);
+  const compact = await textReport(fx);
+  const full = await textReport(fx, ['--verbose']);
+  assert.equal(compact.code, EXIT.FAILURE);
+  assert.equal(full.code, EXIT.FAILURE);
+  const body = full.lines.slice(1, -1).filter((line) => !OK_LINE.test(line));
+  assert.equal(body.length, bad.length, 'one line per warning or failure');
+  assert.deepEqual(compact.lines, [
+    full.lines[0],
+    ...body,
+    `${json.counts.ok} checks ok not listed; use --verbose to list them`,
+    full.lines.at(-1),
+  ]);
+  // None of the hidden lines is anything but ok, and each id that is not ok is on screen.
+  for (const c of bad) assert.match(compact.out, new RegExp(`${c.status}\\s+${c.id}\\s`), `${c.status} ${c.id}`);
+  for (const c of json.checks.filter((entry) => entry.status === 'ok')) assert.doesNotMatch(compact.out, new RegExp(`\\bok\\s+${c.id}\\s`), c.id);
+});
+
+test('compact: a failure alone is shown, with the hint counting only what it left out', async () => {
+  const fx = setup({ hook: 'absent' });
+  const r = await textReport(fx, ['--only', 'hooks-path,git-present,node-version']);
+  assert.equal(r.code, EXIT.FAILURE);
+  assert.equal(r.lines.length, 4, r.out);
+  assert.match(r.lines[1], /^ {2}fail +hooks-path {2}/);
+  assert.equal(r.lines[2], '2 checks ok not listed; use --verbose to list them');
+  assert.equal(r.lines[3], 'doctor: 2 ok, 0 warn, 1 fail');
+});
+
+test('compact: one check left out is said in the singular, and with nothing left out there is no hint at all', async () => {
+  const fx = setup({ hook: 'absent' });
+  const one = await textReport(fx, ['--only', 'hooks-path,git-present']);
+  assert.equal(one.lines[2], '1 check ok not listed; use --verbose to list it');
+  const none = await textReport(fx, ['--only', 'hooks-path']);
+  assert.equal(none.lines.length, 3, none.out);
+  assert.match(none.lines[1], /^ {2}fail +hooks-path {2}/);
+  assert.doesNotMatch(none.out, /not listed|verbose/);
+});
+
+test('--verbose and -v print the full list exactly as before: every check, in table order, with no hint line', async () => {
+  const fx = setup({ tools: { gh: 'absent' } });
+  const verbose = await textReport(fx, ['--verbose']);
+  const short = await textReport(fx, ['-v']);
+  assert.equal(short.out, verbose.out);
+  assert.equal(verbose.code, EXIT.OK);
+  const json = (await doctor(fx)).report;
+  assert.equal(verbose.lines.length, json.checks.length + 2, 'the heading, one line per result, the summary');
+  assert.doesNotMatch(verbose.out, /not listed/);
+  const ids = verbose.lines.slice(1, -1).map((line) => /^ {2}\S+ +(\S+) {2}/.exec(line)[1]);
+  assert.deepEqual(ids, json.checks.map((c) => c.id));
+  // The order of the options does not matter, and --only works with it.
+  assert.equal((await textReport(fx, ['--only', 'git-present', '--verbose'])).lines.length, 3);
+  assert.match((await textReport(fx, ['-v', '--only', 'git-present'])).lines[1], /^ {2}ok +git-present {2}git \d/);
+});
+
+test('--json is the full list whatever the text report shows, and --verbose does not change it', async () => {
+  const fx = setup({ tools: { gh: 'absent' } });
+  const plain = await doctor(fx);
+  const verbose = await doctor(fx, ['--verbose']);
+  assert.deepEqual(verbose.report, plain.report);
+  assert.equal(plain.report.checks.length, CHECK_IDS.length + 1);
+  assert.equal(plain.report.checks.filter((c) => c.status === 'ok').length, plain.report.counts.ok);
+  assert.ok(plain.report.counts.ok > 25);
+  assert.doesNotMatch(plain.stdout, /not listed/);
+});
+
+test('compact in Portuguese: the hint is in the report\'s language, in the plural and in the singular', async () => {
+  const fx = setup({ config: { ...baseConfig(), lang: 'pt-BR' } });
+  const many = await textReport(fx, [], t);
+  const total = (await doctor(fx)).report.counts.ok;
+  assert.equal(many.lines[1], `${total} verifica${String.fromCharCode(0xe7, 0xf5)}es ok n${String.fromCharCode(0xe3)}o listadas; use --verbose para list${String.fromCharCode(0xe1)}-las`);
+  const one = await textReport(fx, ['--only', 'git-present'], t);
+  assert.equal(one.lines[1], `1 verifica${String.fromCharCode(0xe7, 0xe3)}o ok n${String.fromCharCode(0xe3)}o listada; use --verbose para list${String.fromCharCode(0xe1)}-la`);
+  assert.equal(one.lines.at(-1), 'doctor: 1 ok, 0 aviso(s), 0 falha(s)');
+  assert.doesNotMatch(many.out, /\{[a-z_]+\}/);
+});
+
+test('the usage line names --verbose, in both languages', async () => {
+  for (const lang of ['en', 'pt-BR']) {
+    const f = fakeIo();
+    const code = await runDoctor(['--help'], f.io, createTranslator(lang), {});
+    assert.equal(code, EXIT.OK);
+    assert.match(f.stdout(), /\[--verbose \| -v\]/, lang);
+    assert.match(f.stdout(), /\[--only <id,\.\.\.>\] \[--probe\]/, `${lang}: the options it had are still there`);
+  }
+});
+
 test('the Portuguese pack renders the report', async () => {
   const fx = setup();
   const f = fakeIo();
   setVaultLang(fx, 'pt-BR');
-  await runDoctor([fx.root, '--only', 'gitignore-node-modules'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
+  await runDoctor([fx.root, '--only', 'gitignore-node-modules', '--verbose'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
   assert.match(f.stdout(), /node_modules\//);
   assert.match(f.stdout(), /0 aviso\(s\), 0 falha\(s\)/);
   assert.doesNotMatch(f.stdout(), /\{[a-z_]+\}/);
@@ -2136,6 +2257,24 @@ test('claude-isolation-flags: --max-turns, hidden from the help of 2.1.281 and m
   assert.deepEqual(failed.params.missing, ['--setting-sources']);
 });
 
+// The second stranger's F18 (01/10/2026): the message said --max-turns is not in
+// the help of "Claude Code 2.1.281" on a machine that had 2.1.286, a version
+// written into a sentence that is about whatever is installed. It names no
+// version now, in either language.
+test('claude-isolation-flags: the ok message says "the installed version", never a Claude Code version number, in both languages', async () => {
+  const fx = withClaude(setup(), claudeScript({ help: roundFlags().filter((f) => f !== '--max-turns') }));
+  const { report } = await doctor(fx, ['--only', 'claude-isolation-flags']);
+  const c = assertCheck(report, 'claude-isolation-flags', 'ok', 'doctor.claude_isolation_flags.ok');
+  assert.doesNotMatch(c.message, /\d+\.\d+\.\d+/);
+  assert.match(c.message, /not in the help of the installed version/);
+  for (const lang of ['en', 'pt-BR']) {
+    const rendered = renderMessage(createTranslator(lang), c.messageKey, c.params);
+    assert.doesNotMatch(rendered, /\d+\.\d+\.\d+/, lang);
+    assert.match(rendered, /--max-turns/, lang);
+  }
+  assert.match(renderMessage(createTranslator('pt-BR'), c.messageKey, c.params), /na ajuda da versão instalada/);
+});
+
 test('claude-isolation-flags: a CLI whose --help lacks --disable-slash-commands or --tools fails naming it; --max-turns stays exempt', async () => {
   for (const flag of ['--disable-slash-commands', '--tools']) {
     const fx = withClaude(setup(), claudeScript({ help: roundFlags().filter((f) => f !== flag && f !== '--max-turns') }));
@@ -2275,7 +2414,7 @@ test('include-projects: the empty list in Portuguese carries the same edit, "all
   const fx = setup({ config: configWith((c) => { c.sources.transcripts.include_projects = []; }) });
   const f = fakeIo();
   setVaultLang(fx, 'pt-BR');
-  await runDoctor([fx.root, '--only', 'include-projects'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
+  await runDoctor([fx.root, '--only', 'include-projects', '--verbose'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
   assert.ok(f.stdout().includes(`["${ownProject(fx)}"]`), f.stdout());
   assert.match(f.stdout(), /"all"/);
   assert.match(f.stdout(), /docs\/scheduling\.md/);
@@ -2384,7 +2523,7 @@ test('include-projects: the note is in Portuguese too, and says a round has noth
   const fx = listProjects(setup(), (own) => [own]);
   const f = fakeIo();
   setVaultLang(fx, 'pt-BR');
-  await runDoctor([fx.root, '--only', 'include-projects'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
+  await runDoctor([fx.root, '--only', 'include-projects', '--verbose'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
   assert.match(f.stdout(), /ok\s+include-projects\s+.*ainda sem sessões/);
   assert.doesNotMatch(f.stdout(), /\{[a-z_]+\}/);
 });
@@ -2407,7 +2546,7 @@ test('include-projects: "all" passes saying how many projects it reads today, th
   assert.equal(assertCheck((await doctor(fx, ['--only', 'include-projects'])).report, 'include-projects', 'ok', 'doctor.include_projects.all').params.count, 3);
   const f = fakeIo();
   setVaultLang(fx, 'pt-BR');
-  await runDoctor([fx.root, '--only', 'include-projects'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
+  await runDoctor([fx.root, '--only', 'include-projects', '--verbose'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
   assert.match(f.stdout(), /all \(3 projeto\(s\) hoje\) em /);
 });
 
@@ -2897,7 +3036,7 @@ test('cost-cap: the Portuguese pack says each case, no cap for null, with nothin
   const said = async () => {
     const f = fakeIo();
     setVaultLang(fx, 'pt-BR');
-    await runDoctor([fx.root, '--only', 'cost-cap'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
+    await runDoctor([fx.root, '--only', 'cost-cap', '--verbose'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
     assert.doesNotMatch(f.stdout(), /\{[a-z_]+\}|\[object Object\]/);
     return f.stdout();
   };
@@ -2992,7 +3131,7 @@ test('turn-cap and time-cap: curate.enabled false passes saying so; the Portugue
   const said = async () => {
     const f = fakeIo();
     setVaultLang(fx, 'pt-BR');
-    await runDoctor([fx.root, '--only', 'turn-cap,time-cap'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
+    await runDoctor([fx.root, '--only', 'turn-cap,time-cap', '--verbose'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
     assert.doesNotMatch(f.stdout(), /\{[a-z_]+\}|\[object Object\]/);
     return f.stdout();
   };
@@ -3185,7 +3324,7 @@ test('connectors: the old consent flag is superseded by team_authorization: a wa
   assert.equal(lineFor(r.report, 'calendar', 'doctor.connectors.team_authorization').status, 'fail', 'the old flag authorises nothing');
   const f = fakeIo();
   setVaultLang(trusting, 'pt-BR');
-  await runDoctor([trusting.root, '--only', 'connectors'], f.io, createTranslator('pt-BR'), { env: trusting.env, cwd: trusting.root });
+  await runDoctor([trusting.root, '--only', 'connectors', '--verbose'], f.io, createTranslator('pt-BR'), { env: trusting.env, cwd: trusting.root });
   assert.match(f.stdout(), /sources\.calendar\.team_calendars_consent_noted não é mais lido: sources\.calendar\.team_authorization o substituiu/);
 });
 
@@ -3235,7 +3374,7 @@ test('connectors: team calendars without a recorded authorization fail, naming s
   assert.equal(connectorLines((await doctor(alone, ['--only', 'connectors'])).report).some((line) => line.messageKey === 'doctor.connectors.team_authorization'), false);
   const f = fakeIo();
   setVaultLang(fx, 'pt-BR');
-  await runDoctor([fx.root, '--only', 'connectors'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
+  await runDoctor([fx.root, '--only', 'connectors', '--verbose'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
   assert.match(f.stdout(), /Ele não está definido\. Enquanto sources\.calendar\.team_authorization em brain-kit\.config\.json não registrar isso, toda rodada deixa essas agendas de fora e continua lendo as do dono\./);
 });
 
@@ -3273,7 +3412,7 @@ test('connectors: every calendar listed in both lists is named: someone else\'s 
   assert.equal(connectorLines((await doctor(clean, ['--only', 'connectors'])).report).some((line) => line.messageKey.startsWith('doctor.connectors.listed_twice')), false);
   const f = fakeIo();
   setVaultLang(mine, 'pt-BR');
-  await runDoctor([mine.root, '--only', 'connectors'], f.io, createTranslator('pt-BR'), { env: mine.env, cwd: mine.root });
+  await runDoctor([mine.root, '--only', 'connectors', '--verbose'], f.io, createTranslator('pt-BR'), { env: mine.env, cwd: mine.root });
   assert.match(f.stdout(), /ana@example\.com está em sources\.calendar\.calendars e em sources\.calendar\.team_calendars; é a agenda do próprio dono/);
 });
 
@@ -3294,7 +3433,7 @@ test('connectors: the Portuguese pack renders every connector line with nothing 
   writeRoundWith(fx, { at, connectorStates: { calendar: { state: 'connected', at }, meeting_notes: { state: 'needs_auth', at } } });
   const f = fakeIo();
   setVaultLang(fx, 'pt-BR');
-  await runDoctor([fx.root, '--only', 'connectors'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
+  await runDoctor([fx.root, '--only', 'connectors', '--verbose'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
   assert.match(f.stdout(), /conectado na rodada de/);
   assert.match(f.stdout(), /needs_auth na rodada de/);
   assert.doesNotMatch(f.stdout(), /\{[a-z_]+\}|\[object Object\]/);
