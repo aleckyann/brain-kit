@@ -146,8 +146,8 @@ silently"). A literal holding a backslash turns the source off, because how the 
 language escapes one is not measured.
 
 **Checking.** `brain-kit curate --dry` shows the launch mode and each source's days;
-`brain-kit doctor` says why a source is off and what the last round saw; `brain-kit doctor
---probe` asks the CLI for each connector's state now (see the last section).
+`brain-kit doctor --only connectors` says why a source is off and what the last round saw,
+and adding `--probe` asks the CLI for each connector's state now (see the last section).
 
 **A vault made before these sources existed.** `init` used to write your e-mail address into
 `sources.calendar.calendars`, with no `enabled` key. Such a vault keeps the calendar off
@@ -376,15 +376,15 @@ comes back, and never again while the state stays the same. `pending` is never a
 The session's status line (the plugin's SessionStart hook) names each connector source that
 was not connected in the last round, with the date of that round.
 
-**`brain-kit doctor`**, check `connectors`, says for each connector source listed: that it
-is off, and why when it is half configured; the state the last round saw, with that round's
-date; the prefix the tools were seen under, when it is not the configured one, naming both
-and the setting; other people's calendars listed while no authorization records anything,
-a failure, and the superseded `team_calendars_consent_noted`, a warning; every user
-rule that refuses connector mode, with its file; and that the meeting notes wait for the
-calendar (`waiting_for_calendar`) when the calendar's last state, or a user rule, keeps it
-from being read. A state other than `connected` is a
-warning, and a failure only for a source in `curate.sources.required`.
+**`brain-kit doctor --only connectors`**, the check `connectors`, says for each connector
+source listed: that it is off, and why when it is half configured; the state the last round
+saw, with that round's date; the prefix the tools were seen under, when it is not the
+configured one, naming both and the setting; other people's calendars listed while no
+authorization records anything, a failure, and the superseded
+`team_calendars_consent_noted`, a warning; every user rule that refuses connector mode, with
+its file; and that the meeting notes wait for the calendar (`waiting_for_calendar`) when the
+calendar's last state, or a user rule, keeps it from being read. A state other than
+`connected` is a warning, and a failure only for a source in `curate.sources.required`.
 
 **`brain-kit doctor --probe`** asks the CLI now, without a round. It launches the round's own
 connector mode (the same flags, the same allow and deny lists, your user rules mirrored the
@@ -393,7 +393,8 @@ first event, before any model call, and reports each connector's state from that
 also reports anything in that event that would stop every connector-mode round: a hook, a
 built-in tool beyond the pinned set, a memory folder. It writes nothing: no
 `last-run.json`, no log, no mark. When your rules refuse connector mode it launches
-nothing, as a round would not.
+nothing, as a round would not. Name the check, as below, to see a line for each connector,
+connected or not: the default report leaves out the lines that are fine.
 
 ```bash
 brain-kit doctor --only connectors --probe

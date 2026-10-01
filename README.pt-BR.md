@@ -409,11 +409,12 @@ desde a fase 3, se o lint tem palavras-chave de privacidade para recusar nas lin
 acrescentadas, tudo o que uma rodada pode alcançar além do vault, e cada fonte por
 conector: desligada ou ligada, o estado que a última rodada viu com a data dela, um
 prefixo de ferramenta que não confere, agendas de outras pessoas sem o consentimento
-registrado, e uma regra de usuário que recusa o modo com conectores. O `doctor --probe`
-pergunta agora à CLI o estado de cada conector, sem rodada. Desde a fase 4 ele confere
-também o briefing matinal: as assinaturas, os blocos, a fila de perguntas e a tarefa no
-aplicativo para desktop. Cada falha nomeia o comando que a corrige. Por padrão a saída mostra só os
-avisos e as falhas, com a contagem das linhas `ok`; `--verbose` lista todas.
+registrado, e uma regra de usuário que recusa o modo com conectores. O
+`doctor --only connectors --probe` pergunta agora à CLI o estado de cada conector, sem
+rodada. Desde a fase 4 ele confere também o briefing matinal: as assinaturas, os blocos, a
+fila de perguntas e a tarefa no aplicativo para desktop. Cada falha nomeia o comando que a
+corrige. Por padrão a saída mostra só os avisos e as falhas, com a contagem das linhas `ok`;
+`--verbose` lista todas, e o `--only <id,...>` também lista as verificações que nomeia.
 
 O `validate` confere o vault contra o OKF v0.2 e reporta duas réguas separadas: a
 conformidade do próprio formato e as regras da casa do vault, que são mais estritas de

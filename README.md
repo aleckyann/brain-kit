@@ -405,11 +405,12 @@ whether a failed round reaches you or only the log; and, since phase 3, whether 
 privacy keywords to refuse on added lines, anything a round may reach beyond the vault,
 and each connector source: off or on, the state the last round saw with its date, a tool
 prefix that does not match, other people's calendars without recorded consent, and a
-user rule that refuses connector mode. `doctor --probe` asks the CLI for each connector's
-state now, without a round. Since phase 4 it also checks the morning briefing: its
-signatures, its blocks, its question queue and its desktop task. Each failure names the
-command that fixes it. By default the output shows only the warnings and the failures, with a
-count of the `ok` lines; `--verbose` lists them all.
+user rule that refuses connector mode. `doctor --only connectors --probe` asks the CLI for
+each connector's state now, without a round. Since phase 4 it also checks the morning
+briefing: its signatures, its blocks, its question queue and its desktop task. Each failure
+names the command that fixes it. By default the output shows only the warnings and the
+failures, with a count of the `ok` lines; `--verbose` lists them all, and so does
+`--only <id,...>` for the checks it names.
 
 `validate` checks the vault against OKF v0.2 and reports two rulers apart: the format's
 own conformance, and the vault's house rules, which are stricter on purpose. A vault can

@@ -2032,22 +2032,109 @@ test('compact: every warning and every failure is listed, exactly as the full re
 
 test('compact: a failure alone is shown, with the hint counting only what it left out', async () => {
   const fx = setup({ hook: 'absent' });
-  const r = await textReport(fx, ['--only', 'hooks-path,git-present,node-version']);
+  const json = (await doctor(fx)).report;
+  assert.deepEqual(json.checks.filter((c) => c.status !== 'ok').map((c) => `${c.status} ${c.id}`), ['fail hooks-path'], 'the fixture has this one failure and nothing else');
+  const r = await textReport(fx);
   assert.equal(r.code, EXIT.FAILURE);
   assert.equal(r.lines.length, 4, r.out);
   assert.match(r.lines[1], /^ {2}fail +hooks-path {2}/);
-  assert.equal(r.lines[2], '2 checks ok not listed; use --verbose to list them');
-  assert.equal(r.lines[3], 'doctor: 2 ok, 0 warn, 1 fail');
+  assert.equal(r.lines[2], `${json.counts.ok} checks ok not listed; use --verbose to list them`);
+  assert.equal(r.lines[3], `doctor: ${json.counts.ok} ok, 0 warn, 1 fail`);
 });
 
-test('compact: one check left out is said in the singular, and with nothing left out there is no hint at all', async () => {
+// --- --only names the checks, so the text report lists them (the final review of 0.0.9, M1) ---
+//
+// The compact report leaves the ok lines out, and it left out the line of a check the
+// person had asked for by name: `brain-kit doctor --only time-cap` on a healthy vault
+// printed "1 check ok not listed; use --verbose to list it" and nothing of the line
+// asked for. A run that names its checks lists every one of them, ok or not, as
+// --verbose does. The compact report is for a run that asks for no check in particular,
+// and --json always lists everything.
+
+test('--only lists every check it names, ok or not: time-cap on a ready vault prints its line, the same report as with --verbose, and no "not listed"', async () => {
+  const fx = setup();
+  const named = await textReport(fx, ['--only', 'time-cap']);
+  const full = await textReport(fx, ['--only', 'time-cap', '--verbose']);
+  assert.equal(named.code, EXIT.OK);
+  assert.equal(named.err, '');
+  assert.equal(named.lines.length, 3, named.out);
+  assert.equal(named.lines[0], `brain-kit doctor: ${fx.root}`);
+  assert.match(named.lines[1], /^ {2}ok +time-cap +no time limit: /);
+  assert.equal(named.lines[2], 'doctor: 1 ok, 0 warn, 0 fail');
+  assert.doesNotMatch(named.out, /not listed|--verbose/);
+  assert.equal(named.out, full.out);
+});
+
+test('--only connectors lists one line per connector source, both ok here, and says nothing about lines left out', async () => {
+  const fx = setup();
+  const r = await textReport(fx, ['--only', 'connectors']);
+  assert.equal(r.code, EXIT.OK);
+  assert.equal(r.lines.length, 4, r.out);
+  assert.match(r.lines[1], /^ {2}ok +connectors +calendar is off /);
+  assert.match(r.lines[2], /^ {2}ok +connectors +meeting_notes is off /);
+  assert.equal(r.lines[3], 'doctor: 2 ok, 0 warn, 0 fail');
+  assert.doesNotMatch(r.out, /not listed|--verbose/);
+});
+
+test('--only lists the checks it names in table order, a failure among the ok ones where the table puts it, and no hint', async () => {
   const fx = setup({ hook: 'absent' });
-  const one = await textReport(fx, ['--only', 'hooks-path,git-present']);
-  assert.equal(one.lines[2], '1 check ok not listed; use --verbose to list it');
-  const none = await textReport(fx, ['--only', 'hooks-path']);
-  assert.equal(none.lines.length, 3, none.out);
-  assert.match(none.lines[1], /^ {2}fail +hooks-path {2}/);
-  assert.doesNotMatch(none.out, /not listed|verbose/);
+  const r = await textReport(fx, ['--only', 'hooks-path,git-present,node-version']);
+  assert.equal(r.code, EXIT.FAILURE);
+  assert.equal(r.lines.length, 5, r.out);
+  assert.match(r.lines[1], /^ {2}ok +node-version +Node /);
+  assert.match(r.lines[2], /^ {2}ok +git-present +git /);
+  assert.match(r.lines[3], /^ {2}fail +hooks-path +/);
+  assert.equal(r.lines[4], 'doctor: 2 ok, 0 warn, 1 fail');
+  assert.doesNotMatch(r.out, /not listed|--verbose/);
+});
+
+test('--only lists the same way in its other spellings: --only=ids, a repeated --only, and the option before the directory', async () => {
+  const fx = setup();
+  const expected = (await textReport(fx, ['--only', 'git-present,time-cap'])).out;
+  assert.match(expected, /ok +git-present +git [\s\S]*ok +time-cap +no time limit/);
+  assert.doesNotMatch(expected, /not listed/);
+  for (const argv of [['--only=git-present,time-cap'], ['--only', 'time-cap', '--only', 'git-present'], ['--only=time-cap', '--only=git-present']]) {
+    assert.equal((await textReport(fx, argv)).out, expected, argv.join(' '));
+  }
+  const f = fakeIo();
+  await runDoctor(['--only', 'git-present,time-cap', fx.root], f.io, t, { env: fx.env, cwd: fx.base });
+  assert.equal(f.stdout(), expected);
+});
+
+test('without --only the same vault is still compact: the ok line --only listed is the one the default report leaves out', async () => {
+  const fx = setup();
+  const total = (await doctor(fx)).report.counts.ok;
+  const plain = await textReport(fx);
+  assert.deepEqual(plain.lines, [`brain-kit doctor: ${fx.root}`, `${total} checks ok not listed; use --verbose to list them`, `doctor: ${total} ok, 0 warn, 0 fail`]);
+  assert.doesNotMatch(plain.out, /time-cap/);
+  assert.match((await textReport(fx, ['--only', 'time-cap'])).out, /time-cap/);
+});
+
+test('--json is the same with and without --only naming a check: always the full list of what ran', async () => {
+  const fx = setup();
+  const named = await doctor(fx, ['--only', 'time-cap']);
+  assert.deepEqual(named.report.checks.map((c) => c.id), ['time-cap']);
+  assert.deepEqual(named.report.counts, { ok: 1, warn: 0, fail: 0 });
+  assert.doesNotMatch(named.stdout, /not listed/);
+});
+
+test('--only in Portuguese lists the line too, in the vault\'s language, with no hint', async () => {
+  const fx = setup({ config: { ...baseConfig(), lang: 'pt-BR' } });
+  const r = await textReport(fx, ['--only', 'time-cap'], t);
+  assert.equal(r.lines.length, 3, r.out);
+  assert.match(r.lines[1], /^ {2}ok +time-cap +sem limite de tempo: /);
+  assert.equal(r.lines[2], 'doctor: 1 ok, 0 aviso(s), 0 falha(s)');
+  assert.doesNotMatch(r.out, /listad/);
+});
+
+test('the real binary lists the check --only names, in a vault, and prints the hint only for a run that names none', () => {
+  const fx = setup();
+  const run = (...argv) => spawnSync(process.execPath, [BIN, 'doctor', fx.root, ...argv], { cwd: fx.base, encoding: 'utf8', env: { ...fx.env, BRAIN_KIT_LANG: 'en' } });
+  const named = run('--only', 'time-cap');
+  assert.equal(named.status, EXIT.OK, named.stdout + named.stderr);
+  assert.match(named.stdout, /\n {2}ok +time-cap +no time limit: /);
+  assert.doesNotMatch(named.stdout, /not listed/);
+  assert.match(run().stdout, /\d+ checks ok not listed; use --verbose to list them\n/);
 });
 
 test('--verbose and -v print the full list exactly as before: every check, in table order, with no hint line', async () => {
@@ -2077,14 +2164,11 @@ test('--json is the full list whatever the text report shows, and --verbose does
   assert.doesNotMatch(plain.stdout, /not listed/);
 });
 
-test('compact in Portuguese: the hint is in the report\'s language, in the plural and in the singular', async () => {
+test('compact in Portuguese: the hint is in the report\'s language (the singular is held outside a vault, where one check can be the only one left out)', async () => {
   const fx = setup({ config: { ...baseConfig(), lang: 'pt-BR' } });
   const many = await textReport(fx, [], t);
   const total = (await doctor(fx)).report.counts.ok;
   assert.equal(many.lines[1], `${total} verifica${String.fromCharCode(0xe7, 0xf5)}es ok n${String.fromCharCode(0xe3)}o listadas; use --verbose para list${String.fromCharCode(0xe1)}-las`);
-  const one = await textReport(fx, ['--only', 'git-present'], t);
-  assert.equal(one.lines[1], `1 verifica${String.fromCharCode(0xe7, 0xe3)}o ok n${String.fromCharCode(0xe3)}o listada; use --verbose para list${String.fromCharCode(0xe1)}-la`);
-  assert.equal(one.lines.at(-1), 'doctor: 1 ok, 0 aviso(s), 0 falha(s)');
   assert.doesNotMatch(many.out, /\{[a-z_]+\}/);
 });
 
@@ -2254,6 +2338,84 @@ test('outside any vault the report is compact by default, as inside one: the hea
   assert.equal(b.lines[2], '6 checks ok not listed; use --verbose to list them');
   assert.equal(b.lines[3], 'doctor: 6 ok, 0 warn, 1 fail');
   assert.equal(b.lines[4], noVaultSentence(broken.dir));
+});
+
+// A machine where six of the seven checks are not ok (no git, no brain-kit on PATH, a gh and a
+// claude that run but fail) and the seventh is the Node running the suite. It is the one way
+// left to have exactly one check left out of the compact report: a run that names its checks
+// with --only lists them all, so it no longer leaves one out.
+const SIX_NOT_OK = { git: 'absent', brainKit: 'absent', gh: 'broken', claude: 'broken' };
+
+test('outside any vault, compact: one check left out is said in the singular, and with nothing left out there is no hint at all', async () => {
+  const m = bareMachine({ tools: SIX_NOT_OK });
+  const one = await bareReport(m);
+  assert.equal(one.code, EXIT.FAILURE);
+  assert.equal(one.lines.length, 1 + 6 + 1 + 1 + 1, one.out);
+  assert.equal(one.lines[7], '1 check ok not listed; use --verbose to list it');
+  assert.equal(one.lines[8], 'doctor: 1 ok, 2 warn, 4 fail');
+  // With the Node too old as well, all seven are listed and nothing is left out.
+  const none = await bareReport(m, [], t, { nodeVersion: '20.11.1' });
+  assert.equal(none.lines.length, 1 + 7 + 1 + 1, none.out);
+  assert.match(none.lines[1], /^ {2}fail +node-version {2}/);
+  assert.doesNotMatch(none.out, /not listed|--verbose/);
+  assert.equal(none.lines[8], 'doctor: 0 ok, 2 warn, 5 fail');
+});
+
+test('outside any vault, compact in Portuguese: the one check left out is said in the singular', async () => {
+  const pt = await bareReport(bareMachine({ tools: SIX_NOT_OK }), [], createTranslator('pt-BR'));
+  assert.equal(pt.lines[7], '1 verificação ok não listada; use --verbose para listá-la');
+  assert.equal(pt.lines[8], 'doctor: 1 ok, 2 aviso(s), 4 falha(s)');
+  assert.doesNotMatch(pt.out, /\{[a-z_]+\}/);
+});
+
+test('outside any vault, --only lists every machine check it names, ok or not, and the way to create a vault is still last (the final review of 0.0.9, M1)', async () => {
+  const m = bareMachine();
+  const one = await bareReport(m, ['--only', 'node-version']);
+  assert.equal(one.code, EXIT.OK, one.out + one.err);
+  assert.equal(one.err, '');
+  assert.equal(one.lines.length, 4, one.out);
+  assert.equal(one.lines[0], NO_VAULT_HEADING);
+  assert.match(one.lines[1], /^ {2}ok +node-version +Node \d/);
+  assert.equal(one.lines[2], 'doctor: 1 ok, 0 warn, 0 fail');
+  assert.equal(one.lines[3], noVaultSentence(m.dir));
+  assert.doesNotMatch(one.out, /not listed|--verbose/);
+  // Two ids, in table order whatever the order asked for, each its own line.
+  const two = await bareReport(m, ['--only', 'gh-auth,node-version']);
+  assert.equal(two.lines.length, 5, two.out);
+  assert.match(two.lines[1], /^ {2}ok +node-version +Node \d/);
+  assert.match(two.lines[2], /^ {2}ok +gh-auth +"gh auth status --hostname github\.com" exited 0$/);
+  assert.equal(two.lines[3], 'doctor: 2 ok, 0 warn, 0 fail');
+  assert.equal(two.lines[4], noVaultSentence(m.dir));
+  assert.doesNotMatch(two.out, /not listed|--verbose/);
+  // The same report as with --verbose, which is what naming the checks now means.
+  assert.equal(two.out, (await bareReport(m, ['--only', 'gh-auth,node-version', '--verbose'])).out);
+  // A failure among the ok ones is listed where the table puts it.
+  const broken = await bareReport(bareMachine({ tools: { gh: 'loggedOut' } }), ['--only', 'gh-auth,git-present']);
+  assert.equal(broken.code, EXIT.FAILURE);
+  assert.match(broken.lines[1], /^ {2}ok +git-present +git \d/);
+  assert.match(broken.lines[2], /^ {2}fail +gh-auth +/);
+  assert.equal(broken.lines[3], 'doctor: 1 ok, 0 warn, 1 fail');
+  assert.doesNotMatch(broken.out, /not listed|--verbose/);
+});
+
+test('outside any vault, without --only the report is still compact, and --json is the same with --only as ever', async () => {
+  const m = bareMachine();
+  const plain = await bareReport(m);
+  assert.deepEqual(plain.lines, [NO_VAULT_HEADING, '7 checks ok not listed; use --verbose to list them', 'doctor: 7 ok, 0 warn, 0 fail', noVaultSentence(m.dir)]);
+  assert.doesNotMatch(plain.out, /node-version/);
+  const named = await bareJson(m, ['--only', 'node-version']);
+  assert.deepEqual(named.report.checks.map((c) => c.id), ['node-version']);
+  assert.doesNotMatch(named.out, /not listed/);
+});
+
+test('the real binary, outside any vault, lists the machine check --only names', () => {
+  const m = bareMachine();
+  const r = spawnSync(process.execPath, [BIN, 'doctor', '--only', 'node-version'], { cwd: m.dir, encoding: 'utf8', env: { ...m.env, BRAIN_KIT_LANG: 'en' } });
+  assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
+  assert.equal(r.stderr, '');
+  assert.match(r.stdout, /\n {2}ok +node-version +Node \d/);
+  assert.doesNotMatch(r.stdout, /not listed/);
+  assert.ok(r.stdout.trimEnd().split('\n').at(-1).endsWith('brain-kit init <dir>.'), r.stdout);
 });
 
 test('outside any vault, --json keeps the shape of the vault report with vault: null, and lists every machine check', async () => {
@@ -3964,6 +4126,20 @@ test('--probe with --only that leaves connectors out is a usage error, and nothi
   assert.equal(r.stdout, '');
   assert.match(r.stderr, /--probe feeds the connectors check/);
   assert.equal(probe.launched(), false);
+});
+
+test('--only connectors --probe, in the text report, lists what the probe found for each source, healthy or not (the final review of 0.0.9, M1)', async () => {
+  const fx = setup({ config: connectorConfig() });
+  probeClaude(fx);
+  const f = fakeIo();
+  const code = await runDoctor([fx.root, '--only', 'connectors', '--probe'], f.io, t, { env: fx.env, cwd: fx.root });
+  assert.equal(code, EXIT.OK, f.stdout() + f.stderr());
+  const out = lines(f.stdout());
+  assert.equal(out.length, 4, f.stdout());
+  assert.match(out[1], /^ {2}ok +connectors +calendar: claude\.ai Google Calendar connected now \(brain-kit doctor --probe\)/);
+  assert.match(out[2], /^ {2}ok +connectors +meeting_notes: claude\.ai Google Drive connected now \(brain-kit doctor --probe\)/);
+  assert.equal(out[3], 'doctor: 2 ok, 0 warn, 0 fail');
+  assert.doesNotMatch(f.stdout(), /not listed/);
 });
 
 test('the real binary runs doctor --probe, and the usage names --probe', () => {

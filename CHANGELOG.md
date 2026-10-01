@@ -190,9 +190,11 @@ real Node 22 showed the code already supported.
   default text report is the heading, the lines of the checks that are not `ok` (every warning and
   every failure, each as it was printed and in the same order), one line saying how many `ok`
   checks it left out and how to see them ("25 checks ok not listed; use --verbose to list them"),
-  and the summary line. `--verbose` (or `-v`) prints the full list as it always did. `--json` is
-  unchanged and still lists every check, so the tools that read it see no difference, and the exit
-  codes are unchanged. A check that is not `ok` is never left out of the compact report.
+  and the summary line. `--verbose` (or `-v`) prints the full list as it always did. `--only`
+  lists every check it names, ok or not, as `--verbose` does: `brain-kit doctor --only time-cap`
+  prints the `time-cap` line, not "1 check ok not listed". `--json` is unchanged and still lists
+  every check, so the tools that read it see no difference, and the exit codes are unchanged. A
+  check that is not `ok` is never left out of the compact report.
 - The `claude-isolation-flags` line of `doctor` no longer names a Claude Code version. It said
   `--max-turns` is not in the help of "Claude Code 2.1.281" on a machine that had 2.1.286; it now
   says "the installed version", in both languages (found in the walkthrough).

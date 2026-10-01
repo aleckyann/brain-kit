@@ -198,9 +198,9 @@ Within that, what limits how much the model reads is not the permission system:
   of turns): `0` is refused as a configuration error before any round, like any other
   invalid value. `null` is how an owner asks for no cap at all: `"budget_usd": null`
   passes no `--max-budget-usd`, `"max_turns": null` no `--max-turns`, and `curate
-  --check`, `curate --dry`, the round's own output and `doctor` (checks `cost-cap` and
-  `turn-cap`) say so, as they say which cap applies otherwise. The model is stopped after
-  `curate.timeout_minutes` minutes when that is a number (`doctor`, check `time-cap`);
+  --check`, `curate --dry`, the round's own output and `doctor --only cost-cap,turn-cap`
+  say so, as they say which cap applies otherwise. The model is stopped after
+  `curate.timeout_minutes` minutes when that is a number (`doctor --only time-cap`);
   `null`, the default, sets no time limit: a limit its owner never asked for is not the
   kit's to impose.
 
@@ -279,8 +279,9 @@ What this mode leaves open, on purpose or because it is not measured:
   because the CLI's login had expired.
 
 [connectors.md](connectors.md) has the whole of it: which rules are mirrored and which
-refuse the mode, the states of a connector, and `brain-kit doctor --probe`, which launches
-this mode, kills it at its first event and reports each connector's state without a round.
+refuse the mode, the states of a connector, and `brain-kit doctor --only connectors --probe`,
+which launches this mode, kills it at its first event and reports each connector's state
+without a round.
 
 ## The digests
 

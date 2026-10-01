@@ -100,9 +100,9 @@ those words, and it is your choice to make: every session on this machine become
 a round may read. Each round lists the transcripts directory again, so a project you start
 tomorrow is read from tomorrow on. `sources.transcripts.exclude_path_patterns` still
 applies: a directory a pattern covers whole (such as `/-tmp-` for scratch folders) is no
-project at all, and a file a pattern names is left out as with a list. `doctor` says
-`all (N project(s) today)`. Any other string is refused as configuration, and a list
-holding "all" names a directory called `all`.
+project at all, and a file a pattern names is left out as with a list. With
+`--only include-projects`, `doctor` says `all (N project(s) today)`. Any other string is
+refused as configuration, and a list holding "all" names a directory called `all`.
 
 "all" that finds no project directory reads nothing, and so does a list none of whose
 projects exists: the transcripts source then counts as failed, never as empty, and its mark
@@ -654,8 +654,10 @@ with the round's date, whether the timer is installed and when it fires next, wh
 failures reach you or only the log, and the limits the next round runs under (`cost-cap`:
 the number, the default when `curate.budget_usd` is left out, or no cap when it is
 `null`; `turn-cap`, the same for `curate.max_turns`; `time-cap`, a number of minutes or no
-time limit). `brain-kit doctor --probe` asks the CLI for each connector's state now, without a
-round.
+time limit). The default report lists only what needs attention: `--verbose` lists every
+line, and `--only <id>` lists the checks it names, ok or not.
+`brain-kit doctor --only connectors --probe` asks the CLI for each connector's state now,
+without a round.
 
 ## A round that hangs
 
@@ -671,7 +673,7 @@ when one is set), until you stop it. What the next windows do depends on the sch
   naming the hung round, and notifies you.
 
 A hung round shows as `Vault lock: held by "curate".` in `brain-kit preflight` (and in the
-morning briefing), and `brain-kit doctor` says under `time-cap` that no time limit is set.
+morning briefing), and `brain-kit doctor --only time-cap` says that no time limit is set.
 See it and stop it with the name `brain-kit schedule status` prints
 (`brain-kit-curate-<vault_id>`):
 

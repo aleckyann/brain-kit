@@ -26,6 +26,12 @@
 // checks, never see less than all of them. A status that is not ok is never
 // left out, whatever it is called.
 //
+// `--only` lists every check it names, ok or not, as `--verbose` does: the
+// compact report is for a run that asks for no check in particular, and a
+// person who asked for `time-cap` by name used to be told "1 check ok not
+// listed" instead of the line (the final review of 0.0.9, 01/10/2026). With
+// `--only` there is never a hint line, because nothing is left out.
+//
 // OUTSIDE ANY VAULT it checks the machine and says so. `doctor` before `init`
 // used to answer "no vault found" and nothing else, exit 2, while the README
 // promises it tells whether "this machine and this vault are ready" (found in
@@ -207,7 +213,7 @@ export async function runDoctor(argv, io, t, deps = {}) {
     return exitCode;
   }
 
-  io.stdout.write(renderReport(reportT, { heading: reportT('doctor.heading', { vault: root }), results, counts, verbose: parsed.verbose }));
+  io.stdout.write(renderReport(reportT, { heading: reportT('doctor.heading', { vault: root }), results, counts, listAll: listsEveryLine(parsed) }));
   return exitCode;
 }
 
@@ -250,22 +256,28 @@ function checkMachine({ parsed, startDir, env, deps, io, t }) {
     io.stdout.write(`${JSON.stringify(jsonReport(t, { vault: null, results, counts, exitCode }))}\n`);
     return exitCode;
   }
-  const text = renderReport(t, { heading: t('doctor.machine_only'), results, counts, verbose: parsed.verbose });
+  const text = renderReport(t, { heading: t('doctor.machine_only'), results, counts, listAll: listsEveryLine(parsed) });
   io.stdout.write(`${text}${t('doctor.no_vault', { dir: startDir, config: CONFIG_FILENAME, index: ROOT_INDEX })}\n`);
   return exitCode;
+}
+
+// Whether the text report lists every line: with --verbose, and when --only
+// names the checks, so the line a person asked for is never the one left out.
+function listsEveryLine(parsed) {
+  return parsed.verbose || parsed.only !== null;
 }
 
 // The human report. The columns are as wide as the widest of ALL the results,
 // listed or not, so a line is the same line in the compact report and in the
 // full one.
-function renderReport(reportT, { heading, results, counts, verbose }) {
+function renderReport(reportT, { heading, results, counts, listAll }) {
   const width = Math.max(...results.map((r) => r.id.length));
   const labels = results.map((r) => statusLabel(reportT, r.status));
   const labelWidth = Math.max(...labels.map((label) => label.length));
   let text = `${heading}\n`;
   let left = 0;
   results.forEach((result, index) => {
-    if (!verbose && result.status === 'ok') {
+    if (!listAll && result.status === 'ok') {
       left += 1;
       return;
     }
