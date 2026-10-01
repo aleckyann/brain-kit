@@ -1,28 +1,11 @@
 # brain-kit
 
-> Em construção. A fase 1 está concluída: o validador, o linter, os gates de push, o
-> `init`, o `init --adopt`, o `update`, o `doctor`, o loop de pull request (`sync`,
-> `propose`, `verify`) e o plugin do Claude Code (hooks, skills, um subagente somente
-> leitura) já funcionam hoje, a partir de um clone deste repositório. A fase 2 também está
-> concluída: o curador agendado (`curate`, `watermark`, `schedule`) lê as suas sessões
-> recentes do Claude Code e abre um pull request a partir de uma rodada sem ninguém por
-> perto. A fase 3 também está concluída: a rodada lê ainda a sua agenda e as suas notas de
-> reunião pelos conectores do claude.ai, depois que você os liga. A fase 4 também está
-> concluída: o briefing matinal (`preflight`, `questions`, a skill `briefing` e a tarefa dela
-> no aplicativo para desktop). A fase 5a traz o que um vault que sai de scripts próprios
-> precisa: o `watermark import`, uma ponte para uma trava `flock` legada e rodadas sem teto
-> de custo, de turnos ou de tempo quando a configuração não pede nenhum. A fase 5 está em
-> andamento: o vault de referência de onde este kit saiu já roda a configuração, o CI, o
-> gate de push e o hook Stop pelo kit, e, desde 01/10/2026, o curador agendado dele também
-> roda pelo kit (o timer legado está desativado) e o briefing matinal dele roda como tarefa
-> do aplicativo para desktop; o que ainda falta para a fase terminar está na tabela de
-> Status abaixo. Toda versão a partir da 0.0.2 é só uma tag do git: o pacote no npm ainda é
-> o esqueleto da fase 0, e a publicação 0.1.0 no npm é a fase 6, que não começou.
-
-Um segundo cérebro em markdown puro, no Open Knowledge Format (OKF) v0.2, mantido por um
-agente de IA que o lê por um índice, o alimenta todo dia a partir do seu próprio trabalho
-(transcripts de sessão, agenda, notas de reunião) e só o altera por pull request. O seu
-merge é a aprovação e a verificação.
+O brain-kit mantém um segundo cérebro em markdown puro, no Open Knowledge Format (OKF)
+v0.2: um agente de IA o lê por um índice, o alimenta todo dia a partir do seu próprio
+trabalho (transcripts de sessão, agenda, notas de reunião) e só o altera por pull request.
+O seu merge é a aprovação e a verificação. Instale um comando, o `brain-kit`, e um plugin
+do Claude Code, e [Seu primeiro vault](#seu-primeiro-vault) leva você de uma máquina limpa
+até o primeiro pull request.
 
 O brain-kit é um repositório que pretende ser, ao mesmo tempo:
 
@@ -46,37 +29,180 @@ O motor é Node.js 24 sem nenhuma dependência, de runtime ou de desenvolvimento
 que ele gera é seu: markdown, frontmatter YAML e um arquivo de configuração declarativo,
 nada mais.
 
-## O que funciona hoje
+## Requisitos
 
-Todo comando roda a partir de um clone. Um vault é um diretório com um
-`brain-kit.config.json` e um `index.md` na raiz; os comandos recebem o caminho dele, ou o
-encontram subindo a partir do diretório atual.
+Node.js 24 ou mais novo (com o npm dele), git, a CLI do GitHub (`gh`) autenticada
+(`gh auth login`) e o Claude Code; para as fontes de agenda e de notas de reunião, os
+conectores Google Calendar e Google Drive do claude.ai, conectados no claude.ai e ativados
+para o Claude Code; para o briefing com horário, o aplicativo Claude para desktop. Linux é a
+plataforma de referência para agendamento (timers de usuário do systemd, que precisam de
+`loginctl enable-linger` para rodar com você deslogado); as entradas de macOS (launchd) e
+cron são geradas e testadas sem que a suíte de testes as instale; Windows fica fora do
+escopo de agendamento.
+
+## Instalando uma versão fixa
+
+Um vault do qual você depende deve rodar uma versão fixa do kit, e não o que o branch
+padrão tiver hoje. Toda versão a partir da 0.0.2 é uma tag do git, e a tag mais recente é a
+que se instala. A lista das versões, e o que cada uma fez, está no
+[CHANGELOG](CHANGELOG.md) e na página de Releases do repositório.
+`npm i -g github:aleckyann/brain-kit#<tag>` instala uma tag onde o npm pode baixar pacotes
+de git; onde não pode (o npm recusa com `EALLOWGIT`), empacote a tag você mesmo, instale o
+tarball e guarde a cópia desempacotada para o plugin. O `npm i -g` precisa de um prefixo do
+npm em que você possa escrever: se falhar com `EACCES`, rode
+`npm config set prefix ~/.local` uma vez e ponha `~/.local/bin` no seu PATH. A segunda
+linha do trecho descobre a tag mais recente, então nada abaixo cita uma versão:
 
 ```bash
 git clone https://github.com/aleckyann/brain-kit.git
-node brain-kit/bin/brain-kit.mjs init caminho/do/vault-novo
-node brain-kit/bin/brain-kit.mjs init --adopt caminho/do/vault-existente
-node brain-kit/bin/brain-kit.mjs update caminho/do/vault
-node brain-kit/bin/brain-kit.mjs doctor caminho/do/vault
-node brain-kit/bin/brain-kit.mjs validate caminho/do/vault
-node brain-kit/bin/brain-kit.mjs lint caminho/do/vault
-node brain-kit/bin/brain-kit.mjs sync caminho/do/vault
-node brain-kit/bin/brain-kit.mjs propose "resumo" --only notas/alterada.md
-node brain-kit/bin/brain-kit.mjs verify --pr 12
-node brain-kit/bin/brain-kit.mjs curate caminho/do/vault
-node brain-kit/bin/brain-kit.mjs watermark show caminho/do/vault
-node brain-kit/bin/brain-kit.mjs schedule install caminho/do/vault
-node brain-kit/bin/brain-kit.mjs preflight caminho/do/vault
-node brain-kit/bin/brain-kit.mjs questions list caminho/do/vault
-node brain-kit/bin/brain-kit.mjs schedule install --job briefing caminho/do/vault
+TAG=$(git -C brain-kit describe --tags --abbrev=0)
+mkdir -p ~/.local/share/brain-kit/$TAG
+git -C brain-kit archive $TAG | tar -x -C ~/.local/share/brain-kit/$TAG
+cd ~/.local/share/brain-kit/$TAG && npm pack --silent && npm i -g ./second-brain-kit-${TAG#v}.tgz
+claude plugin marketplace add ~/.local/share/brain-kit/$TAG
+claude plugin install brain-kit@brain-kit --scope user
+```
+
+O `brain-kit --version` imprime a versão que você instalou.
+`claude plugin marketplace add aleckyann/brain-kit` segue, em vez disso, o branch padrão do
+repositório. O CI de um vault pode fixar o kit do mesmo jeito, baixando-o no commit da tag
+ao lado do vault.
+
+## Seu primeiro vault
+
+De uma máquina com os requisitos acima até o seu primeiro pull request, em ordem. Três dos
+comandos, marcados com "(o `init` imprime isto no fim)", são os que o próprio `init`
+imprime quando termina.
+
+1. Faça login no GitHub, no seu próprio terminal (o `init` imprime isto no fim). O
+   `propose` abre os pull requests dele com o `gh`, e o `doctor` falha para um `gh` sem
+   login:
+
+   ```bash
+   gh auth login
+   ```
+
+2. Instale o kit com o trecho de
+   [Instalando uma versão fixa](#instalando-uma-versão-fixa), até a linha do `npm i -g`. Ele
+   põe o `brain-kit` no seu PATH, onde o gate de push do vault também o procura.
+3. Instale o plugin com as duas últimas linhas do mesmo trecho
+   (`claude plugin marketplace add` e `claude plugin install`).
+4. Crie o vault num diretório novo ou vazio:
+
+   ```bash
+   brain-kit init ~/my-brain
+   ```
+
+   Ele faz sete perguntas, uma de cada vez, e precisa de um terminal para fazê-las (um pipe
+   é recusado sem nada escrito). Onde não há terminal, `--from-answers <arquivo>` lê as
+   respostas de um arquivo JSON e `--yes` aceita todos os padrões. O `init` escreve o
+   esqueleto e o gate de push, roda `validate` e `lint` sobre ele e não faz commit. A
+   pergunta do repositório só registra um nome: o `init` não cria repositório nem remoto.
+5. Faça o primeiro commit. Se o git disser que não sabe quem você é, configure antes
+   `git config --global user.name` e `user.email`:
+
+   ```bash
+   cd ~/my-brain
+   git add -A
+   git commit -m "Inicia o vault"
+   ```
+
+6. Crie o repositório no GitHub e faça o push, num comando só (o `init` imprime isto no
+   fim):
+
+   ```bash
+   gh repo create my-brain --private --source . --push
+   ```
+
+   O repositório é privado porque o vault guarda notas sobre pessoas, e um repositório
+   público as deixa à vista de qualquer um. O comando faz o push (`--push`) porque sem ele
+   o remoto fica vazio, não há branch padrão nele e o `propose` não consegue funcionar. O
+   push roda o gate de push do vault (`validate`, `lint` e uma varredura de credenciais),
+   então um vault que falhe neles não é publicado.
+7. Confira a máquina e o vault:
+
+   ```bash
+   brain-kit doctor
+   ```
+
+   Um resultado saudável não tem nenhuma linha `fail` e sai com 0. Neste ponto, linhas
+   `warn` sobre o curador agendado (a marca d'água, a última rodada, o agendamento, o
+   comando de notificação e o briefing) estão bem: você ainda não configurou nenhum, e o
+   [docs/scheduling.md](docs/scheduling.md) trata disso quando você quiser uma rodada num
+   timer. Um `fail` diz o que rodar para corrigi-lo; o de `gh` diz `gh auth login`.
+8. Abra o Claude Code no vault (o `init` imprime isto no fim):
+
+   ```bash
+   claude
+   ```
+
+   Com o plugin instalado, as nove skills e os hooks `Stop` e `SessionStart` dele
+   funcionam nesta pasta; [O plugin do Claude Code](#o-plugin-do-claude-code) diz o que
+   cada um faz.
+9. Escreva um fato no log do vault, `memoria/log.md` (`memory/log.md` num vault em inglês).
+   Ou conte algo novo ao Claude, como "Registre no log que comecei este vault hoje" (a
+   skill `capture` escreve a entrada datada), ou acrescente você mesmo: um título
+   `## AAAA-MM-DD` com a data de hoje e, embaixo, uma linha que começa com `**Captura**`.
+10. Abra o pull request. O hook `Stop` roda quando o Claude termina uma resposta: ele vê o
+    arquivo alterado e pede ao Claude que valide, rode o lint e proponha, o que a skill
+    `curate-session` também faz quando pedida. Para fazer você mesmo:
+
+    ```bash
+    brain-kit propose "Primeira captura" --only memoria/log.md
+    ```
+
+    `--only` nomeia exatamente os arquivos a propor, e o `propose` nunca mexe no seu branch
+    nem na sua árvore de trabalho. Acrescente `--dry` antes para ver o plano: ele recusa o
+    que a execução de verdade recusaria (sem `gh`, sem login, sem `origin`, branch padrão
+    não publicado).
+11. Faça o merge do pull request no GitHub: o seu merge é a aprovação, e a única forma de
+    o vault mudar. Depois o `brain-kit sync` deixa o seu branch local em dia com o remoto, e
+    o `brain-kit verify --pr <número>` carimba `verified` nas notas que esse pull request
+    alterou (a skill `approve` faz o mesmo).
+
+A partir daqui, [O curador agendado](#o-curador-agendado) alimenta o vault com as suas
+sessões do Claude Code sem você pedir, e [O briefing matinal](#o-briefing-matinal) diz
+toda manhã onde ele está.
+
+## O que funciona hoje
+
+Um vault é um diretório com um `brain-kit.config.json` e um `index.md` na raiz; os comandos
+recebem o caminho dele, ou o encontram subindo a partir do diretório atual. Os comandos
+abaixo supõem o `brain-kit` no seu PATH (veja
+[Instalando uma versão fixa](#instalando-uma-versão-fixa)); para rodar um a partir de um
+clone sem instalar, troque `brain-kit` por `node <clone>/bin/brain-kit.mjs`.
+
+```bash
+brain-kit init caminho/do/vault-novo
+brain-kit init --adopt caminho/do/vault-existente
+brain-kit update caminho/do/vault
+brain-kit doctor caminho/do/vault
+brain-kit validate caminho/do/vault
+brain-kit lint caminho/do/vault
+brain-kit sync caminho/do/vault
+brain-kit propose "resumo" --only notas/alterada.md
+brain-kit verify --pr 12
+brain-kit curate caminho/do/vault
+brain-kit watermark show caminho/do/vault
+brain-kit schedule install caminho/do/vault
+brain-kit preflight caminho/do/vault
+brain-kit questions list caminho/do/vault
+brain-kit schedule install --job briefing caminho/do/vault
 ```
 
 O `init` cria um vault novo num diretório vazio ou novo, em inglês ou português: o
 esqueleto, a configuração, um `.gitignore`, o gate de push (`.githooks/pre-push`, com o
 `core.hooksPath` apontando para ele), um manifesto do que o kit escreveu, um repositório
 git, e o `machine.json` num diretório de estado fora do vault. Ele faz uma pergunta por
-vez, aceita `--yes` ou `--from-answers <arquivo>` no lugar, e nunca faz o primeiro commit
-a menos que isso seja pedido.
+vez, o que exige um terminal; `--yes` (todos os padrões, listados) ou
+`--from-answers <arquivo>` (um objeto JSON) respondem por você onde não há um, e ele nunca
+faz o primeiro commit a menos que isso seja pedido.
+
+Um vault fala o idioma escolhido para ele no `init`, com a primeira pergunta ou com
+`init --lang en|pt-BR`: o `validate`, o `lint`, as skills e os hooks o usam. Todo o resto
+que o kit imprime, e todo comando fora de um vault, tira o idioma de `BRAIN_KIT_LANG` (`en`
+ou `pt-BR`) quando ela está definida, senão da primeira entre `LC_ALL`, `LC_MESSAGES` e
+`LANG` que estiver: um valor que começa com `pt` é português, qualquer outro é inglês.
 
 O `init --adopt` traz um vault existente para o kit. O vault precisa já ser um repositório
 git (escreva o `.gitignore` dele e depois rode `git init`); uma pasta que não é um é
@@ -255,31 +381,6 @@ só quando o diretório de trabalho da tarefa é um projeto listado em
 [docs/briefing.md](docs/briefing.md), em "Which sessions the curator skips", tem os
 detalhes.
 
-## Instalando uma versão fixa
-
-Um vault do qual você depende deve rodar uma versão fixa do kit, e não o que o branch
-padrão tiver hoje. Toda versão a partir da 0.0.2 é uma tag do git, e a tag mais recente é a
-que se instala. A lista das versões, e o que cada uma fez, está no
-[CHANGELOG](CHANGELOG.md) e na página de Releases do repositório.
-`npm i -g github:aleckyann/brain-kit#<tag>` instala uma tag onde o npm pode baixar pacotes
-de git; onde não pode (o npm recusa com `EALLOWGIT`), empacote a tag você mesmo, instale o
-tarball e guarde a cópia desempacotada para o plugin. A segunda linha descobre
-a tag mais recente, então nada abaixo cita uma versão:
-
-```bash
-git clone https://github.com/aleckyann/brain-kit.git
-TAG=$(git -C brain-kit describe --tags --abbrev=0)
-mkdir -p ~/.local/share/brain-kit/$TAG
-git -C brain-kit archive $TAG | tar -x -C ~/.local/share/brain-kit/$TAG
-cd ~/.local/share/brain-kit/$TAG && npm pack && npm i -g ./second-brain-kit-${TAG#v}.tgz
-claude plugin marketplace add ~/.local/share/brain-kit/$TAG
-claude plugin install brain-kit@brain-kit --scope user
-```
-
-`claude plugin marketplace add aleckyann/brain-kit` segue, em vez disso, o branch padrão do repositório.
-O CI de um vault pode fixar o kit do mesmo jeito, baixando-o no commit da tag ao lado do
-vault.
-
 ## O plugin do Claude Code
 
 Carregue a partir de um clone com `claude --plugin-dir caminho/do/brain-kit`, ou instale
@@ -319,6 +420,24 @@ A pasta `evals/` traz um caso de `claude plugin eval` por skill e idioma; veja
 A tag mais recente é a `v0.0.7`. Toda versão a partir da 0.0.2 é só uma tag do git: o
 pacote `second-brain-kit` no npm continua com apenas a 0.0.1, o esqueleto da fase 0.
 
+O kit está em construção. A fase 1 está concluída: o validador, o linter, os gates de push,
+o `init`, o `init --adopt`, o `update`, o `doctor`, o loop de pull request (`sync`,
+`propose`, `verify`) e o plugin do Claude Code (hooks, skills, um subagente somente
+leitura) já funcionam hoje, a partir de um clone deste repositório ou da instalação acima.
+A fase 2 também está concluída: o curador agendado (`curate`, `watermark`, `schedule`) lê
+as suas sessões recentes do Claude Code e abre um pull request a partir de uma rodada sem
+ninguém por perto. A fase 3 também está concluída: a rodada lê ainda a sua agenda e as suas
+notas de reunião pelos conectores do claude.ai, depois que você os liga. A fase 4 também
+está concluída: o briefing matinal (`preflight`, `questions`, a skill `briefing` e a tarefa
+dela no aplicativo para desktop). A fase 5a trouxe o que um vault que sai de scripts
+próprios precisa: o `watermark import`, uma ponte para uma trava `flock` legada e rodadas
+sem teto de custo, de turnos ou de tempo quando a configuração não pede nenhum. A fase 5
+está em andamento: o vault de referência de onde este kit saiu já roda a configuração, o
+CI, o gate de push e o hook Stop pelo kit, e, desde 01/10/2026, o curador agendado dele
+também roda pelo kit (o timer legado está desativado) e o briefing matinal dele roda como
+tarefa do aplicativo para desktop; o que ainda falta para a fase terminar está na tabela
+acima. A publicação 0.1.0 no npm é a fase 6, que não começou.
+
 A fase 1 é construída em cinco fatias:
 
 | Fatia | Conteúdo | Estado |
@@ -351,17 +470,6 @@ Leia primeiro o [CONTRIBUTING.md](CONTRIBUTING.md). Todo clone precisa rodar
 
 Leia [docs/rationale.md](docs/rationale.md) para o raciocínio e
 [docs/incidents.md](docs/incidents.md) para as falhas datadas que produziram cada guarda.
-
-## Requisitos
-
-Node.js >= 24, git, a CLI do GitHub (`gh`) autenticada e o Claude Code; para as fontes de
-agenda e de notas de reunião, os conectores Google Calendar e Google Drive do claude.ai,
-conectados no claude.ai e ativados para o Claude Code; para o briefing com horário, o
-aplicativo Claude para desktop. Linux é a
-plataforma de referência para agendamento (timers de usuário do systemd, que precisam de
-`loginctl enable-linger` para rodar com você deslogado); as entradas de macOS (launchd) e
-cron são geradas e testadas sem que a suíte de testes as instale; Windows fica fora do
-escopo de agendamento.
 
 ## Licença
 
