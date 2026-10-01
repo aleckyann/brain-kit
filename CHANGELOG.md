@@ -14,16 +14,24 @@ kit's own output. These are the fixes in the code and the messages (both languag
   stopped (exit 1 on the first two) or published its branch and ended without a pull request
   (exit 3 on the last two). Now the dry run asks the remote what it publishes (a read-only
   `git ls-remote`, judged by the same function as the real run's fetch, so it refuses with
-  the same sentence and the same exit code 1) and `gh auth status`, and refuses with exit 3
-  when `gh` is absent or logged out, naming `gh auth login`. A remote that cannot be asked is
-  said to be unverified, exit 1, never "Would propose". It also names the branch the real run
+  the same sentence and the same exit code 1) and `gh auth status --hostname <host>`, for
+  the host of the remote's url (github.com while there is none), and refuses with exit 3
+  when `gh` is absent or exits non-zero for that host, quoting gh's own sentence and naming
+  `gh auth login --hostname <host>`. A remote that cannot be asked, or a `gh` that does not
+  finish (a timeout, a program that cannot be started), is said to be unverified, exit 1,
+  never "Would propose" and never "not logged in". It also names the branch the real run
   would make (with `-2` when a push url already holds the stamped one). It still writes
   nothing.
-- `doctor` has a new check, `gh-auth` (after `gh-present`): it runs `gh auth status` and
-  fails, naming `gh auth login`, when `gh` is installed but holds no login. Until now a
-  logged-out `gh` read `ok` and the first `propose` ended exit 3 with the branch pushed and
-  no pull request. With no `gh` at all the check is skipped (and says so), because
-  `gh-present` already reports that. The id is accepted by `--only`.
+- `doctor` has a new check, `gh-auth` (after `gh-present`): it runs `gh auth status
+  --hostname <host>`, for the host of the `origin` remote (github.com while there is none).
+  Asked about every host, `gh` exits 1 when any account on any of them is stale, which
+  would fail a vault whose own host works. Exit 0 is `ok`; a non-zero exit is `fail`, in
+  gh's own words, naming `gh auth login --hostname <host>`; a run that does not finish (a
+  timeout, a `gh` that cannot be started) is a `warn`, since the login was not found
+  wanting, only not verified. Until now a `gh` with no login read `ok` and the first
+  `propose` ended exit 3 with the branch pushed and no pull request. With no `gh` at all
+  the check is skipped (and says so), because `gh-present` already reports that. The id is
+  accepted by `--only`.
 - `doctor`'s `include-projects` failure says how to fix it. The empty-list message now names
   the key, the form of an entry (a directory under the transcripts folder, with this
   vault's own entry written out), that `"all"` is accepted but means every project on the
@@ -40,8 +48,9 @@ kit's own output. These are the fixes in the code and the messages (both languag
 - `init` writes `sources.transcripts.include_projects` with the one project that is the new
   vault itself (the name Claude Code gives the directory of the vault's own path, from one
   function, `claudeProjectName`), so the first `doctor` has nothing to fail on. Only into an
-  empty list, only while a round reads transcripts, never `"all"`, and nothing for a path
-  too long to be named as it is spelt. `init --adopt` does the same.
+  empty list, only while a round reads transcripts, never `"all"`. For a path the rule does
+  not cover (longer than Claude Code keeps, or not starting with a slash) the list stays
+  empty and init says so. `init --adopt` does the same.
 - `init` ends with the commands that lead to a first pull request, in order and in five
   lines, and runs none of them: `gh auth status` (then `gh auth login` if it says no),
   `gh repo create <name> --private --source . --push` (with the repository answered, or the
@@ -61,6 +70,16 @@ kit's own output. These are the fixes in the code and the messages (both languag
   codes in the warning it prints for a source that is only best effort. The other refusals of
   a round (an over-cap first day, a file it cannot read: exit 4) are still previewed with exit
   0, as before.
+- The round and `curate --dry` treat a new vault's own project as what it is. Its folder does
+  not exist until a session has run in the vault, and both used to answer "fix
+  `include_projects`" (or "fix `machine.json` `transcripts_dir`") for the very entry `init`
+  wrote, while `doctor` called it `ok`. It is now a project with no sessions: an empty
+  window, said in one plain line, exit 0, and the day closes empty. Every real
+  misconfiguration still refuses (exit 1): a name that is not the vault's own, the vault's own
+  beside such a name with nothing found, a projects folder named in `machine.json` that is
+  not there, a broken link or a file in its place, and, with `CLAUDE_CONFIG_DIR` set and no
+  folder named, the vault's own project missing from `~/.claude/projects`. `doctor` reads the
+  same rule from the same function, so it cannot disagree with the round.
 - `propose` in a repository with no remote of the name it reads the default branch from no
   longer says "the default branch is published to remote origin" as if something had set it
   up. It says the repository has no remote called that, and how to create one:

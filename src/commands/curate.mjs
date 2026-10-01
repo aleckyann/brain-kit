@@ -125,7 +125,7 @@ import { allowedTools, disallowedTools, KIT_SUBCOMMANDS, kitCommand } from '../c
 import { unsafeRuleCharacters } from '../curate/rule-path.mjs';
 import { blockingMessage, mirrorUserRules, userSettingsFiles } from '../curate/user-rules.mjs';
 import { SOURCES } from '../sources/index.mjs';
-import { writeDigests } from '../sources/transcripts-claude-code.mjs';
+import { waitingProjectName, writeDigests } from '../sources/transcripts-claude-code.mjs';
 import { syncUnderLock } from './sync.mjs';
 import { parseRoundRecord, roundRecordPath } from './propose.mjs';
 import { proposedMatch, restoreMatching } from '../guards/proposed.mjs';
@@ -404,12 +404,16 @@ function computeWindow(stateDir, sources, now, tz) {
 // day to the end of its last, with its own days. A source with no day in
 // the round is never collected. `digestDir` is where the transcripts
 // source names its digests (built in memory; writeDigests writes them).
-function collectPlans(sources, days, config, machine, env, now, tz, digestDir) {
+function collectPlans(sources, days, config, machine, env, now, tz, digestDir, root) {
   const plans = {};
   const home = env.HOME || undefined;
+  // The listed project that may have no folder yet (the vault's own), the
+  // same answer `doctor` reads: a project with no sessions, not a
+  // misconfiguration. Only the transcripts source reads it.
+  const waiting = waitingProjectName({ vaultRoot: root, machine, env });
   for (const source of sources) {
     const own = days[source.id];
-    plans[source.id] = source.collect({ window: { from: startOfDay(own[0], tz), to: startOfDay(addDays(own.at(-1), 1), tz), days: own, timezone: tz }, config, machine, now, digestDir, ...(home ? { home } : {}) });
+    plans[source.id] = source.collect({ window: { from: startOfDay(own[0], tz), to: startOfDay(addDays(own.at(-1), 1), tz), days: own, timezone: tz }, config, machine, now, digestDir, waiting, ...(home ? { home } : {}) });
   }
   return plans;
 }
@@ -746,7 +750,10 @@ function sourceLines(t, { active, plans, days, unavailable, config, blocks }) {
       continue;
     }
     const plan = plans[source.id];
-    if (source.kind === 'local') lines.push(t('curate.check_source', { source: source.id, kept: keptOf(plan) ?? 0 }));
+    if (source.kind === 'local') {
+      lines.push(t('curate.check_source', { source: source.id, kept: keptOf(plan) ?? 0 }));
+      if (!blocks) lines.push(...(plan.waitingLines ?? []));
+    }
     else lines.push(t('curate.check_connector_source', { source: source.id, connector: source.serverSpec(config).serverDisplayName, days: own.map(shown).join(', ') }));
     if (blocks) lines.push(plan.promptBlock);
     else if ((plan.problems ?? []).length > 0) lines.push(t('curate.source_warning', { source: source.id, problems: problemWords(plan) }));
@@ -1259,7 +1266,7 @@ export async function runCurate(argv, io, t, deps = {}) {
     for (const source of active) {
       if (days[source.id].length === 0) log('source_no_day', { source: source.id, mark: computed.marks[source.id] ?? null });
     }
-    const plans = collectPlans(offered, days, config, machine, env, now, tz, digestDir);
+    const plans = collectPlans(offered, days, config, machine, env, now, tz, digestDir, root);
     for (const source of offered) {
       const plan = plans[source.id];
       run.sources[source.id] = sourceEntry(source, plan);
@@ -1272,6 +1279,10 @@ export async function runCurate(argv, io, t, deps = {}) {
         io.stderr.write(`${text}\n`);
         log('source_warning', { source: source.id, problems: plan.problems.map((p) => p.code) });
       }
+      // A listed project with no sessions yet (a new vault's own) is said once,
+      // plainly; it is no warning, and nothing about it needs fixing.
+      for (const line of plan.waitingLines ?? []) io.stderr.write(`${line}\n`);
+      if ((plan.waiting ?? []).length > 0) log('source_waiting', { source: source.id, projects: plan.waiting });
     }
     // A file a required source cannot read keeps its day open whatever the
     // model does, so the model is not started at all: running it would
@@ -1970,7 +1981,7 @@ function dryRun({ root, stateDir, machine, claudeBin, io, env, now, keepStream }
   const offered = active.filter((source) => days[source.id].length > 0);
   // The digests are built in memory to name them as the round would; a dry
   // run writes none.
-  const plans = collectPlans(offered, days, config, machine, env, now, tz, digestDirFor(stateDir, now, keepStream));
+  const plans = collectPlans(offered, days, config, machine, env, now, tz, digestDirFor(stateDir, now, keepStream), root);
   // A round that would refuse over a source it cannot do without says so
   // here, with its own sentence and exit code, instead of previewing a round
   // that will not happen.

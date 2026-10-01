@@ -886,7 +886,7 @@ test('claudeProjectName: a path whose name would pass the length Claude Code kee
   assert.equal(claudeProjectName(`/${'b'.repeat(200)}`), null);
 });
 
-test('claudeProjectName refuses what is not an absolute path', () => {
-  assert.throws(() => claudeProjectName('brain'), /absolute/);
-  assert.throws(() => claudeProjectName(''), /absolute/);
+test('claudeProjectName has no name for a path that does not start with a slash (a relative one, a Windows one), and says so with null instead of throwing', () => {
+  for (const path of ['brain', '', 'C:\\Users\\ana\\brain', '\\\\server\\share\\brain']) assert.equal(claudeProjectName(path), null, path);
+  assert.throws(() => claudeProjectName(undefined), TypeError);
 });

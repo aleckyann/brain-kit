@@ -76,9 +76,11 @@
 //      with, judged by the same code: nothing published, the base missing,
 //      or no answer, which the dry run says it could not verify), asking each
 //      push url which branches it holds (to name the branch the real run
-//      would make) and, last, asking gh whether it is logged in (`gh auth status`, the one thing
-//      that would make the real run publish its branch and then end with
-//      exit 3 and no pull request). No fetch, so no reference moves and no
+//      would make) and, last, asking gh about the host of the remote (`gh
+//      auth status --hostname`, the one thing that would make the real run
+//      publish its branch and then end with exit 3 and no pull request): gh
+//      exiting non-zero is exit 3 with gh's own sentence, gh not finishing
+//      is "could not verify", exit 1. No fetch, so no reference moves and no
 //      object is written.
 //   7. The base is fetched and the fetch proved (src/git.mjs, fetch);
 //      anything short of a proved tip is exit 1. Every chosen path must
@@ -176,7 +178,7 @@ import { decodeBytes } from '../io.mjs';
 import { run } from '../exec.mjs';
 import { KIT_ROOT } from '../version.mjs';
 import { PR_BODY_PATH } from '../init/skeleton.mjs';
-import { AUTH_STATUS_ARGS, authVerdict, loginCommand } from '../gh.mjs';
+import { authArgs, authVerdict, hostOfRemote, loginCommand } from '../gh.mjs';
 import { joinOrAcquire } from '../guards/lock.mjs';
 import { GuardError, locateRepository } from '../guards/location.mjs';
 import { readSnapshot, splitDirty } from '../guards/snapshot.mjs';
@@ -400,7 +402,7 @@ export async function runPropose(argv, io, t, deps = {}) {
     // The round's token goes no further than this command: git, the hooks
     // a push runs and gh get the environment without it.
     const { BRAIN_KIT_ROUND_TOKEN: _token, ...childEnv } = env;
-    return await proposeUnderLock({ root, cwd, config, parsed, io, t, env: childEnv, now, walkVault, scratch, temp, round, guardWaitMs });
+    return await proposeUnderLock({ root, cwd, config, parsed, io, t, env: childEnv, now, walkVault, scratch, temp, round, guardWaitMs, ghTimeoutMs: deps.ghTimeoutMs ?? NETWORK_TIMEOUT_MS });
   } catch (error) {
     if (error instanceof Refusal) {
       io.stderr.write(`${error.message}\n`);
@@ -422,7 +424,7 @@ export async function runPropose(argv, io, t, deps = {}) {
   }
 }
 
-async function proposeUnderLock({ root, cwd, config, parsed, io, t, env, now, walkVault, scratch, temp, round, guardWaitMs }) {
+async function proposeUnderLock({ root, cwd, config, parsed, io, t, env, now, walkVault, scratch, temp, round, guardWaitMs, ghTimeoutMs }) {
   const operation = operationInProgress(root, { env });
   if (operation !== null) throw new Refusal(EXIT.TEMPFAIL, t('propose.operation_in_progress', { operation }));
   const prefix = runGit(root, ['rev-parse', '--show-prefix'], { env });
@@ -504,8 +506,9 @@ async function proposeUnderLock({ root, cwd, config, parsed, io, t, env, now, wa
     // url, as it asks), so the plan names the branch that would be made.
     const branch = freeBranch(root, t, env, stamped, urls, pinned);
     const program = gitConfig.pr_command;
-    refuseUnlessGhLoggedIn(root, t, env, program);
-    io.stdout.write(`${t('propose.dry_run', { files: names, urls, base, branch, title, origin, remote, program })}\n`);
+    const host = hostOfRemote((args) => git(root, args, env), remote);
+    refuseUnlessGhAnswers(root, t, env, program, host, ghTimeoutMs);
+    io.stdout.write(`${t('propose.dry_run', { files: names, urls, base, branch, title, origin, remote, program, host })}\n`);
     return EXIT.OK;
   }
 
@@ -835,15 +838,20 @@ function refuseUnlessPublished(t, remote, base, asked, { dry }) {
 // The dry run's last question. The real run learns that gh cannot open the
 // pull request only after it has published its branch, and ends exit 3
 // (the commit is pushed, the pull request is not): a dry run that promised a
-// pull request over a gh that is not there, or not logged in, would promise
-// what the real run cannot do. Exit 3 here is that same code. `gh auth
-// status` writes nothing and opens nothing.
-function refuseUnlessGhLoggedIn(root, t, env, program) {
-  const asked = run(program, [...AUTH_STATUS_ARGS], { cwd: root, env: ghEnvOf(env), timeout: NETWORK_TIMEOUT_MS });
+// pull request over a gh that is not there, or that reports a problem for
+// the host, would promise what the real run cannot do. Exit 3 here is that
+// same code. gh is asked about the one host the remote names (src/gh.mjs says
+// why), writes nothing and opens nothing. A gh that does not finish (a
+// timeout, a program that cannot be started) has answered nothing: the dry
+// run says it could not verify, exit 1 like a remote it could not ask, and
+// never that the login is missing.
+function refuseUnlessGhAnswers(root, t, env, program, host, timeout) {
+  const asked = run(program, authArgs(host), { cwd: root, env: ghEnvOf(env), timeout });
   const verdict = authVerdict(asked);
   if (verdict.state === 'absent') throw new Refusal(EXIT.DEGRADED, t('propose.dry_gh_absent', { program, command: loginCommand(program) }));
-  if (verdict.state === 'logged_out') {
-    throw new Refusal(EXIT.DEGRADED, t('propose.dry_gh_logged_out', { program, command: loginCommand(program), detail: verdict.detail }));
+  if (verdict.state === 'unverified') throw new Refusal(EXIT.FAILURE, t('propose.dry_gh_unverified', { program, host, error: verdict.error }));
+  if (verdict.state === 'problem') {
+    throw new Refusal(EXIT.DEGRADED, t('propose.dry_gh_problem', { program, host, status: verdict.status, detail: verdict.detail, command: loginCommand(program, host) }));
   }
 }
 

@@ -35,10 +35,14 @@ path with every character that is not a letter or a digit replaced by a dash, on
 each. The vault at `/home/ana/brain` is `-home-ana-brain`, one at `/home/ana/My Notes/brain`
 is `-home-ana-My-Notes-brain`, and an accented letter or a dot is a dash too. `brain-kit init`
 writes the vault's own project into the list for you. Claude Code makes that directory the
-first time a session runs in the vault, so until then `doctor` says the project has no
-sessions yet, which is no fault, and a round has nothing to read: with the transcripts
-required it refuses (exit 1), and `curate --dry` says the same without running one. A name
-that is not the vault's own and is not there is reported as missing.
+first time a session runs in the vault, so until then the project has no sessions yet,
+which is no fault: `doctor` says so and is `ok`, and a round treats it as a project with no
+sessions, an empty window (`curate --dry` says so in a line; the round exits 0 with nothing
+to curate, and the day closes empty). A name that is not the vault's own and is not there
+is reported as missing. That holds while the kit looks where Claude Code keeps its
+projects: with `CLAUDE_CONFIG_DIR` set, name that folder with `brain-kit machine set
+transcripts_dir`, or the vault's own project missing from `~/.claude/projects` is a missing
+name like any other.
 
 To feed the vault from every project instead, write the string `"all"` in place of the list:
 `"include_projects": "all"`. Nothing reads every project unless the configuration says so in
@@ -55,7 +59,9 @@ projects exists: the transcripts source then counts as failed, never as empty, a
 never moves on it, whether the transcripts are required or best effort. With them in
 `curate.sources.required`, the default, every round refuses to run (exit 1). With them in
 `curate.sources.best_effort`, the round goes on with its other sources and does not exit 4
-for them, and their days stay open. `doctor` fails in both cases.
+for them, and their days stay open. `doctor` fails in both cases. The one exception is the
+case above: a list that names only the vault's own project, before any session has run in
+the vault, is a project with no sessions, not a list none of whose projects exists.
 
 The calendar and the meeting notes are off until you turn them on:
 [connectors.md](connectors.md) says how, and `brain-kit doctor --only connectors --probe`
