@@ -3,11 +3,14 @@
 ## Unreleased
 
 - Both READMEs now open with a box a first-time reader can follow: "Comece aqui" in
-  `README.pt-BR.md`, "Start here" in `README.md`. Seven numbered steps take a clean machine to
-  the first pull request, each with its command, its time (install 2 min, `gh auth login` 3,
-  the machine check 1, `init` 3, first commit 2, push 1, first pull request 5) and a link to
-  the detailed step, under a plain "about 30 minutes the first time" that calls the times
-  estimates, because no outside adopter has timed the path yet. A glossary of twelve words
+  `README.pt-BR.md`, "Start here" in `README.md`. Seven numbered steps take a machine that
+  already has the requirements to the first pull request, each with its command, its time
+  (install 2 min, `gh auth login` 3, the machine check 1, `init` 3, first commit 3, push 1,
+  steps 7 to 10 together 8) and a link to the detailed step. They sit under a plain "about 30
+  minutes the first time" that is arithmetic: about 10 minutes of reading plus the 21 of the
+  steps, for someone who already has Node.js, git, `gh`, Claude Code and a GitHub account. The
+  times are called estimates, not a promise, because no outside adopter has timed the path
+  yet. A glossary of twelve words
   (terminal, PATH, repository, branch, commit, pull request, merge, vault, push gate, hook,
   skill, plugin and marketplace) follows the box. The second stranger, who followed only the
   Portuguese README, reached the first pull request but estimated 30 to 40 minutes for a person
@@ -50,18 +53,27 @@
   refusal of the first commit, and says why git asks. Step 7 names the doctor lines by the
   words on the screen (`falha`, `aviso`, `ok` in Portuguese; `fail`, `warn`, `ok` in English)
   and says the output lists only the warnings and the failures, with `--verbose` for all of
-  them. A closing "Se travar" ("If you get stuck") list gives, in at most eight lines, the fix
-  for the five traps most likely to stop a new person, and links the incident page only for
-  secrets.
+  them. Steps 3, 7 and 11 say what the person sees (a `doctor:` line that ends in `0 falha(s)`
+  or `0 fail`; "nothing to stamp, and nothing was written") and never an exit code, which a
+  terminal does not show. A closing "Se travar" ("If you get stuck") list gives, in at most
+  eight lines, the fix for the five traps most likely to stop a new person, and links the
+  incident page only for secrets. Its `propose` item gives `git push -u origin HEAD` for an
+  `origin` that exists with nothing pushed (the kit says "push the default branch first"
+  without a command, and repeating `gh repo create` fails because the repository exists), and
+  its `command not found` item sends the person through the whole `EACCES` block, because the
+  paste ends in "Successfully installed" even when npm refused.
 - The second machine has a section of its own in both READMEs, in the order
   `docs/scheduling.md` gives: clone, `machine register --new`,
   `git config core.hooksPath .githooks`, `doctor`, and `schedule install` only where the
   rounds run. Before, the Portuguese README only linked to an English section. The section
   also says that the tool's own next-steps text puts the `doctor` before the `git config` (the
-  outcome is the same, since the doctor fails `hooks-path` and names the command), that the
-  shared `brain-kit.config.json` must not be edited to silence the doctor, and that a new
-  vault's `{vault}` in `include_projects` makes a clone at another path need no edit. A test
-  compares the README's commands with the scheduling page's, in order.
+  outcome is the same, since the doctor fails `hooks-path` and names the command), that a
+  vault created by this version lists its project as `{vault}` in `include_projects` and needs
+  no edit on a second machine, and that a vault created before 0.0.9 lists the first machine's
+  project name, fails `include-projects` on the second machine, and has to switch that entry
+  to `"{vault}"` (propose it, merge it, `brain-kit sync` on both machines) rather than get the
+  second machine's name, which would stop the first machine's rounds from reading its own
+  sessions. A test compares the README's commands with the scheduling page's, in order.
 - `README.pt-BR.md` uses one name for the push check, "trava de push", the term the tool
   prints (the README said "gate de push" and the doctor "trava de push"), and replaces the
   English fragments the stranger listed: "best effort" is now "de melhor esforço", "overlay de
