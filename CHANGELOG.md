@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.5 (tagged `v0.0.5`, not on npm)
 
 ### The model reads a digest of each transcript, never the transcript (01/10/2026)
 
