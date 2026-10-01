@@ -303,7 +303,7 @@ A pasta `evals/` traz um caso de `claude plugin eval` por skill e idioma; veja
 
 ## Status
 
-<!-- status-reviewed: 0.0.6 -->
+<!-- status-reviewed: 0.0.7 -->
 
 | Fase | Conteúdo | Estado |
 |---|---|---|
@@ -316,7 +316,7 @@ A pasta `evals/` traz um caso de `claude plugin eval` por skill e idioma; veja
 | 6 | Publicação 0.1.0 no npm | planejada, não começou; precisa de `docs/incident-response.md`, `examples/minimal-vault` e de uma execução por um adotante externo, e nenhum dos três existe ainda |
 | 7 | Outras forjas, outros harnesses, mais fontes, cada um só quando um segundo caso real precisar | planejada |
 
-A tag mais recente é a `v0.0.6`. Toda versão a partir da 0.0.2 é só uma tag do git: o
+A tag mais recente é a `v0.0.7`. Toda versão a partir da 0.0.2 é só uma tag do git: o
 pacote `second-brain-kit` no npm continua com apenas a 0.0.1, o esqueleto da fase 0.
 
 A fase 1 é construída em cinco fatias:

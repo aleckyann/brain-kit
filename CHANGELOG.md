@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.0.7 (tagged `v0.0.7`, not on npm)
+
+No command does anything different in this version. It makes the documentation and the
+release process keep up with the development: the READMEs say the true stage, a gate in the
+suite and in CI stops them falling behind a release, and every tag now gets a GitHub Release
+with its CHANGELOG section. It is the first version published by the new release workflow.
 
 - The READMEs and the documentation were brought to the stage of 0.0.6 (01/10/2026): the
   status of each phase and the point Phase 5 has reached, the tag and npm situation (every
@@ -25,7 +30,7 @@
   checks, without a tag, over the repository's own files, so they run on every `npm test`
   and in CI on every push. An ordinary commit passes them; a version bump that left the
   CHANGELOG heading, the READMEs' stamp or their latest-tag sentence behind does not. The
-  forcing function is the stamp: both READMEs carry `<!-- status-reviewed: 0.0.6 -->` right
+  forcing function is the stamp: both READMEs carry `<!-- status-reviewed: 0.0.7 -->` right
   under their Status heading, and bumping the version fails the suite until a person has
   re-read that section and changed the stamp. No fenced code block of either README may
   name a literal tag or tarball (the install snippets resolve the latest tag themselves).

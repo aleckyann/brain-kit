@@ -294,7 +294,7 @@ marketplace. Inside a vault:
 
 ## Status
 
-<!-- status-reviewed: 0.0.6 -->
+<!-- status-reviewed: 0.0.7 -->
 
 | Phase | Content | State |
 |---|---|---|
@@ -307,7 +307,7 @@ marketplace. Inside a vault:
 | 6 | 0.1.0 release on npm | planned, not started; it needs `docs/incident-response.md`, `examples/minimal-vault` and a run by an external adopter, none of which exists yet |
 | 7 | Other forges, other harnesses, more sources, each only when a second real case needs it | planned |
 
-The latest tag is `v0.0.6`. Every version from 0.0.2 on is a git tag only: the package
+The latest tag is `v0.0.7`. Every version from 0.0.2 on is a git tag only: the package
 `second-brain-kit` on npm still has only 0.0.1, the Phase 0 skeleton.
 
 Phase 1 is built in five slices:
