@@ -74,6 +74,7 @@ import { run } from '../exec.mjs';
 import { expandHome, findExecutable, resolveClaude, shownInstant } from '../doctor/checks.mjs';
 import { bashQuoted, kitCommand } from '../curate/tools.mjs';
 import { briefingSetting } from '../briefing/blocks.mjs';
+import { BRIEFING_TASK_PREFIX } from '../briefing/task-id.mjs';
 import { createTranslator, resolveLang, SUPPORTED_LANGS } from '../lang.mjs';
 import { signatureProblem, signatureProblems, startsWithSignature } from '../sources/transcripts-claude-code.mjs';
 
@@ -808,7 +809,10 @@ function status(context, rendered, windows, lastRun, now) {
 // --job briefing` and doctor's `briefing` check read the task back and say
 // so, with the fix (install again and update the task).
 
-export const BRIEFING_TASK_PREFIX = 'brain-kit-briefing-';
+// The prefix is defined in ../briefing/task-id.mjs, which the transcripts
+// source's self-trace filter imports too; it is re-exported from here so
+// that nothing else changes.
+export { BRIEFING_TASK_PREFIX };
 // Five cron fields, the only shape the application's cronExpression takes.
 const CRON_FIELDS = /^\S+(\s+\S+){4}$/;
 // A kit path kitCommand() quotes as it is, so none of these may be in it.

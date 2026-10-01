@@ -14,7 +14,10 @@
 //   - 11/08/2026, the self-trace filter ate the day's work. The curator's
 //     own runs are recognized only by the FIRST user message, parsed as
 //     JSON; a signature anywhere else never drops a file. In doubt the
-//     file stays in.
+//     file stays in. Since 01/10/2026 that first message may be the
+//     desktop application's envelope around a scheduled task's prompt:
+//     startsWithSignature looks through it, by the task's name or by the
+//     prompt inside, and nowhere else.
 //   - 11/08/2026, the cap threw away exactly the work of the day. The cap
 //     never cuts a day in half: it takes WHOLE days, oldest first (the
 //     order a catch-up round reads them in), while the distinct files of
@@ -127,6 +130,7 @@ import { homedir } from 'node:os';
 import { dirname, join, sep } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { createTranslator } from '../lang.mjs';
+import { BRIEFING_TASK_PREFIX } from '../briefing/task-id.mjs';
 import { addDays, localDay, startOfDay, wallClock } from '../guards/watermark.mjs';
 import { unsafeRuleCharacters } from '../curate/rule-path.mjs';
 
@@ -271,17 +275,104 @@ export function signaturesOf(config) {
   return all.filter((sig) => typeof sig === 'string' && sig.trim() !== '');
 }
 
+// The desktop application does not hand a scheduled task's prompt to the
+// session as it is (measured on the first real briefing run, 01/10/2026,
+// docs/incidents.md): the session's first user message is one string, an
+// open tag `<scheduled-task name="..." file="...">`, a newline, one
+// paragraph in the application's own wording, a blank line, the prompt as
+// registered, a newline and a closing tag. Only the open tag, the blank
+// line and the prompt's start are read here; the paragraph's wording is the
+// application's, may change with its version, and is never matched. Every
+// scan below stays inside the first ENVELOPE_HEAD characters of the message
+// (a first message can be a pasted blob of megabytes), and a tag that is not
+// finished inside them is not an envelope.
+const ENVELOPE_TAG = '<scheduled-task';
+const ENVELOPE_HEAD = 16 * 1024;
+const BLANK_LINE = /\r?\n[ \t]*\r?\n/;
+const ATTRIBUTE_NAME = /^[A-Za-z0-9_:.-]$/;
+
+function isSpace(char) {
+  return char === ' ' || char === '\t' || char === '\n' || char === '\r';
+}
+
+// The index of the first character at or after `from` that is not
+// whitespace, within `head`.
+function skipSpace(head, from) {
+  let index = from;
+  while (index < head.length && isSpace(head[index])) index += 1;
+  return index;
+}
+
+// The envelope's open tag at the start of `text`, or null when the start is
+// not one that clearly matches: { name, end }, `name` the value of the first
+// `name` attribute (null when there is none) and `end` the index just past
+// the `>` that closes the tag. Attributes are `key=value` with the value in
+// double or single quotes (a `>` inside a quoted value is a character of the
+// value), in any order, each separated from the next by whitespace. Anything
+// else (an unquoted value, an attribute with no value, `/>`, a quote that
+// never closes, a tag not finished inside ENVELOPE_HEAD) is no envelope. One
+// forward pass over the head, no backtracking.
+function openTag(text) {
+  if (!text.startsWith(ENVELOPE_TAG)) return null;
+  const head = text.slice(0, ENVELOPE_HEAD);
+  let index = ENVELOPE_TAG.length;
+  if (!isSpace(head[index])) return null;
+  let name = null;
+  for (;;) {
+    index = skipSpace(head, index);
+    if (index >= head.length) return null;
+    if (head[index] === '>') return { name, end: index + 1 };
+    const keyStart = index;
+    while (index < head.length && ATTRIBUTE_NAME.test(head[index])) index += 1;
+    if (index === keyStart) return null;
+    const key = head.slice(keyStart, index);
+    index = skipSpace(head, index);
+    if (head[index] !== '=') return null;
+    index = skipSpace(head, index + 1);
+    const quote = head[index];
+    if (quote !== '"' && quote !== '\'') return null;
+    const close = head.indexOf(quote, index + 1);
+    if (close === -1) return null;
+    if (key === 'name' && name === null) name = head.slice(index + 1, close);
+    index = close + 1;
+    if (index < head.length && head[index] !== '>' && !isSpace(head[index])) return null;
+  }
+}
+
+// Where the task prompt may start inside an envelope whose open tag ends at
+// `end`: right after the open tag's line (the application left its paragraph
+// out), and after the first blank line that follows the tag (the paragraph,
+// then the prompt). Never anywhere else: a signature further into the
+// message signs nothing (11/08/2026).
+function promptStarts(text, end) {
+  const head = text.slice(0, ENVELOPE_HEAD);
+  const starts = [skipSpace(head, end)];
+  const blank = BLANK_LINE.exec(head.slice(end));
+  if (blank !== null) starts.push(skipSpace(head, end + blank.index + blank[0].length));
+  return starts;
+}
+
 // THE one predicate that says a session is one of the kit's own (ruling
 // R-T12, phase 4 fix round 1): `text` is the session's first user message
 // with text, and it is the kit's own when, trimmed, it starts with one of
-// `signatures`. A blank signature never counts. `schedule status --job
-// briefing` and doctor's `briefing` check call this same function on the
-// desktop task's prompt, so "the task is signed" and "the curator drops
-// its sessions" can never disagree.
+// `signatures`, or when it is the desktop application's envelope of a
+// scheduled task (above) and either the envelope's `name` starts with
+// BRIEFING_TASK_PREFIX (the kit's own briefing task, also the one of
+// another vault on this machine, whose signature this vault does not know)
+// or the task prompt inside starts with one of `signatures`. A blank
+// signature never counts. `schedule status --job briefing` and doctor's
+// `briefing` check call this same function on the desktop task's prompt,
+// which the application keeps unwrapped in the task's file, so "the task is
+// signed" and "the curator drops its sessions" can never disagree.
 export function startsWithSignature(text, signatures) {
   if (typeof text !== 'string') return false;
   const trimmed = text.trim();
-  return signatures.some((sig) => typeof sig === 'string' && sig.trim() !== '' && trimmed.startsWith(sig));
+  const usable = signatures.filter((sig) => typeof sig === 'string' && sig.trim() !== '');
+  if (usable.some((sig) => trimmed.startsWith(sig))) return true;
+  const tag = openTag(trimmed);
+  if (tag === null) return false;
+  if (tag.name !== null && tag.name.startsWith(BRIEFING_TASK_PREFIX)) return true;
+  return promptStarts(trimmed, tag.end).some((at) => usable.some((sig) => trimmed.startsWith(sig, at)));
 }
 
 // Why a configured signature cannot sign anything reliably, or null: not a
@@ -319,8 +410,10 @@ export function signatureProblems(config) {
 //   anyTimestamp:  whether any message timestamp parsed at all
 //   lines, parsed: non-blank lines judged, and how many parsed as JSON
 //   conversation:  lines of type user or assistant, dated or not
-//   selfTrace:     whether the first user message with text starts with a
-//                  signature
+//   selfTrace:     whether the first user message with text is the kit's
+//                  own (startsWithSignature: it starts with a signature, or
+//                  it is the desktop application's envelope of the kit's
+//                  scheduled task)
 //   sampleLine:    the 1-based number of the line holding byte sampleFrom,
 //                  that is 1 + the newlines strictly before it
 function scanFile(path, size, sampleFrom, window, starts, signatures, io, limits) {
