@@ -1045,6 +1045,7 @@
   "curate.cleanup_changed": "brain-kit curate: changed after the push, left as they are: {paths}",
   "curate.isolation_failed": "brain-kit curate: the model was not isolated from your own Claude Code settings and was stopped: {problems}",
   "curate.model_timed_out": "brain-kit curate: the model ran longer than {minutes} minutes and was killed.",
+  "curate.auth_expired": "brain-kit curate: the round stopped because the Claude Code login has expired or is not valid (the CLI said: {detail}). Run claude in a terminal and log in again with /login. The day is not lost: no watermark moved, and the first round after you log in covers it.",
   "curate.model_unavailable": "brain-kit curate: the model is unavailable (an API or login error, result {subtype}): {detail}",
   "curate.model_failed": "brain-kit curate: the model run failed (result {subtype}, exit {code}): {detail}",
   "curate.source_unread": "brain-kit curate: a required source was not read in full (read/listed): {sources}. The day stays open.",

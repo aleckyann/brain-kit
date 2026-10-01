@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.4 (tagged `v0.0.4`, not on npm)
 
 ### A document the connector answers "not found" for (30/09/2026)
 
@@ -21,6 +21,27 @@
   that passes `prompt --check` still does. A vault with its own curate overlay gets the
   source block, which the kit writes, but not the rule's new sentences: copy them by hand
   into the overlay's `no-access-label` paragraph. No code reads the label text.
+
+### An expired login says what to do (30/09/2026)
+
+- A round whose Claude Code login has expired exits 69 with `reasonCode` `auth_expired`
+  ([docs/incidents.md](docs/incidents.md), 30/09/2026). The CLI still starts on an
+  expired login and ends with a result that is an error, at no cost and in one turn; the
+  round used to record `model_failed` with `-` for its detail. Now, when the result is an
+  error and its text holds a known login failure (`Failed to authenticate`, `OAuth session
+  expired`, `could not be refreshed`, `Invalid API key`, `authentication_error`, `API Error: 401`, in any
+  case) or it carries an `api_error_status` of 401, the reason, in the vault's language,
+  quotes the CLI's text, says to run `claude` and log in with `/login`, and says the day
+  is not lost. No watermark moves, `last-run.json` records the code, the notify command
+  is called once, and nothing is retried. A model's text that only mentions a login, in
+  a run that did not end in an error, never counts.
+- Every model failure whose run ended in an error result now carries the first 300
+  characters of that result's text, on one line with the round's token hidden, instead
+  of `-` (`model_failed`) or only the markers found (`model_unavailable` from the
+  stream; text the CLI printed on its standard error is still reported by its markers).
+- `doctor`'s `last-run` check fails on an `auth_expired` round instead of warning that
+  the next window retries. [docs/scheduling.md](docs/scheduling.md) has a new section,
+  "When the login expires".
 
 ## 0.0.3 (tagged `v0.0.3`, not on npm)
 

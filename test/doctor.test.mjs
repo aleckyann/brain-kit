@@ -2187,6 +2187,22 @@ test('last-run: a postponed, degraded or unavailable round warns; any other non-
   }
 });
 
+// docs/incidents.md, 30/09/2026: an expired login exits 69, but no later
+// window passes it on its own, so doctor never says "the next window
+// retries" for it.
+test('last-run: an expired login (69, auth_expired) fails with its reason, never reads as a soft exit', async () => {
+  const fx = setup();
+  const reason = 'brain-kit curate: the round stopped because the Claude Code login has expired or is not valid (the CLI said: Failed to authenticate). Run claude in a terminal and log in again with /login.';
+  writeLastRun(fx, lastRun({ exit: EXIT.UNAVAILABLE, reasonCode: 'auth_expired', reason }));
+  const { report, code } = await doctor(fx, ['--only', 'last-run']);
+  const c = assertCheck(report, 'last-run', 'fail', 'doctor.last_run.failed');
+  assert.equal(c.params.exit, EXIT.UNAVAILABLE);
+  assert.equal(c.params.reason, reason);
+  assert.equal(code, EXIT.FAILURE);
+  writeLastRun(fx, lastRun({ exit: EXIT.UNAVAILABLE, reasonCode: 'no_network', reason: 'no network' }));
+  assertCheck((await doctor(fx, ['--only', 'last-run'])).report, 'last-run', 'warn', 'doctor.last_run.soft');
+});
+
 test('last-run: no record yet warns and names curate; a record that cannot be read, or holds no exit, fails', async () => {
   const fx = setup();
   rmSync(join(fx.stateDir, 'last-run.json'));

@@ -51,10 +51,11 @@
 //       more without those sources, never twice
 //   14. read evidence, the sources line and the round record
 //   15. bring what the round proposed back to HEAD's content, byte-proved
-//   16. the exit code, first match wins: isolation 1; model failure 69 or
-//       1; a required source unread 4; a round record that cannot be read
-//       1; anything still dirty 1; a proposal not opened 3; otherwise 0.
-//       A best-effort source never changes it.
+//   16. the exit code, first match wins: isolation 1; an expired login 69
+//       (auth_expired, the reason saying to log in again with /login);
+//       another model failure 69 or 1; a required source unread 4; a round
+//       record that cannot be read 1; anything still dirty 1; a proposal
+//       not opened 3; otherwise 0. A best-effort source never changes it.
 //   17. advance each source's watermark through its own last day, only on
 //       0 or 3
 //   18. always: remove the round record, write last-run.json, append the
@@ -64,9 +65,12 @@
 //
 // The log (logs/curate-<date>.log in the state directory) holds one line
 // per event, never a tool result, the model's final text or anything read
-// from a transcript, and never the round's token. --check and --dry write
-// no last-run.json: a round that did not run the model is not a round a
-// reader of last-run should take for one.
+// from a transcript, and never the round's token. What the CLI itself said
+// on a failed run goes in the reason (step 16): the last line of its
+// standard error, and the start of an error result's text, its own word on
+// why the run ended. --check and --dry write no last-run.json: a round that
+// did not run the model is not a round a reader of last-run should take for
+// one.
 //
 // `deps` carries the environment, the working directory, the clock, the
 // network wait's timing, a step observer, the round's kill timer
@@ -100,6 +104,7 @@ import {
   addDays, advanceWatermark, DEFAULT_MAX_DAYS, localDay, parseSourcesLine, readWatermark, SOURCES_LINE_PREFIX, startOfDay, windowFor, WatermarkError,
 } from '../guards/watermark.mjs';
 import { buildArgv, runModel, unscopedRules } from '../harness/claude-code.mjs';
+import { errorText, isLoginFailure } from '../harness/stream.mjs';
 import { allowedTools, disallowedTools, KIT_SUBCOMMANDS, kitCommand } from '../curate/tools.mjs';
 import { blockingMessage, mirrorUserRules, userSettingsFiles } from '../curate/user-rules.mjs';
 import { SOURCES } from '../sources/index.mjs';
@@ -1562,15 +1567,24 @@ export async function runCurate(argv, io, t, deps = {}) {
       exit = fail(EXIT.FAILURE, 'timed_out', t('curate.model_timed_out', { minutes: Math.ceil(timeoutMs / 60000) }));
     } else if (!modelOk) {
       const subtype = result?.subtype ?? '-';
-      const api = API_ERROR.test(out.stderrTail) || (result?.isError === true && API_ERROR.test(result.text ?? ''));
-      // On an API or login error only the markers found are reported, never
-      // the CLI's own text (review finding M5); otherwise its last stderr line.
-      const apiText = `${out.stderrTail}\n${result?.isError === true ? result.text ?? '' : ''}`;
-      const detail = api
-        ? API_MARKERS.map((re) => re.exec(apiText)?.[0]).filter(Boolean).join(', ')
-        : lastLine(out.stderrTail) || (out.spawnError ?? '-');
-      if (api) exit = fail(EXIT.UNAVAILABLE, 'model_unavailable', t('curate.model_unavailable', { subtype, detail }));
-      else exit = fail(EXIT.FAILURE, 'model_failed', t('curate.model_failed', { subtype, code: String(out.exitCode ?? out.signal ?? '-'), detail }));
+      // An error result's own text, on one line and cut at 300 characters,
+      // goes in the reason (the round of 30/09/2026 reported only "-"), with
+      // the round's token hidden. The CLI's standard error is reported only
+      // by the markers found in it on an API error (review finding M5), and
+      // by its last line otherwise.
+      const said = errorText(result, [lock.token]);
+      if (isLoginFailure(result)) {
+        // An expired login is not a model failure and no retry fixes it:
+        // exit 69 with what the person must do, and no mark moves.
+        exit = fail(EXIT.UNAVAILABLE, 'auth_expired', t('curate.auth_expired', { detail: said || '-' }));
+      } else if (API_ERROR.test(out.stderrTail) || (result?.isError === true && API_ERROR.test(result.text ?? ''))) {
+        const markers = API_MARKERS.map((re) => re.exec(out.stderrTail)?.[0]).filter(Boolean).join(', ');
+        const detail = [said, markers].filter(Boolean).join('; ') || '-';
+        exit = fail(EXIT.UNAVAILABLE, 'model_unavailable', t('curate.model_unavailable', { subtype, detail }));
+      } else {
+        const detail = [said, lastLine(out.stderrTail)].filter(Boolean).join('; ') || (out.spawnError ?? '-');
+        exit = fail(EXIT.FAILURE, 'model_failed', t('curate.model_failed', { subtype, code: String(out.exitCode ?? out.signal ?? '-'), detail }));
+      }
     } else if (unread.length > 0) {
       const sources = unread.map((id) => `${id} (${evidence[id].read}/${evidence[id].expected ?? '-'})`).join(', ');
       exit = fail(EXIT.SOURCE_UNREAD, 'source_unread', t('curate.source_unread', { sources }));
