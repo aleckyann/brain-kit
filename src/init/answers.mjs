@@ -78,14 +78,32 @@ function userName(env) {
   }
 }
 
-export function toHandle(text) {
-  const slug = String(text)
+// The short id a name suggests, which signs the person's approvals as
+// human:<handle>: lower case, accents folded to ASCII, anything outside
+// a-z0-9 a hyphen, hyphens collapsed and trimmed. null when nothing usable
+// is left ("!!!", a name in a script with no Latin letters) or when what is
+// left is not a handle, so a caller has to choose what to offer instead.
+export function handleFromName(name) {
+  if (name === undefined || name === null) return null;
+  const slug = String(name)
     .normalize('NFD')
     .replace(/\p{M}/gu, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
-  return slug === '' ? 'owner' : slug;
+  return HANDLE.test(slug) ? slug : null;
+}
+
+export function toHandle(text) {
+  return handleFromName(text) ?? 'owner';
+}
+
+// The short id offered for `name`, the one just typed: the one that name
+// makes, else the one the system user's name makes (the default before the
+// name was asked), else "owner". It used to be the system user's alone, so
+// "Ana Souza" was offered "ana".
+export function defaultHandle(name, env) {
+  return handleFromName(name) ?? toHandle(userName(env));
 }
 
 // The language a vault defaults to: the one this CLI is already speaking
@@ -95,8 +113,10 @@ export function defaultLang(env) {
   return resolveLang(env);
 }
 
-// Every default, for one language. `title` needs that language's pack.
-export function defaultAnswers({ lang, env, t = null }) {
+// Every default, for one language. `title` needs that language's pack, and
+// `handle` follows `name` when the caller already has one (typed, or in the
+// answers file), and the system user's name when it does not.
+export function defaultAnswers({ lang, env, t = null, name }) {
   const user = userName(env);
   let timezone = 'UTC';
   try {
@@ -108,7 +128,7 @@ export function defaultAnswers({ lang, env, t = null }) {
   return {
     lang,
     name: user === '' ? 'Owner' : user,
-    handle: toHandle(user),
+    handle: defaultHandle(name, env),
     title: t === null ? 'Second brain' : t('init.default_title'),
     repo: null,
     private: true,
@@ -219,7 +239,8 @@ export async function askInteractively({ stdin, stdout, preset, env, translatorF
       }
       if (key !== 'lang' && defaults === null) defaults = defaultAnswers({ lang: answers.lang, env, t });
       if (answers[key] !== undefined) continue;
-      const fallback = key === 'lang' ? defaultLang(env) : defaults[key];
+      // The short id offered is made from the name just typed (or given before).
+      const fallback = key === 'lang' ? defaultLang(env) : key === 'handle' ? defaultHandle(answers.name, env) : defaults[key];
       for (;;) {
         stdout.write(question(t, key, fallback));
         const next = await lines.next();
@@ -229,7 +250,7 @@ export async function askInteractively({ stdin, stdout, preset, env, translatorF
           answers[key] = value;
           break;
         }
-        stdout.write(`${t('init.answer_again', { answer: key })}\n`);
+        stdout.write(`${t('init.answer_again', { answer: questionLabel(t, key) })}\n`);
       }
       if (key === 'lang') t = translatorFor(answers.lang);
     }
@@ -237,6 +258,14 @@ export async function askInteractively({ stdin, stdout, preset, env, translatorF
   } finally {
     rl.close();
   }
+}
+
+// What a question is called, as its prompt begins (except the private
+// repository's, whose prompt is a sentence): "Language", "First name", "Short
+// id", for the messages that name a question to a person. The key is the
+// answers file's name for it and means nothing to someone at a terminal.
+export function questionLabel(t, key) {
+  return t(`init.label_${key}`);
 }
 
 function shown(t, value) {

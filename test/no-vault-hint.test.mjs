@@ -9,10 +9,14 @@
 // ending is now two sentences, the same everywhere: go into the folder (or
 // pass -C), and only then how to create a new vault.
 //
-// `doctor` has its own task in the same release (it also checks the
-// machine); it is held to the weaker claim that it still says how to create
-// a vault, until it takes the ending too, and `prompt.*` messages are
-// instructions to a model, not sentences for a person.
+// `doctor` is the one command that does not refuse outside a vault: it checks
+// the machine and ends its report with the same two sentences. Its behaviour
+// is held by test/doctor.test.mjs, with a PATH of its own (a check of the
+// machine runs gh and claude, and no test here may run the real ones); this
+// file holds only that its message in the pack carries the ending too.
+// `prompt.*` messages are instructions to a model, not sentences for a person.
+// `curate` no longer says the vault is marked by one of two files when it is
+// marked by both.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -82,13 +86,6 @@ for (const lang of ['en', 'pt-BR']) {
     assert.doesNotMatch(r.stderr, /\{[a-z_]+\}/);
   });
 
-  test(`${lang}: doctor outside a vault exits 2 and ends by saying how to create one`, () => {
-    const r = outsideAnyVault(['doctor'], lang);
-    assert.equal(r.status, EXIT.USAGE, r.stdout + r.stderr);
-    assert.equal(r.stdout, '');
-    assert.match(r.stderr, /brain-kit init <dir>\.?\n$/);
-    assert.match(r.stderr, /brain-kit\.config\.json/);
-  });
 }
 
 // The pack itself, so a command added tomorrow with a `no_vault` message
@@ -99,8 +96,8 @@ test('every no_vault message of both packs carries the ending, and the ones that
   const WITH_ITS_OWN_TAIL = ['machine.register_new_no_vault'];
   for (const lang of ['en', 'pt-BR']) {
     const pack = loadMessages(lang);
-    const keys = Object.keys(pack).filter((key) => /no_vault/.test(key) && !NOT_FOR_A_PERSON(key) && !OWNED_ELSEWHERE.includes(key));
-    assert.deepEqual(keys.filter((key) => key.endsWith('.no_vault')).map((key) => key.split('.')[0]).sort(), [...Object.keys(COMMANDS)].sort(), `${lang}: the commands this file runs are the commands with a message`);
+    const keys = Object.keys(pack).filter((key) => /no_vault/.test(key) && !NOT_FOR_A_PERSON(key));
+    assert.deepEqual(keys.filter((key) => key.endsWith('.no_vault') && !OWNED_ELSEWHERE.includes(key)).map((key) => key.split('.')[0]).sort(), [...Object.keys(COMMANDS)].sort(), `${lang}: the commands this file runs are the commands with a message`);
     for (const key of keys) {
       assert.ok(pack[key].includes(FIND_IT[lang]), `${lang} ${key}: ${pack[key]}`);
       if (!WITH_ITS_OWN_TAIL.includes(key)) assert.ok(pack[key].endsWith(TAIL[lang]), `${lang} ${key} must end with the two sentences: ${pack[key]}`);
