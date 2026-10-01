@@ -27,8 +27,8 @@
 //      after a proved fetch once the default branch holds that content). The
 //      line that says so names the paths and the branches and no command:
 //      how to get a file back from the ref is said LAST, once, in every
-//      outcome, and only for a ref that is still there then (the second
-//      stranger's F7: it used to be said first, and one line below the run
+//      outcome, and only for a ref that is still there then (found in the
+//      second walkthrough: it used to be said first, and one line below the run
 //      reported that it had removed that very ref). A
 //      path whose entry lost its ref is left as it is. Then a dirty working
 //      tree (anything `git status` reports but an ignored file) postpones

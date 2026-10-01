@@ -20,7 +20,7 @@
 // the full report prints it, in the same order), one line saying how many ok
 // lines were left out and how to see them, and the summary. A healthy run
 // used to print 32 lines of jargon when the one thing a person needs is the
-// last (the first stranger's m9, the second's F12). `--verbose` (`-v`) is
+// last (found in both walkthroughs, 01/10/2026). `--verbose` (`-v`) is
 // the full list, as it always was, and `--json` is the full list in either
 // case: a consumer of the JSON, and the Stop hook and the briefing that read
 // checks, never see less than all of them. A status that is not ok is never
@@ -28,8 +28,8 @@
 //
 // OUTSIDE ANY VAULT it checks the machine and says so. `doctor` before `init`
 // used to answer "no vault found" and nothing else, exit 2, while the README
-// promises it tells whether "this machine and this vault are ready" (the
-// first stranger's m2, the second's F24). Now it runs the checks that read
+// promises it tells whether "this machine and this vault are ready" (found in
+// both walkthroughs, 01/10/2026). Now it runs the checks that read
 // no vault (MACHINE_CHECKS in src/doctor/checks.mjs: Node, git, brain-kit on
 // PATH, gh and its login, the claude on PATH), in a context that holds no
 // vault, under a heading that says only the machine is checked, in the

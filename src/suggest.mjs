@@ -1,5 +1,5 @@
 // Which known names a mistyped one probably meant, for the sentence that
-// follows "unknown command" (the second stranger's F13): the names within
+// follows "unknown command" (found in the second walkthrough, 01/10/2026): the names within
 // two edits of it, or the one name it is the beginning of.
 //
 // Pure on purpose: it reads nothing, runs nothing and prints nothing. The

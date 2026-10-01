@@ -8,8 +8,8 @@ click that approves the request, is the approval and the verification.
 
 > **Start here.** Once you have Node.js 22 or newer (24 LTS is recommended), git, `gh` (the GitHub
 > app for the terminal), Claude Code and a GitHub account ready, the path to your first pull request
-> takes about 30 minutes the first time: about 10 of reading and 21 for the steps below. The times
-> are estimates, not a promise. The detail of each step is in [Your first vault](#your-first-vault).
+> takes about 35 minutes the first time: about 10 of reading, 21 for the steps below and a few more
+> to approve it on GitHub. The times are estimates, not a promise. See [Your first vault](#your-first-vault).
 >
 > 1. Install the kit and the plugin by pasting the [install snippet](#installing-a-fixed-version) into the terminal (2 min).
 > 2. Log in to GitHub with `gh auth login` ([step 2](#step-2), 3 min).
@@ -291,8 +291,8 @@ then, in this order:
 Let only one machine run the curator's rounds: state is per machine, so two scheduled machines
 would each propose the same day. On the other, use the vault by hand.
 
-`brain-kit machine register --new` prints these steps too, but with `doctor` before
-`git config`: if you skip step 3, `doctor` fails on `hooks-path` and says the same command.
+`brain-kit machine register --new` prints the same three steps after it finishes, in the same
+order (it leaves out the clone and the register line, which you have just run).
 
 A vault created by this version of `init` needs no edit on the second machine, even with the
 clone in another folder: it lists its own project as `{vault}` in `include_projects`, which
@@ -301,10 +301,14 @@ stands for the vault's folder on each machine.
 A vault created before 0.0.9 lists its project by the name it had on the first machine, and the
 second machine's `doctor` gives `fail include-projects`. Do not put this machine's project name
 in `brain-kit.config.json` to silence the `doctor`: the file is the same on both machines, and
-the first one would stop reading its own sessions. Instead, replace the name in
-`sources.transcripts.include_projects` with `"{vault}"`, propose the change with
-`brain-kit propose "Use {vault}" --only brain-kit.config.json`, merge it on GitHub and run
-`brain-kit sync` on both machines; the `doctor` then ends with `0 fail`.
+the first one would stop reading its own sessions. The way out has an order. First install this
+version of the kit on every machine that opens the vault and run `brain-kit update` in the
+vault once: a kit older than 0.0.9 reads `"{vault}"` as the name of a project, and fails the same
+check. Then replace the name in `sources.transcripts.include_projects` with `"{vault}"`, propose
+the change with `brain-kit propose "Use {vault}" --only brain-kit.config.json` (after `--only`,
+add any other file that `update` said it changed), merge it on GitHub and run `brain-kit sync`
+on both machines; the `doctor` then ends with `0 fail`. Do not commit that file yourself before
+the pull request is merged.
 [docs/scheduling.md](docs/scheduling.md#before-the-first-round) explains this in "Before the
 first round", and has the
 [details of the second machine](docs/scheduling.md#the-same-vault-on-a-second-machine),
@@ -584,7 +588,7 @@ marketplace. Inside a vault:
 | 3 | Calendar and meeting-notes sources (best effort by design) | done |
 | 4 | Morning briefing | done |
 | 5 | Migration of the original vault onto the kit | in progress. Done: 5a (what a migrating vault needs, since 0.0.2); the vault's scheduled curator moved from its legacy scripts to the kit on 01/10/2026 (a systemd user timer at 09:30 with retries at 14:00 and 20:00, the legacy timer disabled) and its first real rounds were supervised; the model reads a text digest of each transcript (0.0.5); the morning briefing runs as a desktop application task and ran for the first time on 01/10/2026, and since 0.0.6 the curator recognizes its session through the envelope the application wraps around the task's prompt. Open for the exit of the phase: five curator rounds and three briefings without an unexplained failure, the cleanup of the legacy scripts after seven stable days, and the first `verify` on the vault |
-| 6 | 0.1.0 release on npm | in progress. Done: `docs/incident-response.md`, `examples/minimal-vault`, a walkthrough by a stranger on a clean machine (it found the gaps between `init` and the first pull request; 0.0.8 closed them, except a short list of small ones), and a GitHub Release with the CHANGELOG text for every tag. Open: a run by an external adopter (the 0.1.0 criterion: from a clean machine to a validated vault, the plugin installed, the hook active and a first pull request in under 30 minutes), and the exit of Phase 5 |
+| 6 | 0.1.0 release on npm | in progress. Done: `docs/incident-response.md`, `examples/minimal-vault`, two walkthroughs on a clean machine by an agent playing a first-time user, not a person (the first found the gaps between `init` and the first pull request, which 0.0.8 closed; the second followed only the Portuguese README, reached the first pull request, and found what 0.0.9 closed: a README for someone who is not a developer, a Node older than the minimum, a `doctor` that checked nothing before the first vault, and a vault's project that only worked on the machine that made it), the supported Node set at 22 (0.0.9), and a GitHub Release with the CHANGELOG text for every tag. Open: a run by an external adopter, a person who is not the maintainer (the 0.1.0 criterion: from a clean machine to a validated vault, the plugin installed, the hook active and a first pull request in under 30 minutes by the adopter's own clock; the README's estimate, with the reading, is about 35, and no person has timed the path yet), and the exit of Phase 5 |
 | 7 | Other forges, other harnesses, more sources, each only when a second real case needs it | planned |
 
 The latest tag is `v0.0.8`. Every version from 0.0.2 on is a git tag only: the package

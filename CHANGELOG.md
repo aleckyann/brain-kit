@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+A first-time user can now follow `README.pt-BR.md` from a machine that has Node.js, git, `gh`
+and Claude Code to the first pull request, without a developer's vocabulary, and the kit says
+what to do at the places where it used to leave a person guessing. Two walkthroughs on a clean
+machine, by an agent playing a first-time user (the second followed only the Portuguese
+README; no person outside the project has done the path yet), found what this version fixes: a
+README written for developers, a Node older than the kit supports that died with a stack
+trace, a `doctor` that checked nothing before the first vault, messages that sent a person the
+wrong way, and a vault whose project name worked only on the machine that created it (a
+regression of 0.0.8). It also lowers the oldest supported Node from 24 to 22, which a run on a
+real Node 22 showed the code already supported.
+
 - The oldest Node the kit supports is now 22, not 24, and CI runs the whole suite on 22 and on 24.
   The 24 was a plan decision that nobody had measured. Run on a real Node 22.22.1 on 01/10/2026,
   the suite of 0.0.8 (3582 tests) had 3560 tests pass, 6 skipped by the suite itself and 16 fail,
@@ -79,7 +90,6 @@
   is a machine where Claude Code never ran. A vault whose own project cannot be named has its own
   messages (`vault_unnamed`, `some_unnamed`) in place of "the list is empty" and "a project is
   missing".
-- `propose` in a repository that has no commit yet says so, and gives the fix. A vault made
 - `propose` and `sync` in a repository that has no commit yet say so, and give the fix. A vault made
   by `init` has no commit until its owner makes one, and `propose` run before that said the
   default branch could not be found and sent the person to `vault.default_branch` in the
@@ -146,35 +156,27 @@
   line of a session ("Retrato da sessão tirado", a word-for-word "snapshot taken") and the
   Stop hook's "0 caminho(s) ... ficaram de fora: não cabe a esta sessão propô-los", which
   read as cut short. The English pack is unchanged.
-- On a Node older than 22, `brain-kit` now says so in one sentence, in your language, instead of
-  dying with a SyntaxError or a TypeError and a stack trace from inside `src/` (the first
-  reviewer's m13): "brain-kit needs Node 22 or newer; this machine has Node 20.11.1. Install
-  Node 24 (LTS) from https://nodejs.org and run it again." The launcher,
-  `bin/brain-kit.mjs`, now imports only a small guard (`src/node-guard.mjs`: no imports, and no
-  syntax an old Node cannot parse), asks it, and loads the CLI with a dynamic `import()` only when
-  the Node is 22 or newer;
-  otherwise the sentence goes to stderr and the exit code is 2. The language is chosen as every
-  other message of the kit is (`BRAIN_KIT_LANG`, then `LC_ALL`, `LC_MESSAGES` and `LANG`). A
-  version string it cannot read never blocks. The one exception is `brain-kit hook ...`: it prints
-  the same line and exits 0, because a Claude Code hook that fails breaks the session it runs in.
-  No Node older than 22 was at hand, so the tests make the real launcher believe it runs on Node
-  20 with a preload, and scan the guard for syntax an old Node cannot parse.
-- A Node older than the supported minimum now gets one clear sentence and exit code 2, instead of
-  whatever that Node does with the code (found when a first-time user ran the README on a clean
-  machine). The sentence is in your language, names the Node it found and says where to get a
-  supported one. The launcher, `bin/brain-kit.mjs`, imports only a small guard
-  (`src/node-guard.mjs`: no imports, and no syntax an old Node cannot parse), asks it, and loads
-  the CLI with a dynamic `import()` only when the Node is supported. The language is chosen as
-  every other message of the kit is (`BRAIN_KIT_LANG`, then `LC_ALL`, `LC_MESSAGES` and `LANG`),
-  and a version string it cannot read never blocks. This also refuses a Node that happened to run
-  the kit before: every command exits 2 with the sentence, the push gate refuses every push, and
-  the Claude Code hooks stand down, until a supported Node is first on PATH. The one exception is
-  `brain-kit hook ...`: it prints the same line to stderr and exits 0, because a Claude Code hook
-  that fails breaks the session it runs in.
+- A Node older than the supported minimum (22) now gets one clear sentence and exit code 2,
+  instead of whatever that Node does with the code: a SyntaxError or a TypeError and a stack
+  trace from inside `src/` (found in the walkthrough). The sentence is in your language, names
+  the Node it found and says where to get a supported one: "brain-kit needs Node 22 or newer;
+  this machine has Node 20.11.1. Install Node 24 (LTS) from https://nodejs.org and run it
+  again." The launcher, `bin/brain-kit.mjs`, imports only a small guard (`src/node-guard.mjs`:
+  no imports, and no syntax an old Node cannot parse), asks it, and loads the CLI with a
+  dynamic `import()` only when the Node is supported. The language is chosen as every other
+  message of the kit is (`BRAIN_KIT_LANG`, then `LC_ALL`, `LC_MESSAGES` and `LANG`), and a
+  version string it cannot read never blocks. This also refuses a Node that happened to run
+  the kit before: every command exits 2 with the sentence, the push gate refuses every push,
+  and the Claude Code hooks stand down, until a supported Node is first on PATH. The one
+  exception is `brain-kit hook ...`: it prints the same line to stderr and exits 0, because a
+  Claude Code hook that fails breaks the session it runs in. The launcher awaits the CLI at
+  its top level, so a command that never settles still ends with Node's exit code 13, not 0,
+  which keeps the push gate closed. No Node older than 22 was at hand, so the tests make the
+  real launcher believe it runs on Node 20 with a preload, and scan the guard for syntax an
+  old Node cannot parse.
 - `brain-kit doctor` outside a vault is now the check of the machine, where it only said "no
-  vault found" and checked nothing (found when a first-time user ran the README on a clean
-  machine; the README says it tells whether "this machine and this vault are ready", and nothing
-  could be run before `init`). It runs the checks that read no vault: Node, git, `brain-kit` on
+  vault found" and checked nothing (found in the walkthrough; the README says it tells
+  whether "this machine and this vault are ready", and nothing could be run before `init`). It runs the checks that read no vault: Node, git, `brain-kit` on
   PATH, `gh` and its login (asked about github.com, since there is no origin to read), and the
   `claude` on PATH (does it run, is it the real CLI, not a launcher stub). Its heading says that
   only the machine is checked, and it ends with the same "no vault found ... To create one:
@@ -184,19 +186,18 @@
   the exit code outside a vault is no longer 2 but 0, or 1 when one of those checks fails (a
   warning never changes it).
 - `brain-kit doctor` now puts what needs attention first, and prints three lines instead of 34
-  when everything is fine (found when a first-time user ran the README on a clean machine). The
+  when everything is fine (found in the walkthrough). The
   default text report is the heading, the lines of the checks that are not `ok` (every warning and
   every failure, each as it was printed and in the same order), one line saying how many `ok`
-  checks it left out and how to see them ("31 checks ok not listed; use --verbose to list them"),
+  checks it left out and how to see them ("25 checks ok not listed; use --verbose to list them"),
   and the summary line. `--verbose` (or `-v`) prints the full list as it always did. `--json` is
   unchanged and still lists every check, so the tools that read it see no difference, and the exit
   codes are unchanged. A check that is not `ok` is never left out of the compact report.
 - The `claude-isolation-flags` line of `doctor` no longer names a Claude Code version. It said
   `--max-turns` is not in the help of "Claude Code 2.1.281" on a machine that had 2.1.286; it now
-  says "the installed version", in both languages (found when a first-time user ran the README on a
-  clean machine).
+  says "the installed version", in both languages (found in the walkthrough).
 - `init` asks for a "short id" where it asked for a "handle", and offers the one the name just
-  typed makes (found when a first-time user ran the README on a clean machine). The question that
+  typed makes (found in the walkthrough). The question that
   names the person who signs their approvals was "Handle, lowercase letters, digits and dashes,
   used as human:<handle>", and it offered the system user's name even after the person had typed
   theirs ("ana" for "Ana Souza"). It now reads "Short id (lowercase letters, digits and hyphens)
@@ -206,30 +207,34 @@
   usable is left. The same holds for `--yes` with a name in the answers file and no handle. The
   key stays `handle`, in the answers file and in the configuration.
 - `init` run through a pipe says which question has no answer by its name, not by its internal
-  key (found when a first-time user ran the README on a clean machine): `no answer for
+  key (found in the walkthrough): `no answer for
   "Language"`, `sem resposta para "Idioma"`, where it said `"lang"`. The retry of a bad answer and
   the "input ended" message name the question the same way.
-- `init` on a new vault prints one line when `validate` and `lint` find nothing, where it printed
-  both full reports, about 45 lines of rule names (the second reviewer's F11): "brain-kit
-  validate and brain-kit lint --base all checked the new vault: nothing found." Clean means each
-  exits 0, wrote nothing to stderr and ended its report with its own clean verdict (not the ones
-  for stale notes, skipped rules or warnings only). When either says anything else, `init` prints
-  exactly what it printed before, under the same heading, in the same order and on the same
-  streams. `init --adopt` still prints both reports. `validate` and `lint` are unchanged.
+- `init` on a new vault prints one line when `validate` and `lint` find nothing, where it
+  printed both full reports, 38 lines of rule names (counted with `init --yes` on 01/10/2026;
+  found in the walkthrough): "brain-kit validate and brain-kit lint --base all checked the new
+  vault: nothing found." Clean means each exits 0, wrote nothing to stderr and ended its report
+  with its own clean verdict (not the ones for stale notes, skipped rules or warnings only).
+  When either says anything else, `init` prints exactly what it printed before, under the same
+  heading, in the same order and on the same streams. `init --adopt` still prints both reports.
+  `validate` and `lint` are unchanged.
 - Both READMEs now open with a box a first-time reader can follow: "Comece aqui" in
   `README.pt-BR.md`, "Start here" in `README.md`. Seven numbered steps take a machine that
   already has the requirements to the first pull request, each with its command, its time
   (install 2 min, `gh auth login` 3, the machine check 1, `init` 3, first commit 3, push 1,
-  steps 7 to 10 together 8) and a link to the detailed step. They sit under a plain "about 30
-  minutes the first time" that is arithmetic: about 10 minutes of reading plus the 21 of the
-  steps, for someone who already has Node.js, git, `gh`, Claude Code and a GitHub account. The
-  times are called estimates, not a promise, because no outside adopter has timed the path
-  yet. A glossary of twelve words
-  (terminal, PATH, repository, branch, commit, pull request, merge, vault, push gate, hook,
-  skill, plugin and marketplace) follows the box. The second stranger, who followed only the
-  Portuguese README, reached the first pull request but estimated 30 to 40 minutes for a person
-  who is not a developer, ten to fifteen of them spent reading a dense page full of technical
-  terms.
+  steps 7 to 10 together 8) and a link to the detailed step. They sit under a plain "about 35
+  minutes the first time": about 10 minutes of reading plus the 21 of the steps, plus a few
+  minutes to approve the pull request on GitHub (step 11, which the box does not time), for
+  someone who already has Node.js, git, `gh`, Claude Code and a GitHub account. The times are
+  called estimates, not a promise, because no person outside the project has timed the path
+  yet, and a test holds the number to its parts: the reading and the timed steps can never
+  come to more than it, and it stays inside the 30 to 40 minutes the second walkthrough
+  estimated. A glossary of twelve entries (terminal, PATH, repository, branch, commit, pull
+  request, merge, vault, push gate, hook, skill, and plugin with marketplace) follows the box.
+  The second walkthrough, which followed only the Portuguese README, reached the first pull
+  request, and its own estimate for a person who is not a developer was 30 to 40 minutes (an
+  agent's estimate, not a measurement), ten to fifteen of them spent reading a dense page full
+  of technical terms.
 - The long description of what the repository holds (the npm package, the plugin, the
   marketplace, the story of the npm name, the engine) moved from the top of both READMEs to a
   section of its own, "O que há no repositório" ("What is in the repository"), after the
@@ -241,7 +246,7 @@
   optional. The systemd, `loginctl enable-linger`, launchd, cron and Windows note moved to "The
   scheduled curator", the Google connectors' requirement to "Calendar and meeting notes" and
   the desktop application's to "The morning briefing", where each is introduced; nothing was
-  dropped. The stranger had found the user timers and `enable-linger` scary on the first
+  dropped. The walkthrough found the user timers and `enable-linger` scary on the first
   screen and not needed for the first pull request.
 - The install snippet now deletes the `.tgz` it packs: a new `rm -f` line, with the same
   `$TAG` variable, between the `npm i -g` line and the two `claude plugin` lines. Before, the
@@ -255,8 +260,8 @@
   `echo ... >> ~/.bashrc` and one `>> ~/.zshrc` line that put `~/.local/bin` on the PATH,
   "close the terminal and open a new one", paste the snippet again, and `brain-kit --version`
   to check. It says why not to use `sudo`, that nvm users do not get the error, and what PATH
-  is. The second stranger predicted the error for most people (the system npm prefix is
-  `/usr/local`, owned by root) but their sandbox had a writable prefix and hid it; the
+  is. The second walkthrough predicted the error for most people (the system npm prefix is
+  `/usr/local`, owned by root) but its sandbox had a writable prefix and hid it; the
   commands were run against that system prefix. Pasting the snippet a second time is safe: the
   clone line complains that the folder exists, and the plugin lines report the marketplace and
   the plugin as already installed.
@@ -280,26 +285,28 @@
   `docs/scheduling.md` gives: clone, `machine register --new`,
   `git config core.hooksPath .githooks`, `doctor`, and `schedule install` only where the
   rounds run. Before, the Portuguese README only linked to an English section. The section
-  also says that the tool's own next-steps text puts the `doctor` before the `git config` (the
-  outcome is the same, since the doctor fails `hooks-path` and names the command), that a
-  vault created by this version lists its project as `{vault}` in `include_projects` and needs
-  no edit on a second machine, and that a vault created before 0.0.9 lists the first machine's
-  project name, fails `include-projects` on the second machine, and has to switch that entry
-  to `"{vault}"` (propose it, merge it, `brain-kit sync` on both machines) rather than get the
-  second machine's name, which would stop the first machine's rounds from reading its own
-  sessions. A test compares the README's commands with the scheduling page's, in order.
+  also says that a vault created by this version lists its project as `{vault}` in
+  `include_projects` and needs no edit on a second machine, and that a vault created before
+  0.0.9 lists the first machine's project name, fails `include-projects` on the second machine,
+  and has to switch that entry to `"{vault}"` rather than get the second machine's name, which
+  would stop the first machine's rounds from reading its own sessions. The switch has an order,
+  the one `docs/scheduling.md` gives: install this version on every machine that opens the
+  vault and run `brain-kit update` first (an older kit reads `"{vault}"` as a project name and
+  fails the same check), then propose the change, merge it and run `brain-kit sync` on both
+  machines, without committing the file yourself before the merge. A test compares the
+  README's commands with the scheduling page's, in order.
+- `brain-kit machine register --new` prints its next steps in the order that works: the push
+  gate (`git config core.hooksPath .githooks`) first, then `brain-kit doctor`, then
+  `brain-kit schedule install` only on the machine that runs the rounds. It printed `doctor`
+  first and the `git config` as a fallback, and a fresh clone fails the doctor's `hooks-path`
+  check until that command is run, so the person met a failure the message itself had caused.
+  The order is now the README's and the scheduling page's, and a test holds it in both
+  languages.
 - `README.pt-BR.md` uses one name for the push check, "trava de push", the term the tool
   prints (the README said "gate de push" and the doctor "trava de push"), and replaces the
-  English fragments the stranger listed: "best effort" is now "de melhor esforço", "overlay de
+  English fragments the walkthrough listed: "best effort" is now "de melhor esforço", "overlay de
   prompt" is described as a prompt of the vault's own, "tarball" is the `.tgz` file, and
   `verified` is glossed where `verify` stamps it.
-  both full reports, about 40 lines of rule names (found when a first-time user ran the README on
-  a clean machine): "brain-kit validate and brain-kit lint --base all checked the new vault:
-  nothing found." Clean means each exits 0, wrote nothing to stderr and ended its report with its
-  own clean verdict (not the ones for stale notes, skipped rules or warnings only). When either
-  says anything else, `init` prints exactly what it printed before, under the same heading, in the
-  same order and on the same streams. `init --adopt` still prints both reports. `validate` and
-  `lint` are unchanged.
 - The `setup` skill, in both languages, and its eval criteria no longer say that the doctor
   refuses to run outside a vault and so runs only after `init`: that stopped being true when
   the doctor learned to check the machine there. Step 3 now runs `doctor` from a folder that

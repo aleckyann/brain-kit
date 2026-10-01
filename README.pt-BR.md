@@ -8,8 +8,8 @@ o clique que aprova o pedido, é a aprovação e a verificação.
 
 > **Comece aqui.** Com o Node.js 22 ou mais novo (o 24 LTS é o recomendado), o git, o `gh` (o aplicativo
 > do GitHub para o terminal), o Claude Code e uma conta no GitHub já prontos, o caminho até o seu primeiro
-> pull request leva cerca de 30 minutos na primeira vez: uns 10 de leitura e 21 nos passos abaixo. São
-> estimativas, não uma promessa. O detalhe de cada passo está em [Seu primeiro vault](#seu-primeiro-vault).
+> pull request leva cerca de 35 minutos na primeira vez: uns 10 de leitura, 21 nos passos abaixo e mais
+> alguns para aprová-lo no GitHub. São estimativas, não uma promessa. Veja [Seu primeiro vault](#seu-primeiro-vault).
 >
 > 1. Instale o kit e o plugin colando o [trecho de instalação](#instalando-uma-versão-fixa) no terminal (2 min).
 > 2. Entre no GitHub com `gh auth login` ([passo 2](#passo-2), 3 min).
@@ -292,8 +292,8 @@ como nos passos 1 e 2 de [Seu primeiro vault](#seu-primeiro-vault); depois, nest
 Deixe só uma máquina rodar as rodadas do curador: o estado é por máquina, então duas máquinas
 agendadas proporiam, cada uma, o mesmo dia. Na outra, use o vault à mão.
 
-O `brain-kit machine register --new` imprime estes passos também, mas com o `doctor` antes do
-`git config`: se você pular o passo 3, o `doctor` falha em `hooks-path` e diz o mesmo comando.
+O `brain-kit machine register --new` imprime os mesmos três passos quando termina, na mesma
+ordem (ele deixa de fora o clone e a linha do registro, que você acabou de rodar).
 
 Um vault criado por esta versão do `init` não precisa de edição nenhuma na segunda máquina,
 mesmo com o clone em outra pasta: ele lista o próprio projeto como `{vault}` em
@@ -302,10 +302,15 @@ mesmo com o clone em outra pasta: ele lista o próprio projeto como `{vault}` em
 Um vault criado antes da 0.0.9 lista o projeto pelo nome que ele tinha na primeira máquina, e o
 `doctor` da segunda dá `falha include-projects`. Não ponha no `brain-kit.config.json` o nome do
 projeto desta máquina para fazer o `doctor` calar: o arquivo é o mesmo nas duas máquinas, e a
-primeira deixaria de ler as próprias sessões. Em vez disso, troque o nome que está em
+primeira deixaria de ler as próprias sessões. O caminho para sair disso tem ordem. Primeiro,
+instale esta versão do kit em todas as máquinas que abrem o vault e rode `brain-kit update`
+dentro do vault uma vez: um kit mais velho que a 0.0.9 lê `"{vault}"` como o nome de um projeto
+e falha na mesma checagem. Depois, troque o nome que está em
 `sources.transcripts.include_projects` por `"{vault}"`, proponha a mudança com
-`brain-kit propose "Usa {vault}" --only brain-kit.config.json`, faça o merge no GitHub e rode
-`brain-kit sync` nas duas máquinas; o `doctor` passa a terminar em `0 falha(s)`. O
+`brain-kit propose "Usa {vault}" --only brain-kit.config.json` (depois de `--only`, ponha
+também qualquer outro arquivo que o `update` disse ter mudado), faça o merge no GitHub e rode
+`brain-kit sync` nas duas máquinas; o `doctor` passa a terminar em `0 falha(s)`. Não faça você
+mesmo o commit desse arquivo antes do merge do pull request. O
 [docs/scheduling.md](docs/scheduling.md#before-the-first-round) (em inglês) explica isso na
 seção "Before the first round", e traz os
 [detalhes da segunda máquina](docs/scheduling.md#the-same-vault-on-a-second-machine), inclusive
@@ -591,10 +596,10 @@ A pasta `evals/` traz um caso de `claude plugin eval` por skill e idioma; veja
 | 0 | Esqueleto, códigos de saída, packs de idioma, schemas de config, trava anti-vazamento, CI, docs | concluída, 0.0.1 no npm |
 | 1 | Validador, lint, propose (loop de PR), hook Stop, init, doctor, skills | concluída |
 | 2 | Curador agendado sobre transcripts locais, templates de agendamento | concluída |
-| 3 | Fontes de agenda e notas de reunião (best effort por desenho) | concluída |
+| 3 | Fontes de agenda e notas de reunião (de melhor esforço, por desenho) | concluída |
 | 4 | Briefing matinal | concluída |
 | 5 | Migração do vault original para o kit | em andamento. Feito: a 5a (o que um vault em migração precisa, desde a 0.0.2); o curador agendado do vault saiu dos scripts legados para o kit em 01/10/2026 (um timer de usuário do systemd às 09:30 com novas tentativas às 14:00 e às 20:00, o timer legado desativado) e as primeiras rodadas reais foram acompanhadas; o modelo lê um extrato em texto de cada transcript (0.0.5); o briefing matinal roda como tarefa do aplicativo para desktop e rodou pela primeira vez em 01/10/2026, e desde a 0.0.6 o curador reconhece a sessão dele pelo envelope que o aplicativo põe em volta do prompt da tarefa. Falta para a fase terminar: cinco rodadas do curador e três briefings sem falha inexplicada, a limpeza dos scripts legados depois de sete dias estáveis e o primeiro `verify` no vault |
-| 6 | Publicação 0.1.0 no npm | em andamento. Feito: `docs/incident-response.md`, `examples/minimal-vault`, uma caminhada de um estranho numa máquina limpa (ela achou as lacunas entre o `init` e o primeiro pull request; a 0.0.8 as fechou, menos uma lista curta de pequenas), e uma Release no GitHub com o texto do CHANGELOG para cada tag. Falta: uma execução por um adotante externo (o critério da 0.1.0: de uma máquina limpa a um vault validado, o plugin instalado, o hook ativo e o primeiro pull request em menos de 30 minutos) e a saída da fase 5 |
+| 6 | Publicação 0.1.0 no npm | em andamento. Feito: `docs/incident-response.md`, `examples/minimal-vault`, duas caminhadas numa máquina limpa feitas por um agente no papel de quem usa pela primeira vez, não por uma pessoa (a primeira achou as lacunas entre o `init` e o primeiro pull request, que a 0.0.8 fechou; a segunda seguiu só o README em português, chegou ao primeiro pull request e achou o que a 0.0.9 fechou: um README para quem não é desenvolvedor, um Node mais velho que o mínimo, um `doctor` que não conferia nada antes do primeiro vault e um projeto do vault que só funcionava na máquina que o criou), o Node mínimo aceito fixado em 22 (0.0.9), e uma Release no GitHub com o texto do CHANGELOG para cada tag. Falta: uma execução por um adotante externo, uma pessoa que não é quem mantém o projeto (o critério da 0.1.0: de uma máquina limpa a um vault validado, o plugin instalado, o hook ativo e o primeiro pull request em menos de 30 minutos no relógio do próprio adotante; a estimativa do README, com a leitura, é de cerca de 35, e nenhuma pessoa cronometrou o caminho ainda) e a saída da fase 5 |
 | 7 | Outras forjas, outros harnesses, mais fontes, cada um só quando um segundo caso real precisar | planejada |
 
 A tag mais recente é a `v0.0.8`. Toda versão a partir da 0.0.2 é só uma tag do git: o

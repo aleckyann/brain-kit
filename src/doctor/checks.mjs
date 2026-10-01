@@ -2015,8 +2015,8 @@ export const CHECKS = new Map([
 export const CHECK_IDS = Object.freeze([...CHECKS.keys()]);
 
 // The checks that need no vault, for `doctor` outside any: whether this
-// machine is ready for the kit before `init` has made one (both strangers'
-// step 0: the first's m2, the second's F24). Each is decided by what it
+// machine is ready for the kit before `init` has made one (step 0 of both
+// walkthroughs). Each is decided by what it
 // reads. Node, git, brain-kit on PATH, gh and its login read programs and
 // PATH only. claude-present and claude-real read a claude too, here the one
 // on PATH, since the claude_bin a vault records is in its machine.json

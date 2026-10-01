@@ -3,8 +3,8 @@
 // package.json says `"node": ">=22"`, and nothing said it to a person on an
 // older Node: the launcher used to import the whole CLI at once, so a Node too
 // old for some syntax or built-in in src/ would die with a SyntaxError or a
-// TypeError and a stack trace, before a word of the kit (the first stranger's
-// m13, 01/10/2026). The launcher now imports only this file, asks it, and loads
+// TypeError and a stack trace, before a word of the kit (found in the first
+// walkthrough, 01/10/2026). The launcher now imports only this file, asks it, and loads
 // the CLI with a dynamic import() once the answer is "go on".
 //
 // THE NUMBER. MINIMUM_NODE_MAJOR is the one place the kit decides the oldest

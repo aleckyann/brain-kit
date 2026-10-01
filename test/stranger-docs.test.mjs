@@ -55,7 +55,7 @@ const READMES = {
 const FIRST_RUN = {
   en: {
     box: '> **Start here.**',
-    thirty: 'about 30 minutes',
+    whole: /about (\d+) minutes the first time/,
     estimates: 'estimates',
     promise: /not a promise/,
     stepsWord: 'for the steps below',
@@ -100,7 +100,11 @@ const FIRST_RUN = {
     switchTo: /replace the name in `sources\.transcripts\.include_projects` with `"\{vault\}"`/,
     switchPropose: '`brain-kit propose "Use {vault}" --only brain-kit.config.json`',
     switchDoc: 'docs/scheduling.md#before-the-first-round',
-    toolOrder: /prints these steps too, but with `doctor` before `git config`/,
+    toolSame: /prints the same three steps after it finishes, in the same order/,
+    switchFirst: /First install this version of the kit on every machine that opens the vault and run `brain-kit update` in the vault once/,
+    switchOlder: /a kit older than 0\.0\.9 reads `"\{vault\}"` as the name of a project, and fails the same check/,
+    switchFiles: /after `--only`, add any other file that `update` said it changed/,
+    switchUncommitted: /Do not commit that file yourself before the pull request is merged/,
     stuck: '**If you get stuck**',
     traps: [/EACCES/, /`gh auth login`/, /`propose`.*commit.*`git push -u origin HEAD`/, /command not found.*Successfully installed.*whole .*EACCES/, /`doctor`.*fail.*gh auth login --hostname github\.com/, /incident-response\.md/],
     notTrap: [null, null, /configuration/, /redo the PATH/, null, null],
@@ -109,7 +113,7 @@ const FIRST_RUN = {
   },
   'pt-BR': {
     box: '> **Comece aqui.**',
-    thirty: 'cerca de 30 minutos',
+    whole: /cerca de (\d+) minutos na primeira vez/,
     estimates: 'estimativas',
     promise: /não uma promessa/,
     stepsWord: 'nos passos abaixo',
@@ -154,7 +158,11 @@ const FIRST_RUN = {
     switchTo: /troque o nome que está em `sources\.transcripts\.include_projects` por `"\{vault\}"`/,
     switchPropose: '`brain-kit propose "Usa {vault}" --only brain-kit.config.json`',
     switchDoc: 'docs/scheduling.md#before-the-first-round',
-    toolOrder: /imprime estes passos também, mas com o `doctor` antes do `git config`/,
+    toolSame: /imprime os mesmos três passos quando termina, na mesma ordem/,
+    switchFirst: /Primeiro, instale esta versão do kit em todas as máquinas que abrem o vault e rode `brain-kit update` dentro do vault uma vez/,
+    switchOlder: /um kit mais velho que a 0\.0\.9 lê `"\{vault\}"` como o nome de um projeto e falha na mesma checagem/,
+    switchFiles: /depois de `--only`, ponha também qualquer outro arquivo que o `update` disse ter mudado/,
+    switchUncommitted: /Não faça você mesmo o commit desse arquivo antes do merge do pull request/,
     stuck: '**Se travar**',
     traps: [/EACCES/, /`gh auth login`/, /`propose`.*commit.*`git push -u origin HEAD`/, /command not found.*Successfully installed.*bloco .*EACCES.* inteiro/, /`doctor`.*falha.*gh auth login --hostname github\.com/, /incident-response\.md/],
     notTrap: [null, null, /configura/, /refaça o PATH/, null, null],
@@ -444,21 +452,27 @@ for (const [lang, spec] of Object.entries(READMES)) {
     assert.ok(lines.length <= 12, `the box has ${lines.length} lines`);
     const body = lines.map((line) => line.replace(/^>\s?/, ''));
     const flat = norm(body.join(' '));
-    assert.ok(flat.includes(run.thirty), 'it says how long the whole path takes');
+    const whole = Number(run.whole.exec(flat)?.[1]);
+    assert.ok(whole > 0, 'it says how long the whole path takes');
     assert.ok(flat.includes(run.estimates), 'and that the times are estimates');
     assert.match(flat, run.promise);
-    assert.match(flat, run.ready, 'the 30 minutes assume the programs are already there');
+    assert.match(flat, run.ready, 'the minutes assume the programs are already there');
     assert.doesNotMatch(flat, /clean machine|máquina limpa/, 'a clean machine would have to install them first');
     for (const need of run.needs) assert.match(flat, need);
     const steps = body.filter((line) => /^\d+\. /.test(line));
     assert.equal(steps.length, 7);
     const minutes = steps.map((step) => Number(/\b(\d+) min\b/.exec(step)?.[1]));
     assert.deepEqual(minutes, [2, 3, 1, 3, 3, 1, 8]);
-    // The promise is arithmetic: the reading and the steps add up to the "about 30".
+    // The whole is arithmetic and never less than its parts: the reading and the timed steps add up
+    // to at most the "about N" the box prints, which adds only a few minutes for the step it does
+    // not time (approving the request on GitHub). The second walkthrough estimated 30 to 40 for a
+    // person who is not a developer, so a number under 30 or over 40 is not what that supports.
     const reading = Number(run.reading.exec(flat)?.[1]);
     const total = minutes.reduce((sum, value) => sum + value, 0);
     assert.ok(reading >= 10, `the box counts ${reading} minutes of reading`);
-    assert.ok(Math.abs(reading + total - 30) <= 2, `${reading} of reading and ${total} of steps do not come to about 30`);
+    assert.ok(reading + total <= whole, `${reading} of reading and ${total} of steps are more than the ${whole} the box promises`);
+    assert.ok(whole - (reading + total) <= 5, `the box adds ${whole - (reading + total)} minutes to ${reading} of reading and ${total} of steps`);
+    assert.ok(whole >= 30 && whole <= 40, `${whole} minutes is outside the 30 to 40 the walkthrough estimated`);
     assert.ok(flat.includes(`${total} ${run.stepsWord}`), 'and it says what the steps come to');
     const named = ['gh auth login', 'brain-kit doctor', 'brain-kit init ~/my-brain', 'git add -A', 'gh repo create my-brain --private --source . --push', 'brain-kit propose'];
     named.forEach((command, index) => assert.ok(steps[index + 1].includes(command), `step ${index + 2} names ${command}`));
@@ -609,16 +623,21 @@ for (const [lang, spec] of Object.entries(READMES)) {
     assert.match(words, run.newVault);
     assert.match(words, run.oldVault);
     assert.ok(words.includes(run.noName), 'it does not tell a person to put this machine\'s name in the shared file');
+    assert.match(words, run.switchFirst, 'the kit is brought up to date on every machine before the entry changes');
+    assert.match(words, run.switchOlder, 'and it says why: an older kit reads the token as a name');
     assert.match(words, run.switchTo);
     assert.ok(words.includes(run.switchPropose));
+    assert.match(words, run.switchFiles);
+    assert.match(words, run.switchUncommitted);
+    assert.ok(words.search(run.switchFirst) !== -1 && words.search(run.switchFirst) < words.indexOf(run.switchPropose), 'update comes before the proposal');
     assert.ok(words.includes('`brain-kit sync`'));
     assert.ok(body.includes(run.switchDoc), 'and it points at the section that explains it');
     assert.ok(read('docs/scheduling.md').split('\n').includes('## Before the first round'), 'which exists');
     const at = (heading) => text.split('\n').indexOf(heading);
     assert.ok(at(spec.first) < at(run.second) && at(run.second) < at(spec.works), 'between the first vault and the command reference');
-    // The tool's own next steps print the doctor first and the push gate only if the doctor
-    // fails; the README gives the gate first (a doctor that passes at once), and says so.
-    assert.match(norm(body), run.toolOrder);
+    // The tool's own next steps (machine.register_new_next) give the same order as the README;
+    // test/machine-register-new.test.mjs pins that order in both packs.
+    assert.match(norm(body), run.toolSame);
     const doc = read('docs/scheduling.md');
     const part = doc.slice(doc.indexOf('## The same vault on a second machine'), doc.indexOf('## Moving from a legacy lock'));
     const docCommands = part.split('\n').filter((line) => /^\d+\. `/.test(line)).map((line) => /`([^`]+)`/.exec(line)[1]);

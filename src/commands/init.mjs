@@ -405,7 +405,7 @@ export async function runInit(argv, io, t, {
   // Claude Code will give the sessions run in it: that name comes from this
   // clone's path, the configuration travels to every machine that clones the
   // vault, and on a clone elsewhere the name is a project that is not there
-  // (the second stranger's F1/D2, 01/10/2026). The entry means the vault's
+  // (found in the second walkthrough, 01/10/2026). The entry means the vault's
   // project wherever it is opened. Null when this path is too long to be named
   // as it is spelt, which makes the entry stand for nothing here: then the list
   // is left empty for doctor to say.
@@ -589,8 +589,9 @@ export async function runInit(argv, io, t, {
 //
 // For an adopted vault they write straight to the terminal under their
 // heading, as always. For a new vault their output is held while they run:
-// each full report is about 45 lines of rule names, and when BOTH say the
-// vault is clean the person gets one line instead (the second stranger's F11);
+// the two full reports are 38 lines of rule names on a new vault, and when
+// BOTH say it is clean the person gets one line instead (found in the second
+// walkthrough);
 // when either says anything else, the heading and everything they wrote is
 // printed, in the order and on the streams they wrote it, which is what was
 // printed before. A vault is clean here only when each command exits OK,

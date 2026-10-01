@@ -47,7 +47,7 @@
 //      all (hasNoCommit, src/git.mjs) is exit 1, in the dry run too, before a path, a
 //      default branch or a remote is looked at: every refusal further down
 //      would blame the configuration or the remote for what is only the
-//      first commit the person has not made yet (the second stranger's F3).
+//      first commit the person has not made yet (found in the second walkthrough).
 //   2. A proposal an earlier run published without a confirmed pull request
 //      (its record in the git directory, below) is checked with `gh pr
 //      view`: confirmed, the record is removed; otherwise its finishing

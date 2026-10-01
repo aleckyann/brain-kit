@@ -126,8 +126,8 @@
 // as it does for a list none of whose projects is there, rather than close
 // a day nobody read. Any other value lists no project (`no_projects`).
 //
-// One entry of the list is not a name: VAULT_PROJECT, "{vault}" (the second
-// stranger's F1/D2, 01/10/2026). It stands for the project Claude Code names
+// One entry of the list is not a name: VAULT_PROJECT, "{vault}" (found in the second
+// walkthrough, 01/10/2026). It stands for the project Claude Code names
 // for THIS vault's folder ON THIS MACHINE. The name of a clone's project
 // depends on the clone's path, and the configuration travels to every machine
 // that clones the vault, so a name written out was right on the machine that
