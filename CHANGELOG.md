@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.9 (tagged `v0.0.9`, not on npm)
 
 A first-time user can now follow `README.pt-BR.md` from a machine that has Node.js, git, `gh`
 and Claude Code to the first pull request, without a developer's vocabulary, and the kit says

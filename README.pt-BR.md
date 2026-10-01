@@ -589,7 +589,7 @@ A pasta `evals/` traz um caso de `claude plugin eval` por skill e idioma; veja
 
 ## Status
 
-<!-- status-reviewed: 0.0.8 -->
+<!-- status-reviewed: 0.0.9 -->
 
 | Fase | Conteúdo | Estado |
 |---|---|---|
@@ -602,7 +602,7 @@ A pasta `evals/` traz um caso de `claude plugin eval` por skill e idioma; veja
 | 6 | Publicação 0.1.0 no npm | em andamento. Feito: `docs/incident-response.md`, `examples/minimal-vault`, duas caminhadas numa máquina limpa feitas por um agente no papel de quem usa pela primeira vez, não por uma pessoa (a primeira achou as lacunas entre o `init` e o primeiro pull request, que a 0.0.8 fechou; a segunda seguiu só o README em português, chegou ao primeiro pull request e achou o que a 0.0.9 fechou: um README para quem não é desenvolvedor, um Node mais velho que o mínimo, um `doctor` que não conferia nada antes do primeiro vault e um projeto do vault que só funcionava na máquina que o criou), o Node mínimo aceito fixado em 22 (0.0.9), e uma Release no GitHub com o texto do CHANGELOG para cada tag. Falta: uma execução por um adotante externo, uma pessoa que não é quem mantém o projeto (o critério da 0.1.0: de uma máquina limpa a um vault validado, o plugin instalado, o hook ativo e o primeiro pull request em menos de 30 minutos no relógio do próprio adotante; a estimativa do README, com a leitura, é de cerca de 35, e nenhuma pessoa cronometrou o caminho ainda) e a saída da fase 5 |
 | 7 | Outras forjas, outros harnesses, mais fontes, cada um só quando um segundo caso real precisar | planejada |
 
-A tag mais recente é a `v0.0.8`. Toda versão a partir da 0.0.2 é só uma tag do git: o
+A tag mais recente é a `v0.0.9`. Toda versão a partir da 0.0.2 é só uma tag do git: o
 pacote `second-brain-kit` no npm continua com apenas a 0.0.1, o esqueleto da fase 0.
 
 O kit está em construção. A fase 1 está concluída: o validador, o linter, as travas de push,

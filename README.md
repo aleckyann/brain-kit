@@ -578,7 +578,7 @@ marketplace. Inside a vault:
 
 ## Status
 
-<!-- status-reviewed: 0.0.8 -->
+<!-- status-reviewed: 0.0.9 -->
 
 | Phase | Content | State |
 |---|---|---|
@@ -591,7 +591,7 @@ marketplace. Inside a vault:
 | 6 | 0.1.0 release on npm | in progress. Done: `docs/incident-response.md`, `examples/minimal-vault`, two walkthroughs on a clean machine by an agent playing a first-time user, not a person (the first found the gaps between `init` and the first pull request, which 0.0.8 closed; the second followed only the Portuguese README, reached the first pull request, and found what 0.0.9 closed: a README for someone who is not a developer, a Node older than the minimum, a `doctor` that checked nothing before the first vault, and a vault's project that only worked on the machine that made it), the supported Node set at 22 (0.0.9), and a GitHub Release with the CHANGELOG text for every tag. Open: a run by an external adopter, a person who is not the maintainer (the 0.1.0 criterion: from a clean machine to a validated vault, the plugin installed, the hook active and a first pull request in under 30 minutes by the adopter's own clock; the README's estimate, with the reading, is about 35, and no person has timed the path yet), and the exit of Phase 5 |
 | 7 | Other forges, other harnesses, more sources, each only when a second real case needs it | planned |
 
-The latest tag is `v0.0.8`. Every version from 0.0.2 on is a git tag only: the package
+The latest tag is `v0.0.9`. Every version from 0.0.2 on is a git tag only: the package
 `second-brain-kit` on npm still has only 0.0.1, the Phase 0 skeleton.
 
 The kit is under construction. Phase 1 is complete: the validator, the linter, the push
