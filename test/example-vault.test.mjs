@@ -12,15 +12,23 @@
 // belongs to a real machine or a real person, a git directory, or any file
 // from the state directory that `init` keeps outside a vault.
 //
+// Frontmatter is read with the kit's own reader (src/frontmatter.mjs), the one
+// `validate` uses, so a note that `validate` accepts cannot slip past a check
+// here because it is spelled with CRLF line endings, a byte-order mark or a
+// quoted key. A note whose frontmatter cannot be read fails; it is never skipped.
+//
 // The fictional owner is Ana and every address is on example.com, per the
 // repository's standing rule against real names in anything public.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { cpSync, existsSync, lstatSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
-import { KIT_ROOT } from '../src/version.mjs';
+import { KIT_ROOT, kitVersion } from '../src/version.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
+import { frontmatterKeyLine, readEntries, readMapping, splitFrontmatter } from '../src/frontmatter.mjs';
+import { STATE_FILES } from '../src/state.mjs';
+import { sha256Of } from '../src/manifest.mjs';
 import { makeTempDir } from './helpers/tmp.mjs';
 import { CLEAN_ENV, git } from './helpers/git-repo.mjs';
 
@@ -37,9 +45,10 @@ const OWNER = 'human:ana';
 const INIT_ACTOR = 'process:brain-kit-init';
 const COLLECTIONS = Object.freeze(['people', 'organizations', 'projects', 'decisions']);
 
-// Files `init` keeps outside a vault, in the state directory, or that exist
-// only in a real clone. None of them belongs in an example.
-const STATE_FILES = Object.freeze(['machine.json', 'watermark.json', 'last-run.json', 'questions.log']);
+// What `init` keeps outside a vault, in the state directory (the names the kit
+// itself defines in src/state.mjs) and in machine.json beside them. None of it
+// belongs in an example.
+const STATE_NAMES = new Set([...Object.values(STATE_FILES), 'machine.json']);
 
 function requireExample() {
   assert.ok(existsSync(EXAMPLE) && statSync(EXAMPLE).isDirectory(), `examples/minimal-vault is missing from the repository (${EXAMPLE})`);
@@ -79,22 +88,26 @@ function read(entry) {
   return readFileSync(entry.path, 'utf8');
 }
 
-// The frontmatter block of a note as an array of lines, or null when the
-// file does not start with one. Only what these tests need: the top-level
-// keys and the `by` under `generated`.
-function frontmatterLines(text) {
-  if (!text.startsWith('---\n')) return null;
-  const end = text.indexOf('\n---', 4);
-  return end === -1 ? null : text.slice(4, end).split('\n');
+function exampleConfig() {
+  return JSON.parse(readFileSync(join(EXAMPLE, 'brain-kit.config.json'), 'utf8'));
 }
 
-function generatedBy(lines) {
-  const at = lines.findIndex((line) => /^generated:\s*$/.test(line));
-  if (at === -1) return null;
-  for (let i = at + 1; i < lines.length && /^\s+/.test(lines[i]); i++) {
-    const match = /^\s+by:\s*(.+?)\s*$/.exec(lines[i]);
-    if (match) return match[1];
-  }
+// Markdown the example carries without frontmatter, on purpose: an index (the
+// root one holds only okf_version), the log, the README (validate.ignore_paths
+// lists it) and the pull request template under .brain-kit/.
+function carriesNoFrontmatter(entry) {
+  return entry.name === 'index.md' || entry.rel === exampleConfig().taxonomy.log || entry.rel === 'README.md' || entry.rel.startsWith('.brain-kit/');
+}
+
+// The frontmatter of a markdown file as the kit reads it, or null for a file
+// that has none on purpose. A file that should have one and has none, or opens
+// one it never closes, fails here instead of being skipped.
+function frontmatterOf(entry) {
+  const text = read(entry);
+  const { frontmatter, hasFrontmatter } = splitFrontmatter(text);
+  assert.ok(hasFrontmatter || !/^\uFEFF?---/.test(text), `${entry.rel} opens a frontmatter block it never closes`);
+  if (hasFrontmatter) return frontmatter;
+  assert.ok(carriesNoFrontmatter(entry), `${entry.rel} has no readable frontmatter`);
   return null;
 }
 
@@ -113,8 +126,8 @@ function stateDir() {
   return makeTempDir('brain-kit-example-state-');
 }
 
-function cli(args, { cwd, state }) {
-  return spawnSync(process.execPath, [BIN, ...args], {
+function cli(args, { cwd, state, script = BIN }) {
+  return spawnSync(process.execPath, [script, ...args], {
     cwd,
     encoding: 'utf8',
     env: { ...CLEAN_ENV, BRAIN_KIT_LANG: 'en', BRAIN_KIT_STATE_DIR: state },
@@ -155,17 +168,43 @@ test('the commands the README gives work as written, from the repository root', 
   requireExample();
   const readme = readFileSync(join(EXAMPLE, 'README.md'), 'utf8');
   for (const args of [['validate'], ['lint', '--base', 'all']]) {
-    const command = `brain-kit -C examples/minimal-vault ${args.join(' ')}`;
+    const command = `node bin/brain-kit.mjs -C examples/minimal-vault ${args.join(' ')}`;
     assert.ok(readme.includes(`${command}\n`), `the README does not give "${command}"`);
-    const result = cli(['-C', 'examples/minimal-vault', ...args, '--json'], { cwd: KIT_ROOT, state: stateDir() });
+    const result = cli(['-C', 'examples/minimal-vault', ...args, '--json'], { cwd: KIT_ROOT, state: stateDir(), script: 'bin/brain-kit.mjs' });
     assert.equal(result.status, EXIT.OK, `"${command}" failed:\n${result.stdout}\n${result.stderr}`);
     assert.deepEqual(JSON.parse(result.stdout).findings, [], `"${command}" found something`);
   }
 });
 
+test('the example\'s managed files are untouched since init and are what this kit writes today (update --check at the running version)', () => {
+  requireExample();
+  // update keeps a managed file the owner edited, and says nothing is pending,
+  // so the checksums the manifest records are checked here too.
+  const manifest = JSON.parse(readFileSync(join(EXAMPLE, '.brain-kit', 'manifest.json'), 'utf8'));
+  const managed = manifest.files.filter((file) => file.class === 'managed');
+  assert.ok(managed.length >= 5, `the manifest records only ${managed.length} managed files`);
+  for (const file of managed) {
+    const text = readFileSync(join(EXAMPLE, file.path), 'utf8').replace(/\r\n/g, '\n'); // as the manifest hashes it
+    assert.equal(sha256Of(text), file.sha256, `${file.path} was edited since init wrote it`);
+  }
+  const vault = scratchCopy();
+  // `update --check` also reports a difference between the kit_version the
+  // example records and the running kit, which says nothing about the files and
+  // changes on every release. Compared at the running version, only a managed
+  // file that differs from what the kit would write can fail it.
+  const configPath = join(vault, 'brain-kit.config.json');
+  const config = readFileSync(configPath, 'utf8');
+  const current = config.replace(/("kit_version":\s*)"[^"]*"/, `$1"${kitVersion()}"`);
+  assert.ok(current.includes(`"kit_version": "${kitVersion()}"`), 'the example config has no kit_version to compare at');
+  writeFileSync(configPath, current);
+  const result = cli(['update', '--check'], { cwd: vault, state: stateDir() });
+  assert.equal(result.status, EXIT.OK, `a managed file of the example is not what this kit writes now (a template changed?).\nRefresh it with "node bin/brain-kit.mjs -C examples/minimal-vault update" and commit the result:\n${result.stdout}\n${result.stderr}`);
+  assert.match(result.stdout, /Nothing to update\./);
+});
+
 test('the example\'s configuration is Ana\'s, keeps every connector module off, and still forbids the em dash', () => {
   requireExample();
-  const config = JSON.parse(readFileSync(join(EXAMPLE, 'brain-kit.config.json'), 'utf8'));
+  const config = exampleConfig();
   assert.equal(config.owner.handle, 'ana');
   assert.equal(config.owner.email, 'ana@example.com');
   assert.equal(config.actors.human, OWNER);
@@ -185,11 +224,11 @@ test('no note carries verified: a human confirmation is not faked', () => {
   requireExample();
   const checked = [];
   for (const entry of markdown()) {
-    const lines = frontmatterLines(read(entry));
-    if (lines === null) continue;
+    const frontmatter = frontmatterOf(entry);
+    if (frontmatter === null) continue; // frontmatter-free on purpose, and frontmatterOf checked it may be
     checked.push(entry.rel);
-    const verified = lines.filter((line) => /^verified\s*:/.test(line));
-    assert.deepEqual(verified, [], `${entry.rel} carries verified in its frontmatter`);
+    // The kit's own key finder: it also sees a quoted key and a CRLF or BOM file.
+    assert.equal(frontmatterKeyLine(frontmatter, 'verified'), null, `${entry.rel} carries verified in its frontmatter`);
   }
   assert.ok(checked.length >= 15, `only ${checked.length} notes with frontmatter were read`);
 });
@@ -198,11 +237,13 @@ test('every note is attributed to human:ana, or to the init that wrote it, and t
   requireExample();
   const seen = new Map();
   for (const entry of notes()) {
-    if (entry.name === 'index.md') continue; // an index has no frontmatter, but the root's okf_version
-    const lines = frontmatterLines(read(entry));
-    if (lines === null) continue; // the log: no frontmatter
-    const by = generatedBy(lines);
-    assert.ok(by !== null, `${entry.rel} has no generated.by`);
+    const frontmatter = frontmatterOf(entry);
+    if (frontmatter === null) continue; // an index or the log: frontmatter-free on purpose
+    if (entry.name === 'index.md') continue; // the root index holds only okf_version
+    const generated = readMapping(frontmatter, 'generated');
+    assert.ok(generated, `${entry.rel} has no readable generated mapping`);
+    const by = generated.by;
+    assert.ok(typeof by === 'string' && by !== '', `${entry.rel} has no generated.by`);
     // A template is copied to make a note, and says so: its actor is the
     // placeholder to be replaced.
     if (entry.rel.startsWith('templates/')) {
@@ -213,18 +254,27 @@ test('every note is attributed to human:ana, or to the init that wrote it, and t
     seen.set(entry.rel, by);
   }
   for (const dir of COLLECTIONS) {
-    const notes = [...seen.keys()].filter((rel) => rel.startsWith(`${dir}/`));
-    assert.ok(notes.length >= 1, `the example has no note under ${dir}/`);
-    for (const rel of notes) assert.equal(seen.get(rel), OWNER, `${rel} must be Ana's`);
+    const inDir = [...seen.keys()].filter((rel) => rel.startsWith(`${dir}/`));
+    assert.ok(inDir.length >= 1, `the example has no note under ${dir}/`);
+    for (const rel of inDir) assert.equal(seen.get(rel), OWNER, `${rel} must be Ana's`);
   }
-  assert.equal(seen.get('pending/follow-ups.md'), OWNER);
-  assert.equal(seen.get('pending/promises.md'), OWNER);
-  assert.ok([...seen.values()].includes(INIT_ACTOR), 'no note is left as init wrote it: the example is not made by init any more');
+  for (const rel of ['core/identity.md', 'pending/follow-ups.md', 'pending/promises.md']) assert.equal(seen.get(rel), OWNER, `${rel} must be Ana's`);
+  // The notes the manifest records as managed are exactly as `init` wrote them
+  // (their checksums say so), so they keep init's actor: stamping them
+  // human:ana would claim a person wrote text a program did.
+  const manifest = JSON.parse(readFileSync(join(EXAMPLE, '.brain-kit', 'manifest.json'), 'utf8'));
+  let managed = 0;
+  for (const file of manifest.files) {
+    if (file.class !== 'managed' || !seen.has(file.path)) continue;
+    managed += 1;
+    assert.equal(seen.get(file.path), INIT_ACTOR, `${file.path} is managed by the kit and must keep init's actor`);
+  }
+  assert.ok(managed >= 4, `only ${managed} managed notes were pinned to init's actor`);
 });
 
 test('the example shows the vault\'s habits: dated log entries with the pack\'s markers, an open dated pending item, a sourced and footnoted claim', () => {
   requireExample();
-  const config = JSON.parse(readFileSync(join(EXAMPLE, 'brain-kit.config.json'), 'utf8'));
+  const config = exampleConfig();
   const markers = Object.values(config.taxonomy.log_markers);
   const log = readFileSync(join(EXAMPLE, config.taxonomy.log), 'utf8');
   const headings = [...log.matchAll(/^## (\d{4}-\d{2}-\d{2})$/gm)].map((match) => match[1]);
@@ -239,10 +289,14 @@ test('the example shows the vault\'s habits: dated log entries with the pack\'s 
   const rows = open.split('\n').filter((line) => /^\| \d{4}-\d{2}-\d{2} \|/.test(line));
   assert.ok(rows.length >= 1, 'no open follow-up with a date');
 
-  const org = readFileSync(join(EXAMPLE, 'organizations', 'example-studio.md'), 'utf8');
-  assert.match(org, /^sources:\n(?:  - .*\n(?:    .*\n)*)+/m, 'the organization note has no sources');
-  assert.match(org, /[a-z.]\[\^site\]/, 'a claim carries no footnote');
-  assert.match(org, /^\[\^site\]: /m, 'the footnote is not defined');
+  const { frontmatter, body } = splitFrontmatter(readFileSync(join(EXAMPLE, 'organizations', 'example-studio.md'), 'utf8'));
+  const sources = readEntries(frontmatter, 'sources');
+  assert.ok(Array.isArray(sources) && sources.length >= 2, 'the organization note has fewer than two sources');
+  for (const source of sources) {
+    assert.ok(source.id && source.resource, 'a source of the organization note lacks an id or a resource');
+    assert.match(body, new RegExp(`[a-z.]\\[\\^${source.id}\\]`), `no claim carries the footnote [^${source.id}]`);
+    assert.match(body, new RegExp(`^\\[\\^${source.id}\\]: `, 'm'), `the footnote [^${source.id}] is not defined`);
+  }
 });
 
 // --- nothing from a real machine or a real person -----------------------------
@@ -253,7 +307,7 @@ test('the example holds no git directory, no state file and no symbolic link', (
   assert.ok(entries.length >= 30, `the example holds only ${entries.length} entries`);
   const gitEntries = entries.filter((entry) => entry.name === '.git');
   assert.deepEqual(gitEntries.map((entry) => entry.rel), [], 'the example carries a .git entry');
-  const state = entries.filter((entry) => STATE_FILES.includes(entry.name));
+  const state = entries.filter((entry) => STATE_NAMES.has(entry.name));
   assert.deepEqual(state.map((entry) => entry.rel), [], 'the example carries a file from the state directory');
   const links = entries.filter((entry) => entry.stat.isSymbolicLink());
   assert.deepEqual(links.map((entry) => entry.rel), [], 'the example carries a symbolic link');
@@ -263,7 +317,7 @@ test('the example holds no git directory, no state file and no symbolic link', (
 // directory, a Windows drive, a file: URL, or a home written with a tilde.
 // `/memory/log.md`-style paths are not matched: they are resolved from the
 // vault root, which `sources[].resource` is defined to do.
-const ABSOLUTE_PATH = /(?:^|[\s"'`(=:[,])(?:\/(?:home|Users|tmp|var|root|etc|opt|mnt|usr|srv|run|media|private|Volumes)\/|~\/|[A-Za-z]:[\\/]|file:\/\/)/;
+const ABSOLUTE_PATH = /(?:^|[\s"'`(=:[,*_|>])(?:\/(?:home|Users|tmp|var|root|etc|opt|mnt|usr|srv|run|media|private|Volumes)\/|~\/|[A-Za-z]:[\\/]|file:\/\/)/;
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 
 test('the example holds no absolute path and no e-mail address outside example.com', () => {
@@ -307,12 +361,12 @@ test('every link and every sources resource of the example resolves to a file in
       assert.ok(inside(path), `${entry.rel}: the link "${target}" leaves the example`);
       assert.ok(existsSync(path) && statSync(path).isFile(), `${entry.rel}: the link "${target}" resolves to no file`);
     }
-    const lines = frontmatterLines(text);
-    if (lines === null) continue;
-    for (const line of lines) {
-      const match = /^\s+(?:- )?resource:\s*(\S+)\s*$/.exec(line);
-      if (!match) continue;
-      const resource = match[1];
+    const frontmatter = frontmatterOf(entry);
+    if (frontmatter === null) continue;
+    const sources = readEntries(frontmatter, 'sources');
+    assert.notEqual(sources, undefined, `${entry.rel}: its sources cannot be read`);
+    for (const { resource } of sources ?? []) {
+      assert.ok(typeof resource === 'string' && resource !== '', `${entry.rel}: a source has no resource`);
       if (/^https:\/\/example\.com(?:\/|$)/.test(resource)) continue;
       assert.ok(resource.startsWith('/'), `${entry.rel}: the source "${resource}" is neither a vault path nor an example.com address`);
       const path = resolve(root, `.${resource}`);
