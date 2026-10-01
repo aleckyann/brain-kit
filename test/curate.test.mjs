@@ -418,6 +418,14 @@ test('a dirty tree postpones the round with 75, naming the file, before anything
   assert.match(r.stderr, /draft\.md/);
   assert.equal(w.lastRun().reasonCode, 'dirty_tree');
   assert.match(w.lastRun().reason, /draft\.md \(\d{4}-/, 'the round\'s own reason names the file');
+  // What the person reads (the notification and last-run.json) and what sync printed just above it
+  // agree: propose them, or keep them on another branch or in a stash -u; never commit them on the
+  // default branch (S4 of the review of G2b).
+  for (const text of [w.lastRun().reason, r.stderr]) {
+    assert.match(text, /brain-kit propose "<summary>" --only <paths>/);
+    assert.match(text, /git stash -u/);
+    assert.doesNotMatch(text, /Commit, propose or discard|Commit, move or remove/);
+  }
   assert.equal(traces(w).fetched, false);
   assert.equal(traces(w).model, false);
 });

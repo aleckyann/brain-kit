@@ -814,6 +814,23 @@ export function resolveCommit(root, ref, { env = process.env } = {}) {
   return commitOf(root, ref, env);
 }
 
+// True for a repository that has never had a commit: HEAD names nothing and
+// no reference of any kind reaches a commit. `rev-list --all` names one when
+// there is one anywhere (another branch, a remote-tracking branch, a tag, a
+// proposal's local ref) and names none, exit 0, only for such a repository.
+// HEAD alone is not the test (that is hasAnyCommit's, above, which the lint
+// reader needs for its own reason): the checked-out branch may be an orphan
+// one (`git checkout --orphan`) in a repository with history, and proposing
+// from it works, since the pull request is built on the remote's tip and
+// never on HEAD. A git that cannot answer is never read as "no commit".
+// `propose` and `sync` ask it first, so a vault `init` has left before its
+// first commit is told to make that commit, whatever else is also missing.
+export function hasNoCommit(root, { env = process.env } = {}) {
+  if (commitOf(root, 'HEAD', env) !== null) return false;
+  const reached = ask(root, ['rev-list', '-n', '1', '--all'], { env });
+  return reached.status === 0 && reached.stdout.trim() === '';
+}
+
 function refusedAsOption(value, what) {
   if (typeof value !== 'string' || value === '' || value.startsWith('-')) {
     throw new TypeError(`${what} must be a non-empty string that does not begin with a dash (got ${JSON.stringify(value)})`);

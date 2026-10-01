@@ -9,6 +9,12 @@
 // new, empty folder for `init`, and the notes moved in); `--adopt` says,
 // for each thing missing, how to supply it, with the index.md as an example
 // of three lines. Message-only: nothing here makes adopt create a file.
+//
+// Wherever a message sends a person to `git init`, it sends them to write the
+// `.gitignore` first (the README and src/commands/init.mjs ask for that order
+// on purpose: the manifest names every file git would publish, and the first
+// commit the kit suggests is `git add -A`, so what is kept out of git has to
+// be kept out before it).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -75,6 +81,13 @@ for (const lang of ['en', 'pt-BR']) {
     assert.match(r.stderr, /index\.md/, 'what adopting needs: an index.md at the root');
     assert.doesNotMatch(r.stderr, /\{[a-z_]+\}/);
     assert.deepEqual(listing(w.base), before, 'nothing was written');
+  });
+
+  test(`${lang}: wherever a message tells a person to run git init it tells them to write the .gitignore first, in the same clause`, () => {
+    for (const key of ['init.not_empty', 'init.adopt_no_index', 'init.adopt_not_repository']) {
+      const text = t(key, { dir: '/x', count: 2 });
+      assert.match(text, /\.gitignore[^.]*git init/, `${key}: ${text}`);
+    }
   });
 
   test(`${lang}: init in a folder that is already a git repository says what adopting still needs, which is the index.md and not git init`, () => {
@@ -146,13 +159,17 @@ for (const lang of ['en', 'pt-BR']) {
     // 3. adopt then says to make the folder a repository.
     const noRepository = w.kit(['init', '--adopt', w.folder]);
     assert.equal(noRepository.status, EXIT.USAGE);
-    assert.match(noRepository.stderr, /git init/);
+    assert.match(noRepository.stderr, /\.gitignore[^.]*git init/, 'it says the .gitignore first, then git init');
+    // The order it asks for: what is kept out of git is written down before git exists.
+    writeFileSync(join(w.folder, '.gitignore'), 'scratch.tmp\n');
+    writeFileSync(join(w.folder, 'scratch.tmp'), 'kept out of git\n');
     assert.equal(w.git(['init', '-q']).status, 0);
     // 4. and now it adopts: whatever the checks that follow find, the refusal is over.
     const adopted = w.kit(['init', '--adopt', w.folder, '--yes', '--lang', lang]);
     assert.notEqual(adopted.status, EXIT.USAGE, adopted.stdout + adopted.stderr);
     assert.equal(existsSync(join(w.folder, 'brain-kit.config.json')), true, adopted.stdout + adopted.stderr);
     assert.equal(existsSync(join(w.folder, MANIFEST_PATH)), true);
+    assert.doesNotMatch(readFileSync(join(w.folder, MANIFEST_PATH), 'utf8'), /scratch\.tmp/, 'what the .gitignore keeps out is not even named');
     assert.equal(readFileSync(join(w.folder, 'idea.md'), 'utf8'), '# An idea\n', 'no note was touched');
   });
 }

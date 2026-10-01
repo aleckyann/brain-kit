@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- `propose` in a repository that has no commit yet says so, and gives the fix. A vault made
+- `propose` and `sync` in a repository that has no commit yet say so, and give the fix. A vault made
   by `init` has no commit until its owner makes one, and `propose` run before that said the
   default branch could not be found and sent the person to `vault.default_branch` in the
   configuration; following it led to "no remote called origin", to a `gh repo create` that
@@ -12,14 +12,23 @@
   the real run alike (exit 1, as the refusals it used to run into), and names the two
   commands (`git add -A`, `git commit -m "first commit"`). It judges the repository, not
   HEAD alone, so a repository with history whose checked-out branch is an orphan still
-  proposes.
+  proposes. `sync` asks the same question first (`sync.no_commit`, exit 1, one helper in
+  `src/git.mjs` for both): in such a vault it used to say "do not commit them on the default
+  branch" and offer a `git stash`, which fails there ("You do not have the initial commit
+  yet"), and the `propose` it pointed to said to make the first commit.
 - `sync` with changes that were not committed no longer says "Commit, move or remove them",
   which was the opposite of what the READMEs say (the file a session changed stays
   uncommitted until its pull request is merged; committed on the default branch it makes
   `sync` report "diverged" later). It names both honest paths: propose them with
   `brain-kit propose "<summary>" --only <paths>` and run `sync` again after the merge,
   without committing them on the default branch; or, if they are yours to keep, commit them
-  on another branch or stash them.
+  on another branch or stash them with `git stash -u` (the `-u` is what saves a new file:
+  plain `git stash` answers "No local changes to save" and `sync` postpones again with the
+  same sentence). A round of `curate` prints its own sentence right under sync's, and it is
+  the text that goes into the failure notification and `last-run.json`; it said "Commit,
+  propose or discard them", and `verify` said "Commit, move or remove them". Both now say the
+  same two paths (messages only, keys and placeholders unchanged; the row for exit 75 in
+  `docs/scheduling.md` too).
 - `sync` no longer offers a recovery command for a ref it has just removed. After a merge it
   printed how to get a file back with `git restore --source=refs/brain-kit/proposed/<branch>`
   and, one line below, that it had removed that very ref; the command failed with "could not
@@ -51,8 +60,9 @@
   what adopting needs (a git repository, and an `index.md` at the root that lists the
   folders) and the simplest way out (`brain-kit init <new-dir>` in a new, empty folder, and
   the notes moved in); `--adopt` says how to supply what is missing, with a three-line
-  `index.md` as an example, and `git init` for a folder that is not a repository. Message-only:
-  `--adopt` still writes nothing when it refuses.
+  `index.md` as an example, and `git init` for a folder that is not a repository, after
+  writing its `.gitignore` (so nothing kept out of git is ever committed, the order the
+  README asks for). Message-only: `--adopt` still writes nothing when it refuses.
 - Three Portuguese sentences a Brazilian reader found wrong are rewritten: the dry run's
   "Proporia X como ..., enviados para ..." (a plural participle for one file), the first
   line of a session ("Retrato da sessão tirado", a word-for-word "snapshot taken") and the
