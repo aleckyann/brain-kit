@@ -263,8 +263,8 @@ que se instala. A lista das versões, e o que cada uma fez, está no
 [CHANGELOG](CHANGELOG.md) e na página de Releases do repositório.
 `npm i -g github:aleckyann/brain-kit#<tag>` instala uma tag onde o npm pode baixar pacotes
 de git; onde não pode (o npm recusa com `EALLOWGIT`), empacote a tag você mesmo, instale o
-tarball e guarde a cópia desempacotada para o plugin. As primeiras linhas abaixo descobrem
-a tag mais recente, então nenhuma delas cita uma versão:
+tarball e guarde a cópia desempacotada para o plugin. A segunda linha descobre
+a tag mais recente, então nada abaixo cita uma versão:
 
 ```bash
 git clone https://github.com/aleckyann/brain-kit.git
@@ -276,7 +276,7 @@ claude plugin marketplace add ~/.local/share/brain-kit/$TAG
 claude plugin install brain-kit@brain-kit --scope user
 ```
 
-`claude plugin marketplace add aleckyann/brain-kit` segue o branch padrão do repositório.
+`claude plugin marketplace add aleckyann/brain-kit` segue, em vez disso, o branch padrão do repositório.
 O CI de um vault pode fixar o kit do mesmo jeito, baixando-o no commit da tag ao lado do
 vault.
 
@@ -312,7 +312,7 @@ A pasta `evals/` traz um caso de `claude plugin eval` por skill e idioma; veja
 | 2 | Curador agendado sobre transcripts locais, templates de agendamento | concluída |
 | 3 | Fontes de agenda e notas de reunião (best effort por desenho) | concluída |
 | 4 | Briefing matinal | concluída |
-| 5 | Migração do vault original para o kit | em andamento. Feito: a 5a (o que um vault em migração precisa, desde a 0.0.2); o curador agendado do vault saiu dos scripts legados para o kit em 01/10/2026 (um timer de usuário do systemd às 09:30 com novas tentativas às 14:00 e às 20:00, o timer legado desativado) e as primeiras rodadas reais foram acompanhadas; o modelo lê um extrato em texto de cada transcript (0.0.5); o briefing matinal roda como tarefa do aplicativo para desktop e rodou pela primeira vez em 01/10/2026, e desde a 0.0.6 o curador reconhece a sessão dele pelo envelope que o aplicativo põe em volta do prompt da tarefa. Falta para a fase terminar: cinco rodadas do curador e três briefings sem falha inexplicada, a limpeza dos scripts legados depois de sete dias estáveis e o primeiro `verify` |
+| 5 | Migração do vault original para o kit | em andamento. Feito: a 5a (o que um vault em migração precisa, desde a 0.0.2); o curador agendado do vault saiu dos scripts legados para o kit em 01/10/2026 (um timer de usuário do systemd às 09:30 com novas tentativas às 14:00 e às 20:00, o timer legado desativado) e as primeiras rodadas reais foram acompanhadas; o modelo lê um extrato em texto de cada transcript (0.0.5); o briefing matinal roda como tarefa do aplicativo para desktop e rodou pela primeira vez em 01/10/2026, e desde a 0.0.6 o curador reconhece a sessão dele pelo envelope que o aplicativo põe em volta do prompt da tarefa. Falta para a fase terminar: cinco rodadas do curador e três briefings sem falha inexplicada, a limpeza dos scripts legados depois de sete dias estáveis e o primeiro `verify` no vault |
 | 6 | Publicação 0.1.0 no npm | planejada, não começou; precisa de `docs/incident-response.md`, `examples/minimal-vault` e de uma execução por um adotante externo, e nenhum dos três existe ainda |
 | 7 | Outras forjas, outros harnesses, mais fontes, cada um só quando um segundo caso real precisar | planejada |
 
@@ -352,7 +352,7 @@ Leia primeiro o [CONTRIBUTING.md](CONTRIBUTING.md). Todo clone precisa rodar
 Leia [docs/rationale.md](docs/rationale.md) para o raciocínio e
 [docs/incidents.md](docs/incidents.md) para as falhas datadas que produziram cada guarda.
 
-## Requisitos (alvo)
+## Requisitos
 
 Node.js >= 24, git, a CLI do GitHub (`gh`) autenticada e o Claude Code; para as fontes de
 agenda e de notas de reunião, os conectores Google Calendar e Google Drive do claude.ai,

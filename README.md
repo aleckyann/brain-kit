@@ -254,8 +254,8 @@ one to install. The list of versions, and what each one did, is in the
 [CHANGELOG](CHANGELOG.md) and on the Releases page of the repository.
 `npm i -g github:aleckyann/brain-kit#<tag>` installs a tag where npm may fetch git
 packages; where it may not (npm refuses with `EALLOWGIT`), pack the tag yourself, install
-the tarball, and keep the unpacked copy for the plugin. The first lines below find the
-latest tag, so nothing in them names a version:
+the tarball, and keep the unpacked copy for the plugin. The second line finds the
+latest tag, so nothing below names a version:
 
 ```bash
 git clone https://github.com/aleckyann/brain-kit.git
@@ -303,7 +303,7 @@ marketplace. Inside a vault:
 | 2 | Scheduled curator over local transcripts, scheduler templates | done |
 | 3 | Calendar and meeting-notes sources (best effort by design) | done |
 | 4 | Morning briefing | done |
-| 5 | Migration of the original vault onto the kit | in progress. Done: 5a (what a migrating vault needs, since 0.0.2); the vault's scheduled curator moved from its legacy scripts to the kit on 01/10/2026 (a systemd user timer at 09:30 with retries at 14:00 and 20:00, the legacy timer disabled) and its first real rounds were supervised; the model reads a text digest of each transcript (0.0.5); the morning briefing runs as a desktop application task and ran for the first time on 01/10/2026, and since 0.0.6 the curator recognises its session through the envelope the application wraps around the task's prompt. Open for the exit of the phase: five curator rounds and three briefings without an unexplained failure, the cleanup of the legacy scripts after seven stable days, and the first `verify` |
+| 5 | Migration of the original vault onto the kit | in progress. Done: 5a (what a migrating vault needs, since 0.0.2); the vault's scheduled curator moved from its legacy scripts to the kit on 01/10/2026 (a systemd user timer at 09:30 with retries at 14:00 and 20:00, the legacy timer disabled) and its first real rounds were supervised; the model reads a text digest of each transcript (0.0.5); the morning briefing runs as a desktop application task and ran for the first time on 01/10/2026, and since 0.0.6 the curator recognizes its session through the envelope the application wraps around the task's prompt. Open for the exit of the phase: five curator rounds and three briefings without an unexplained failure, the cleanup of the legacy scripts after seven stable days, and the first `verify` on the vault |
 | 6 | 0.1.0 release on npm | planned, not started; it needs `docs/incident-response.md`, `examples/minimal-vault` and a run by an external adopter, none of which exists yet |
 | 7 | Other forges, other harnesses, more sources, each only when a second real case needs it | planned |
 
@@ -343,7 +343,7 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Every clone must run
 Read [docs/rationale.md](docs/rationale.md) for the reasoning and
 [docs/incidents.md](docs/incidents.md) for the dated failures that produced every guard.
 
-## Requirements (target)
+## Requirements
 
 Node.js >= 24, git, the GitHub CLI (`gh`) logged in, and Claude Code; for the calendar and
 meeting-notes sources, the claude.ai Google Calendar and Google Drive connectors, connected

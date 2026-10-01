@@ -263,8 +263,8 @@
 
 ## 0.0.2 (tagged `v0.0.2` on 26/09/2026, not on npm)
 
-The version the reference vault installs, from the tag (see the README, "Installing a
-fixed version"). It holds every phase below, 1 to 5a.
+The first version the reference vault installed, from the tag. It holds every phase
+below, 1 to 5a.
 
 ### Phase 1, slice 1A: the validator
 
