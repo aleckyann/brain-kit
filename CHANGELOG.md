@@ -13,16 +13,30 @@
   source's window, in order of time, one line each (`[HH:MM user] <text>`,
   `[HH:MM assistant] <text>`, the date in front when the window spans several days, on the
   vault's clock): a user message's text and the assistant's text blocks, never a tool call,
-  a tool result or a thinking block, and never the harness's own text (a line Claude Code
-  marks as its own, a compact summary, a block that starts with `<system-reminder>`,
-  `<command-name>`, `<local-command-`, `<task-notification>`, `Caveat:` and the like). Each
-  message is cut at 1 800 characters with ` [...]`, and the whole kept within 40 000
-  characters and 800 messages, keeping the most recent ones; its first line names the
-  session, the project, the window, the time zone, how many messages the window held and
-  how many it keeps, and every cut (`cut: the first N messages and M characters were left
-  out`, in the vault's language). The largest digest those bounds allow is under 125 000
-  bytes and 24 000 tokens at a pessimistic 2 characters per token, so it is always read
-  whole.
+  a tool result or a thinking block. What Claude Code writes on its own is filtered by its
+  own marks and tags: a line marked `isMeta`, `isCompactSummary` or
+  `isVisibleInTranscriptOnly`, a user line whose `origin.kind` is not a person's, and,
+  from a user line, every block of the tags Claude Code writes itself, wherever it stands
+  and with its attributes (`system-reminder`, its `id` form included, `task-notification`,
+  `teammate-message`, `cross-session-message`, `fetched-web-content`, `ide_selection` and
+  the rest listed in [docs/security.md](docs/security.md), "The digests"), and a block that
+  is then blank or starts with `[SYSTEM NOTIFICATION - NOT USER INPUT]` or `Stop hook
+  feedback:`; what the person typed as a slash command (`/name args`) or a `!` command
+  stays. Each message is cut at 1 800 characters with ` [...]`.
+- A digest is bounded by what Read prints for it, line numbers included: under 24 000
+  UTF-8 bytes. Every token covers at least one byte, so a digest is under Read's 25 000
+  tokens whatever its script (Chinese, emoji or a pasted blob as much as prose), and far
+  under its 256 KB and 2 000 lines: it is always read whole. For prose that is about 22 000
+  characters.
+- A digest holds whole days. When a source's days do not all fit, the round offers the
+  oldest days every digest holds whole and leaves the others open for the next round: the
+  transcripts mark stops at the last day offered whole. Each digest's first line, the
+  prompt's transcripts block, the round's output, `last-run.json` (warnings and reason)
+  and the end of the round's reason say which days stay open. Only a first day that alone
+  does not fit is cut, keeping its most recent messages, and the first line, the block,
+  the output, the warnings and the reason say what was left out (`cut: the first N
+  messages and M characters were left out`, in the vault's language), a cut of one
+  message included.
 - The round grants `Read(//<digest>)` for each digest and no longer grants any transcript.
   A transcript counts as read when its digest was read whole, in one successful Read with
   no offset past its first line and no limit short of its last; a Read or a Grep of the
@@ -30,28 +44,31 @@
   many were read, in the same terms.
 - The digests live in `digests/<instant>-<hex>/` in the state directory, each file 0600 in
   a folder of 0700, and are deleted when the round ends, on a failure, an exit 4 or a
-  signal as on a success; the next round deletes what a round killed outright left, as
-  soon as it holds the lock. With `--keep-stream` they are written beside the kept stream
-  (`logs/curate-<instant>-<hex>.digests/`) and age out with the logs. No digest text goes
-  into the log, `last-run.json` or a notification: the log says how many were written and
-  the counts of each one cut, and the round says each cut on its output and among the
-  warnings. `--dry` writes none and says how many a round would write; `--check` writes
-  none.
+  signal as on a success, first of the round's cleanup steps, none of which can skip
+  another; the next round deletes what a round killed outright left, as soon as it holds
+  the lock, and only what bears a round's own name. With `--keep-stream` they are written
+  beside the kept stream (`logs/curate-<instant>-<hex>.digests/`) and age out with the
+  logs. No digest text goes into the log, `last-run.json` or a notification. `--dry`
+  writes none and says how many a round would write; `--check` writes none.
 - A state directory whose path holds a character no read rule can name exactly (a vault
   folder named `Notes (old)` gives its name to the state directory) stops the round before
-  the model with exit 1, `digest_dir_unsafe`, naming the folder and how to move it.
+  the model with exit 1, `digest_dir_unsafe`, and `doctor` fails a new check,
+  `digest-dir`, before any round does. Both name the fix that reaches the scheduled round:
+  rename the vault's folder, run `brain-kit machine register --from <its previous path>`
+  and `brain-kit schedule install` again.
 - `doctor`'s `round-scope` and `connectors` checks now take the digest folders, not the
   transcripts folder, as the round's own reads when they mirror the person's user rules,
   as a round does.
 - The curate prompt's rule `sample-from-end`, in both languages, now speaks of the digests:
-  the kit already sampled each transcript from its end, the model reads each digest whole
-  with no offset or limit, and reading the digest is reading the transcript. The
-  transcripts block of the parameters says the same and lists each session by its digest.
-  No contract marker was added or removed, so an overlay that passes `prompt --check`
-  still does. A vault with its own curate overlay gets the new block, which the kit
-  writes, but not the rule's new wording: copy it by hand into the overlay's
-  `sample-from-end` paragraph, or the overlay keeps telling the model to read a transcript
-  from a `sampleLine` it is no longer given.
+  the kit already sampled each transcript, a digest holds whole days, the model reads each
+  digest whole with no offset or limit, and reading the digest is reading the transcript.
+  The transcripts block of the parameters says the same and lists each session by its
+  digest. No contract marker was added or removed. A vault with its own curate overlay
+  gets the new block, which the kit writes, but not the rule's new wording: copy it by
+  hand into the overlay's `sample-from-end` paragraph. Until then such a round reads
+  nothing and exits 4: `brain-kit prompt --check` now warns about an overlay that names
+  `sampleLine` or tells the model to pass an offset to a transcript, and the reason of a
+  round that exits 4 says so when its model tried to read a transcript itself.
 
 ## 0.0.4 (tagged `v0.0.4`, not on npm)
 

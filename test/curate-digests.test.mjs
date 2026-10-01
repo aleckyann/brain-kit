@@ -15,6 +15,7 @@ import { basename, join } from 'node:path';
 import { EXIT } from '../src/exit-codes.mjs';
 import { BIN, FAKE, makeCurateWorld, note, PROJECT, STREAMS, utcDay } from './helpers/curate-world.mjs';
 import { assistant, user, userBlocks } from './helpers/transcripts-world.mjs';
+import { transcriptsSource } from '../src/sources/transcripts-claude-code.mjs';
 
 const SENTINEL = 'SENTINEL-DIGEST-zq9x';
 const propose = (w) => [{ write: { path: 'notes/reading.md', content: note('Reading') } }, w.proposeAction('notes/reading.md')];
@@ -110,6 +111,10 @@ test('a model that Reads or Greps a transcript itself reads nothing: the Read is
   assert.deepEqual(w.reads().map((read) => [read.isError, read.content]), [
     [true, 'Permission to use Read has been denied.'], [true, 'Permission to use Read has been denied.'],
   ]);
+  // The denials say what such a model was told to do: the reason names the
+  // overlay with the old wording (fix round 1, Important 4).
+  assert.match(w.lastRun().reason, /The model tried to read 2 transcript\(s\) itself, which the round no longer grants: the vault's curate prompt overlay most likely still carries the old sample-from-end wording/);
+  assert.match(w.lastRun().reason, /brain-kit prompt --check says whether it still has the old one\.$/);
   const argv = JSON.parse(readFileSync(w.files.argvFile, 'utf8'));
   assert.equal(argv.some((arg) => arg.includes(w.transcript) || arg.includes(w.projects)), false, 'no rule names a transcript or its folder');
   assert.deepEqual(w.digestDirs(), []);
@@ -197,6 +202,33 @@ test('a round killed outright leaves its digests, and the next round removes the
   assert.match(w.logText(), / digests_swept \{"count":1\}/);
 });
 
+test('the sweep removes only what bears a round\'s own name in digests/: a file or a folder of anyone else\'s stays', () => {
+  const w = makeCurateWorld();
+  const root = join(w.state, 'digests');
+  const leftover = join(root, '2026-09-30T10-00-00-000Z-deadbeef');
+  mkdirSync(leftover, { recursive: true, mode: 0o700 });
+  writeFileSync(join(leftover, '01-aaaaaaaa.txt'), 'a digest a killed round left\n');
+  writeFileSync(join(root, 'notes.txt'), 'Ana keeps this here\n');
+  mkdirSync(join(root, 'keep-me'));
+  const r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.deepEqual(readdirSync(root).sort(), ['keep-me', 'notes.txt']);
+  assert.match(w.logText(), / digests_swept \{"count":1\}/);
+});
+
+test('a step of the round\'s cleanup that fails never skips the digests\' removal nor keeps the lock', () => {
+  const w = makeCurateWorld();
+  // The model leaves a folder where the round record's guard file goes:
+  // removing it as a file fails.
+  w.scenario({ actions: [{ run: [process.execPath, '-e', "require('node:fs').mkdirSync('.git/brain-kit-round-' + process.env.BRAIN_KIT_ROUND_TOKEN + '.json.lock')"] }] });
+  const r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.equal(w.reads().length, 1, 'the digest was read');
+  assert.deepEqual(w.digestDirs(), [], 'and removed all the same');
+  assert.match(w.logText(), / record_not_removed \{"code":"ERR_FS_EISDIR"\}/);
+  assert.equal(w.roundFiles().includes('brain-kit.lock'), false, 'the lock is released');
+});
+
 test('--dry writes no digest and says how many a round would write; --check writes none either', () => {
   const w = makeCurateWorld();
   secondSession(w);
@@ -212,22 +244,96 @@ test('--dry writes no digest and says how many a round would write; --check writ
   assert.equal(w.lastRun(), null);
 });
 
-test('a transcript whose window holds more than a digest carries: the model reads the last messages, and the round says the cut on its output and in last-run, with counts only in the log', () => {
-  const w = makeCurateWorld();
+// The plan a round of the curate world collects for yesterday, with its
+// digests built in memory: what the round itself will hand the model.
+function planOf(w) {
+  const from = new Date(`${utcDay(-1)}T00:00:00.000Z`);
+  const window = { from, to: new Date(from.getTime() + 86_400_000), timezone: 'UTC', days: [utcDay(-1)] };
+  return transcriptsSource.collect({ window, config: w.config, machine: { transcripts_dir: w.projects }, now: new Date(), digestDir: join(w.base, 'probe-digests', 'round') });
+}
+
+// A session of yesterday with `count` equal messages of 1 000 characters.
+function busySession(w, count, size = 996) {
   const path = join(w.projects, PROJECT, 'cccccccc-1111-4222-8333-444444444444.jsonl');
   const lines = [];
-  for (let i = 0; i < 100; i += 1) lines.push(user(`m${String(i).padStart(2, '0')} ${'w'.repeat(996)}`, new Date(Date.parse(`${utcDay(-1)}T08:00:00.000Z`) + i * 60_000).toISOString()));
+  for (let i = 0; i < count; i += 1) lines.push(user(`m${String(i).padStart(2, '0')} ${'w'.repeat(size)}`, new Date(Date.parse(`${utcDay(-1)}T08:00:00.000Z`) + i * 60_000).toISOString()));
   writeFileSync(path, `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`);
+  return path;
+}
+
+test('a day that holds more than a digest carries: the model reads its last messages, and the round says the cut on its output, in last-run and in its reason, with counts only in the log', () => {
+  const w = makeCurateWorld();
+  const path = busySession(w, 100);
+  const expected = planOf(w).files.find((file) => file.path === path).digest;
+  assert.ok(expected.cutMessages > 0);
   const r = w.curate();
   assert.equal(r.status, EXIT.OK, r.stderr);
-  const said = 'transcripts: the digest of session cccccccc keeps the last 39 of its 100 messages in the window; cut: the first 61 messages and 61000 characters were left out.';
+  const cut = `cut: the first ${expected.cutMessages} messages and ${expected.cutChars} characters were left out`;
+  const said = `transcripts: the digest of session cccccccc keeps the last ${expected.kept} of its 100 messages in the window; ${cut}.`;
   assert.ok(r.stderr.includes(said), r.stderr);
-  assert.ok(w.lastRun().warnings.some((line) => line.includes(said)), JSON.stringify(w.lastRun().warnings));
-  assert.match(w.logText(), / digests \{"source":"transcripts","written":2,"cut":\[\{"session":"cccccccc","kept":39,"held":100,"messages":61,"chars":61000\}\]\}/);
+  const last = w.lastRun();
+  assert.ok(last.warnings.some((line) => line.includes(said)), JSON.stringify(last.warnings));
+  assert.match(last.reason, /transcripts: the digest of session cccccccc was cut: the oldest messages of that day were left out and no round reads them\.$/);
+  assert.ok(w.logText().includes(` digests {"source":"transcripts","written":2,"cut":[{"session":"cccccccc","kept":${expected.kept},"held":100,"messages":${expected.cutMessages},"chars":${expected.cutChars}}]}`), w.logText());
   assert.equal(w.logText().includes('wwwwwwwwww'), false);
   const read = w.reads().find((entry) => basename(entry.path).includes('cccccccc'));
-  assert.match(read.text.split('\n')[0], /cut: the first 61 messages and 61000 characters were left out\.$/);
-  assert.ok(read.text.includes('] m99 ') && !read.text.includes('] m60 '));
+  assert.ok(read.text.split('\n')[0].endsWith(`${cut}.`), read.text.split('\n')[0]);
+  assert.ok(read.text.includes('] m99 ') && !read.text.includes(`] m${String(expected.cutMessages - 1).padStart(2, '0')} `));
+});
+
+test('a cut of exactly one message is said by the round too', () => {
+  const w = makeCurateWorld();
+  let count = 2;
+  for (; count < 40; count += 1) {
+    const path = busySession(w, count, 1796);
+    if (planOf(w).files.find((file) => file.path === path).digest.cutMessages === 1) break;
+  }
+  assert.ok(count < 40, 'some count leaves out exactly one message');
+  const r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.match(r.stderr, /the digest of session cccccccc keeps the last \d+ of its \d+ messages in the window; cut: the first 1 messages and 1800 characters were left out\./);
+  assert.match(w.lastRun().reason, /the digest of session cccccccc was cut/);
+});
+
+// The review's 3-day case, in a real round (fix round 1, ruling R-D2): a
+// session with twelve messages of about 1 700 characters on each of the
+// three open days. One day fits a digest whole and two do not: the round
+// curates the first, its mark stops there, and the two others stay open,
+// said on stderr, in last-run and in the reason; the next round reads the
+// next day whole.
+test('a catch-up round whose digest cannot hold every open day offers the oldest whole days and leaves the others open: the mark stops at the last day offered', () => {
+  const w = makeCurateWorld();
+  const [d3, d2, d1] = [utcDay(-3), utcDay(-2), utcDay(-1)];
+  writeFileSync(join(w.state, 'watermark.json'), JSON.stringify({ sources: { transcripts: utcDay(-4) } }));
+  const lines = [];
+  for (const day of [d3, d2, d1]) {
+    for (let i = 0; i < 12; i += 1) {
+      const at = new Date(Date.parse(`${day}T12:00:00.000Z`) + i * 60_000).toISOString();
+      lines.push(i % 2 ? assistant(`${day} reply ${i} ${'x'.repeat(1700)}`, at) : user(`${day} Ana said ${i} ${'y'.repeat(1700)}`, at));
+    }
+  }
+  writeFileSync(join(w.projects, PROJECT, 'dddddddd-1111-4222-8333-444444444444.jsonl'), `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`);
+  const shownDay = (day) => day.split('-').reverse().join('/');
+  const r = w.curate();
+  assert.equal(r.status, EXIT.OK, r.stderr);
+  assert.deepEqual(w.watermark(), { transcripts: d3 }, 'the mark stops at the last day offered whole');
+  const last = w.lastRun();
+  assert.deepEqual(last.window.days, [d3]);
+  assert.deepEqual(last.deferredDays, [d2, d1]);
+  const open = `${shownDay(d2)}, ${shownDay(d1)}`;
+  const said = `transcripts: this round reads through ${shownDay(d3)} and leaves 2 day(s) (${open}) open for the next round: the digest of session dddddddd could not hold them whole after the days before them`;
+  assert.ok(r.stderr.includes(said), r.stderr);
+  assert.ok(last.warnings.some((line) => line.includes(said)), JSON.stringify(last.warnings));
+  assert.ok(last.reason.endsWith(`transcripts: ${open} stay open for the next round, which reads them: a digest could not hold them whole.`), last.reason);
+  const read = w.reads().find((entry) => basename(entry.path).includes('dddddddd'));
+  assert.equal((read.text.match(new RegExp(`\\] ${d3} `, 'g')) ?? []).length, 12, 'the day offered is whole');
+  assert.equal(read.text.split('\n').slice(1).some((line) => line.includes(d2) || line.includes(d1)), false, 'no message of the days left open, not even in part');
+  assert.match(read.text.split('\n')[0], /stay open for a later round/);
+  // The next round reads the next day, whole, and so on.
+  w.scenario();
+  const next = w.curate();
+  assert.equal(next.status, EXIT.OK, next.stderr);
+  assert.deepEqual(w.watermark(), { transcripts: d2 });
 });
 
 test('a state directory whose path no read rule can name: exit 1 before the model, no mark, the same from --dry', () => {

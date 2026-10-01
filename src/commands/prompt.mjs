@@ -831,6 +831,27 @@ function checkOverlay(t, io, startDir, problems) {
   if (!placeholdersOf(text).includes('sources_line')) {
     io.stderr.write(`${t('prompt.check_overlay_no_sources_line', { path, placeholder: '{{sources_line}}' })}\n`);
   }
+  // An overlay written before 01/10/2026 tells the model to read each
+  // transcript itself from its sampleLine, in slices: the round now hands
+  // it digests read whole and grants no transcript, so such a round reads
+  // nothing and exits 4 every day (fix round 1, Important 4).
+  if (oldSampling(text)) {
+    io.stderr.write(`${t('prompt.check_overlay_old_sampling', { path, rule: 'sample-from-end' })}\n`);
+  }
+}
+
+// Whether an overlay still carries the sampling rule of before the
+// digests: it names `sampleLine`, or the paragraph its sample-from-end
+// marker opens tells the model to pass an offset without a word of the
+// digests the round hands it (the kit's own wording speaks of them, in
+// either language).
+export function oldSampling(text) {
+  if (text.includes('sampleLine')) return true;
+  const at = text.indexOf(ruleMarker('sample-from-end'));
+  if (at === -1) return false;
+  const end = text.indexOf('\n\n', at);
+  const paragraph = text.slice(at, end === -1 ? undefined : end);
+  return /\boffset\b/i.test(paragraph) && !/digest|extrato/i.test(paragraph);
 }
 
 function checkBriefingOverlay(t, io, root, config, problems) {

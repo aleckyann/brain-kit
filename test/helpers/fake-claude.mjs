@@ -31,7 +31,9 @@
 //                                           it: denied when no Read rule of the
 //                                           --allowedTools allows its path, and
 //                                           otherwise ./read-tool.mjs (missing,
-//                                           over 256 KB whole, 25 000 tokens a slice)
+//                                           over 256 KB whole, a numbered output
+//                                           over 25 000 bytes); a denied one is
+//                                           also in the result's permission_denials
 //       "readGranted": true | ["text", ...], a Read, emulated, of every exact
 //                                           file a `Read(//<path>)` rule of the
 //                                           --allowedTools grants (or of those
@@ -216,13 +218,18 @@ function buildStream() {
     const at = events.findIndex((e) => e.type === 'result');
     return at === -1 ? events.length : at;
   };
+  const deniedReads = [];
   [...grantedReads(rw.readGranted), ...(rw.toolUses ?? [])].forEach((use, i) => {
     const id = `toolu_fake_added_${i + 1}`;
     const assistant = { type: 'assistant', message: { id: `msg_fake_added_${i + 1}`, type: 'message', role: 'assistant', content: [{ type: 'tool_use', id, name: use.name, input: use.input }] }, parent_tool_use_id: null, session_id: session };
     let isError = use.isError === true;
     let content = typeof use.content === 'string' ? use.content : (isError ? 'error' : 'ok');
     if (use.emulate === true && use.name === 'Read') {
-      const answer = readAllowed(use.input?.file_path) ? emulateRead(use.input) : { isError: true, content: 'Permission to use Read has been denied.', text: null };
+      const allowed = readAllowed(use.input?.file_path);
+      // A denied read is also listed in the result's permission_denials, as
+      // the real CLI lists it.
+      if (!allowed) deniedReads.push({ tool_name: 'Read', tool_use_id: id, tool_input: use.input });
+      const answer = allowed ? emulateRead(use.input) : { isError: true, content: 'Permission to use Read has been denied.', text: null };
       isError = answer.isError;
       content = answer.content;
       if (scenario.readLog) appendFileSync(scenario.readLog, `${JSON.stringify({ path: use.input.file_path, isError, content: isError ? content : null, text: answer.text, ...modes(use.input.file_path) })}\n`);
@@ -230,6 +237,10 @@ function buildStream() {
     const user = { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: isError, content }] }, parent_tool_use_id: null, session_id: session };
     events.splice(resultAt(), 0, assistant, user);
   });
+  if (deniedReads.length > 0) {
+    const result = events.find((e) => e.type === 'result');
+    if (result) result.permission_denials = [...(Array.isArray(result.permission_denials) ? result.permission_denials : []), ...deniedReads];
+  }
   if (rw.finalText !== undefined) {
     events.splice(resultAt(), 0, { type: 'assistant', message: { id: 'msg_fake_final', type: 'message', role: 'assistant', content: [{ type: 'text', text: rw.finalText }] }, parent_tool_use_id: null, session_id: session });
     const result = events.find((e) => e.type === 'result');

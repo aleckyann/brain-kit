@@ -221,8 +221,8 @@ for (const lang of LANGS) {
     assert.notEqual(at, -1);
     const paragraph = text.slice(at, text.indexOf('\n\n', at));
     const expected = {
-      en: [/through their digests/, /already sampled it from its end/, /keeps the most recent messages, and its first line says how many were left out/, /Read each digest whole, with Read and no offset or limit/, /reading it is reading the transcript, and the transcript file itself is not readable/],
-      'pt-BR': [/pelos extratos delas/, /já a amostrou a partir do fim/, /guarda as mensagens mais recentes, e a primeira linha dele diz quantas ficaram de fora/, /Leia cada extrato inteiro, com o Read e sem offset nem limit/, /ler o extrato é ler a transcrição, e o arquivo da transcrição em si não pode ser lido/],
+      en: [/through their digests/, /already sampled it from its end/, /holds whole days: a day that does not fit waits for a later round/, /a single day that alone does not fit keeps its most recent messages, and the first line says how many were left out/, /Read each digest whole, with Read and no offset or limit/, /reading it is reading the transcript, and the transcript file itself is not readable/],
+      'pt-BR': [/pelos extratos delas/, /já a amostrou a partir do fim/, /guarda dias inteiros: um dia que não cabe fica para uma próxima rodada/, /um dia só que sozinho não cabe guarda as mensagens mais recentes, e a primeira linha diz quantas ficaram de fora/, /Leia cada extrato inteiro, com o Read e sem offset nem limit/, /ler o extrato é ler a transcrição, e o arquivo da transcrição em si não pode ser lido/],
     }[lang];
     for (const pattern of expected) assert.match(paragraph, pattern, `${lang}: ${pattern}`);
     assert.doesNotMatch(paragraph, /sampleLine/, `${lang}: no line offset is handed out any more`);
@@ -469,6 +469,44 @@ test('final review M4: --check warns, in both languages, and still passes, when 
     const code = await runPrompt(['--check', '--vault', vault], c.io, createTranslator(lang), { cwd: vault, env: testEnv(state) });
     assert.equal(code, EXIT.OK, c.stdout + c.stderr);
     assert.match(c.stderr, text, lang);
+  }
+});
+
+// Fix round 1 of 01/10/2026 (Important 4): an overlay that kept the
+// sampling rule of before the digests sends the model to the transcripts
+// themselves, which a round no longer grants, so every round exits 4.
+// --check says so, and still passes: the overlay is the owner's to write.
+const OLD_SAMPLE_RULE = {
+  en: 'Read the transcripts the block lists, and only those. A transcript is long: read each one with Read, starting at the line the block gives as its `sampleLine` (pass it as the offset), which is near the end, and read from there to the end.',
+  'pt-BR': 'Leia as transcrições que o bloco lista, e só elas. Uma transcrição é longa: leia cada uma com o Read, começando na linha que o bloco indica como `sampleLine` (passe esse número como offset), que fica perto do fim.',
+};
+
+function overlayWith(rule) {
+  return `{{signature}}\n${CURATE_RULES.map((r) => `<!-- rule:${r} -->\n${r === 'sample-from-end' ? rule : 'x'}\n\n`).join('')}BRAIN_KIT_SOURCES: {{sources_line}}\n`;
+}
+
+test('--check warns, in both languages, and still passes, when the overlay still tells the model to read a transcript from its sampleLine or with an offset', async () => {
+  for (const [lang, text] of [['en', /still carries the old wording of the rule sample-from-end: it tells the model to read a transcript itself/], ['pt-BR', /ainda traz a redação antiga da regra sample-from-end: ele manda o modelo ler a própria transcrição/]]) {
+    for (const rule of [OLD_SAMPLE_RULE[lang], 'Read each transcript with Read, with an offset near its end, a slice at a time.']) {
+      const { vault, state } = freshVault(lang);
+      writeOverlay(vault, overlayWith(rule));
+      const c = collector();
+      const code = await runPrompt(['--check', '--vault', vault], c.io, createTranslator(lang), { cwd: vault, env: testEnv(state) });
+      assert.equal(code, EXIT.OK, c.stdout + c.stderr);
+      assert.match(c.stderr, text, `${lang}: ${rule.slice(0, 40)}`);
+    }
+  }
+});
+
+test('--check says nothing of the sampling rule when the overlay carries the kit\'s own wording, in either language', async () => {
+  for (const lang of LANGS) {
+    const pack = readFileSync(join(KIT_ROOT, 'lang', lang, 'prompts', 'curate.md'), 'utf8');
+    const { vault, state } = freshVault(lang);
+    writeOverlay(vault, pack);
+    const c = collector();
+    const code = await runPrompt(['--check', '--vault', vault], c.io, createTranslator(lang), { cwd: vault, env: testEnv(state) });
+    assert.equal(code, EXIT.OK, c.stdout + c.stderr);
+    assert.doesNotMatch(c.stderr, /sample-from-end/, lang);
   }
 });
 

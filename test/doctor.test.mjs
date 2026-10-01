@@ -367,7 +367,7 @@ test('a ready vault under a path with a space, an accented letter and both quote
 test('the check table is exactly the phase 1, 2, 3, 4 and 5a set, each named by what it prevents', () => {
   assert.deepEqual(CHECK_IDS, [
     'node-version', 'git-present', 'default-branch-known', 'hooks-path', 'brain-kit-on-path', 'config-valid', 'manifest-valid', 'machine-valid',
-    'state-dir-resolves', 'state-dir-mode', 'legacy-lock', 'kit-version', 'gh-present', 'claude-present', 'gitignore-node-modules', 'privacy-keywords',
+    'state-dir-resolves', 'state-dir-mode', 'digest-dir', 'legacy-lock', 'kit-version', 'gh-present', 'claude-present', 'gitignore-node-modules', 'privacy-keywords',
     'claude-real', 'claude-isolation-flags', 'round-scope', 'cost-cap', 'turn-cap', 'time-cap', 'include-projects', 'connectors', 'watermark', 'last-run', 'schedule', 'notify',
     'briefing',
   ]);
@@ -931,6 +931,41 @@ test('state-dir-resolves and machine-valid honour BRAIN_KIT_STATE_DIR', async ()
   const { report } = await doctor(fx, ['--only', 'state-dir-resolves,machine-valid,state-dir-mode'], { env });
   for (const c of report.checks) assert.equal(c.status, 'ok', JSON.stringify(c));
   assert.equal(check(report, 'machine-valid').params.file, join(pinned, 'machine.json'));
+});
+
+// --- digest-dir (fix round 1 of 01/10/2026, Important 5) -------------------------
+
+test('digest-dir: passes where a round can grant its digests by exact path, and fails, naming the remedy that reaches the scheduled round, where it cannot', async () => {
+  const fx = setup();
+  let { report, code } = await doctor(fx, ['--only', 'digest-dir']);
+  let c = assertCheck(report, 'digest-dir', 'ok', 'doctor.digest_dir.ok');
+  assert.equal(c.params.dir, join(fx.stateDir, 'digests'));
+  assert.equal(code, EXIT.OK);
+  // A state directory whose path holds ( ): as one derived from a vault
+  // folder named that way.
+  const unsafe = join(fx.base, 'state (copy)');
+  mkdirSync(unsafe, { mode: 0o700 });
+  chmodSync(unsafe, 0o700);
+  writeFileSync(join(unsafe, 'machine.json'), readFileSync(fx.machineFile));
+  chmodSync(join(unsafe, 'machine.json'), 0o600);
+  ({ report, code } = await doctor(fx, ['--only', 'digest-dir'], { env: { ...fx.env, BRAIN_KIT_STATE_DIR: unsafe } }));
+  c = assertCheck(report, 'digest-dir', 'fail', 'doctor.digest_dir.unsafe');
+  assert.deepEqual(c.params, {
+    dir: join(unsafe, 'digests'), characters: '( )', vault: fx.root, register: 'brain-kit machine register --from <old path>', install: 'brain-kit schedule install',
+  });
+  assert.equal(code, EXIT.FAILURE);
+  for (const lang of ['en', 'pt-BR']) {
+    const text = createTranslator(lang)(c.messageKey, c.params);
+    assert.ok(text.includes('state_dir') && text.includes('BRAIN_KIT_STATE_DIR') && text.includes('brain-kit schedule install'), `${lang}: ${text}`);
+  }
+});
+
+test('digest-dir: a vault whose curator is turned off has nothing to grant', async () => {
+  const config = baseConfig();
+  config.curate.enabled = false;
+  const fx = setup({ config });
+  const { report } = await doctor(fx, ['--only', 'digest-dir']);
+  assertCheck(report, 'digest-dir', 'ok', 'doctor.curate.disabled');
 });
 
 // --- state-dir-mode ----------------------------------------------------------

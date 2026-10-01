@@ -715,7 +715,8 @@ test('the prompt block lists each file by its digest, with project, window span 
   assert.doesNotMatch(plan.promptBlock, /exclude_path_patterns/);
   assert.doesNotMatch(plan.promptBlock, /own runs/);
   assert.match(plan.promptBlock, /Read each digest whole, with Read and no offset or limit: reading the digest is reading the transcript/);
-  assert.match(plan.promptBlock, /It is sampled from the end/);
+  assert.match(plan.promptBlock, /It holds whole days: a day that does not fit waits for a later round/);
+  assert.match(plan.promptBlock, /a single day that alone does not fit is sampled from its end/);
   assert.match(plan.promptBlock, /Every time in this block is UTC/);
   assert.doesNotMatch(plan.promptBlock, /not opened/);
 });

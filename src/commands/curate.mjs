@@ -37,8 +37,10 @@
 //       its day open even as a best-effort source, ruling R-A9); the
 //       transcripts plan carries a digest of each kept transcript, built in
 //       memory, and the model is granted those digests, never the
-//       transcripts (01/10/2026); a digest folder whose path no read rule
-//       can name: exit 1 before the model
+//       transcripts (01/10/2026); the days the digests cannot hold whole
+//       are deferred like the cap's, and said, and so, in the round's
+//       reason, is a digest cut (fix round 1); a digest folder whose path
+//       no read rule can name: exit 1 before the model
 //   12. the launch mode (decisions D1 and D3): with a connector source to
 //       read, the person's user settings are read and mirrored; connector
 //       mode unless a rule refuses it (every connector source is then
@@ -427,8 +429,12 @@ function digestDirFor(stateDir, now, keep) {
 
 // What a round killed outright (SIGKILL, a power cut) left in DIGEST_DIR,
 // removed by the next round as soon as it holds the vault lock: no round
-// is running then, so nothing there is any round's own. A DIGEST_DIR that
-// is a link or a file is removed itself, never followed.
+// is running then, so no folder there is any round's own. Only what bears
+// a round's own name (ROUND_DIGEST_DIR) is removed; anything else there is
+// left as it is. A DIGEST_DIR that is a link or a file is removed itself,
+// never followed: the round would otherwise write its digests through it.
+const ROUND_DIGEST_DIR = /^[0-9TZ-]+-[0-9a-f]{8}$/;
+
 function sweepDigests(stateDir) {
   const dir = join(stateDir, STATE_FILES.DIGEST_DIR);
   let st;
@@ -441,7 +447,7 @@ function sweepDigests(stateDir) {
     rmSync(dir, { force: true });
     return 1;
   }
-  const names = readdirSync(dir);
+  const names = readdirSync(dir).filter((name) => ROUND_DIGEST_DIR.test(name));
   for (const name of names) rmSync(join(dir, name), { recursive: true, force: true });
   return names.length;
 }
@@ -458,7 +464,11 @@ function capDays(offered, plans, days) {
     if (!Array.isArray(covered) || covered.length === 0 || covered.length >= days[source.id].length) continue;
     const deferred = days[source.id].filter((day) => !covered.includes(day));
     days[source.id] = days[source.id].filter((day) => covered.includes(day));
-    out.push({ source, last: days[source.id].at(-1), deferred, cap: plans[source.id].cap });
+    // Which of them a digest could not hold whole (fix round 1, ruling
+    // R-D2), and which the cap left: each is said in its own words.
+    const byDigest = deferred.filter((day) => (plans[source.id].digestDeferred ?? []).includes(day));
+    const byCap = deferred.filter((day) => !byDigest.includes(day));
+    out.push({ source, last: days[source.id].at(-1), deferred, byCap, byDigest, sessions: plans[source.id].digestLimitedBy ?? [], cap: plans[source.id].cap });
   }
   return out;
 }
@@ -996,18 +1006,24 @@ export async function runCurate(argv, io, t, deps = {}) {
     fail(EXIT.FAILURE, 'internal_error', t('curate.internal_error', { detail: error instanceof Error ? error.message : String(error) }));
   } finally {
     for (const signal of FORWARDED_SIGNALS) process.removeListener(signal, onSignal);
-    if (recordFile !== null) {
-      if (!keepRecord) rmSync(recordFile, { force: true });
-      rmSync(`${recordFile}.lock`, { force: true });
-    }
-    // The digests hold what the person wrote: gone on every end this
-    // process sees, a failure, an exit 4 and a signal included. A folder
-    // that cannot be removed is logged, never allowed to keep the lock.
+    // The digests hold what the person wrote: gone first, on every end this
+    // process sees, a failure, an exit 4 and a signal included. Each step
+    // here is its own: one that fails is logged and never skips the next,
+    // nor keeps the lock.
     if (!keepStream) {
       try {
         rmSync(digestDir, { recursive: true, force: true });
       } catch (error) {
         log('digests_not_removed', { code: error.code ?? null });
+      }
+    }
+    if (recordFile !== null) {
+      for (const file of keepRecord ? [`${recordFile}.lock`] : [recordFile, `${recordFile}.lock`]) {
+        try {
+          rmSync(file, { force: true });
+        } catch (error) {
+          log('record_not_removed', { code: error.code ?? null });
+        }
       }
     }
   }
@@ -1255,15 +1271,27 @@ export async function runCurate(argv, io, t, deps = {}) {
     // curates, and advances through, only the whole days it could take. No
     // other source's days change.
     let deferred = [];
+    // What the round tells the person at its end, in its reason, about the
+    // days a digest left open and the digests cut (fix round 1).
+    const digestNotes = [];
     for (const capped of capDays(offered, plans, days)) {
       deferred = capped.deferred;
       run.deferredDays = deferred;
       run.sources[capped.source.id].kept = keptOf(plans[capped.source.id]) ?? 0;
-      const setting = `${CONFIG_FILENAME} curate.caps.${capped.source.id}`;
-      const text = t('curate.days_deferred', { last: shown(capped.last), count: deferred.length, days: deferred.map(shown).join(', '), setting, cap: capped.cap });
-      run.warnings.push(text);
-      io.stderr.write(`${text}\n`);
-      log('days_deferred', { through: capped.last, days: deferred, source: capped.source.id });
+      if (capped.byCap.length > 0) {
+        const setting = `${CONFIG_FILENAME} curate.caps.${capped.source.id}`;
+        const text = t('curate.days_deferred', { last: shown(capped.last), count: capped.byCap.length, days: capped.byCap.map(shown).join(', '), setting, cap: capped.cap });
+        run.warnings.push(text);
+        io.stderr.write(`${text}\n`);
+      }
+      if (capped.byDigest.length > 0) {
+        const open = capped.byDigest.map(shown).join(', ');
+        const text = t('curate.days_deferred_digest', { source: capped.source.id, last: shown(capped.last), count: capped.byDigest.length, days: open, sessions: capped.sessions.join(', ') });
+        run.warnings.push(text);
+        io.stderr.write(`${text}\n`);
+        digestNotes.push(t('curate.reason_digest_days', { source: capped.source.id, days: open }));
+      }
+      log('days_deferred', { through: capped.last, days: deferred, source: capped.source.id, byDigest: capped.byDigest });
     }
     window = unionWindow(Object.fromEntries(offered.map((s) => [s.id, days[s.id]])), computed.remaining, now, tz);
     run.remainingDays = window.remaining;
@@ -1407,6 +1435,7 @@ export async function runCurate(argv, io, t, deps = {}) {
           run.warnings.push(text);
           io.stderr.write(`${text}\n`);
         }
+        if (cut.length > 0) digestNotes.push(t('curate.reason_digest_cut', { source: source.id, sessions: cut.map((file) => file.session).join(', ') }));
       }
       io.stdout.write(`${t('curate.model_start', { days: window.days.map(shown).join(', ') })}\n`);
       for (const line of limitLines(t, config)) io.stdout.write(`${line}\n`);
@@ -1702,7 +1731,14 @@ export async function runCurate(argv, io, t, deps = {}) {
       }
     } else if (unread.length > 0) {
       const sources = unread.map((id) => `${id} (${evidence[id].read}/${evidence[id].expected ?? '-'})`).join(', ');
-      exit = fail(EXIT.SOURCE_UNREAD, 'source_unread', t('curate.source_unread', { sources }));
+      let reason = t('curate.source_unread', { sources });
+      // A curate overlay that kept the old sample-from-end wording sends the
+      // model to the transcripts themselves, which the round no longer
+      // grants (fix round 1): its denials say so, and so does the reason.
+      const raw = new Set(offered.filter((s) => s.kind === 'local').flatMap((s) => (plans[s.id]?.files ?? []).map((file) => file.path)));
+      const deniedRaw = record.denials.filter((d) => d.toolName === 'Read' && raw.has(d.input?.file_path)).length;
+      if (deniedRaw > 0) reason = `${reason} ${t('curate.hint_old_overlay', { count: deniedRaw, command: 'brain-kit prompt --check' })}`;
+      exit = fail(EXIT.SOURCE_UNREAD, 'source_unread', reason);
     } else if (recordBroken) {
       exit = fail(EXIT.FAILURE, 'record_invalid', t('curate.record_invalid', { file: 'brain-kit-round-<token>.json', dir: recordDirOf(recordFile) }));
     } else if (run.leftovers.length > 0) {
@@ -1752,6 +1788,9 @@ export async function runCurate(argv, io, t, deps = {}) {
     if (exit === EXIT.OK && stuck.length > 0) {
       exit = fail(EXIT.SOURCE_UNREAD, 'source_not_advanced', t('curate.source_not_advanced', { sources: stuck.join(', ') }));
     }
+    // The round's last word to the person says which days a digest left
+    // open and which digests were cut, whatever the exit.
+    if (digestNotes.length > 0) run.reason = [run.reason, ...digestNotes].filter(Boolean).join(' ');
     return exit;
   }
 }
@@ -1894,7 +1933,8 @@ function dryRun({ root, stateDir, machine, claudeBin, io, env, now, keepStream }
   }
   for (const capped of capDays(offered, plans, days)) {
     const setting = `${CONFIG_FILENAME} curate.caps.${capped.source.id}`;
-    io.stdout.write(`${t('curate.dry_days_deferred', { last: shown(capped.last), count: capped.deferred.length, days: capped.deferred.map(shown).join(', '), setting, cap: capped.cap })}\n`);
+    if (capped.byCap.length > 0) io.stdout.write(`${t('curate.dry_days_deferred', { last: shown(capped.last), count: capped.byCap.length, days: capped.byCap.map(shown).join(', '), setting, cap: capped.cap })}\n`);
+    if (capped.byDigest.length > 0) io.stdout.write(`${t('curate.dry_days_deferred_digest', { source: capped.source.id, last: shown(capped.last), count: capped.byDigest.length, days: capped.byDigest.map(shown).join(', '), sessions: capped.sessions.join(', ') })}\n`);
   }
   const connectorDenies = [...new Set(active.filter((s) => s.kind === 'connector').flatMap((s) => s.toolRules(config).deny))];
   const unsafeDigests = unsafeDigestDir(offered, plans);

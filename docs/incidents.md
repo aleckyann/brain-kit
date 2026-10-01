@@ -690,16 +690,21 @@ command line tool, which the kit's isolation rightly does not grant.
 or widen what the model may run: make what it must read small enough to be read. The kit
 writes a digest of each transcript before the model starts, with only what the person and
 the assistant wrote inside the window, in order of time, and never a tool result, a
-thought or the harness's own text; it cuts each message and the whole to bounds proven
-under the tool's limits, keeps the most recent messages, and says every cut. The model is
-granted the digests and not the transcripts, a whole read of a digest is what proves its
+thought or what the harness writes on its own, filtered by the harness's own marks and
+tags. Its bound is a guarantee, not an estimate: what Read prints for it stays under
+24 000 bytes, and every token covers at least one byte. It holds whole days, and a day it
+cannot hold stays open rather than closing unread; only a lone day too big for one digest
+is cut, from its end, and every cut and every day left open is said. The model is granted
+the digests and not the transcripts, a whole read of a digest is what proves its
 transcript read, and the digests are deleted when the round ends. Test with data the size
-of the real thing.
+and the shapes of the real thing, every script included.
 **Where it lives in brain-kit.** `src/sources/transcripts-claude-code.mjs` (the digest,
-`DIGEST_LIMITS`, `writeDigests`, and the evidence that counts only a whole read of a
-digest), `src/commands/curate.mjs` (the digest folder, the grants, the cut warnings, the
-removal on every end and of what a killed round left), the curate prompt's rule
-`sample-from-end`, [security.md](security.md) ("The digests"),
+`DIGEST_LIMITS`, `HARNESS_TAGS`, the whole-day budget, `writeDigests`, and the evidence that
+counts only a whole read of a digest), `src/commands/curate.mjs` (the digest folder, the
+grants, the cut and open-day warnings and reason, the removal on every end and of what a
+killed round left, the hint when the model tried a transcript itself), the curate prompt's
+rule `sample-from-end` and `brain-kit prompt --check` (an overlay with the old wording),
+`brain-kit doctor` check `digest-dir`, [security.md](security.md) ("The digests"),
 `test/transcript-digests.test.mjs`, `test/curate-digests.test.mjs`,
 `test/incidents/2026-10-01-transcripts-too-big-to-read.test.mjs` (Phase 5).
 

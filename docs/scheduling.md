@@ -111,9 +111,13 @@ once broke a real routine.
     marks and exits 0 without calling the model; a connector source never counts as empty
     that way, since an empty day of a calendar is a listing still to prove. Each transcript
     the plan keeps is given a digest, built in memory ([below](#what-the-model-reads-of-a-transcript));
-    the model is granted those digests, never the transcripts. A state directory whose path
-    holds a character no read rule can name exactly (`* ? [ ] { } ( ) \ ,`, from a vault
-    folder named `Notes (old)`, say): exit 1 (`digest_dir_unsafe`) before the model.
+    the model is granted those digests, never the transcripts, and the days the digests
+    cannot hold whole wait for the next round, said like the cap's. A state directory
+    whose path holds a character no read rule can name exactly (`* ? [ ] { } ( ) \ ,`,
+    from a vault folder named `Notes (old)`, say): exit 1 (`digest_dir_unsafe`) before
+    the model; `brain-kit doctor` (check `digest-dir`) says it before any round, and the
+    fix is to rename the vault's folder, then `brain-kit machine register --from <its
+    previous path>` and `brain-kit schedule install`.
 12. **The launch mode.** With a connector source to read, the round reads your Claude Code
     user settings and mirrors every allow rule in them as a deny: connector mode, unless a
     rule refuses it, in which case every connector source gets the state
@@ -223,25 +227,40 @@ hands the model those:
   covers, never the file's modification time), in order of time;
 - only what the person and the assistant wrote: a user message's text and the assistant's
   text blocks, never a tool call, a tool result or a thinking block, and never what Claude
-  Code adds on its own (a message it marks as its own, a compact summary, a block that
-  starts with `<system-reminder>`, `<command-name>`, `<local-command-`, `<task-notification>`,
-  `Caveat:` and the like; a message that only quotes such a tag keeps it);
+  Code writes on its own: a line it marks as its own (`isMeta`, a compact summary), a user
+  line whose `origin` says another program wrote it, and, from what you wrote, every block
+  of its own tags wherever it stands (a system reminder appended after your words
+  included); what you typed as a slash command or a `!` command stays. [security.md](security.md),
+  "The digests", lists exactly what is filtered;
 - one line per message, `[HH:MM user] <text>` or `[HH:MM assistant] <text>`, the time on
   the vault's clock (`[DD/MM HH:MM ...]` when the window spans more than one day), its
-  whitespace folded to single spaces;
-- each message cut at 1 800 characters with ` [...]`, and the whole kept within 40 000
-  characters and 800 messages, keeping the most recent ones;
+  whitespace folded to single spaces, each message cut at 1 800 characters with ` [...]`;
+- under 24 000 bytes as Read prints it, its line numbers included. Every token covers at
+  least one byte, so a digest is under Read's 25 000 tokens whatever its script (Chinese,
+  emoji or a pasted blob as much as prose), and far under its 256 KB and 2 000 lines: it is
+  always read whole. For prose that is about 22 000 characters;
+- whole days only: when the source's days do not all fit one digest, the round offers the
+  oldest days that fit whole in every digest, and the others stay open for the next round,
+  which reads them; the round's mark stops at the last day offered whole. This is said in
+  each digest's first line, in the prompt, on the round's output, in `last-run.json` and at
+  the end of the round's reason. A first day that alone does not fit is the one cut: the
+  digest keeps that day's most recent messages, and says what it left out, which no round
+  reads;
 - a first line naming the session and its project, the window, the time zone, how many
-  messages the window held and how many the digest keeps, and every cut, in the vault's
-  language.
+  messages the window held and how many the digest keeps, every cut and the days left, in
+  the vault's language.
 
-Those bounds are the Read tool's, not a policy: the largest digest they allow is under
-125 000 bytes and, counted at a pessimistic 2 characters per token with Read's line numbers,
-under 24 000 tokens, so it is always read whole. A transcript whose window holds no text at
+Those bounds are the Read tool's, not a policy. A transcript whose window holds no text at
 all still gets its digest, which says so. The digests live in a folder of the state
 directory only you can read ([security.md](security.md), "The digests"), and the round
 removes them when it ends; `--dry` writes none and says how many a round would write, and
 `--check` writes none either.
+
+A vault with a curate prompt of its own (`.brain-kit/prompts/curate.md`) written before
+the digests still tells the model to read a transcript from its `sampleLine`. That read is
+denied, so such a round reads nothing and exits 4; `brain-kit prompt --check` warns about
+it, and the round's reason says so when its model tried. Copy the rule `sample-from-end`
+from the language pack's prompt into the overlay.
 
 ## The watermark
 
@@ -350,10 +369,11 @@ What counts as read has limits, by design:
   Read with no offset past the first line and no limit short of the last. A Read or a Grep
   of the transcript itself never counts, and the round does not grant it. The evidence
   proves the model was handed every word of the digest, not that it weighed each one.
-- A digest is sampled from the end. When the window held more than a digest carries, the
-  oldest messages of the window are left out, the digest's first line says how many and how
-  many characters, the round says it on its output and in `last-run.json`, and the day still
-  closes once the digest is read: no later round reads those messages.
+- A digest holds whole days. Days it cannot hold stay open for the next round. Only a first
+  day that alone holds more than a digest carries is cut: its oldest messages are left out,
+  the digest's first line says how many and how many characters, the round says it on its
+  output, in `last-run.json` and in its reason, and that day still closes once the digest is
+  read: no later round reads those messages.
 - The model may write only inside the vault, and never into the kit's own files there
   ([security.md](security.md)). The leftovers check sees the files git tracks or would
   track: a file the model wrote into a path the vault's `.gitignore` ignores is not
@@ -479,7 +499,7 @@ configured), `source_warning`, `source_no_day` (a source with no open day of its
 `digests` (how many digests were written, and the counts of each one cut, never their
 text), `digests_swept` (the digests of a round killed outright, removed by the next one),
 `digests_not_removed` and `digests_not_swept` (a folder that could not be removed, with
-the error code), `model_start` and `model_end` (one of each per launch, with its number and, on
+the error code), `record_not_removed` (a round record file the cleanup could not remove), `model_start` and `model_end` (one of each per launch, with its number and, on
 `model_start`, its mode), `connectors` (each connector's state in a launch's first event),
 `relaunch` (the sources the second launch goes without, and why), `model_result` (the
 denials and the isolation verdict), `connector_state_changed`, `cleanup`, `watermark` (with

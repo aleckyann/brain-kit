@@ -15,7 +15,8 @@
 //     grants it anyway, and mirrored it would deny the round's own tool;
 //   - a read rule (Read, Glob, Grep, LS) that is bare, or whose scope
 //     overlaps the vault or one of the round's own read rules (the
-//     transcripts its plan lists, a curate.allowed_tools_extra read):
+//     digest of each transcript its plan lists, a curate.allowed_tools_extra
+//     read):
 //     mirrored, it would deny the round's own reads; it is recorded in
 //     `widenedReads` when it reaches outside the vault, and never
 //     mirrored. A read rule whose scope is disjoint from all of them is
@@ -271,8 +272,9 @@ function overlaps(prefix, form) {
   return form.startsWith(prefix) || prefix.startsWith(form);
 }
 
-// The regions the round's own read rules name (the vault's `./**`, each
-// transcript its plan lists, a curate.allowed_tools_extra read), each in
+// The regions the round's own read rules name (the vault's `./**`, the
+// digest of each transcript its plan lists, a curate.allowed_tools_extra
+// read), each in
 // every spelling; `all` when one of them is a bare read tool. A rule on
 // the command line with a single leading slash is taken at both anchors
 // it could have, the vault and the root of the file system.

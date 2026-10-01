@@ -27,7 +27,7 @@ import { basename, join } from 'node:path';
 import { EXIT } from '../../src/exit-codes.mjs';
 import { transcriptsSource } from '../../src/sources/transcripts-claude-code.mjs';
 import { makeCurateWorld, note, PROJECT, utcDay } from '../helpers/curate-world.mjs';
-import { emulateRead, estimateTokens, READ_MAX_BYTES, READ_MAX_TOKENS } from '../helpers/read-tool.mjs';
+import { emulateRead, printedBytes, READ_MAX_BYTES, READ_MAX_TOKENS } from '../helpers/read-tool.mjs';
 import { assistant, defaultConfig, user, userBlocks } from '../helpers/transcripts-world.mjs';
 
 const TOOL_OUTPUT = 'TOOL-OUTPUT-NEVER-IN-A-DIGEST';
@@ -112,7 +112,7 @@ test('after: the model reads one digest per transcript, each whole and under the
   for (const read of reads) {
     assert.equal(read.isError, false, read.content);
     assert.ok(Buffer.byteLength(read.text) < READ_MAX_BYTES / 10, `${basename(read.path)}: ${Buffer.byteLength(read.text)} bytes`);
-    assert.ok(estimateTokens(read.text) < READ_MAX_TOKENS / 10);
+    assert.ok(printedBytes(read.text) < READ_MAX_TOKENS / 10, 'what Read prints, at most that many tokens');
     assert.equal(read.text.includes(TOOL_OUTPUT), false);
   }
   for (let s = 0; s < 8; s += 1) {

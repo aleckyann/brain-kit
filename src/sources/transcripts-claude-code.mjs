@@ -44,24 +44,33 @@
 //   - only their text: the string content of a user line, the `text`
 //     blocks of a content array; never a tool use, a tool result or a
 //     thinking block; never a line the harness marks as its own (isMeta,
-//     isCompactSummary), nor a text block that starts with one of the
-//     harness's wrappers (HARNESS_PREFIXES). A wrapper quoted inside normal
-//     text keeps its message: in doubt, include;
-//   - whitespace and control characters folded to single spaces, each
-//     message cut at DIGEST_LIMITS.messageChars with a visible ` [...]`,
-//     and the whole kept under DIGEST_LIMITS, keeping the END (the most
-//     recent messages) when the window holds more; the first line names
-//     the session, the window, the time zone, how many messages the window
-//     held and how many the digest keeps, and every cut, in the vault's
-//     language.
-// DIGEST_LIMITS is a technical bound of the Read tool (256 KB, 25 000
-// tokens, 2 000 lines by default, long lines cut), never a policy: a digest
-// at its largest is about 41 000 characters on at most 801 lines, so at
-// most 123 000 bytes (UTF-8 spends at most 3 bytes per UTF-16 unit), and
-// about 23 700 tokens even at 2 characters per token with Read's line
-// numbers counted (test/transcript-digests.test.mjs proves the worst
-// case). Reading a digest whole is what proves the transcript read; the
-// raw file is no longer granted, nor counted.
+//     isCompactSummary, isVisibleInTranscriptOnly, a user line whose
+//     `origin.kind` is not a person's); from a user line, every block of
+//     HARNESS_TAGS removed wherever it stands (a system reminder appended
+//     after the person's words, one with an id), the tags of what the
+//     person typed unwrapped (PERSON_TAGS: `/name args`), and a block that
+//     is then blank or starts with the harness speaking
+//     (HARNESS_PREAMBLES) dropped. Text the person plausibly wrote stays:
+//     in doubt, include;
+//   - whitespace and control characters folded to single spaces, and each
+//     message cut at DIGEST_LIMITS.messageChars with a visible ` [...]`;
+//   - bounded so Read can always print it whole: what Read prints for the
+//     digest, its line numbers included, stays under
+//     DIGEST_LIMITS.readBytes UTF-8 bytes, and since every token covers at
+//     least one byte, under Read's 25 000 tokens for any script
+//     (test/transcript-digests.test.mjs builds the worst cases);
+//   - whole days only (ruling R-D2 of fix round 1): the covered days are
+//     those, oldest first, that every kept file's digest holds whole, and
+//     the others wait for a later round, open, said in every digest's
+//     first line, in the prompt block and by the round; a first day that
+//     alone does not fit one digest is the only one cut, keeping its END
+//     (the most recent messages);
+//   - a first line naming the session, the window, the time zone, how
+//     many messages the window held and how many the digest keeps, every
+//     cut and the days left, in the vault's language.
+// DIGEST_LIMITS is a technical bound of the Read tool, never a policy.
+// Reading a digest whole is what proves the transcript read; the raw file
+// is no longer granted, nor counted.
 //
 // A file is scanned in fixed-size chunks, line by line, never loaded
 // whole: an active session can be hundreds of megabytes and is exactly
@@ -127,21 +136,45 @@ export const DEFAULT_LIMITS = Object.freeze({ chunkBytes: 256 * 1024, maxLineCha
 // The one value of include_projects that is not a list.
 export const ALL_PROJECTS = 'all';
 
-// The bounds of one digest (see the header): each message's text is cut at
-// `messageChars`, and the message lines, newlines included, hold at most
-// `totalChars` characters and `messages` lines. The first line, the
-// header, comes on top of them and stays under 1 000 characters.
-export const DIGEST_LIMITS = Object.freeze({ messageChars: 1800, totalChars: 40000, messages: 800 });
+// The bound of one digest (ruling R-D1 of fix round 1, 01/10/2026). Read
+// prints a file numbered, each line behind its number and a separator, and
+// a digest is read whole only when what Read prints for it stays under its
+// limits: 256 KB, and 25 000 tokens counted by the real tokenizer. Every
+// token covers at least one byte, so what Read prints for a digest is kept
+// under `readBytes` UTF-8 bytes, whatever the script: Chinese, emoji and a
+// base64 blob as plain prose, with 1 000 tokens to spare for what Read adds
+// to its answer. `lineBytes` is what Read adds to a line, taken at 12 bytes:
+// its number in six columns and a tab is 7, and with a three-byte arrow in
+// place of the tab 9. That bound also keeps a digest far under Read's
+// 2 000 lines (every line costs at least 27 bytes). `messageChars` cuts one
+// message, so no line passes the 2 000 characters Read may cut a line at.
+export const DIGEST_LIMITS = Object.freeze({ messageChars: 1800, readBytes: 24000, lineBytes: 12 });
 // What a message cut at messageChars ends with.
 export const DIGEST_CUT_MARK = '[...]';
 
-// What the harness injects into a session as if the person had typed it: a
-// text block that starts with one of these (after leading whitespace) is
-// not the person's or the assistant's own text.
-export const HARNESS_PREFIXES = Object.freeze([
-  '<system-reminder>', '<command-name>', '<command-message>', '<command-args>', '<command-stdout>', '<local-command-',
-  '<task-notification>', '<user-prompt-submit-hook>', '<bash-stdout>', '<bash-stderr>', 'Caveat:',
+// The tags of the blocks the harness writes into a user message: the tags
+// the CLI itself strips from a person's text (read from Claude Code
+// 2.1.286), and the ones it wrote before. Each block is removed wherever it
+// stands, attributes and all.
+export const HARNESS_TAGS = Object.freeze([
+  'system-reminder', 'task-notification', 'command-message', 'command-stdout', 'command-stderr',
+  'local-command-stdout', 'local-command-stderr', 'local-command-caveat', 'bash-stdout', 'bash-stderr', 'bash-exit-code',
+  'user-prompt-submit-hook', 'agent-message', 'fetched-web-content', 'coordinator-relay', 'function_results', 'fork-boilerplate',
+  'teammate-message', 'cross-session-message', 'slack-tag-message', 'forked-skill-launch', 'message-files-missing',
+  'ide_opened_file', 'ide_selection',
 ]);
+// The tags around what the person typed: the name and the arguments of a
+// slash command, the command of a `!` line. The tags go, the text stays.
+export const PERSON_TAGS = Object.freeze(['command-name', 'command-args', 'bash-input']);
+// A text block that starts with one of these, once the blocks above are
+// gone, is the harness speaking: a background task's notification and a
+// Stop hook's feedback.
+export const HARNESS_PREAMBLES = Object.freeze(['[SYSTEM NOTIFICATION - NOT USER INPUT]', 'Stop hook feedback:']);
+// The `origin.kind` of a user line the person wrote (typed, typed from
+// another device, or a suggestion the person sent); a user line that
+// carries any other kind (a task notification, a peer, a channel, a plugin,
+// an automatic continuation, an observer) is not the person's.
+export const HUMAN_ORIGINS = Object.freeze(['human', 'remote', 'suggestion']);
 
 const MESSAGE_TYPES = new Set(['user', 'assistant', 'system', 'attachment']);
 
@@ -321,8 +354,7 @@ function scanFile(path, size, sampleFrom, window, starts, signatures, io, limits
     if (Number.isNaN(at)) return;
     anyTimestamp = true;
     if (!inWindow(at, from, to)) return;
-    let index = starts.length - 1;
-    while (index > 0 && at < starts[index]) index -= 1;
+    const index = dayOf(at, starts);
     const span = perDay.get(index);
     if (span === undefined) perDay.set(index, { first: at, last: at });
     else {
@@ -407,46 +439,91 @@ function forEachLine(path, size, io, limits, onLine, onChunk = null) {
 
 // --- digests ----------------------------------------------------------------
 
-// Whether a text block is the harness's own, by how it starts.
-function isHarnessText(text) {
-  const head = text.trimStart();
-  return HARNESS_PREFIXES.some((prefix) => head.startsWith(prefix));
-}
+// What the harness writes into a user message as if the person had typed
+// it (fix round 1 of 01/10/2026, the CLI's own rule): a block of one of
+// HARNESS_TAGS is removed wherever it stands in the text, its attributes
+// and its closing tag's own attributes included (Claude Code 2.1.286 writes
+// `<system-reminder id="...">...</system-reminder id="...">`); a block of
+// PERSON_TAGS loses its tags and keeps its text. A tag with no closing tag
+// is someone quoting it, and stays as written.
+const HARNESS_BLOCK = new RegExp(`<(${HARNESS_TAGS.join('|')})(?:\\s[^>]*)?>[\\s\\S]*?<\\/\\1(?:\\s[^>]*)?>`, 'g');
+const PERSON_BLOCK = new RegExp(`<(${PERSON_TAGS.join('|')})(?:\\s[^>]*)?>([\\s\\S]*?)<\\/\\1(?:\\s[^>]*)?>`, 'g');
+// Spaces, control characters and format characters (a zero-width space).
+const BLANK = /^[\s\p{Cc}\p{Cf}]*$/u;
+const LEADING_BLANK = /^[\s\p{Cc}\p{Cf}]+/u;
 
 // Whitespace and control characters, folded to one space.
 function fold(text) {
   return text.replace(/[\s\p{Cc}]+/gu, ' ').trim();
 }
 
-// The text a digest keeps of a user or assistant line's content: a string
-// is one block, an array contributes its `text` blocks (never tool_use,
-// tool_result, thinking or images), each block the harness wrote dropped,
-// the rest folded and joined with a space. '' when nothing is left.
-function messageText(content) {
-  let blocks = [];
-  if (typeof content === 'string') blocks = [content];
-  else if (Array.isArray(content)) blocks = content.filter((block) => block?.type === 'text' && typeof block.text === 'string').map((block) => block.text);
-  return blocks.filter((text) => !isHarnessText(text)).map(fold).filter((text) => text !== '').join(' ');
+// What a digest keeps of one text block of a user line: the harness's
+// blocks removed, the person's own tags unwrapped, and nothing when what is
+// left is blank or starts with the harness speaking (HARNESS_PREAMBLES).
+// Text the person plausibly wrote is kept: in doubt, include.
+function personText(text) {
+  const rest = text.replace(HARNESS_BLOCK, ' ').replace(PERSON_BLOCK, ' $2 ');
+  if (BLANK.test(rest)) return '';
+  const head = rest.replace(LEADING_BLANK, '');
+  if (HARNESS_PREAMBLES.some((preamble) => head.startsWith(preamble))) return '';
+  return fold(rest);
+}
+
+// The text blocks of a line's content: a string is one, an array gives its
+// `text` blocks (never tool_use, tool_result, thinking or images).
+function textBlocks(content) {
+  if (typeof content === 'string') return [content];
+  if (!Array.isArray(content)) return [];
+  return content.filter((block) => block?.type === 'text' && typeof block.text === 'string').map((block) => block.text);
+}
+
+// The text a digest keeps of a user or assistant line: a user line's blocks
+// as personText leaves them, the assistant's as it wrote them (the harness
+// writes nothing into them), folded and joined with a space. '' when
+// nothing is left.
+function messageText(line) {
+  const blocks = textBlocks(line.message?.content);
+  const kept = line.type === 'user' ? blocks.map(personText) : blocks.map((text) => (BLANK.test(text) ? '' : fold(text)));
+  return kept.filter((text) => text !== '').join(' ');
+}
+
+// Whether a line is the harness's own by its own marks: isMeta (an
+// expanded slash command or skill body, a caveat), a compact summary
+// (isCompactSummary, isVisibleInTranscriptOnly), or a user line whose
+// `origin.kind`, when it carries one, is none of HUMAN_ORIGINS.
+function harnessLine(line) {
+  if (line.isMeta === true || line.isCompactSummary === true || line.isVisibleInTranscriptOnly === true) return true;
+  if (line.type !== 'user') return false;
+  const origin = line.origin ?? line.message?.origin;
+  return origin !== null && typeof origin === 'object' && typeof origin.kind === 'string' && !HUMAN_ORIGINS.includes(origin.kind);
+}
+
+// The index of the window's day an instant falls on (`starts` holds each
+// day's first instant, ascending).
+function dayOf(at, starts) {
+  let index = starts.length - 1;
+  while (index > 0 && at < starts[index]) index -= 1;
+  return index;
 }
 
 // The messages of a digest: every user and assistant line of the first
 // `size` bytes of `path` whose own timestamp falls in [from, to), with
-// text, in order of time (ties in file order). Each keeps its folded
-// length and only as much of its text as a line can show, so a pasted blob
-// costs no more memory than the cap.
-function digestMessages(path, size, from, to, io, limits) {
+// text, in order of time (ties in file order), each with its day. Each
+// keeps its folded length and only as much of its text as a line can show,
+// so a pasted blob costs no more memory than the cap.
+function digestMessages(path, size, from, to, starts, io, limits) {
   const messages = [];
   forEachLine(path, size, io, limits, (raw) => {
     if (raw.trim() === '') return;
     const line = parseLine(raw);
     if (line === null || typeof line !== 'object' || (line.type !== 'user' && line.type !== 'assistant')) return;
-    if (line.isMeta === true || line.isCompactSummary === true) return;
+    if (harnessLine(line)) return;
     const at = instantOf(line);
     if (Number.isNaN(at) || !inWindow(at, from, to)) return;
-    const text = messageText(line.message?.content);
+    const text = messageText(line);
     if (text === '') return;
     const cap = DIGEST_LIMITS.messageChars;
-    messages.push({ at, role: line.type, length: text.length, text: text.length > cap ? text.slice(0, cap) : text, order: messages.length });
+    messages.push({ at, day: dayOf(at, starts), role: line.type, length: text.length, text: text.length > cap ? text.slice(0, cap) : text, order: messages.length });
   });
   return messages.sort((a, b) => a.at - b.at || a.order - b.order);
 }
@@ -483,69 +560,125 @@ function messageLine(message, tz, withDate) {
   return `[${time} ${message.role}] ${text}`;
 }
 
+// What one line of a digest costs in what Read prints for it: its UTF-8
+// bytes, its newline, and Read's own number and separator.
+function lineCost(line) {
+  return Buffer.byteLength(line) + 1 + DIGEST_LIMITS.lineBytes;
+}
+
+// A digest's first line: the session, its project, the window, the time
+// zone, how many messages the window held and how many the digest keeps,
+// the cut when there is one, and the days left for a later round.
+function headerOf(t, { session, project, from, to, timezone, held, kept, cutMessages, cutChars, daysLeft }) {
+  let header;
+  if (cutMessages > 0) {
+    const cut = t('sources.transcripts.digest_cut', { messages: cutMessages, chars: cutChars });
+    header = t('sources.transcripts.digest_header_cut', { session, project, from, to, timezone, held, kept, cut });
+  } else {
+    header = t('sources.transcripts.digest_header', { session, project, from, to, timezone, held, kept });
+  }
+  if (daysLeft.length === 0) return header;
+  return `${header} ${t('sources.transcripts.digest_days_left', { days: daysLeft.map(shownDay).join(', ') })}`;
+}
+
+// What the first line can cost at most for these messages: the longest
+// form (cut, every count at its largest, every day after the first left),
+// so the lines can be budgeted before their counts are known.
+function headerBound(t, { session, project, from, to, timezone, messages, daysLeft }) {
+  const all = Math.max(1, messages.length);
+  const chars = messages.reduce((sum, message) => sum + message.length, 0);
+  return lineCost(headerOf(t, { session, project, from, to, timezone, held: all, kept: all, cutMessages: all, cutChars: chars, daysLeft }));
+}
+
+// The covered days every kept file's digest can hold whole (ruling R-D2 of
+// fix round 1, 01/10/2026): each file's messages over the `covered` days
+// the cap took, and the number of those days, oldest first, whose lines fit
+// whole under DIGEST_LIMITS.readBytes with the first line. The round covers
+// the fewest any file holds, and never fewer than one: a first day that
+// alone does not fit is the one cut, inside itself, from its end. Returns
+// { fit, read (path -> messages), failed (files that could not be read
+// again), holds (session -> days held) }.
+function fitDigests(t, taken, { days, covered, window, starts, tz, io, limits }) {
+  const zone = clockZone(tz);
+  const from = window.from.getTime();
+  const to = covered === days.length ? window.to.getTime() : days[covered].start;
+  const withDate = covered > 1;
+  const daysLeft = days.slice(1, covered).map((d) => d.day);
+  const read = new Map();
+  const failed = [];
+  const holds = [];
+  let fit = covered;
+  for (const candidate of taken) {
+    let messages;
+    try {
+      messages = digestMessages(candidate.path, candidate.bytes, from, to, starts, io, limits);
+    } catch {
+      failed.push(candidate);
+      continue;
+    }
+    read.set(candidate.path, messages);
+    const perDay = new Array(covered).fill(0);
+    for (const message of messages) perDay[message.day] += lineCost(messageLine(message, zone, withDate));
+    let used = headerBound(t, { session: candidate.session, project: candidate.project, from: new Date(from).toISOString(), to: new Date(to).toISOString(), timezone: zone, messages, daysLeft });
+    let held = 0;
+    while (held < covered && used + perDay[held] < DIGEST_LIMITS.readBytes) {
+      used += perDay[held];
+      held += 1;
+    }
+    holds.push({ session: candidate.session, held });
+    fit = Math.min(fit, Math.max(1, held));
+  }
+  return { fit, read, failed, holds };
+}
+
 // The digest of one kept file over the plan's window: its text, and what
-// the plan and the round report about it. Sampled from the end: the most
-// recent lines that fit DIGEST_LIMITS are kept, and the first N messages
-// (with M characters of text) that did not fit are said in the header.
-function buildDigest(t, file, window, tz, withDate, io, limits) {
-  const messages = digestMessages(file.path, file.bytes, Date.parse(window.from), Date.parse(window.to), io, limits);
+// the plan and the round report about it. Every line it holds, header
+// included, is kept under DIGEST_LIMITS.readBytes as Read prints it; when
+// the one covered day holds more, the most recent lines that fit are kept,
+// and the first N messages (with M characters of text) that did not fit
+// are said in the header.
+function buildDigest(t, file, window, tz, withDate, messages, daysLeft) {
+  const { session, project } = file;
+  const { from, to } = window;
+  const lineBudget = DIGEST_LIMITS.readBytes - headerBound(t, { session, project, from, to, timezone: tz, messages, daysLeft });
   // From the newest back, while the next older line still fits.
   const keptLines = [];
-  let budget = DIGEST_LIMITS.totalChars;
-  for (let index = messages.length - 1; index >= 0 && keptLines.length < DIGEST_LIMITS.messages; index -= 1) {
+  let used = 0;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
     const line = messageLine(messages[index], tz, withDate);
-    if (line.length + 1 > budget) break;
-    budget -= line.length + 1;
+    if (used + lineCost(line) >= lineBudget) break;
+    used += lineCost(line);
     keptLines.push(line);
   }
   keptLines.reverse();
   const kept = keptLines.length;
-  const first = messages.length - kept;
-  const cutMessages = first;
-  const cutChars = messages.slice(0, first).reduce((sum, message) => sum + message.length, 0);
   const held = messages.length;
-  const { session, project } = file;
-  const { from, to } = window;
-  let header;
-  if (cutMessages > 0) {
-    const cut = t('sources.transcripts.digest_cut', { messages: cutMessages, chars: cutChars });
-    header = t('sources.transcripts.digest_header_cut', { session, project, from, to, timezone: tz, held, kept, cut });
-  } else {
-    header = t('sources.transcripts.digest_header', { session, project, from, to, timezone: tz, held, kept });
-  }
+  const cutMessages = held - kept;
+  const cutChars = messages.slice(0, cutMessages).reduce((sum, message) => sum + message.length, 0);
+  const header = headerOf(t, { session, project, from, to, timezone: tz, held, kept, cutMessages, cutChars, daysLeft });
   const body = [header, ...keptLines];
   return { text: `${body.join('\n')}\n`, held, kept, cutMessages, cutChars, lines: body.length };
 }
 
 // Gives every kept file of `plan` its digest, named `<NN>-<session>.txt`
-// under `dir` in the plan's order (newest first): `file.digest` holds its
-// path and counts, and the texts go in the plan's non-enumerable
-// `digestTexts` ([{ path, text }]), which writeDigests writes and no log,
-// report or JSON copy of the plan ever carries. A file that cannot be read
-// again for its digest leaves the offer for `unreadable`, as a file the
-// scan could not read does: a day the round cannot hand the model whole
-// stays open.
-function attachDigests(plan, { dir, t, tz, io, limits }) {
+// under `dir` in the plan's order (newest first), from the messages
+// fitDigests read (`read`, path -> messages), cut to the plan's window:
+// `file.digest` holds its path and counts, and the texts go in the plan's
+// non-enumerable `digestTexts` ([{ path, text }]), which writeDigests
+// writes and no log, report or JSON copy of the plan ever carries.
+function attachDigests(plan, { dir, t, tz, read }) {
   const zone = clockZone(tz);
   const withDate = plan.daysCovered.length > 1;
+  const to = Date.parse(plan.window.to);
   const width = Math.max(2, String(plan.files.length).length);
   const texts = [];
-  const kept = [];
-  plan.files.forEach((file, index) => {
+  plan.files = plan.files.map((file, index) => {
     const path = join(dir, `${String(index + 1).padStart(width, '0')}-${file.session}.txt`);
-    let digest;
-    try {
-      digest = buildDigest(t, file, plan.window, zone, withDate, io, limits);
-    } catch {
-      plan.dropped.unreadable += 1;
-      plan.unreadable.push({ path: file.path, project: file.project, bytes: file.bytes });
-      return;
-    }
+    const messages = (read.get(file.path) ?? []).filter((message) => message.at < to);
+    const digest = buildDigest(t, file, plan.window, zone, withDate, messages, plan.digestDeferred);
     texts.push({ path, text: digest.text });
-    kept.push({ ...file, digest: { path, held: digest.held, kept: digest.kept, cutMessages: digest.cutMessages, cutChars: digest.cutChars, lines: digest.lines } });
+    return { ...file, digest: { path, held: digest.held, kept: digest.kept, cutMessages: digest.cutMessages, cutChars: digest.cutChars, lines: digest.lines } };
   });
-  plan.files = kept;
-  plan.unreadable.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   plan.digestDir = dir;
   Object.defineProperty(plan, 'digestTexts', { value: texts, enumerable: false });
 }
@@ -625,8 +758,14 @@ function renderPromptBlock(t, plan) {
     else lines.push(t('sources.transcripts.unreadable_line', { path: file.path, project: file.project, bytes: file.bytes }));
   }
   const d = plan.dropped;
+  const digestDays = plan.digestDeferred ?? [];
+  if (digestDays.length > 0) {
+    lines.push(t('sources.transcripts.days_left_digest', {
+      days: digestDays.map(shownDay).join(', '), sessions: plan.digestLimitedBy.join(', '), bytes: DIGEST_LIMITS.readBytes, count: d.byDigest,
+    }));
+  }
   if (plan.overCap) lines.push(t('sources.transcripts.over_cap', { day: shownDay(plan.overCap.day), count: plan.overCap.files, cap: plan.cap }));
-  else if (d.byCap) lines.push(t('sources.transcripts.dropped_by_cap', { count: d.byCap, cap: plan.cap, days: plan.daysDeferred.map(shownDay).join(', ') }));
+  else if (d.byCap) lines.push(t('sources.transcripts.dropped_by_cap', { count: d.byCap, cap: plan.cap, days: plan.daysDeferred.filter((day) => !digestDays.includes(day)).map(shownDay).join(', ') }));
   if (d.selfTrace) lines.push(t('sources.transcripts.dropped_self_trace', { count: d.selfTrace }));
   if (d.outOfWindow) lines.push(t('sources.transcripts.dropped_out_of_window', { count: d.outOfWindow }));
   if (d.modifiedBeforeWindow) lines.push(t('sources.transcripts.dropped_modified_before_window', { count: d.modifiedBeforeWindow }));
@@ -688,7 +827,7 @@ function collect({ window, config, machine, home = homedir(), digestDir, io = fs
   const capValue = config?.curate?.caps?.transcripts;
   const cap = Number.isInteger(capValue) && capValue >= 0 ? capValue : Infinity;
   const signatures = signaturesOf(config);
-  const dropped = { byCap: 0, selfTrace: 0, outOfWindow: 0, modifiedBeforeWindow: 0, excludedPath: 0, unreadable: 0, noTimestamp: 0 };
+  const dropped = { byCap: 0, byDigest: 0, selfTrace: 0, outOfWindow: 0, modifiedBeforeWindow: 0, excludedPath: 0, unreadable: 0, noTimestamp: 0 };
   const problems = [];
   const unreadable = [];
   const candidates = [];
@@ -798,6 +937,36 @@ function collect({ window, config, machine, home = homedir(), digestDir, io = fs
   const overCap = covered === 0 && days.length > 0 ? { day: days[0].day, files: byDay[0].length } : null;
   dropped.byCap = candidates.length - taken.size;
 
+  // The digests, read once here: the covered days narrow to those every
+  // kept file's digest holds whole (fitDigests), the others stay open, and
+  // a file with no message left on the covered days waits with them. A
+  // file that cannot be read again is unreadable, as one the scan could
+  // not read: a day the round cannot hand the model whole stays open.
+  const t = createTranslator(config?.lang ?? 'en');
+  const tz = window.timezone ?? config?.vault?.timezone;
+  let digestRead = null;
+  const digestDeferred = [];
+  let digestLimitedBy = [];
+  if (typeof digestDir === 'string' && covered > 0) {
+    const fitted = fitDigests(t, taken, { days, covered, window, starts, tz, io, limits });
+    for (const candidate of fitted.failed) {
+      taken.delete(candidate);
+      dropped.unreadable += 1;
+      unreadable.push({ path: candidate.path, project: candidate.project, bytes: candidate.bytes });
+    }
+    if (fitted.fit < covered) {
+      digestDeferred.push(...days.slice(fitted.fit, covered).map((d) => d.day));
+      digestLimitedBy = [...new Set(fitted.holds.filter((h) => Math.max(1, h.held) === fitted.fit).map((h) => h.session))].sort();
+      covered = fitted.fit;
+      for (const candidate of [...taken]) {
+        if ([...candidate.perDay.keys()].some((index) => index < covered)) continue;
+        taken.delete(candidate);
+        dropped.byDigest += 1;
+      }
+    }
+    digestRead = fitted.read;
+  }
+
   // A kept file's span counts only its messages on the covered days.
   const kept = [...taken].map((candidate) => {
     let first = null;
@@ -827,12 +996,16 @@ function collect({ window, config, machine, home = homedir(), digestDir, io = fs
     dropped,
     daysCovered: days.slice(0, covered).map((d) => d.day),
     daysDeferred: days.slice(covered).map((d) => d.day),
+    // The deferred days that are so because a digest could not hold them
+    // whole (the others are the cap's), and the sessions whose digests
+    // decided it.
+    digestDeferred,
+    digestLimitedBy,
     overCap,
     problems,
     misconfigured,
   };
-  const t = createTranslator(config?.lang ?? 'en');
-  if (typeof digestDir === 'string') attachDigests(plan, { dir: digestDir, t, tz: window.timezone ?? config?.vault?.timezone, io, limits });
+  if (digestRead !== null) attachDigests(plan, { dir: digestDir, t, tz, read: digestRead });
   plan.promptBlock = renderPromptBlock(t, plan);
   return plan;
 }

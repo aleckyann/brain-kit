@@ -170,7 +170,12 @@ before the model (exit 4), naming the file, since renaming it or its folder is t
 (spaces and accents are fine), and `brain-kit machine set transcripts_dir` refuses such a
 folder. A state directory whose path holds one (a vault folder named `Notes (old)` gives
 its name to the state directory) cannot hold a digest the round could grant: the round
-stops before the model with exit 1 (`digest_dir_unsafe`), naming the folder.
+stops before the model with exit 1 (`digest_dir_unsafe`), naming the folder, and `brain-kit
+doctor` fails its `digest-dir` check before any round does. The state directory takes its
+name from the vault's folder, so the fix that reaches the scheduled round is to rename that
+folder, run `brain-kit machine register --from <its previous path>` and `brain-kit schedule
+install` again: `machine.json`'s `state_dir` only records the path, and a
+`BRAIN_KIT_STATE_DIR` set in a shell never reaches a systemd, launchd or cron round.
 
 Within that, what limits how much the model reads is not the permission system:
 
@@ -182,7 +187,8 @@ Within that, what limits how much the model reads is not the permission system:
   window, each named in the plan.
 - **The digest.** The kit, not the model, decides how much of a session the model sees:
   only the messages of the window, only the person's and the assistant's own text, each
-  message within 1 800 characters and the whole within 40 000, sampled from the end (below).
+  message within 1 800 characters, and the whole under 24 000 bytes as Read prints it,
+  whole days only (below).
 - **The prompt.** It tells the model to read each digest whole and nothing else of the
   transcripts, and states what it may not carry into the vault.
 - **The cost ceiling.** Every round runs with `--max-turns` (`curate.max_turns`, default
@@ -282,10 +288,27 @@ What the model reads of a session, written by the round before the model starts
 
 - **What one holds.** The words you and the assistant wrote to each other in that session
   inside the round's window, one line per message with its time, and a first line naming
-  the session, its project, the window and every cut. Never a tool call or its result,
-  never a thinking block, never a block Claude Code injects (system reminders, slash
-  command wrappers, local command output, task notifications, caveats, compact summaries).
+  the session, its project, the window, every cut and the days left for a later round.
   That is less than the transcript holds, and still private: it is what you said.
+- **What is filtered out, exactly.** Every tool call, tool result and thinking block (only
+  the `text` blocks of a message are read). Every line Claude Code marks as its own:
+  `isMeta` (an expanded slash command or skill, a caveat), `isCompactSummary` and
+  `isVisibleInTranscriptOnly` (a compact summary), and a user line whose `origin.kind` is
+  present and is not `human`, `remote` or `suggestion` (a task notification, another
+  session or agent, a channel, a plugin, an automatic continuation). From what is left of
+  a user line, every block of the tags Claude Code writes itself is removed wherever it
+  stands, attributes and all: `system-reminder` (the form with an `id` included),
+  `task-notification`, `command-message`, `command-stdout`, `command-stderr`,
+  `local-command-stdout`, `local-command-stderr`, `local-command-caveat`, `bash-stdout`,
+  `bash-stderr`, `bash-exit-code`, `user-prompt-submit-hook`, `agent-message`,
+  `fetched-web-content`, `coordinator-relay`, `function_results`, `fork-boilerplate`,
+  `teammate-message`, `cross-session-message`, `slack-tag-message`, `forked-skill-launch`,
+  `message-files-missing`, `ide_opened_file` and `ide_selection`; a text block that is then
+  blank, or starts with `[SYSTEM NOTIFICATION - NOT USER INPUT]` or `Stop hook feedback:`,
+  is dropped. What you typed inside `command-name`, `command-args` and `bash-input` stays
+  (`/name args`, a `!` command). A tag no version of Claude Code this kit knows writes, and
+  text you plausibly wrote, stays: in doubt, include. The assistant's own text is kept as
+  it wrote it.
 - **Where it lives.** In a folder of its own per round, `digests/<instant>-<hex>/` under
   the vault's state directory (`BRAIN_KIT_STATE_DIR`, or
   `~/.local/state/brain-kit/<vault name>-<hash>/`), one file per session,
@@ -296,14 +319,18 @@ What the model reads of a session, written by the round before the model starts
 - **When it is deleted.** When the round ends, whatever its end: a success, a failure, an
   exit 4, a signal the round handles. A round killed outright (SIGKILL, a power cut) cannot
   delete anything; the next round deletes what it left, as soon as it holds the vault lock,
-  before it does anything else. `--dry` and `--check` write none. With `--keep-stream` (or
+  before it does anything else. The round removes its digests first of its cleanup steps,
+  and a step that fails never skips the others. `--dry` and `--check` write none. With `--keep-stream` (or
   `keep_stream: true` in `machine.json`) the digests are written beside the kept stream
   instead, `logs/curate-<instant>-<hex>.digests/`, with the same modes, and stay until the
   logs' retention (`log_retention_days`, 30 days by default) removes them with the stream.
 - **What leaves the folder.** Nothing of a digest's text: the log carries only how many
   digests were written and, for one that was cut, its session and its counts, and the
-  round's output and the warnings of `last-run.json` say the same cut in words. The
-  notification never mentions them.
+  round's output, the warnings and the reason of `last-run.json` say the same cut, and the
+  days left open, in words. The notification carries the reason of a round that failed,
+  never a digest's text.
+- **What the sweep removes.** Only the folders under `digests/` that bear a round's own
+  name (`<instant>-<hex>`): a file or folder of yours there is left alone.
 
 ## What the logs hold
 

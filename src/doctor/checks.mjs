@@ -622,6 +622,34 @@ function stateDirMode(ctx) {
   return { id, status: 'ok', messageKey: 'doctor.state_dir_mode.ok', params: { dir } };
 }
 
+// Fix round 1 of 01/10/2026 (Important 5): a round grants the model each
+// digest of its transcripts by its exact path, under the state directory
+// (STATE_FILES.DIGEST_DIR, and LOG_DIR with the stream kept), and a path
+// holding a character a read rule cannot carry (src/curate/rule-path.mjs)
+// cannot be granted: every round with a transcript to read stops before
+// the model, exit 1 (`digest_dir_unsafe`). It is said here, before the
+// first scheduled round fails on it. The state directory is derived from
+// the vault folder's own path (src/state.mjs); machine.json's `state_dir`
+// only records it, and a BRAIN_KIT_STATE_DIR set in a shell never reaches
+// the scheduled unit, so the remedy named is the one that does: rename the
+// vault's folder, carry its state with `machine register --from`, and
+// install the schedule again.
+function digestDirCheck(ctx) {
+  const id = 'digest-dir';
+  const inputs = curateInputs(ctx, id);
+  if (inputs.result) return inputs.result;
+  if (inputs.disabled) return curateDisabled(ctx, id);
+  const dir = join(ctx.stateDir, STATE_FILES.DIGEST_DIR);
+  const characters = unsafeRuleCharacters(dir);
+  if (characters.length === 0) return { id, status: 'ok', messageKey: 'doctor.digest_dir.ok', params: { dir } };
+  return {
+    id,
+    status: 'fail',
+    messageKey: 'doctor.digest_dir.unsafe',
+    params: { dir, characters: characters.join(' '), vault: ctx.root, register: 'brain-kit machine register --from <old path>', install: 'brain-kit schedule install' },
+  };
+}
+
 // The bridge to a legacy lock (src/guards/legacy-lock.mjs), read and probed
 // exactly as a writer and the Stop hook read and probe it: off (no
 // paths.legacy_lock, or no machine.json, which machine-valid reports), on
@@ -1782,6 +1810,7 @@ export const CHECKS = new Map([
   ['machine-valid', machineValid],
   ['state-dir-resolves', stateDirResolves],
   ['state-dir-mode', stateDirMode],
+  ['digest-dir', digestDirCheck],
   ['legacy-lock', legacyLockCheck],
   ['kit-version', kitVersionCheck],
   ['gh-present', ghPresent],
