@@ -2257,10 +2257,12 @@ test('include-projects: the empty list names the exact edit, the form of an entr
   const { report, code } = await doctor(fx, ['--only', 'include-projects']);
   const c = assertCheck(report, 'include-projects', 'fail', 'doctor.include_projects.empty');
   assert.equal(code, EXIT.FAILURE);
-  assert.equal(c.params.project, ownProject(fx), 'the entry that would make this vault read its own sessions');
+  assert.equal(c.params.project, ownProject(fx), 'what the entry is on this machine');
   assert.equal(c.params.doc, 'docs/scheduling.md');
   assert.match(c.message, /sources\.transcripts\.include_projects/);
-  assert.ok(c.message.includes(`["${ownProject(fx)}"]`), c.message);
+  // The entry that makes this vault read its own sessions on any machine, not the name of this clone's project.
+  assert.ok(c.message.includes('["{vault}"]'), c.message);
+  assert.ok(!c.message.includes(`["${ownProject(fx)}"]`), c.message);
   assert.match(c.message, /name of a directory under /);
   assert.match(c.message, /"all" is accepted .* every project on this machine/);
   assert.match(c.message, /docs\/scheduling\.md/);
@@ -2276,11 +2278,12 @@ test('include-projects: the empty list in Portuguese carries the same edit, "all
   const f = fakeIo();
   setVaultLang(fx, 'pt-BR');
   await runDoctor([fx.root, '--only', 'include-projects'], f.io, createTranslator('pt-BR'), { env: fx.env, cwd: fx.root });
-  assert.ok(f.stdout().includes(`["${ownProject(fx)}"]`), f.stdout());
+  assert.ok(f.stdout().includes('["{vault}"]'), f.stdout());
   assert.match(f.stdout(), /"all"/);
   assert.match(f.stdout(), /docs\/scheduling\.md/);
   assert.match(f.stdout(), /Before the first round/);
-  assert.doesNotMatch(f.stdout(), /\{[a-z_]+\}/);
+  // No placeholder is left over; {vault} is the entry the message offers.
+  assert.doesNotMatch(f.stdout(), /\{(?!vault\})[a-z_]+\}/);
 });
 
 test('include-projects: the vault\'s own project, with no session run in the vault yet, is ok with a note that it has no sessions yet', async () => {
