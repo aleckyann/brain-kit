@@ -17,7 +17,7 @@ import {
 import {
   ANSWER_KEYS, QUESTIONS, askInteractively, defaultAnswers, defaultLang, describeAnswer, invalidAnswer, readAnswersFile, suggestedRepoName,
 } from '../init/answers.mjs';
-import { claudeProjectName } from '../sources/transcripts-claude-code.mjs';
+import { claudeProjectName, VAULT_PROJECT } from '../sources/transcripts-claude-code.mjs';
 import {
   GITIGNORE_PATH, gitignoreText, inspectTarget, isInside, isoStamp, makeOwnTree, nearestExisting, rollback, writeVault,
 } from '../init/skeleton.mjs';
@@ -401,10 +401,15 @@ export async function runInit(argv, io, t, {
       return EXIT.USAGE;
     }
   }
-  // The vault's own project is the name Claude Code will give the sessions
-  // run in it, from its canonical path; null when that path is too long to be
-  // named as it is spelt, and then the list is left empty for doctor to say.
-  const project = claudeProjectName(target);
+  // The vault's own project is listed as the entry {vault}, never as the name
+  // Claude Code will give the sessions run in it: that name comes from this
+  // clone's path, the configuration travels to every machine that clones the
+  // vault, and on a clone elsewhere the name is a project that is not there
+  // (the second stranger's F1/D2, 01/10/2026). The entry means the vault's
+  // project wherever it is opened. Null when this path is too long to be named
+  // as it is spelt, which makes the entry stand for nothing here: then the list
+  // is left empty for doctor to say.
+  const project = claudeProjectName(target) === null ? null : VAULT_PROJECT;
   const config = completeDefaults(inferred?.config ?? readDefaults(answers.lang), answers, { kitVersion: kitVersion(), project });
   const configErrors = validateConfig(config);
   if (configErrors.length > 0) {

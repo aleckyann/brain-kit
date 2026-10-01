@@ -43,7 +43,7 @@ import {
   MANAGED_SKELETON_FILES, HOOK_PATH, PR_BODY_PATH, CLAUDE_SETTINGS_PATH, isInside, stampGenerated, writeVault,
 } from '../src/init/skeleton.mjs';
 import { runInit, worseExit } from '../src/commands/init.mjs';
-import { claudeProjectName } from '../src/sources/transcripts-claude-code.mjs';
+import { claudeProjectName, resolveIncludeProjects } from '../src/sources/transcripts-claude-code.mjs';
 import { MANIFEST_PATH, readManifest } from '../src/manifest.mjs';
 import { makeTempDir } from './helpers/tmp.mjs';
 
@@ -202,7 +202,7 @@ for (const lang of ['en', 'pt-BR']) {
     // kit's version, valid, and free of machine-only keys.
     const config = readConfig(vault);
     const defaults = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', lang, 'config.defaults.json'), 'utf8'));
-    assert.deepEqual(config, completeDefaults(defaults, ANSWERS[lang], { kitVersion: kitVersion(), project: claudeProjectName(realpathSync(vault)) }));
+    assert.deepEqual(config, completeDefaults(defaults, ANSWERS[lang], { kitVersion: kitVersion(), project: '{vault}' }));
     assert.equal(config.kit_version, kitVersion());
     assert.deepEqual(validateConfig(config), []);
     assert.deepEqual(findMachineOnlyKeys(config), []);
@@ -286,6 +286,11 @@ for (const lang of ['en', 'pt-BR']) {
 // init ended at "commit it" without the three commands that lead to a first
 // pull request (M1). Init writes the vault's own project, only that, only
 // when transcripts are read, and prints the commands without running them.
+// It writes it as the entry {vault}, not as the name Claude Code gives the
+// folder of this clone: that name depends on the path, the configuration
+// travels to every machine that clones the vault, and on a second machine at
+// another path the name named a project that is not there (the second
+// stranger's F1/D2, 01/10/2026).
 
 function noGh(base) {
   // A gh that would record being run: init must never run it.
@@ -297,7 +302,7 @@ function noGh(base) {
 }
 
 for (const lang of ['en', 'pt-BR']) {
-  test(`${lang}: init lists the vault's own project in include_projects, never "all", and the first doctor does not fail on it`, () => {
+  test(`${lang}: init lists {vault} in include_projects, never "all" and never the name of this clone's project, and the first doctor does not fail on it`, () => {
     const { base, vault, state } = freshTarget();
     const file = writeAnswers(base, ANSWERS[lang]);
     const home = join(base, 'home');
@@ -306,8 +311,9 @@ for (const lang of ['en', 'pt-BR']) {
     const r = brainKit(['init', vault, '--from-answers', file], { env });
     assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
     const config = readConfig(vault);
-    assert.deepEqual(config.sources.transcripts.include_projects, [claudeProjectName(realpathSync(vault))]);
+    assert.deepEqual(config.sources.transcripts.include_projects, ['{vault}']);
     assert.notEqual(config.sources.transcripts.include_projects, 'all');
+    assert.ok(!readFileSync(join(vault, CONFIG_FILENAME), 'utf8').includes(claudeProjectName(realpathSync(vault))), 'nothing that depends on the path of this clone is written');
     assert.deepEqual(validateConfig(config), []);
     // The doctor, on a machine where Claude Code never ran, fails nothing about the projects.
     const d = brainKit(['doctor', vault, '--only', 'include-projects', '--json'], { env });
@@ -315,10 +321,11 @@ for (const lang of ['en', 'pt-BR']) {
     const check = JSON.parse(d.stdout).checks[0];
     assert.equal(check.status, 'ok');
     assert.equal(check.messageKey, 'doctor.include_projects.no_sessions_yet');
+    assert.deepEqual(check.params.projects, [claudeProjectName(realpathSync(vault))], 'the entry is this clone\'s project here');
   });
 }
 
-test('init writes the vault\'s own project whichever way it is run, and the project is the vault\'s real path, a link or not', () => {
+test('init writes {vault} whichever way it is run, and the project it stands for is the vault\'s real path, a link or not', () => {
   const { base, vault, state } = freshTarget();
   const real = join(base, 'real parent');
   mkdirSync(real);
@@ -327,8 +334,11 @@ test('init writes the vault\'s own project whichever way it is run, and the proj
   const r = brainKit(['init', target, '--yes'], { env: testEnv(state), stdio: ['ignore', 'pipe', 'pipe'] });
   assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
   const project = claudeProjectName(realpathSync(join(real, 'my vault')));
-  assert.deepEqual(readConfig(join(real, 'my vault')).sources.transcripts.include_projects, [project]);
+  assert.deepEqual(readConfig(join(real, 'my vault')).sources.transcripts.include_projects, ['{vault}']);
   assert.match(project, /-real-parent-my-vault$/);
+  // The entry is the real path's project, reached by the link or not.
+  assert.deepEqual(resolveIncludeProjects(['{vault}'], target), [project]);
+  assert.deepEqual(resolveIncludeProjects(['{vault}'], join(real, 'my vault')), [project]);
   void vault;
 });
 
@@ -377,7 +387,7 @@ test('completeDefaults writes the project only into an empty list, and only whil
   assert.deepEqual(defaults.sources.transcripts.include_projects, []);
 });
 
-test('adopt lists the vault\'s own project too, and not when the inferred configuration reads no transcripts', async () => {
+test('adopt lists {vault} too, and not when the inferred configuration reads no transcripts', async () => {
   const lang = 'en';
   const defaults = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', lang, 'config.defaults.json'), 'utf8'));
   for (const [reads, edit] of [[true, () => {}], [false, (c) => { c.curate.sources.required = []; c.curate.sources.best_effort = []; }]]) {
@@ -397,7 +407,7 @@ test('adopt lists the vault\'s own project too, and not when the inferred config
       walkVault, env: testEnv(state), cwd: base, infer, checks: { validate: async () => EXIT.OK, lint: async () => EXIT.OK },
     });
     assert.equal(code, EXIT.OK, f.text + e.text);
-    assert.deepEqual(readConfig(vault).sources.transcripts.include_projects, reads ? [claudeProjectName(realpathSync(vault))] : []);
+    assert.deepEqual(readConfig(vault).sources.transcripts.include_projects, reads ? ['{vault}'] : []);
     assert.doesNotMatch(f.text, /gh repo create/, 'an adopted vault has its own repository: no first-repository commands');
   }
 });

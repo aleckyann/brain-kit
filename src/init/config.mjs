@@ -81,10 +81,13 @@ function findPlaceholders(value, path, found) {
 // vault records the kit that actually made it; it is a parameter rather
 // than a read of package.json here so this function stays pure.
 //
-// `options.project`, when it is a string, is the name Claude Code gives the
-// vault's own sessions (claudeProjectName in src/sources/
-// transcripts-claude-code.mjs). It becomes the one entry of
-// sources.transcripts.include_projects, so that a new vault reads the
+// `options.project`, when it is a string, is the entry that stands for the
+// vault's own sessions: `init` passes VAULT_PROJECT, "{vault}" (src/sources/
+// transcripts-claude-code.mjs), which means the project Claude Code names for
+// the vault's folder on whichever machine the vault is opened, and not the
+// name it has on this one (claudeProjectName), which depends on this clone's
+// path while the configuration travels to every machine. It becomes the one
+// entry of sources.transcripts.include_projects, so that a new vault reads the
 // sessions held in it and the first `doctor` has nothing to fail on. Only
 // into an empty list (a choice already there, a list or "all", is never
 // replaced), and only while a round reads transcripts at all: curate on, and
