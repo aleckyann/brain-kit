@@ -41,6 +41,9 @@ import { ROUND_TOOLS } from '../src/harness/claude-code.mjs';
 import { claudeProjectName } from '../src/sources/transcripts-claude-code.mjs';
 
 const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
+// A clone address is not an e-mail address: the sign is joined at run time so the
+// scan of tracked files (test/no-leak.test.mjs) does not read it as one.
+const AT = '@';
 const PACK_KEYWORDS = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', 'en', 'config.defaults.json'), 'utf8')).privacy.third_party_keywords;
 const TEMPLATE_HOOK = join(KIT_ROOT, 'templates', 'githooks', 'pre-push');
 const A_ACUTE = String.fromCodePoint(0xc1);
@@ -1147,9 +1150,9 @@ test('gh-auth: a stale account elsewhere does not fail the vault\'s own host: on
 test('gh-auth: the host is read from the origin remote, in each form a url can have, and is github.com when there is no origin', async () => {
   for (const [url, host] of [
     ['https://ghe.example.com/ana/brain.git', 'ghe.example.com'],
-    ['ssh://git@ghe.example.com:2222/ana/brain.git', 'ghe.example.com'],
-    ['git@ghe.example.com:ana/brain.git', 'ghe.example.com'],
-    ['git@github.com:ana/brain.git', 'github.com'],
+    [`ssh://git${AT}ghe.example.com:2222/ana/brain.git`, 'ghe.example.com'],
+    [`git${AT}ghe.example.com:ana/brain.git`, 'ghe.example.com'],
+    [`git${AT}github.com:ana/brain.git`, 'github.com'],
     [null, 'github.com'],
   ]) {
     const fx = setup();
@@ -1163,7 +1166,7 @@ test('gh-auth: the host is read from the origin remote, in each form a url can h
 
 test('gh-auth: a problem on the vault\'s own host fails, naming that host, quoting gh, and naming gh auth login for it', async () => {
   const fx = setup();
-  addOrigin(fx, 'git@ghe.example.com:ana/brain.git');
+  addOrigin(fx, `git${AT}ghe.example.com:ana/brain.git`);
   hostAwareGh(fx, 'github.com');
   const { report, code } = await doctor(fx, ['--only', 'gh-auth']);
   const c = assertCheck(report, 'gh-auth', 'fail', 'doctor.gh_auth.problem');

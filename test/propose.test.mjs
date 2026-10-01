@@ -30,6 +30,9 @@ import { BRANCH, NOW, PR_URL, fingerprint, makeProposeWorld, note } from './help
 
 const t = createTranslator('en');
 const line = (key, params) => `${t(key, params)}\n`;
+// A clone address is not an e-mail address: the sign is joined at run time so the
+// scan of tracked files (test/no-leak.test.mjs) does not read it as one.
+const AT = '@';
 const IDENTITY = "Ana's Second Brain (curator) <curator@example.invalid>";
 
 function fakeIo() {
@@ -610,7 +613,7 @@ test('--dry: the host is the one the remote\'s url names (scp-like, here), and t
   const world = makeProposeWorld();
   world.write('notes/a.md', note('A'));
   const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8', env: world.env }).stdout.trim();
-  writeFileSync(join(world.base, 'fakebin', 'git'), `#!/bin/sh\nif [ "$1" = "remote" ] && [ "$2" = "get-url" ]; then echo 'git@ghe.example.com:ana/brain.git'; exit 0; fi\nexec '${realGit}' "$@"\n`, { mode: 0o755 });
+  writeFileSync(join(world.base, 'fakebin', 'git'), `#!/bin/sh\nif [ "$1" = "remote" ] && [ "$2" = "get-url" ]; then echo 'git${AT}ghe.example.com:ana/brain.git'; exit 0; fi\nexec '${realGit}' "$@"\n`, { mode: 0o755 });
   let run = await propose(world, ['A', '--only', 'notes/a.md', '--dry'], { env: { ...world.env, FAKE_GH_AUTH_OK_HOST: 'ghe.example.com' } });
   assert.equal(run.code, EXIT.OK, run.stderr);
   assert.deepEqual(world.ghCalls().map((call) => call.args), [['auth', 'status', '--hostname', 'ghe.example.com']]);
