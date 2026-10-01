@@ -27,7 +27,8 @@ or README that was broken.
    version: what a person who uses the kit sees change, why, and what is left out on
    purpose. It becomes the body of the Release, so write it for a reader who has not seen
    the commits, and put a placeholder such as `<folder>` in backticks with its command
-   (GitHub reads it as an HTML tag and drops it; `changelog-raw-html` checks). Entries left
+   (GitHub reads it as an HTML tag: an element it does not know vanishes from the
+   Release body and one it knows is drawn instead of shown; `changelog-raw-html` checks). Entries left
    under `## Unreleased` fail the tag check, so move them all; an empty `## Unreleased`
    heading above the new section is fine.
 3. **Re-read the Status section of BOTH READMEs against reality** (`README.md` and
@@ -70,7 +71,7 @@ or README that was broken.
 | `package-version` | `package.json` without a valid `X.Y.Z` version; every other check is relative to it, so it is reported alone |
 | `changelog-section` | no `## X.Y.Z` heading (a suffix after the version is fine), two of them, a section with no text, a section over 120000 characters (GitHub refuses a Release body over 125000), or a CHANGELOG that ends inside an unclosed code fence |
 | `changelog-order` | version headings not strictly descending by semver, a version twice, `## Unreleased` twice or below a version heading, any other level-two heading above the first version heading (`## [Unreleased]`, `## Unreleased (next)`, `## Unreleased:`) |
-| `changelog-raw-html` | in the `## X.Y.Z` section only (older sections are history), text outside code fences and inline code spans that GitHub would read as an HTML tag and drop from the Release body: `<word>`, `<word attr>`, `</word>` or `<!--`. A placeholder such as `<folder>` goes in backticks, together with the command it belongs to. Autolinks (`<https://...>`, `<name@example.com>`), a backslash escape and a `<` followed by a space or a digit are fine |
+| `changelog-raw-html` | in the `## X.Y.Z` section only (older sections are history), text outside code fences and inline code spans that GitHub would read as an HTML tag (an element it does not know vanishes from the Release body, one it knows is drawn instead of shown): `<word>`, `<word attr>`, `</word>` or `<!--`. A placeholder such as `<folder>` goes in backticks, together with the command it belongs to. Autolinks (`<https://...>`, `<name@example.com>`), a backslash escape and a `<` followed by a space or a digit are fine |
 | `status-stamp` | a README without exactly one `<!-- status-reviewed: X.Y.Z -->`, or one whose version is not the one in `package.json` |
 | `status-latest-tag` | a Status section without the latest-tag sentence for this version, in either language |
 | `install-literals` | a literal tag (`v1.2.3`) or tarball name in a fenced code block of either README |

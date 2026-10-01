@@ -81,6 +81,8 @@ const FIRST_RUN = {
     cloneFolder: 'The `brain-kit` folder that the first line cloned',
     deletable: /is no longer used and can be deleted/,
     keep: /\*\*must not be deleted\*\*/,
+    upgradeFolder: /delete the `brain-kit` folder that the first line cloned, if it is still there \(otherwise the snippet reuses that old copy and installs the old version\)/,
+    upgradeOld: /The folders of older versions under `~\/\.local\/share\/brain-kit\/` are no longer used and can be deleted; the newest must stay/,
     identityError: 'Author identity unknown',
     identity: ['git config --global user.name "Your Name"', 'git config --global user.email "you@example.com"'],
     identityWhy: /git records who made each commit/,
@@ -141,6 +143,8 @@ const FIRST_RUN = {
     cloneFolder: 'A pasta `brain-kit` que a primeira linha baixou',
     deletable: /não é mais usada e pode ser apagada/,
     keep: /\*\*não pode ser apagada\*\*/,
+    upgradeFolder: /apague a pasta `brain-kit` que a primeira linha baixou, se ela ainda existir \(senão o trecho reaproveita essa cópia velha e instala a versão velha\)/,
+    upgradeOld: /As pastas das versões antigas em `~\/\.local\/share\/brain-kit\/` não são mais usadas e podem ser apagadas; a mais nova não/,
     identityError: 'Author identity unknown',
     identity: ['git config --global user.name "Seu Nome"', 'git config --global user.email "voce@example.com"'],
     identityWhy: /O git guarda quem fez cada commit/,
@@ -551,6 +555,19 @@ for (const [lang, spec] of Object.entries(READMES)) {
     assert.match(words, run.deletable);
     assert.ok(words.includes('`~/.local/share/brain-kit/`'));
     assert.match(words, run.keep);
+  });
+
+  test(`${spec.file}: moving to a newer version says to drop the old clone, paste again, record the version in Claude Code and which folders can go`, () => {
+    const install = section(text, spec.install);
+    const words = norm(prose(install));
+    assert.match(words, run.upgradeFolder, 'a stale clone would make the snippet install the old version again');
+    assert.match(words, run.upgradeOld);
+    const blocks = fencedBlocks(install);
+    assert.equal(blocks[1], 'claude plugin update brain-kit@brain-kit', 'the second block of the install section records the version');
+    const flat = install.split('\n');
+    const at = (needle) => flat.findIndex((line) => line.includes(needle));
+    assert.ok(at('claude plugin update') > at('claude plugin install brain-kit@brain-kit'), 'it comes after the snippet');
+    assert.ok(at(run.eacces) === -1 || at('claude plugin update') < at(run.eacces), 'and before the EACCES block');
   });
 
   test(`${spec.file}: the EACCES block has the exact commands, says why not sudo and what nvm users do, and ends with the check`, () => {

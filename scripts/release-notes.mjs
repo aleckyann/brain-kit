@@ -377,7 +377,7 @@ export function checkChangelogRawHtml(text, version) {
   if (found.length === 0) return [];
   const [first] = found;
   const count = found.length > 1 ? `, ${found.length} in all` : '';
-  return [problem(id, `the "${entry.heading}" section of CHANGELOG.md has "${first.shown}" outside code (line ${first.line}${count}); GitHub reads it as an HTML tag and drops it from the Release body, so put it in backticks together with the command it belongs to, as in \`cd <folder>\``)];
+  return [problem(id, `the "${entry.heading}" section of CHANGELOG.md has "${first.shown}" outside code (line ${first.line}${count}); GitHub reads it as an HTML tag (an element it does not know vanishes from the Release body, one it knows is drawn instead of shown), so put it in backticks together with the command it belongs to, as in \`cd <folder>\``)];
 }
 
 export function checkUnreleasedEmpty(text) {

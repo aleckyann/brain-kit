@@ -2587,7 +2587,7 @@ test('the real binary runs doctor --json against a vault in the hard path and ex
 });
 
 test('doctor is listed in the CLI usage, with --verbose and with what it does outside a vault, in both languages', () => {
-  for (const [lang, outside, verbose] of [['en', /or only this machine outside a vault/, /every check with --verbose/], ['pt-BR', /ou s\u00f3 esta m\u00e1quina fora de um vault/, /todas as verifica\u00e7\u00f5es com --verbose/]]) {
+  for (const [lang, outside, verbose] of [['en', /or only this machine outside a vault/, /every check with --verbose or when --only names it/], ['pt-BR', /ou s\u00f3 esta m\u00e1quina fora de um vault/, /cada verifica\u00e7\u00e3o com --verbose ou quando o --only a nomeia/]]) {
     const r = spawnSync(process.execPath, [BIN, '--help'], { encoding: 'utf8', env: { ...process.env, BRAIN_KIT_LANG: lang } });
     assert.match(r.stdout, /doctor \[dir\] \[--json\] \[--only <id,\.\.\.>\] \[--probe\] \[--verbose\]/, lang);
     assert.match(r.stdout, outside, lang);
@@ -3666,8 +3666,25 @@ test('connectors: a source on that no round has seen yet warns and names --probe
     const c = lineFor(report, source, 'doctor.connectors.unseen');
     assert.equal(c.status, 'warn');
     assert.equal(c.params.file, join(fx.stateDir, 'last-run.json'));
-    assert.match(c.message, /doctor --probe/);
+    assert.match(c.message, /doctor --only connectors --probe/);
   }
+});
+
+// The default report leaves out the lines that are fine, and a probe that finds the connectors
+// connected is such a line: the advice to probe names the check, so the answer is on the screen
+// (the re-review of the fix round of 0.0.9, 01/10/2026).
+test('connectors: every place that tells a person to probe names the check, so a connected answer is not left out', () => {
+  for (const lang of ['en', 'pt-BR']) {
+    const pack = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', lang, 'messages.json'), 'utf8'));
+    for (const key of ['doctor.connectors.unseen', 'doctor.connectors.state']) {
+      assert.match(pack[key], /doctor --only connectors --probe/, `${lang} ${key}`);
+      assert.doesNotMatch(pack[key], /doctor --probe/, `${lang} ${key} still names the bare command`);
+    }
+  }
+  const doc = readFileSync(join(KIT_ROOT, 'docs', 'connectors.md'), 'utf8');
+  const advice = doc.split('\n').filter((line) => /run `brain-kit doctor|asks the CLI directly/.test(line));
+  assert.ok(advice.length >= 4, `only ${advice.length} lines of advice found`);
+  for (const line of advice) assert.doesNotMatch(line, /`brain-kit doctor --probe`/, line);
 });
 
 test('connectors: the last round\'s state per source, with the round\'s day as DD/MM/YYYY in the vault\'s zone', async () => {

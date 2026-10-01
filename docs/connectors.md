@@ -14,7 +14,7 @@ model, and the measurements behind it, is in [security.md](security.md). Every m
 on this page was taken on 24/09/2026 with Claude Code 2.1.281, the version on the
 maintainer's machine, except the two memory switches, measured on 25/09/2026 with the same
 version. A later version may behave differently: every round checks what it relies on
-again, and `brain-kit doctor --probe` asks the CLI directly.
+again, and `brain-kit doctor --only connectors --probe` asks the CLI directly.
 
 ## What the two sources read
 
@@ -306,10 +306,10 @@ them (incident of 05/09/2026).
 | State | What it means | What to do |
 |---|---|---|
 | `connected` | listed as connected, with every tool the source needs in the session | nothing |
-| `needs_auth` | the connector needs you to sign in again | reconnect it in your claude.ai connector settings, then run `brain-kit doctor --probe` |
-| `failed` | the connector failed to connect | check it in your claude.ai connector settings, and run `brain-kit doctor --probe` again later |
+| `needs_auth` | the connector needs you to sign in again | reconnect it in your claude.ai connector settings, then run `brain-kit doctor --only connectors --probe` |
+| `failed` | the connector failed to connect | check it in your claude.ai connector settings, and run `brain-kit doctor --only connectors --probe` again later |
 | `pending` | still connecting when the session started | nothing yet: the round keeps the source and its evidence decides; if it keeps coming back pending, treat it as `failed` |
-| `absent` | not in the session's server list: never connected in claude.ai, or disabled for Claude Code, and the two cannot be told apart | connect it in claude.ai, make sure it is enabled for Claude Code, then run `brain-kit doctor --probe` |
+| `absent` | not in the session's server list: never connected in claude.ai, or disabled for Claude Code, and the two cannot be told apart | connect it in claude.ai, make sure it is enabled for Claude Code, then run `brain-kit doctor --only connectors --probe` |
 | `tools_missing` | listed as connected, but a tool the source needs is not in the session | when `doctor` names another prefix the tools were seen under, set `sources.<source>.tool_prefix` to it; otherwise compare the environment the round runs in with one where the tools work (incident of 05/09/2026) |
 | `unknown` | a status this version of brain-kit does not know | update brain-kit; until then the source is not read |
 | `blocked_by_user_rules` | a rule in your Claude Code user settings refuses connector mode, or would deny the source its own tools | `brain-kit doctor` names the rule and its file: scope it or remove it |

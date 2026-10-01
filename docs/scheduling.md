@@ -554,7 +554,7 @@ settings; that round is a child of the lock's holder, and a sentence saying anot
 process holds the lock reads to it as a competing writer
 ([incidents.md](incidents.md), 28/09/2026). The lock is enforced by mechanism instead:
 every writer refuses while it is held, and the Stop hook stands down. It is reported where
-a person reads it: `brain-kit doctor` (the `legacy-lock` check), `brain-kit preflight` and
+a person reads it: `brain-kit doctor --only legacy-lock` (the `legacy-lock` check), `brain-kit preflight` and
 so the morning briefing's facts, and the Stop hook's release line.
 
 The bridge needs Linux and util-linux `flock` on the `PATH` the command runs with. One

@@ -72,6 +72,17 @@ that the first line cloned (it sits in the folder where you pasted the snippet) 
 used and can be deleted. The `~/.local/share/brain-kit/` folder that the snippet creates, on
 the other hand, **must not be deleted**: Claude Code loads the plugin from it.
 
+To move to a newer version later, delete the `brain-kit` folder that the first line cloned, if
+it is still there (otherwise the snippet reuses that old copy and installs the old version),
+paste the snippet again, and then record the new version in Claude Code:
+
+```bash
+claude plugin update brain-kit@brain-kit
+```
+
+Open Claude Code again afterwards. The folders of older versions under
+`~/.local/share/brain-kit/` are no longer used and can be deleted; the newest must stay.
+
 Where npm may fetch git packages, `npm i -g github:aleckyann/brain-kit#<tag>` installs the kit
 from a tag by itself; where it may not (npm refuses with `EALLOWGIT`), the snippet packs the
 tag for you, installs the `.tgz` and keeps the unpacked copy for the plugin.

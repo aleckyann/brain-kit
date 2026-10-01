@@ -73,6 +73,17 @@ O `brain-kit --version` imprime a versão que você instalou. O trecho já apaga
 mais usada e pode ser apagada. Já a pasta `~/.local/share/brain-kit/`, que o trecho cria,
 **não pode ser apagada**: é dela que o Claude Code carrega o plugin.
 
+Para passar a uma versão mais nova depois, apague a pasta `brain-kit` que a primeira linha
+baixou, se ela ainda existir (senão o trecho reaproveita essa cópia velha e instala a versão
+velha), cole o trecho de novo e depois registre a versão nova no Claude Code:
+
+```bash
+claude plugin update brain-kit@brain-kit
+```
+
+Abra o Claude Code de novo em seguida. As pastas das versões antigas em
+`~/.local/share/brain-kit/` não são mais usadas e podem ser apagadas; a mais nova não.
+
 Onde o npm aceita baixar direto do git, `npm i -g github:aleckyann/brain-kit#<tag>` instala o
 kit de uma tag, sozinho; onde ele recusa (com o erro `EALLOWGIT`), o trecho empacota a tag por
 você, instala o `.tgz` e guarda a cópia desempacotada para o plugin. `claude plugin marketplace add aleckyann/brain-kit`
@@ -304,10 +315,10 @@ Um vault criado antes da 0.0.9 lista o projeto pelo nome que ele tinha na primei
 projeto desta máquina para fazer o `doctor` calar: o arquivo é o mesmo nas duas máquinas, e a
 primeira deixaria de ler as próprias sessões. O caminho para sair disso tem ordem. Primeiro,
 instale esta versão do kit em todas as máquinas que abrem o vault: um kit mais velho que a
-0.0.9 lê `"{vault}"` como o nome de um projeto e falha na mesma checagem. Segundo, rode
+0.0.9 lê `"{vault}"` como o nome de um projeto e falha na mesma checagem. Depois, rode
 `brain-kit update` dentro do vault uma vez, na máquina em que você vai editar o arquivo; nas
 outras máquinas, só instale o kit, e elas recebem a mudança com `brain-kit sync` depois do
-merge. Terceiro, troque o nome que está em `sources.transcripts.include_projects` por
+merge. Por fim, troque o nome que está em `sources.transcripts.include_projects` por
 `"{vault}"`, proponha a mudança com `brain-kit propose "Usa {vault}" --only brain-kit.config.json`
 (depois de `--only`, ponha também qualquer outro arquivo que o `update` disse ter mudado),
 faça o merge no GitHub e rode `brain-kit sync` nas duas máquinas; o `doctor` passa a terminar

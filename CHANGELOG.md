@@ -325,6 +325,28 @@ real Node 22 showed the code already supported.
   is not a vault as the machine check (the "no vault found" line it prints is expected), and
   the doctor after `init` and the final one stay as they were. The test that pinned the old
   sentence now pins the three runs, in order.
+- Both READMEs now say how to move to a newer version, which they did not. Delete the
+  `brain-kit` folder that the first line of the install snippet cloned (left in place, the
+  snippet reuses that old copy and installs the old version again), paste the snippet, run
+  `claude plugin update brain-kit@brain-kit` so that Claude Code records the new version, and open
+  Claude Code again; the folders of older versions under `~/.local/share/brain-kit/` can then be
+  deleted and the newest must stay. Checked on 01/10/2026 with Claude Code 2.1.286 in a scratch
+  configuration: adding the marketplace from the new folder points it there and the installed
+  plugin follows, the recorded version stays the old one until `plugin update`, deleting the
+  older folder changes nothing, and deleting the newest one makes `claude plugin list` report the
+  plugin as failed to load.
+- The advice in `doctor`'s connector warnings, and in `docs/connectors.md`, to ask the CLI for
+  the connectors' state now names the check, `brain-kit doctor --only connectors --probe`: the
+  default report leaves out the lines that are fine, so the plain `--probe` printed nothing
+  about the connectors when they were connected. Six Portuguese messages call the push check
+  "trava de push" like the README and the rest of the pack: the `update --accept` refusal said
+  "gate" and five refusals of the push gate said "barreira".
+- The release gate (maintainer tooling, not part of the package) gained a check,
+  `changelog-raw-html`: text in angle brackets outside code in the section of the version being
+  released now fails `npm test` and CI, because GitHub reads it as an HTML tag in the Release
+  body, where an element it does not know vanishes and one it knows is drawn instead of shown.
+  It happened: the published Release of 0.0.8 reads "To create one: brain-kit init " and the
+  placeholder after it is gone. The maintainer checklist lists the check.
 
 ## 0.0.8 (tagged `v0.0.8`, not on npm)
 
