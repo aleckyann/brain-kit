@@ -182,6 +182,7 @@ function refuseTarget(io, t, refusal, { adopt, machinePath }) {
     case 'inside_vault': line = t('init.inside_vault', { dir, vault }); break;
     case 'already_vault':
       if (adopt) line = t('init.adopt_already_vault', { dir, machine: machinePath });
+      else if (!existsSync(machinePath)) line = t('init.already_vault_clone', { dir });
       else line = t('init.already_vault', { dir });
       break;
     case 'already_repository': line = t('init.already_repository', { dir }); break;

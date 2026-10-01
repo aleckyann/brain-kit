@@ -94,11 +94,21 @@
 // marks. It is combined with `--from` never: `--from` says moved, `--new`
 // says never had.
 //
+// A DECLARED LIMIT OF THAT SEARCH, AND WHAT IS DONE ABOUT IT. The folder name
+// is the only sign, so a vault moved AND renamed is not recognised and
+// `--new` goes ahead. It then prints the records it could not tie to this
+// vault (the same ones plain `register` lists as candidates), with the undo:
+// delete the machine.json it wrote and run `register --from <that path>`.
+// `register --from` accepts a target holding only the trace of a refused
+// round (the same two entries `--new` accepts), setting it aside while the
+// state moves and deleting it once the register has worked; a failed register
+// puts it back.
+//
 // `deps` is the seam the tests use to hand in the environment, the working
 // directory, a rename that fails, and a validator that rejects what the
 // real one accepts. Production passes nothing.
 import {
-  closeSync, existsSync, fchmodSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync,
+  closeSync, existsSync, fchmodSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync,
   statSync, unlinkSync, writeSync, chmodSync,
 } from 'node:fs';
 import { randomBytes } from 'node:crypto';
@@ -120,6 +130,19 @@ import { GuardError } from '../guards/location.mjs';
 const ROOT_INDEX = 'index.md';
 const MACHINE_FILE_MODE = 0o600;
 const MANAGED_KEYS = Object.freeze(['vault_id', 'canonical_path', 'state_dir']);
+
+// What a round that stopped for lack of machine.json leaves in the state
+// directory: its log and last-run.json (src/commands/curate.mjs writes both
+// before it reads the machine file). Nothing else counts as "no state", for
+// `register --new` and for `register --from` alike: a target holding exactly
+// this is not another vault's state, it is the mark of a command run too
+// early, and refusing it would send the person from `curate` to a `--from`
+// that refuses.
+const TRACE_OF_A_REFUSED_ROUND = Object.freeze([STATE_FILES.LAST_RUN, STATE_FILES.LOG_DIR]);
+
+function beyondTrace(names) {
+  return names.filter((name) => !TRACE_OF_A_REFUSED_ROUND.includes(name));
+}
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -619,9 +642,12 @@ function registerLocked(io, t, { realRoot, target, env, from, deps }) {
       source = target;
       sourceFile = targetFile;
       read = there;
-    } else if (existsSync(target) && readdirSync(target).length > 0) {
-      io.stderr.write(`${t('machine.register_target_not_empty', { dir: target })}\n`);
-      return EXIT.FAILURE;
+    } else if (existsSync(target)) {
+      const stray = beyondTrace(readdirSync(target));
+      if (stray.length > 0) {
+        io.stderr.write(`${t('machine.register_target_not_empty', { dir: target, names: stray })}\n`);
+        return EXIT.FAILURE;
+      }
     }
   }
 
@@ -650,10 +676,33 @@ function registerLocked(io, t, { realRoot, target, env, from, deps }) {
   }
 
   const rename = deps.rename ?? renameSync;
+  // What a refused round left at the target is set aside, not deleted, until
+  // the register has worked: a failed register leaves it where it was.
+  let aside = null;
+  const putTraceBack = () => {
+    if (aside === null) return;
+    try {
+      rename(aside, target);
+    } catch {
+      io.stderr.write(`${t('machine.register_trace_stranded', { from: aside, to: target })}\n`);
+    }
+  };
   if (source !== target) {
     mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-    if (existsSync(target)) rmdirSync(target);
-    rename(source, target);
+    try {
+      if (existsSync(target)) {
+        if (readdirSync(target).length === 0) {
+          rmdirSync(target);
+        } else {
+          aside = join(dirname(target), `.${basename(target)}.trace-${process.pid}-${randomBytes(4).toString('hex')}`);
+          rename(target, aside);
+        }
+      }
+      rename(source, target);
+    } catch (error) {
+      putTraceBack();
+      throw error;
+    }
     fsyncDir(dirname(target));
     fsyncDir(dirname(source));
   }
@@ -666,11 +715,20 @@ function registerLocked(io, t, { realRoot, target, env, from, deps }) {
     if (source !== target) {
       try {
         rename(target, source);
+        putTraceBack();
       } catch {
         io.stderr.write(`${t('machine.register_stranded', { from: source, to: target })}\n`);
       }
     }
     throw error;
+  }
+  if (aside !== null) {
+    try {
+      rmSync(aside, { recursive: true, force: true });
+    } catch {
+      // A hidden folder beside the state directory that could not be removed
+      // is litter, not a failed register.
+    }
   }
   if (source === target) io.stdout.write(`${t('machine.register_updated', { dir: realRoot, file: targetFile })}\n`);
   else io.stdout.write(`${t('machine.register_done', { dir: realRoot, from: source, to: target })}\n`);
@@ -678,11 +736,6 @@ function registerLocked(io, t, { realRoot, target, env, from, deps }) {
 }
 
 // --- register --new -------------------------------------------------------------
-
-// What a round that stopped for lack of machine.json leaves in the state
-// directory: its log and last-run.json (src/commands/curate.mjs writes both
-// before it reads the machine file). Nothing else counts as "no state".
-const TRACE_OF_A_REFUSED_ROUND = Object.freeze([STATE_FILES.LAST_RUN, STATE_FILES.LOG_DIR]);
 
 // Why this folder is not a configured vault, or null when it is: its
 // configuration must pass the schema and its manifest must read.
@@ -708,12 +761,22 @@ function refuseExisting(io, t, file, read) {
   return EXIT.FAILURE;
 }
 
-// State of a vault this one looks like before it moved: its record names a
-// path that is gone (and the same folder name), or a path that now leads here.
-function movedStates(env, target, realRoot) {
-  if (env.BRAIN_KIT_STATE_DIR) return [];
+// The state on this machine whose vault is gone, split in two: `moved`, what
+// looks like this vault before it moved (a record naming a path that is gone
+// and the same folder name, or a path that now leads here), which stops --new;
+// and `unrelated`, the rest, which --new cannot tie to this vault (a vault
+// moved AND renamed is among them) and says so after it has written. Nothing
+// is searched when BRAIN_KIT_STATE_DIR pins the directory.
+function goneStates(env, target, realRoot) {
+  if (env.BRAIN_KIT_STATE_DIR) return { moved: [], unrelated: [] };
   const name = basename(realRoot);
-  return orphanRecords(env, target, realRoot).filter((state) => state.leadsHere || basename(state.recorded) === name);
+  const looksLikeThis = (state) => state.leadsHere || basename(state.recorded) === name;
+  const records = orphanRecords(env, target, realRoot);
+  return { moved: records.filter(looksLikeThis), unrelated: records.filter((state) => !looksLikeThis(state)) };
+}
+
+function listOf(states) {
+  return states.map(({ recorded, dir }) => `  ${recorded}  (${dir})`).join('\n');
 }
 
 function runRegisterNew(io, t, parsed, env, cwd) {
@@ -746,15 +809,14 @@ function registerNewLocked(io, t, { realRoot, derived, stateDir, env }) {
   }
   if (!read.missing) return refuseExisting(io, t, file, read);
 
-  const others = names.filter((name) => !TRACE_OF_A_REFUSED_ROUND.includes(name));
-  if (others.length > 0) {
-    io.stderr.write(`${t('machine.register_new_state_not_empty', { dir: stateDir, names: others })}\n`);
+  const stray = beyondTrace(names);
+  if (stray.length > 0) {
+    io.stderr.write(`${t('machine.register_new_state_not_empty', { dir: stateDir, names: stray })}\n`);
     return EXIT.FAILURE;
   }
-  const moved = movedStates(env, derived, realRoot);
+  const { moved, unrelated } = goneStates(env, derived, realRoot);
   if (moved.length > 0) {
-    const list = moved.map(({ recorded, dir }) => `  ${recorded}  (${dir})`).join('\n');
-    io.stderr.write(`${t('machine.register_new_moved', { name: basename(realRoot), list })}\n`);
+    io.stderr.write(`${t('machine.register_new_moved', { name: basename(realRoot), list: listOf(moved) })}\n`);
     return EXIT.FAILURE;
   }
 
@@ -782,6 +844,7 @@ function registerNewLocked(io, t, { realRoot, derived, stateDir, env }) {
   else io.stdout.write(`${t('machine.register_new_claude_missing', { bin: machine.claude_bin })}\n`);
   io.stdout.write(`${t('machine.register_new_defaults', { host: `${DEFAULT_HOST}:${DEFAULT_PORT}` })}\n`);
   io.stdout.write(`${t('machine.register_new_no_watermark')}\n`);
+  if (unrelated.length > 0) io.stdout.write(`${t('machine.register_new_orphans', { list: listOf(unrelated), file })}\n`);
   io.stdout.write(`${t('machine.register_new_next')}\n`);
   return EXIT.OK;
 }

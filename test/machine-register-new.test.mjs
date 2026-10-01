@@ -19,7 +19,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
-  chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync,
+  chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { delimiter, dirname, join } from 'node:path';
@@ -636,4 +636,230 @@ test('the real launcher: register --new in pt-BR prints the Portuguese messages 
   assert.equal(modeOf(world.machineFile), 0o600);
   const again = cli(world, ['machine', 'register', '--new']);
   assert.equal(again.status, EXIT.FAILURE, again.stderr);
+});
+
+// --- fix round 1 -----------------------------------------------------------------------
+//
+// What the first review found: a vault moved AND renamed got a second, empty
+// state with no word about the old one (S1); after a move a refused round's
+// trace sent the person from `curate` to `register --from`, which refused
+// because of that same trace (S2); the rollback of a failed write was never
+// exercised (S3); the second-machine steps left out the push gate (S4); plain
+// `init` and `schedule` said things that were not true for a clone (S5, S6);
+// and `watermark set` before `--new` made it refuse with advice that loses
+// what the person set (S7).
+
+// --- S1: the state --new cannot tie to this vault is listed, with the way back -------------
+
+test('S1: --new on a vault that moved AND was renamed succeeds, lists the state it cannot tie to it, and the undo it gives works', async () => {
+  for (const lang of ['en', 'pt-BR']) {
+    const world = makeWorld({ lang });
+    const moved = makeMovedVault(world, { newName: 'Renamed notes' });
+    const oldId = readJson(join(moved.oldState, 'machine.json')).vault_id;
+    const r = await machine(world, ['register', '--new'], { env: moved.env, cwd: moved.newPath });
+    assert.equal(r.code, EXIT.OK, `${lang}: ${r.stderr}`);
+    assert.ok(r.stdout.includes(moved.oldPath), `${lang}: it names the old path: ${r.stdout}`);
+    assert.ok(r.stdout.includes(moved.oldState), `${lang}: and the old state directory`);
+    assert.ok(r.stdout.includes('machine register --from'), `${lang}: and the way to adopt it`);
+    const newFile = join(stateDirFor(moved.newPath, moved.env), 'machine.json');
+    assert.ok(r.stdout.includes(newFile), `${lang}: and the file to remove first`);
+    // The undo, as given: remove what --new wrote, then register --from.
+    unlinkSync(newFile);
+    const undo = await machine(world, ['register', '--from', moved.oldPath], { env: moved.env, cwd: moved.newPath });
+    assert.equal(undo.code, EXIT.OK, `${lang}: ${undo.stderr}`);
+    assert.equal(readJson(newFile).vault_id, oldId, `${lang}: the old state is this vault's now`);
+    assert.equal(existsSync(moved.oldState), false);
+  }
+});
+
+test('S1: the notice also lists an unrelated vault that is gone, and is absent when the machine holds no such state', async () => {
+  const world = makeWorld({ pinned: false });
+  const stranger = join(world.base, 'strangers', 'Other notes');
+  const init = spawnSync(process.execPath, [BIN, 'init', '--yes', '--lang', 'en', stranger], { cwd: world.base, env: world.env, encoding: 'utf8' });
+  assert.equal(init.status, EXIT.OK, init.stderr);
+  const strangerState = stateDirFor(stranger, world.env);
+  rmSync(stranger, { recursive: true, force: true });
+  const r = await machine(world, ['register', '--new']);
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  assert.ok(r.stdout.includes(stranger) && r.stdout.includes(strangerState), r.stdout);
+  const clean = makeWorld();
+  const quiet = await machine(clean, ['register', '--new']);
+  assert.equal(quiet.code, EXIT.OK, quiet.stderr);
+  assert.ok(!quiet.stdout.includes('--from'), `no notice when there is nothing to tell: ${quiet.stdout}`);
+});
+
+test('S1: every message that reports a missing machine.json says "moved or renamed", and the limit is written in docs/scheduling.md', () => {
+  const keys = ['machine.missing', 'doctor.machine_valid.missing', 'curate.machine_missing', 'schedule.machine_missing',
+    'hook.stop.release_unregistered', 'machine.register_nothing'];
+  for (const [lang, pattern] of [['en', /moved or renamed/], ['pt-BR', /mov(ido|ida) ou renomead[oa]/]]) {
+    const pack = loadMessages(lang);
+    for (const key of keys) assert.match(pack[key], pattern, `${lang} ${key}`);
+  }
+  const doc = readFileSync(join(KIT_ROOT, 'docs', 'scheduling.md'), 'utf8');
+  const section = doc.slice(doc.indexOf('## The same vault on a second machine'), doc.indexOf('## Moving from a legacy lock'));
+  assert.match(section, /moved and renamed/);
+  assert.match(section, /lists/);
+});
+
+// --- S2: register --from takes the trace a refused round leaves, as --new does -----------------
+
+// A vault moved by hand, then a round refused at its new path for lack of
+// machine.json: its trace is what register --from used to refuse.
+function movedWithRefusedRound(world) {
+  const moved = makeMovedVault(world);
+  const newState = stateDirFor(moved.newPath, moved.env);
+  const curate = cli(world, ['curate'], { env: moved.env, cwd: moved.newPath });
+  assert.equal(curate.status, EXIT.USAGE, curate.stderr);
+  assert.deepEqual(readdirSync(newState).sort(), ['last-run.json', 'logs']);
+  return { ...moved, newState };
+}
+
+test('S2: move, curate refused, then register --from succeeds: the advice of curate and of --new is not a dead end', async () => {
+  const world = makeWorld();
+  const moved = movedWithRefusedRound(world);
+  const refused = await machine(world, ['register', '--new'], { env: moved.env, cwd: moved.newPath });
+  assert.equal(refused.code, EXIT.FAILURE, refused.stderr);
+  assert.ok(refused.stderr.includes('machine register --from'));
+  const r = await machine(world, ['register', '--from', moved.oldPath], { env: moved.env, cwd: moved.newPath });
+  assert.equal(r.code, EXIT.OK, r.stderr);
+  assert.deepEqual(readdirSync(moved.newState), ['machine.json'], 'the old state is in place and the refused round\'s trace is gone');
+  assert.equal(existsSync(moved.oldState), false);
+  assert.deepEqual(readdirSync(dirname(moved.newState)).filter((name) => name.includes('trace')), [], 'nothing was left beside it');
+  assert.equal(readJson(join(moved.newState, 'machine.json')).canonical_path, realpathSync(moved.newPath));
+});
+
+test('S2: register --from still refuses anything beyond that trace in the target, naming it, and leaves everything where it was', async () => {
+  const world = makeWorld();
+  const moved = movedWithRefusedRound(world);
+  writeFileSync(join(moved.newState, 'watermark.json'), '{}\n');
+  const r = await machine(world, ['register', '--from', moved.oldPath], { env: moved.env, cwd: moved.newPath });
+  assert.equal(r.code, EXIT.FAILURE, r.stderr);
+  assert.ok(r.stderr.includes('watermark.json') && r.stderr.includes(moved.newState), r.stderr);
+  assert.deepEqual(readdirSync(moved.newState).sort(), ['last-run.json', 'logs', 'watermark.json']);
+  assert.ok(existsSync(join(moved.oldState, 'machine.json')));
+});
+
+test('S2: a register --from that fails after setting the trace aside puts the trace and the old state back', async () => {
+  for (const failAt of [2, 3]) {
+    const world = makeWorld();
+    const moved = movedWithRefusedRound(world);
+    const before = readFileSync(join(moved.oldState, 'machine.json'));
+    let calls = 0;
+    const rename = (from, to) => {
+      calls += 1;
+      if (calls === failAt) throw Object.assign(new Error('EXDEV: simulated'), { code: 'EXDEV' });
+      return renameSync(from, to);
+    };
+    await assert.rejects(machine(world, ['register', '--from', moved.oldPath], { env: moved.env, cwd: moved.newPath, deps: { rename } }), /EXDEV/);
+    assert.deepEqual(readdirSync(moved.newState).sort(), ['last-run.json', 'logs'], `failing rename ${failAt}: the trace is back`);
+    assert.ok(readFileSync(join(moved.oldState, 'machine.json')).equals(before), `failing rename ${failAt}: the old state is where it was`);
+    assert.deepEqual(readdirSync(dirname(moved.newState)).filter((name) => name.includes('trace')), []);
+    const again = await machine(world, ['register', '--from', moved.oldPath], { env: moved.env, cwd: moved.newPath });
+    assert.equal(again.code, EXIT.OK, again.stderr);
+  }
+});
+
+// --- S3: a write that fails after the directory exists leaves nothing behind -------------------
+
+test('S3: --new whose machine.json write fails midway (a file-size limit) rolls back the file and the directories, and a later --new works', (t) => {
+  if (spawnSync('bash', ['-c', 'exit 0']).status !== 0) t.skip('no bash to set a file-size limit');
+  const world = makeWorld({ stateExists: false });
+  // A long state path: machine.json (five paths in it) passes 1 KiB, the vault lock's file does not.
+  const first = join(world.base, 'a'.repeat(200));
+  const long = join(first, 'b'.repeat(200));
+  const env = { ...world.env, BRAIN_KIT_STATE_DIR: long };
+  const limited = spawnSync('bash', ['-c', 'ulimit -f 1; exec "$0" "$@"', process.execPath, BIN, 'machine', 'register', '--new'], {
+    cwd: world.clone, env, encoding: 'utf8',
+  });
+  assert.equal(limited.status, EXIT.FAILURE, limited.stdout + limited.stderr);
+  assert.match(limited.stderr, /EFBIG/);
+  assert.ok(limited.stderr.includes(long), limited.stderr);
+  assert.equal(existsSync(first), false, 'the directories this run created are gone, and no file cut short is left in them');
+  const ok = spawnSync(process.execPath, [BIN, 'machine', 'register', '--new'], { cwd: world.clone, env, encoding: 'utf8' });
+  assert.equal(ok.status, EXIT.OK, ok.stderr);
+});
+
+// --- S4: the push gate -----------------------------------------------------------------------------
+
+test('S4: the second-machine steps give the clone its push gate: the section, both READMEs, the incident page and the next steps', () => {
+  const doc = readFileSync(join(KIT_ROOT, 'docs', 'scheduling.md'), 'utf8');
+  const section = doc.slice(doc.indexOf('## The same vault on a second machine'), doc.indexOf('## Moving from a legacy lock'));
+  const gate = 'git config core.hooksPath .githooks';
+  assert.ok(section.includes(gate), 'docs/scheduling.md');
+  for (const file of ['README.md', 'README.pt-BR.md']) {
+    const text = readFileSync(join(KIT_ROOT, file), 'utf8');
+    const at = text.indexOf('machine register --new');
+    assert.ok(at >= 0 && text.slice(at - 600, at + 900).includes(gate), file);
+  }
+  const incident = readFileSync(join(KIT_ROOT, 'docs', 'incident-response.md'), 'utf8');
+  assert.ok(incident.indexOf(gate, incident.indexOf('machine register --new')) > 0, 'the gate comes after the registration there');
+  for (const lang of ['en', 'pt-BR']) assert.ok(loadMessages(lang)['machine.register_new_next'].includes('core.hooksPath'), lang);
+});
+
+// --- S5: plain init on a configured clone ---------------------------------------------------------
+
+for (const lang of ['en', 'pt-BR']) {
+  test(`${lang}: plain init on a configured clone with no state names machine register --new, and does not once the machine has its own`, async () => {
+    const world = makeWorld({ lang });
+    let r = cli(world, ['init', '.', '--yes', '--lang', lang]);
+    assert.equal(r.status, EXIT.USAGE, r.stderr);
+    assert.ok(r.stderr.includes('machine register --new'), r.stderr);
+    assert.ok(r.stderr.includes('brain-kit update'), 'the advice for a vault that has its state is still there');
+    assert.equal((await machine(world, ['register', '--new'])).code, EXIT.OK);
+    r = cli(world, ['init', '.', '--yes', '--lang', lang]);
+    assert.equal(r.status, EXIT.USAGE, r.stderr);
+    assert.ok(!r.stderr.includes('machine register --new'), r.stderr);
+    assert.ok(r.stderr.includes('brain-kit update'), r.stderr);
+  });
+}
+
+// --- S6: schedule says what is true for each caller --------------------------------------------
+
+test('S6: schedule status and uninstall on a machine with no machine.json do not claim an installation was refused, and doctor\'s schedule check fails on it', () => {
+  const world = makeWorld();
+  for (const args of [['schedule', 'status'], ['schedule', 'uninstall'], ['schedule', 'install', '--dry']]) {
+    const r = cli(world, args);
+    assert.equal(r.status, EXIT.USAGE, `${args.join(' ')}: ${r.stderr}`);
+    assert.ok(r.stderr.includes('machine register --new'), r.stderr);
+    assert.ok(!/nothing was installed/.test(r.stderr), `${args.join(' ')}: ${r.stderr}`);
+  }
+  for (const lang of ['en', 'pt-BR']) {
+    const text = loadMessages(lang)['schedule.machine_missing'];
+    assert.ok(!/nothing was installed|nada foi instalado/.test(text), lang);
+  }
+  // The decision, pinned: a configured vault with no machine.json cannot run a round at all, so the check fails (it was a warning before).
+  const doctor = cli(world, ['doctor', '--json', '--only', 'schedule']);
+  const check = JSON.parse(doctor.stdout).checks[0];
+  assert.equal(check.status, 'fail');
+  assert.equal(check.messageKey, 'schedule.machine_missing');
+  assert.equal(doctor.status, EXIT.FAILURE);
+});
+
+// --- S7: a mark set before --new is not lost by the way out --------------------------------------
+
+test('S7: watermark set before --new makes it refuse, the message does not offer to lose the mark, and the way it gives keeps it', async () => {
+  for (const lang of ['en', 'pt-BR']) {
+    const world = makeWorld({ lang });
+    const set = cli(world, ['watermark', 'set', 'transcripts', '2020-01-02']);
+    assert.equal(set.status, EXIT.OK, set.stdout + set.stderr);
+    assert.ok(existsSync(join(world.stateDir, 'watermark.json')));
+    const r = await machine(world, ['register', '--new']);
+    assert.equal(r.code, EXIT.FAILURE, r.stderr);
+    assert.ok(r.stderr.includes('watermark.json'), r.stderr);
+    assert.ok(!/do not need them|não precisa deles/.test(r.stderr), `${lang}: it must not offer to throw the mark away: ${r.stderr}`);
+    assert.match(r.stderr, lang === 'en' ? /watermark set/ : /watermark set/);
+    assert.match(r.stderr, lang === 'en' ? /back/ : /de volta/);
+    // The way it gives: move aside, --new, move back.
+    const aside = join(world.base, 'aside');
+    mkdirSync(aside);
+    renameSync(join(world.stateDir, 'watermark.json'), join(aside, 'watermark.json'));
+    assert.equal((await machine(world, ['register', '--new'])).code, EXIT.OK);
+    renameSync(join(aside, 'watermark.json'), join(world.stateDir, 'watermark.json'));
+    const show = cli(world, ['watermark', 'show']);
+    assert.equal(show.status, EXIT.OK, show.stderr);
+    assert.ok(show.stdout.includes('02/01/2020'), show.stdout);
+  }
+  const doc = readFileSync(join(KIT_ROOT, 'docs', 'scheduling.md'), 'utf8');
+  const section = doc.slice(doc.indexOf('## The same vault on a second machine'), doc.indexOf('## Moving from a legacy lock'));
+  assert.match(section, /after `brain-kit machine register --new`/, 'the marks are set after --new');
 });
