@@ -976,6 +976,7 @@
   "prompt.check_overlay_signature_prepended": "warning: the vault's curate prompt {path} does not start with {line}; a round will put the signature line in front of it.",
   "prompt.check_overlay_unknown_placeholder": "warning: the vault's curate prompt {path} uses the placeholder \"{placeholder}\", which a round does not fill; it will reach the model as written.",
   "schedule.usage": "Usage: brain-kit schedule install|uninstall|status [dir] [--job curate|briefing] [--platform systemd|launchd|cron] [--dry]",
+  "schedule.briefing_dry_note": "--dry changes nothing for --job briefing: this job never writes anything, it only prints the task to register in the Claude desktop application, as it does without --dry.",
   "schedule.bad_argument": "brain-kit schedule: unknown argument \"{arg}\".",
   "schedule.platform_needs_value": "brain-kit schedule: --platform needs a value: systemd, launchd or cron.",
   "schedule.unknown_action": "brain-kit schedule: unknown action \"{action}\"; the actions are install, uninstall and status.",

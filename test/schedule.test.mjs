@@ -735,14 +735,14 @@ test('install --job briefing warns on stderr when the machine\'s clock and the v
   assert.equal(registration(r.stdout).taskId, BRIEFING_TASK_ID);
 });
 
-test('--job takes curate or briefing; --platform and --dry mean nothing for the briefing', async () => {
+test('--job takes curate or briefing; --platform means nothing for the briefing, and --dry is a status-only refusal', async () => {
   const world = makeScheduleWorld();
   const usage = world.t('schedule.usage');
   const cases = [
     [['install', '--job', 'nightly'], `${world.t('schedule.bad_job', { job: 'nightly', jobs: 'curate, briefing' })}\n${usage}\n`],
     [['install', '--job'], `${world.t('schedule.job_needs_value', { jobs: 'curate, briefing' })}\n${usage}\n`],
     [['status', '--job', 'briefing', '--platform', 'cron'], `${world.t('schedule.bad_argument', { arg: '--platform' })}\n${usage}\n`],
-    [['install', '--job', 'briefing', '--dry'], `${world.t('schedule.bad_argument', { arg: '--dry' })}\n${usage}\n`],
+    [['status', '--job', 'briefing', '--dry'], `${world.t('schedule.bad_argument', { arg: '--dry' })}\n${usage}\n`],
   ];
   for (const [argv, stderr] of cases) {
     const r = await world.run(argv);
@@ -752,6 +752,41 @@ test('--job takes curate or briefing; --platform and --dry mean nothing for the 
   const curate = await world.run(['install', '--job=curate', '--platform', 'systemd', '--dry']);
   assert.equal(curate.status, 0, curate.stderr);
   assert.ok(curate.stdout.includes(`${world.name}.service`), curate.stdout);
+});
+
+// The usage line lists [--dry], and "unknown argument --dry" under it was a
+// contradiction (the stranger's m6, 01/10/2026): --dry is accepted for the
+// briefing job, which writes nothing anyway, and says so; the rest is a
+// normal run of that job, exit code included.
+test('install --job briefing --dry is accepted, says the briefing job writes nothing anyway, and is otherwise the normal run, exit 3', async () => {
+  const world = makeScheduleWorld();
+  const normal = await world.run(['install', '--job', 'briefing']);
+  const dry = await world.run(['install', '--job', 'briefing', '--dry']);
+  assert.equal(dry.status, normal.status);
+  assert.equal(dry.status, 3);
+  assert.equal(dry.stdout, normal.stdout, 'the task to register is printed as in a normal run');
+  assert.equal(dry.stderr, `${world.t('schedule.briefing_dry_note')}\n`);
+  assert.doesNotMatch(dry.stderr, /unknown argument/i);
+  assert.deepEqual(world.commands(), [], 'no scheduler was asked anything');
+  assert.equal(registration(dry.stdout).taskId, BRIEFING_TASK_ID);
+});
+
+test('uninstall --job briefing --dry says the same, and changes nothing either way', async () => {
+  const world = makeScheduleWorld();
+  const file = writeTask(world, await registeredPrompt(world));
+  const normal = await world.run(['uninstall', '--job', 'briefing']);
+  const dry = await world.run(['uninstall', '--job', 'briefing', '--dry']);
+  assert.equal(dry.status, normal.status);
+  assert.equal(dry.stdout, normal.stdout);
+  assert.equal(dry.stderr, `${world.t('schedule.briefing_dry_note')}\n`);
+  assert.ok(existsSync(file));
+});
+
+test('--dry for the curate job is still a dry run, and says nothing about the briefing', async () => {
+  const world = makeScheduleWorld();
+  const r = await world.run(['install', '--job', 'curate', '--platform', 'systemd', '--dry']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.doesNotMatch(r.stderr, new RegExp(world.t('schedule.briefing_dry_note').slice(0, 20)));
 });
 
 test('uninstall --job briefing removes nothing, says the task is deleted in the application, and exits 3', async () => {

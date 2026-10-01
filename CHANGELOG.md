@@ -49,6 +49,9 @@ kit's own output. These are the fixes in the code and the messages (both languag
 - Outside a vault, `doctor`, `validate`, `lint`, `propose` and `curate` end their "no vault
   found" message with "To create one: brain-kit init <dir>", and `curate` no longer says it
   looked for the configuration "or" a root index when both are required.
+- `schedule install --job briefing --dry` is accepted (the usage line lists `--dry`) and says
+  that for the briefing job nothing is written anyway; the run is the normal run of that job,
+  exit 3 included. `status` still takes no `--dry`.
 - `propose` in a repository with no remote of the name it reads the default branch from no
   longer says "the default branch is published to remote origin" as if something had set it
   up. It says the repository has no remote called that, and how to create one:

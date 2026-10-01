@@ -122,8 +122,8 @@ function parseArgs(argv) {
   // The briefing's task lives in the desktop application, not in a
   // scheduler this command writes: no platform to choose.
   if (result.job === 'briefing' && result.platform !== null) return { error: 'argument', arg: '--platform' };
-  // Nor anything to dry-run: install --job briefing writes nothing anyway.
-  if (result.job === 'briefing' && result.dry) return { error: 'argument', arg: '--dry' };
+  // --dry is accepted for the briefing too (the usage line lists it): the job
+  // writes nothing anyway, and briefingJob says so.
   return result;
 }
 
@@ -374,7 +374,7 @@ export function runScheduleSync(argv, io, t, deps = {}) {
     return EXIT.USAGE;
   }
   if (parsed.job === 'briefing') {
-    return briefingJob({ action: parsed.action, root, config, machine, env, t, say, complain, now: deps.now ?? new Date(), localZone: deps.localZone });
+    return briefingJob({ action: parsed.action, dry: parsed.dry, root, config, machine, env, t, say, complain, now: deps.now ?? new Date(), localZone: deps.localZone });
   }
 
   const node = deps.node ?? process.execPath;
@@ -949,9 +949,13 @@ export function readBriefingTask({ root, config, vaultId, env = process.env, cur
   return { state: 'ok', signed, taskId, file, kit };
 }
 
-function briefingJob({ action, root, config, machine, env, t, say, complain, now, localZone }) {
+function briefingJob({ action, dry, root, config, machine, env, t, say, complain, now, localZone }) {
   const enabled = briefingSetting(config, 'enabled') === true;
   const vaultId = machine.vault_id;
+  // Nothing here writes anything, so there is nothing for --dry to hold
+  // back: it is said once, on stderr, and the run is the normal run (its
+  // output on stdout and its exit code are unchanged). status takes no --dry.
+  if (dry) complain(t('schedule.briefing_dry_note'));
   if (action === 'uninstall') {
     const taskId = briefingTaskId(vaultId);
     say(t('schedule.briefing_uninstall', { taskId, file: briefingTaskFile(env, taskId) }));
