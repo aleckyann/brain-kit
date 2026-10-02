@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+- The README is now in Portuguese, written for a person who uses Claude Code (or wants to) and
+  is not a developer. The owner asked for it on 02/10/2026: the people who asked for the kit
+  are Brazilian, and the page has to sell the idea and take a newcomer to the first pull
+  request step by step. `README.md` is the new front door, in under 300 lines: what the kit is
+  in thirty seconds, why it exists, what you gain, for whom (and for whom it is not yet), how it
+  works, what you need with the time the first run takes, the eleven steps to the first pull
+  request with the same verified commands, what to do when stuck, privacy, what it costs (with
+  the cost of a round as measured in the reference vault, its source and its date) and the
+  stage. `README.pt-BR.md` is gone, so a link to it lands nowhere: what it held that the front
+  door does not carry is in `docs/guia.md`, the complete guide in Portuguese, and the English
+  README is `docs/guide.md`, as it was. Both guides ship in the npm package.
+- The release gate follows the documents: the stamp and the latest-tag sentence are checked in
+  `README.md` (the Portuguese sentence, under "Em que pé está"), in `docs/guia.md` and in
+  `docs/guide.md` (under "Status"), and no code block of the three may name a tag or a
+  tarball. The maintainer's release checklist says what to re-read in each.
+- `init`'s last line about privacy, and the one for a configuration that sets a limit, send a
+  person to the guide of the pack's language (`docs/guia.md`, "Privacidade: o que o curador
+  guarda", or `docs/guide.md`, "Privacy: what the curator saves"), where each level is
+  explained; they named the README, which now keeps a short section only.
+
 ## 0.0.10 (tagged `v0.0.10`, not on npm)
 
 What the curator saves is now a setting of the kit, and the default is to save everything. The
