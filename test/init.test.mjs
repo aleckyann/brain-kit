@@ -1558,7 +1558,9 @@ test('when the rollback itself fails, init names what it left behind', { skip: I
     const r = brainKit(['init', vault, '--from-answers', file], { env: testEnv(state, { PATH }) });
     assert.equal(r.status, EXIT.FAILURE, r.stdout + r.stderr);
     assert.match(r.stderr, /Removing what this run had created failed for: /);
-    assert.ok(r.stderr.includes(join(vault, 'core', 'identity.md')), r.stderr);
+    // The real path, as init prints it: on macOS the temporary directory
+    // (/var/folders/...) is a link to /private/var/folders/....
+    assert.ok(r.stderr.includes(join(realpathSync(base), 'vault', 'core', 'identity.md')), r.stderr);
     assert.doesNotMatch(r.stderr, /Everything this run had created was removed/);
   } finally {
     if (existsSync(join(vault, 'core'))) chmodSync(join(vault, 'core'), 0o755);
@@ -1793,7 +1795,8 @@ test('a file another process writes into a directory init created is never remov
   assert.equal(r.status, EXIT.FAILURE, r.stdout + r.stderr);
   assert.equal(readFileSync(join(vault, 'core', 'foreign.txt'), 'utf8'), 'theirs\n');
   assert.match(r.stderr, /Removing what this run had created failed for: /);
-  assert.ok(r.stderr.includes(join(vault, 'core')), r.stderr);
+  // The real path, as init prints it (the temporary directory may be a link).
+  assert.ok(r.stderr.includes(join(realpathSync(base), 'vault', 'core')), r.stderr);
   assert.deepEqual(listFiles(vault), ['core/foreign.txt'], 'everything init wrote is gone, the foreign file is not');
   assert.equal(existsSync(state), false);
 });
