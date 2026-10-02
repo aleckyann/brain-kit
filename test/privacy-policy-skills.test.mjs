@@ -99,9 +99,10 @@ for (const lang of LANGS) {
     const body = readFileSync(join(KIT_ROOT, 'lang', lang, 'skills', 'setup.md'), 'utf8');
     const step = body.split('\n').find((line) => line.startsWith('10. '));
     assert.ok(step, `${lang}: step 10`);
+    // Fix round 1, m7: one sentence, not two clauses spliced by a comma.
     assert.match(step, lang === 'en'
-      ? /by default the curator records everything, personal and sensitive information included, about the person and about others, and `privacy\.sensitive` and `privacy\.never_topics` in `brain-kit\.config\.json` limit it/
-      : /por padrão o curador guarda tudo, inclusive informação pessoal e sensível, da pessoa e dos outros, e `privacy\.sensitive` e `privacy\.never_topics` no `brain-kit\.config\.json` limitam isso/);
+      ? /the vault holds notes about people and, by default, the curator records everything, personal and sensitive information included, about the person and about others \(`privacy\.sensitive` and `privacy\.never_topics` in `brain-kit\.config\.json` limit it\)/
+      : /o vault guarda notas sobre pessoas e, por padrão, o curador guarda tudo, inclusive informação pessoal e sensível, da pessoa e dos outros \(`privacy\.sensitive` e `privacy\.never_topics` no `brain-kit\.config\.json` limitam isso\)/);
   });
 
   test(`${lang}: the briefing records by the same policy, in the section that says how it records`, async () => {

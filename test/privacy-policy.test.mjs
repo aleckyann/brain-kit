@@ -125,7 +125,8 @@ const LEVEL_WORDS = {
   'pt-BR': {
     save: /registre normalmente.*sem omitir nem encurtar nada porque o assunto parece sensível/,
     summary: /registre que ele apareceu e o que foi decidido ou combinado, sem os detalhes íntimos/,
-    skip: /de fora por completo.*sem nem mencionar que deixou/,
+    // Fix round 1, m7: "que os deixou de fora", never a dangling "que deixou".
+    skip: /de fora por completo.*sem nem mencionar que os deixou de fora\.$/,
   },
 };
 
@@ -217,7 +218,7 @@ for (const lang of LANGS) {
     assert.equal(last, t('privacy.policy_topics', { topics: ['"health"', '"legal cases"'] }));
     assert.match(last, lang === 'en'
       ? /^- Whatever the lines above say, never record these subjects, about anyone \(privacy\.never_topics\): "health", "legal cases"\. Leave them out entirely, without even mentioning that you left them out\.$/
-      : /^- Independentemente das linhas acima, nunca registre estes assuntos, de ninguém \(privacy\.never_topics\): "health", "legal cases"\. Deixe-os de fora por completo, sem nem mencionar que deixou\.$/);
+      : /^- Independentemente das linhas acima, nunca registre estes assuntos, de ninguém \(privacy\.never_topics\): "health", "legal cases"\. Deixe-os de fora por completo, sem nem mencionar que os deixou de fora\.$/);
     assert.equal(lines(renderPrivacyPolicy(fixture(), t)).at(-1), t('privacy.policy_no_topics'));
     assert.match(t('privacy.policy_no_topics'), lang === 'en' ? /privacy\.never_topics lists none/ : /privacy\.never_topics não lista nenhum/);
     // A topic is the owner's text, quoted: a line break in it stays inside its quotes.
