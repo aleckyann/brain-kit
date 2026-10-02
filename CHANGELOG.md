@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.0.10 (tagged `v0.0.10`, not on npm)
+
+What the curator saves is now a setting of the kit, and the default is to save everything. The
+case that led to it: curating a one to one meeting, the curator left the owner's own health and
+family out of the log, on its own judgment, with no setting asking for it. From this version it
+records personal and sensitive information, the owner's and other people's, unless the vault's
+configuration says otherwise (`privacy.sensitive` and `privacy.never_topics`). The wording was
+tested on synthetic data with the real model a round runs, in two independent reviews, before
+this release. This changes a default: read the first entry below if you have a vault already.
 
 - **Change of default: the curator now records everything, personal and sensitive
   information included, about the owner and about other people.** Until now the curate

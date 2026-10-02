@@ -259,7 +259,7 @@ test('docs/incidents.md records the decision of 02/10/2026, why the old rule exi
 
 test('the CHANGELOG calls it a change of default, says why, and how close a setting comes to the old behaviour', () => {
   const text = read('CHANGELOG.md');
-  const unreleased = norm(section(text, '## Unreleased'));
+  const unreleased = norm(section(text, '## 0.0.10 (tagged `v0.0.10`, not on npm)'));
   assert.match(unreleased, /Change of default: the curator now records everything, personal and sensitive information included, about the owner and about other people\./);
   assert.match(unreleased, /"Never record anything about the private life of someone other than the owner"/);
   // Fix round 1, m6: the closest setting, and what it does not bring back.
@@ -286,7 +286,7 @@ test('the example vault\'s configuration carries the privacy keys init writes no
 });
 
 test('the CHANGELOG tells a person upgrading about the list init wrote before, and what doctor now says of it', () => {
-  const unreleased = norm(section(read('CHANGELOG.md'), '## Unreleased'));
+  const unreleased = norm(section(read('CHANGELOG.md'), '## 0.0.10 (tagged `v0.0.10`, not on npm)'));
   assert.match(unreleased, /Upgrading a vault made before this change/);
   assert.match(unreleased, /`brain-kit doctor` \(check `privacy-keywords`\) now warns/);
   assert.match(unreleased, /clear it \(`\[\]`\) for the default to hold, or edit it to keep it as your choice/);
