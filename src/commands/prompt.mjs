@@ -76,7 +76,7 @@ import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'n
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { EXIT } from '../exit-codes.mjs';
 import { KIT_ROOT } from '../version.mjs';
-import { createTranslator, resolveLang, SUPPORTED_LANGS } from '../lang.mjs';
+import { createTranslator, REFERENCE_LANG, resolveLang, SUPPORTED_LANGS } from '../lang.mjs';
 import { findVaultRoot } from '../vault.mjs';
 import { CONFIG_FILENAME, loadConfig, loadMachine, ConfigError, MACHINE_FILENAME } from '../config.mjs';
 import { kitCommand, kitCommandIn } from '../curate/tools.mjs';
@@ -88,6 +88,7 @@ import { markAsked } from '../briefing/questions.mjs';
 import {
   blockProblemLine, briefingBlocks, briefingLimits, briefingSetting, renderBlocks, renderLimits, renderNeverRead, renderReadList, selectQuestions, validateBriefingBlocks,
 } from '../briefing/blocks.mjs';
+import { PRIVACY_PLACEHOLDER, PRIVACY_RULE, overlayPrivacyRule, renderPrivacyPolicy } from '../privacy-policy.mjs';
 
 // The nine skills the plugin ships, one skills/<name>/SKILL.md each,
 // and one body per name in every language pack. `seed-rituals` (phase 3,
@@ -107,9 +108,13 @@ const PLACEHOLDER_RE = /\{\{(\w+)\}\}/g;
 // The prompts the kit ships, one lang/<code>/prompts/<name>.md each, and
 // the placeholders a prompt may use. `signature` is prompts only: it is
 // the first line of every prompt, by which the curator's own sessions are
-// told apart from the person's.
+// told apart from the person's. `privacy_policy` (02/10/2026) is what the
+// vault's privacy.sensitive and privacy.never_topics say the model records
+// about personal and sensitive subjects, in the vault's language
+// (src/privacy-policy.mjs, renderPrivacyPolicy); the curate prompt carries it
+// under its rule `third-party-privacy`.
 export const PROMPT_NAMES = Object.freeze(['curate', 'briefing']);
-const KNOWN_PROMPT_PLACEHOLDERS = Object.freeze(['parameters', 'kit', 'log', 'capture_marker', 'agent', 'today_iso', 'now_iso', 'signature', 'sources_line']);
+const KNOWN_PROMPT_PLACEHOLDERS = Object.freeze(['parameters', 'kit', 'log', 'capture_marker', 'agent', 'today_iso', 'now_iso', 'signature', 'sources_line', PRIVACY_PLACEHOLDER]);
 // The briefing's own placeholders. `today_iso` is the log heading the
 // captures go under (`## YYYY-MM-DD`), given so the model never derives it.
 // `kit` is the kit's command with `-C "<vault>"` and `vault` the vault's
@@ -139,10 +144,13 @@ export const DEFAULT_SOURCES_LINE = 'BRAIN_KIT_SOURCES: transcripts=<ok|empty|fa
 // never logged as a link (11/08/2026); a document that does not open for a
 // permission reason is said to be exactly that (10/08 and 21/08/2026), and
 // so is one the connector answers "not found" for, a sentence added to the
-// same rule on 30/09/2026 with no marker of its own; and
-// nothing of anyone's private life is content, other people's schedules
-// included (the undated "a colleague's medical appointment was in the
-// calendar window").
+// same rule on 30/09/2026 with no marker of its own; and what is recorded
+// about personal and sensitive subjects is the vault's privacy setting,
+// `{{privacy_policy}}` under the marker, while of someone else's schedule only
+// the events they share with other people count (the undated "a colleague's
+// medical appointment was in the calendar window"; until 02/10/2026 the rule
+// was one fixed sentence that kept everyone's private life but the owner's
+// out, and the model stretched it to the owner's own).
 export const CURATE_RULES = Object.freeze([
   'read-index-first', 'sample-from-end', 'log-before-note', 'never-verified', 'never-empty-unopened',
   'closed-uncertainty', 'only-kit-commands', 'propose-only', 'sources-line',
@@ -356,13 +364,24 @@ function signatureFor(config, defaults, section = 'curate') {
   return config?.[section]?.signature ?? defaults?.[section]?.signature;
 }
 
+// The privacy policy a prompt or a skill body carries, in `t`'s language: the
+// vault's own, rendered from its configuration; the default outside any vault,
+// where no configuration says otherwise; and in a vault whose configuration
+// does not load, no level at all, only what to do, never the default in its
+// place (the person may have set a limit the kit cannot read).
+function privacyPolicyFor({ vaultRoot, config, t }) {
+  if (vaultRoot && !config) return t('privacy.policy_unknown');
+  return renderPrivacyPolicy(config, t);
+}
+
 // The curate prompt, rendered. `parameters` is the block the round
 // computes, inserted verbatim; `now` is the round's own time, rendered as
 // `{{now_iso}}` and `{{today_iso}}` on the vault's clock; `sourcesLine` is
 // the last line the model must write, naming every source the round offers
-// (DEFAULT_SOURCES_LINE when not given). An overlay whose first line is not
-// the signature gets the signature line put in front of it. Throws when the
-// prompt file cannot be read; the caller decides what that means.
+// (DEFAULT_SOURCES_LINE when not given); `{{privacy_policy}}` is the vault's
+// privacy setting, in `lang` (privacyPolicyFor). An overlay whose first line
+// is not the signature gets the signature line put in front of it. Throws
+// when the prompt file cannot be read; the caller decides what that means.
 export function renderCuratePrompt({ vaultRoot, config, lang, parameters, now = new Date(), sourcesLine = DEFAULT_SOURCES_LINE, packsDir = join(KIT_ROOT, 'lang') }) {
   const defaults = defaultsFor(packsDir, lang);
   const { path } = curatePromptSource({ vaultRoot, config, lang, packsDir });
@@ -380,6 +399,7 @@ export function renderCuratePrompt({ vaultRoot, config, lang, parameters, now = 
     now_iso: clock.iso,
     signature,
     sources_line: String(sourcesLine),
+    [PRIVACY_PLACEHOLDER]: privacyPolicyFor({ vaultRoot, config, t: createTranslator(lang) }),
   };
   return render(text, vars);
 }
@@ -838,6 +858,23 @@ function checkOverlay(t, io, startDir, problems) {
   if (oldSampling(text)) {
     io.stderr.write(`${t('prompt.check_overlay_old_sampling', { path, rule: 'sample-from-end' })}\n`);
   }
+  // An overlay written before 02/10/2026 carries the privacy rule as the
+  // fixed sentence the template had then: the vault's privacy setting never
+  // reaches its rounds (doctor's privacy-policy says the same).
+  if (overlayPrivacyRule(text) === 'fixed') {
+    const rule = ruleMarker(PRIVACY_RULE);
+    const placeholder = `{{${PRIVACY_PLACEHOLDER}}}`;
+    const template = packCuratePrompt(config);
+    io.stderr.write(`${t('prompt.check_overlay_fixed_privacy', { path, rule, placeholder, template })}\n`);
+  }
+}
+
+// The language pack's curate prompt a vault's overlay is compared with: the
+// one of the vault's language, or of the reference language when the
+// configuration names none the kit has.
+export function packCuratePrompt(config) {
+  const lang = SUPPORTED_LANGS.includes(config?.lang) ? config.lang : REFERENCE_LANG;
+  return promptPath(join(KIT_ROOT, 'lang'), lang, 'curate');
 }
 
 // Whether an overlay still carries the sampling rule of before the

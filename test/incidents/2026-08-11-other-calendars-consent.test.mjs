@@ -93,11 +93,14 @@ test('the block that plans other people calendars skips the events the owner att
   const en = plan({}).promptBlock;
   assert.match(en, /skip every event that already includes the owner/);
   assert.match(en, /by its id/);
-  assert.match(en, /only events with at least two attendees count/);
-  assert.match(en, /Nothing about anyone's private life/);
+  // An event of someone else's that does not count is never written; what
+  // is written about the ones that count follows the vault's privacy setting
+  // (02/10/2026, the curate prompt's rule third-party-privacy).
+  assert.match(en, /only events with at least two attendees count, and one of theirs that does not count is never written/);
+  assert.match(en, /follows the privacy rule of this prompt \(privacy\.sensitive\)/);
   const pt = plan({}, 'pt-BR').promptBlock;
   assert.match(pt, /pule todo evento que já inclui o dono/);
   assert.match(pt, /pelo id/);
-  assert.match(pt, /só contam eventos com pelo menos dois participantes/);
-  assert.match(pt, /Nada da vida privada de ninguém/);
+  assert.match(pt, /só contam eventos com pelo menos dois participantes, e um evento dela que não conta nunca é escrito/);
+  assert.match(pt, /segue a regra de privacidade deste prompt \(privacy\.sensitive\)/);
 });

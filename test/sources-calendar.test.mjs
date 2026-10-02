@@ -470,7 +470,13 @@ test('the prompt block speaks the vault language and carries the privacy policy,
   assert.match(en, /count it once, by its id/);
   assert.match(en, /In someone else's calendar, skip every event that already includes the owner/);
   assert.match(en, /only events with at least two attendees count/);
-  assert.match(en, /Nothing about anyone's private life \(health, absence, family, personal errands\) is ever written, not even as a mention/);
+  // 02/10/2026: which events count is the block's; what is written about
+  // the ones that count, the owner's own included, is the vault's privacy
+  // setting, which the curate prompt's rule carries. The line used to say
+  // that nothing about anyone's private life is ever written, the owner's
+  // own appointments included.
+  assert.match(en, /only events with at least two attendees count, and one of theirs that does not count is never written, not even as a mention that something was left out\. What you write about the events that count, the owner's own included, follows the privacy rule of this prompt \(privacy\.sensitive\)\./);
+  assert.doesNotMatch(en, /Nothing about anyone's private life/);
   assert.match(en, /second door to meeting notes/);
   assert.match(en, /passing exactly the inputs on its line and no other/);
   assert.match(en, /If a page fails or comes back cut, ask for it again with the same pageToken, lowering pageSize if that helps \(pageSize is the only input you may change\)/);
@@ -480,8 +486,8 @@ test('the prompt block speaks the vault language and carries the privacy policy,
   assert.match(pt, /chame mcp__claude_ai_Google_Calendar__list_events de novo com as mesmas entradas e mais pageToken/);
   assert.match(pt, /conte uma vez só, pelo id/);
   assert.match(pt, /Na agenda de outra pessoa, pule todo evento que já inclui o dono/);
-  assert.match(pt, /só contam eventos com pelo menos dois participantes/);
-  assert.match(pt, /Nada da vida privada de ninguém \(saúde, ausência, família, compromissos pessoais\) é escrito, nem como menção/);
+  assert.match(pt, /só contam eventos com pelo menos dois participantes, e um evento dela que não conta nunca é escrito, nem como menção de que algo ficou de fora\. O que você escreve sobre os eventos que contam, inclusive os do próprio dono, segue a regra de privacidade deste prompt \(privacy\.sensitive\)\./);
+  assert.doesNotMatch(pt, /Nada da vida privada de ninguém/);
   assert.match(pt, /segunda porta para as notas de reunião/);
 });
 

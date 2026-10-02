@@ -183,21 +183,27 @@ test('CURATE_RULES lists the thirteen contract rules, phase 3\'s four last', () 
 });
 
 // Phase 3, task 5: the four rules the connector sources paid for, each
-// pinned by what it must say in both languages.
+// pinned by what it must say in both languages. Since 02/10/2026 the
+// privacy rule's paragraph is the vault's own setting, rendered (here a
+// vault made by init, so the default: record everything, said in so many
+// words), and the old fixed sentence that kept everyone's private life but
+// the owner's out is in neither pack (test/privacy-policy-round.test.mjs
+// holds the rest: each level, someone else's schedule, an old overlay).
 const NEW_RULES = {
   en: {
     'no-workaround': [/marks unavailable, or whose tools are not in your session, is written `unavailable`/, /not through the shell, not through another tool/],
     'notes-first-class': [/same weight as a transcript/, /A title and a link alone are never a capture/],
     'no-access-label': [/\*\*not verified\*\*, with this exact reason: `no access \(document store permission\)`/, /never empty, never missing/],
-    'third-party-privacy': [/private life of someone other than the owner/, /someone else's schedule, read with the authorization the configuration records: only the events they share with other people count/],
+    'third-party-privacy': [/is the vault owner's choice, set in privacy\.sensitive of brain-kit\.config\.json/, /record normally, about the owner and about others, including health, family, relationships, finances and anything intimate, without omitting or shortening anything because a subject seems sensitive/],
   },
   'pt-BR': {
     'no-workaround': [/marca como indisponível, ou cujas ferramentas não estão na sua sessão, é escrita `unavailable`/, /nem pelo shell, nem por outra ferramenta/],
     'notes-first-class': [/mesmo peso de uma transcrição/, /Título e link sozinhos nunca são captura/],
     'no-access-label': [/\*\*não verificado\*\*, com este motivo exato: `sem acesso \(permissão do repositório de documentos\)`/, /nunca está vazio, nunca está ausente/],
-    'third-party-privacy': [/vida particular de alguém que não seja o dono/, /compromissos de outra pessoa, lidos com a autorização que a configuração registra: só contam os eventos que ela compartilha com outras pessoas/],
+    'third-party-privacy': [/é escolha do dono do vault, definida em privacy\.sensitive, no brain-kit\.config\.json/, /registre normalmente, sobre o dono e sobre os outros, inclusive saúde, família, relacionamentos, finanças e qualquer coisa íntima, sem omitir nem encurtar nada porque o assunto parece sensível/],
   },
 };
+const OLD_PRIVACY = { en: /private life of someone other than the owner/, 'pt-BR': /vida particular de alguém que não seja o dono/ };
 
 for (const lang of LANGS) {
   test(`${lang}: each of phase 3's rules says what it must, in the paragraph its marker opens`, () => {
@@ -208,6 +214,7 @@ for (const lang of LANGS) {
       const paragraph = text.slice(at, text.indexOf('\n\n', at) === -1 ? undefined : text.indexOf('\n\n', at));
       for (const pattern of patterns) assert.match(paragraph, pattern, `${lang}: ${rule}`);
     }
+    assert.doesNotMatch(text, OLD_PRIVACY[lang], `${lang}: the old fixed privacy sentence is gone`);
   });
 
   // 01/10/2026 (docs/incidents.md): real transcripts were too big for the
@@ -452,9 +459,12 @@ test('--check warns, and still passes, when the vault\'s overlay lacks contract 
   assert.ok(!c.stderr.includes('"read-index-first"'));
 });
 
-test('--check says nothing about an overlay that carries every marker and the sources line', async () => {
+// Since 02/10/2026 an overlay that carries every marker also carries the
+// privacy policy under its rule: one that holds the marker without it has a
+// fixed privacy rule, which --check warns about.
+test('--check says nothing about an overlay that carries every marker, the sources line and the privacy policy', async () => {
   const { vault, state } = freshVault('en');
-  writeOverlay(vault, `{{signature}}\n${CURATE_RULES.map((r) => `<!-- rule:${r} -->\nx\n`).join('')}BRAIN_KIT_SOURCES: {{sources_line}}\n`);
+  writeOverlay(vault, `{{signature}}\n${CURATE_RULES.map((r) => `<!-- rule:${r} -->\n${r === 'third-party-privacy' ? '{{privacy_policy}}' : 'x'}\n`).join('')}BRAIN_KIT_SOURCES: {{sources_line}}\n`);
   const c = collector();
   const code = await runPrompt(['--check'], c.io, createTranslator('en'), { cwd: vault, env: testEnv(state) });
   assert.equal(code, EXIT.OK, c.stdout + c.stderr);

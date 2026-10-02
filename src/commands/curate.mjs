@@ -48,7 +48,9 @@
 //       read, the person's user settings are read and mirrored; connector
 //       mode unless a rule refuses it (every connector source is then
 //       blocked_by_user_rules, and the round runs isolated); --check: print
-//       the plan, the mode, the round's limits and the prompt's size, exit 0
+//       the plan, the mode, the round's limits, the privacy policy in effect
+//       (one line, as --dry and the round print it) and the prompt's size,
+//       exit 0
 //   13. write the digests (mode 0600, in a folder of mode 0700 under the
 //       state directory, src/state.mjs DIGEST_DIR; beside the stream in the
 //       log folder with --keep-stream), saying each one cut short; then
@@ -130,6 +132,7 @@ import { syncUnderLock } from './sync.mjs';
 import { parseRoundRecord, roundRecordPath } from './propose.mjs';
 import { proposedMatch, restoreMatching } from '../guards/proposed.mjs';
 import { promptOutsideVault, renderCuratePrompt } from './prompt.mjs';
+import { privacyLine } from '../privacy-policy.mjs';
 
 const ROOT_INDEX = 'index.md';
 
@@ -610,6 +613,10 @@ function renderParameters(t, { window, tz, plans, sources, days, config, deferre
     }
   }
   lines.push('');
+  // The privacy policy in effect, in one line (02/10/2026): what the rule
+  // `third-party-privacy` spells out in full, said here too so the round's
+  // own output and its prompt name the same setting.
+  lines.push(privacyLine(config, t));
   const caps = Object.entries(config.curate?.caps ?? {}).map(([key, value]) => `${key}=${value}`).join(', ');
   lines.push(t('curate.params.caps', { caps: caps === '' ? '-' : caps }));
   lines.push(t('curate.params.kit', { kit: kitCommand() }));
@@ -858,6 +865,14 @@ function timeLine(t, config) {
 // What the round, --check and --dry say about the round's three limits.
 function limitLines(t, config) {
   return [budgetLine(t, config), turnsLine(t, config), timeLine(t, config)];
+}
+
+// What the round, --check and --dry say about what the model records:
+// the three limits, then the privacy policy in effect, one line, every round
+// (02/10/2026), so a person reading the round's output is never surprised by
+// what it left out or kept.
+function settingLines(t, config) {
+  return [...limitLines(t, config), privacyLine(config, t)];
 }
 
 function modelArgv(config, machine, tools, mode = 'isolated') {
@@ -1463,7 +1478,7 @@ export async function runCurate(argv, io, t, deps = {}) {
       for (const line of modeLines(t, choice)) io.stdout.write(`${line}\n`);
       for (const line of sourceLines(t, { active, plans, days, unavailable, config, blocks: true })) io.stdout.write(`${line}\n`);
       io.stdout.write(`${t('curate.check_argv', { bin: claudeBin, argv: JSON.stringify(argvList) })}\n`);
-      for (const line of limitLines(t, config)) io.stdout.write(`${line}\n`);
+      for (const line of settingLines(t, config)) io.stdout.write(`${line}\n`);
       io.stdout.write(`${t('curate.check_prompt', { chars: prompt.length, bytes: Buffer.byteLength(prompt) })}\n`);
       run.exit = EXIT.OK;
       run.reasonCode = 'check';
@@ -1502,7 +1517,7 @@ export async function runCurate(argv, io, t, deps = {}) {
         if (cut.length > 0) digestNotes.push(t('curate.reason_digest_cut', { source: source.id, sessions: cut.map((file) => file.session).join(', ') }));
       }
       io.stdout.write(`${t('curate.model_start', { days: window.days.map(shown).join(', ') })}\n`);
-      for (const line of limitLines(t, config)) io.stdout.write(`${line}\n`);
+      for (const line of settingLines(t, config)) io.stdout.write(`${line}\n`);
       run.budgetUsd = roundBudget(config);
       run.maxTurns = roundTurns(config);
       run.timeoutMinutes = timeoutMs === null ? null : timeoutMs / 60000;
@@ -2037,6 +2052,6 @@ function dryRun({ root, stateDir, machine, claudeBin, io, env, now, keepStream }
   if (digests > 0) io.stdout.write(`${t('curate.dry_digests', { count: digests })}\n`);
   const argv = modelArgv(config, machine, choice.tools, choice.mode);
   io.stdout.write(`${t('curate.check_argv', { bin: claudeBin, argv: JSON.stringify(argv) })}\n`);
-  for (const line of limitLines(t, config)) io.stdout.write(`${line}\n`);
+  for (const line of settingLines(t, config)) io.stdout.write(`${line}\n`);
   return EXIT.OK;
 }
