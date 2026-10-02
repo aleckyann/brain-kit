@@ -23,6 +23,7 @@ import {
 } from '../init/skeleton.mjs';
 import { runValidate } from './validate.mjs';
 import { runLint } from './lint.mjs';
+import { SENSITIVE_SETTING, TOPICS_SETTING, isDefaultPrivacy, privacyLine } from '../privacy-policy.mjs';
 
 // brain-kit init [dir] [--adopt] [--lang en|pt-BR] [--yes] [--from-answers <file>]
 //
@@ -555,6 +556,7 @@ export async function runInit(argv, io, t, {
   const checked = worseExit(validated, linted);
   if (parsed.adopt) {
     io.stdout.write(`${t('init.adopt_no_commit')}\n`);
+    io.stdout.write(`${privacySummary(t, config)}\n`);
     return gateFailed ? worseExit(checked, EXIT.DEGRADED) : checked;
   }
 
@@ -576,6 +578,7 @@ export async function runInit(argv, io, t, {
       io.stdout.write(`${t('init.committed')}\n`);
     }
   }
+  io.stdout.write(`${privacySummary(t, config)}\n`);
   // What leads from a vault on this machine to its first pull request, in
   // order, for a person who has not been told: said, never run, and only over
   // a vault that is checked and, when init committed, committed.
@@ -583,6 +586,17 @@ export async function runInit(argv, io, t, {
     io.stdout.write(`${t('init.next_steps', { dir: target, name: suggestedRepoName({ repo: answers.repo, dir: target }) })}\n`);
   }
   return worseExit(code, checked);
+}
+
+// What the curator records about personal and sensitive subjects, in one
+// line, the last thing init says about the vault before the next steps
+// (02/10/2026): the configuration it wrote records everything, which a person
+// who never reads the README would not guess, and the line says so and where to
+// limit it. A configuration that is not the default (an inference that kept a
+// setting) is said as the policy in effect.
+function privacySummary(t, config) {
+  if (isDefaultPrivacy(config)) return t('init.privacy_default', { sensitive: SENSITIVE_SETTING, topics: TOPICS_SETTING, file: CONFIG_FILENAME });
+  return t('init.privacy_set', { policy: privacyLine(config, t) });
 }
 
 // validate and lint on the result, and what is said about them.
