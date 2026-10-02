@@ -101,8 +101,8 @@ O Claude Code é o Claude que roda no terminal. O [instalador oficial](https://c
 curl -fsSL https://claude.ai/install.sh | bash
 ```
 
-Passa bastante texto pela tela; no fim aparece `Claude Code successfully installed!`. Feche o
-Terminal, abra outro e confira:
+Passa bastante texto pela tela; no fim aparece `Installation complete!`. Feche o Terminal, abra
+outro e confira:
 
 ```bash
 claude --version
@@ -119,8 +119,8 @@ O Claude Code precisa do Ubuntu 20.04 ou mais novo.
 ### 1. git e curl
 
 O git guarda o histórico das suas notas, e o curl baixa os instaladores dos próximos itens (um
-Ubuntu recém-instalado pode vir sem ele). O comando do git é o que o
-[git-scm.com](https://git-scm.com/install/linux) indica:
+Ubuntu recém-instalado pode vir sem ele). Os dois vêm do apt, o instalador de programas do
+Ubuntu, que é o caminho que o [git-scm.com](https://git-scm.com/install/linux) indica para o git:
 
 ```bash
 sudo apt update
@@ -167,7 +167,7 @@ O mesmo [instalador oficial](https://code.claude.com/docs/en/setup) do Mac:
 curl -fsSL https://claude.ai/install.sh | bash
 ```
 
-No fim aparece `Claude Code successfully installed!`. Feche o terminal, abra outro e confira com
+No fim aparece `Installation complete!`. Feche o terminal, abra outro e confira com
 `claude --version`: deu certo se aparecer um número seguido de `(Claude Code)`. Se aparecer
 `command not found`, ponha a pasta do Claude Code no PATH e abra outro terminal:
 

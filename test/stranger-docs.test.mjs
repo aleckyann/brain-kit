@@ -669,7 +669,10 @@ test('docs/preparar-o-computador.md: each item says how to install it and how to
     for (const check of ['git --version', 'node --version', 'gh --version']) assert.ok(blocks.includes(check), `${part}: no block runs ${check}`);
     assert.ok(text.includes('claude --version'), `${part}: no claude --version`);
     assert.ok(blocks.includes('curl -fsSL https://claude.ai/install.sh | bash'), `${part}: the official Claude Code installer`);
-    assert.ok(text.includes('Claude Code successfully installed!'), `${part}: what the installer prints`);
+    // The official install.sh redirects to a bootstrap script that runs under `set -e` and ends
+    // with this line, so it only shows when the install worked (read on 02/10/2026).
+    assert.ok(text.includes('`Installation complete!`'), `${part}: what the installer prints last`);
+    assert.ok(!text.includes('successfully installed'), `${part}: a line read on no official page`);
     for (const shows of ['`git version`', '`gh version`', '`(Claude Code)`']) assert.ok(text.includes(shows), `${part}: what the screen shows: ${shows}`);
   }
   assert.ok(fencedBlocks(mac).includes('xcode-select --install'), 'git on the Mac, the way git-scm.com gives');
