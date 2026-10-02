@@ -700,7 +700,7 @@ test('README.md: each step says what it does, the command, and what the screen s
   // Claude Code before the fallback, run where it has to run.
   assert.match(step(10), /^10\. \*\*O Claude abre o primeiro pull request\.\*\*/);
   const ten = stepWords(10);
-  for (const word of ['`Pull request aberto`', '**Yes**', 'Se ele terminar a resposta sem isso, saia do Claude Code (digite `exit`) e rode no terminal, na pasta do vault:']) assert.ok(ten.includes(word), `step 10 lacks ${word}`);
+  for (const word of ['`Pull request aberto`', '**Yes**', 'Se ele terminar a resposta sem isso, saia do Claude Code (digite `exit`) e rode no terminal, na pasta do vault, pondo depois do `--only` cada arquivo que o `git status` mostrar como mudado']) assert.ok(ten.includes(word), `step 10 lacks ${word}`);
   assert.doesNotMatch(ten, /`Stop`/);
   // The rule that goes against the instinct of step 5 is a rule you can see, not a clause, and it
   // says which approval it means.
