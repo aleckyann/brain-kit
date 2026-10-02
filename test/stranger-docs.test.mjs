@@ -764,7 +764,7 @@ test('README.md: "Em que pé está" says the stage in a few lines, honest about 
   assert.ok(body.split('\n').filter((line) => line.trim() !== '').length <= 8, 'a few lines');
   for (const word of [/em construção/, /testados pelo projeto, mas ninguém de fora fez o caminho todo ainda: você estaria entre os primeiros/]) assert.match(flat, word);
   // The npm package, said so that step 1's `npm i -g` does not read as a contradiction (fix round 2).
-  assert.match(flat, /O pacote `second-brain-kit` no site do npm é um esqueleto antigo, a 0\.0\.1: o passo 1 usa o npm de outro jeito e instala a versão certa\./);
+  assert.match(flat, /É a primeira no npm \(`second-brain-kit`\), e o passo 1 segue como o caminho indicado, porque instala o kit e o plugin juntos, na mesma versão\./);
   assert.doesNotMatch(readme, /Não instale pelo npm/);
   assert.equal(pkg.name, 'second-brain-kit');
   // Where to ask, right next to "nobody outside has done it yet": the repository's issues, which are

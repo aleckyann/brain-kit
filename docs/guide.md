@@ -634,7 +634,7 @@ marketplace. Inside a vault:
 
 ## Status
 
-<!-- status-reviewed: 0.0.10 -->
+<!-- status-reviewed: 0.1.0 -->
 
 | Phase | Content | State |
 |---|---|---|
@@ -644,11 +644,11 @@ marketplace. Inside a vault:
 | 3 | Calendar and meeting-notes sources (best effort by design) | done |
 | 4 | Morning briefing | done |
 | 5 | Migration of the original vault onto the kit | in progress. Done: 5a (what a migrating vault needs, since 0.0.2); the vault's scheduled curator moved from its legacy scripts to the kit on 01/10/2026 (a systemd user timer at 09:30 with retries at 14:00 and 20:00, the legacy timer disabled) and its first real rounds were supervised; the model reads a text digest of each transcript (0.0.5); the morning briefing runs as a desktop application task and ran for the first time on 01/10/2026, and since 0.0.6 the curator recognizes its session through the envelope the application wraps around the task's prompt. Since 0.0.10 what the curator records is a setting of the kit, and by default it records everything, personal and sensitive information included. Open for the exit of the phase: five curator rounds and three briefings without an unexplained failure, the cleanup of the legacy scripts after seven stable days, and the first `verify` on the vault |
-| 6 | 0.1.0 release on npm | in progress. Done: `docs/incident-response.md`, `examples/minimal-vault`, two walkthroughs on a clean machine by an agent playing a first-time user, not a person (the first found the gaps between `init` and the first pull request, which 0.0.8 closed; the second followed only the Portuguese README, reached the first pull request, and found what 0.0.9 closed: a README for someone who is not a developer, a Node older than the minimum, a `doctor` that checked nothing before the first vault, and a vault's project that only worked on the machine that made it), the supported Node set at 22 (0.0.9), and a GitHub Release with the CHANGELOG text for every tag. Open: a run by an external adopter, a person who is not the maintainer (the 0.1.0 criterion: from a clean machine to a validated vault, the plugin installed, the hook active and a first pull request in under 30 minutes by the adopter's own clock; the README's estimate, with the reading, is about 35, and no person has timed the path yet), and the exit of Phase 5 |
+| 6 | 0.1.0 release on npm | 0.1.0 published on npm on 02/10/2026, by the owner's decision, before an external adopter's run; what that run and the exit of Phase 5 find ships as 0.1.x. Done before it: `docs/incident-response.md`, `examples/minimal-vault`, two walkthroughs on a clean machine by an agent playing a first-time user, not a person (the first found the gaps between `init` and the first pull request, which 0.0.8 closed; the second followed only the Portuguese README, reached the first pull request, and found what 0.0.9 closed: a README for someone who is not a developer, a Node older than the minimum, a `doctor` that checked nothing before the first vault, and a vault's project that only worked on the machine that made it), the supported Node set at 22 (0.0.9), and a GitHub Release with the CHANGELOG text for every tag. Open: a run by an external adopter, a person who is not the maintainer (the 0.1.0 criterion: from a clean machine to a validated vault, the plugin installed, the hook active and a first pull request in under 30 minutes by the adopter's own clock; the README's estimate, with the reading, is about 35, and no person has timed the path yet), and the exit of Phase 5 |
 | 7 | Other forges, other harnesses, more sources, each only when a second real case needs it | planned |
 
-The latest tag is `v0.0.10`. Every version from 0.0.2 on is a git tag only: the package
-`second-brain-kit` on npm still has only 0.0.1, the Phase 0 skeleton.
+The latest tag is `v0.1.0`. Every version from 0.0.2 on is a git tag, and 0.1.0 is also the
+first on npm (`second-brain-kit`) since the Phase 0 skeleton 0.0.1.
 
 The kit is under construction. Phase 1 is complete: the validator, the linter, the push
 gates, `init`, `init --adopt`, `update`, `doctor`, the pull request loop (`sync`, `propose`,

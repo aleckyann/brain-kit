@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 (tagged `v0.1.0`, published on npm on 02/10/2026)
+
+The first version on npm since the Phase 0 skeleton: `npm i -g second-brain-kit` installs the
+command, and the README's step 1 still installs the command and the Claude Code plugin together,
+at the same version, which is why it stays the recommended path. It was published on 02/10/2026
+by the owner's decision, before the external adopter's run and the exit of Phase 5 that the plan
+had put first; what they find ships as 0.1.x. Since 0.0.10 the README is a front door in
+Portuguese for a Brazilian reader, with a step zero for the computer and the complete guides in
+`docs/` (the entries below).
 
 - The README is now in Portuguese, written for a person who uses Claude Code (or wants to) and
   is not a developer. The owner asked for it on 02/10/2026: the people who asked for the kit
