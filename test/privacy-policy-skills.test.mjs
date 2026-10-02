@@ -63,6 +63,10 @@ const ASK_FIRST = {
   en: 'When the person asks you to record something this setting leaves out or shortens, tell them what the setting says and let them decide: never decide it for them.',
   'pt-BR': 'Quando a pessoa pedir para registrar algo que essa configuração deixa de fora ou resume, diga o que a configuração diz e deixe a decisão com ela: nunca decida por ela.',
 };
+const ASK_FIRST_BRIEFING = {
+  en: 'When the owner asks you to record something this setting leaves out or shortens, tell them what the setting says and let them decide: never decide it for them.',
+  'pt-BR': 'Quando o dono pedir para registrar algo que essa configuração deixa de fora ou resume, diga o que a configuração diz e deixe a decisão com ele: nunca decida por ele.',
+};
 
 for (const lang of LANGS) {
   const t = createTranslator(lang);
@@ -105,6 +109,10 @@ for (const lang of LANGS) {
     const pack = readFileSync(join(KIT_ROOT, 'lang', lang, 'prompts', 'briefing.md'), 'utf8');
     const recording = pack.slice(pack.indexOf('<!-- rule:propose-only -->'));
     assert.ok(recording.includes('\n\n{{privacy_policy}}\n\n'), `${lang}: the policy is a paragraph of the recording section`);
+    // Fix round 1, m1: the briefing is a session with the owner too, so the
+    // ask-first sentence of the skills follows the policy, in the briefing's own
+    // word for the person.
+    assert.ok(recording.includes(`\n\n{{privacy_policy}}\n\n${ASK_FIRST_BRIEFING[lang]}\n`), `${lang}: the ask-first sentence right after the policy`);
     const world = freshVault(lang, (c) => { c.privacy.sensitive = { outsiders: 'skip' }; });
     const { code, out, err } = await prompt(['briefing', '--vault', world.vault], { ...world, cwd: world.base }, { facts: NO_GH });
     assert.equal(code, EXIT.OK, out + err);

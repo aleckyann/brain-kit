@@ -61,6 +61,8 @@ O vault só muda por um único pull request, no fim do briefing, e só quando h�
 
 {{privacy_policy}}
 
+Quando o dono pedir para registrar algo que essa configuração deixa de fora ou resume, diga o que a configuração diz e deixe a decisão com ele: nunca decida por ele.
+
 Quando o dono terminar, rode cada comando do kit exatamente como está escrito, nunca com `node` nem nada na frente:
 
 1. `{{kit}} validate`

@@ -61,6 +61,8 @@ The vault changes only through one pull request, at the end of the briefing, and
 
 {{privacy_policy}}
 
+When the owner asks you to record something this setting leaves out or shortens, tell them what the setting says and let them decide: never decide it for them.
+
 When the owner is done, run each kit command exactly as written, never with `node` or anything else in front of it:
 
 1. `{{kit}} validate`
