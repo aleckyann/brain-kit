@@ -48,9 +48,10 @@ const README = 'README.md';
 const GUIA = 'docs/guia.md';
 const GUIDE = 'docs/guide.md';
 const STEP_ZERO = 'docs/preparar-o-computador.md';
+const STUB = 'README.pt-BR.md';
 // The status documents the release gate holds, and every page the link and dash checks read.
 const DOCUMENTS = [README, GUIA, GUIDE];
-const PAGES = [...DOCUMENTS, STEP_ZERO];
+const PAGES = [...DOCUMENTS, STEP_ZERO, STUB];
 
 const E_ACUTE = String.fromCharCode(0xe9);
 const PT_LATEST_TAG = `A tag mais recente ${E_ACUTE} a \`v${pkg.version}\`.`;
@@ -259,13 +260,26 @@ const SECOND_MACHINE = ['gh repo clone my-brain ~/my-brain', 'cd ~/my-brain', 'b
 
 // ------------------------------------------------- the documents together
 
-test('the documents exist, the package ships the guides and the step zero, and README.pt-BR.md is gone', () => {
+test('the documents exist, the package ships the guides and the step zero, and README.pt-BR.md is a stub that ships nowhere', () => {
   for (const file of PAGES) assert.ok(existsSync(join(KIT_ROOT, file)), `${file} is missing`);
   for (const file of [...DOCUMENTS, STEP_ZERO]) assert.ok(pkg.files.includes(file), `package.json files does not list ${file}`);
-  assert.equal(existsSync(join(KIT_ROOT, 'README.pt-BR.md')), false, 'README.md is the Portuguese README now');
+  assert.ok(!pkg.files.includes(STUB), 'the stub keeps an old link alive, it is not a document to ship');
 });
 
-test('every relative link of the README, the guides and the step zero lands on a file, and on a heading or an anchor, that exists', () => {
+// Fix round 1 of R1: a link to README.pt-BR.md, in a bookmark or another site, lands on a stub
+// that sends the reader on, and holds nothing of its own to keep true.
+test('README.pt-BR.md: a stub of a few lines that points to the README and the guide, with no content of its own', () => {
+  const stub = read(STUB);
+  const lines = stub.split('\n').filter((line) => line.trim() !== '');
+  assert.ok(lines.length <= 4, `the stub has ${lines.length} lines`);
+  assert.deepEqual(headings(stub, 1), ['# brain-kit']);
+  assert.deepEqual(headings(stub, 2), []);
+  assert.deepEqual(fencedBlocks(stub), []);
+  assert.ok(stub.includes('](README.md)') && stub.includes('](docs/guia.md)'));
+  assert.doesNotMatch(stub, /status-reviewed|tag mais recente|latest tag/i);
+});
+
+test('every relative link of the README, the guides, the step zero and the stub lands on a file, and on a heading or an anchor, that exists', () => {
   const problems = PAGES.flatMap((file) => brokenLinks(file));
   assert.deepEqual(problems, []);
   const inPage = links(read(README)).filter((target) => target.startsWith('#'));
@@ -282,7 +296,7 @@ test('self-check: the link guard reports a missing file, a missing anchor and a 
   assert.deepEqual(brokenLinks(README, '## Se aparecer `EACCES`\n\n<a id="passo-2"></a>[x](#se-aparecer-eacces) [y](#passo-2)'), []);
 });
 
-test('no em dash, no en dash and no emoji in the README, the guides and the step zero', () => {
+test('no em dash, no en dash and no emoji in the README, the guides, the step zero and the stub', () => {
   for (const file of PAGES) {
     const text = read(file);
     for (const [name, code] of [['em dash', 0x2014], ['en dash', 0x2013]]) {
