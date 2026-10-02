@@ -17,6 +17,12 @@
 //   - docs/guia.md, the complete guide in Portuguese: every section of the old
 //     README.pt-BR.md that the front door does not carry, nothing true dropped.
 //
+// Fix round 1 of R1 (a reader test by a Brazilian non-developer on a Mac, and a technical
+// review) added docs/preparar-o-computador.md, the step zero (the terminal, Node, git, gh,
+// Claude Code and the two accounts, from the official pages), put what decides first in the
+// README, closed the traps the reader found inside the steps, and left README.pt-BR.md as a
+// stub that keeps the old link alive.
+//
 // Also pinned here:
 //   - the `setup` and `curate-session` skill bodies say the things the
 //     stranger tripped on (a repository created without `--push` is empty; a
@@ -32,6 +38,8 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, posix } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
+import { completeDefaults } from '../src/init/config.mjs';
+import { VAULT_PROJECT } from '../src/sources/transcripts-claude-code.mjs';
 
 const read = (path) => readFileSync(join(KIT_ROOT, path), 'utf8');
 const pkg = JSON.parse(read('package.json'));
@@ -39,7 +47,10 @@ const pkg = JSON.parse(read('package.json'));
 const README = 'README.md';
 const GUIA = 'docs/guia.md';
 const GUIDE = 'docs/guide.md';
+const STEP_ZERO = 'docs/preparar-o-computador.md';
+// The status documents the release gate holds, and every page the link and dash checks read.
 const DOCUMENTS = [README, GUIA, GUIDE];
+const PAGES = [...DOCUMENTS, STEP_ZERO];
 
 const E_ACUTE = String.fromCharCode(0xe9);
 const PT_LATEST_TAG = `A tag mais recente ${E_ACUTE} a \`v${pkg.version}\`.`;
@@ -213,23 +224,27 @@ const EACCES_BLOCKS = [
 
 const UPDATE_BLOCK = 'claude plugin update brain-kit@brain-kit';
 
-// The code blocks of the README's step by step, in order: the install, the eleven steps,
-// the EACCES block and the update. They are the commands the English guide gives (the
-// test below holds that) and the ones run by hand in a scratch directory (the task
-// reports list them); only the words a Portuguese reader reads differ.
+// Step 11's two commands, in a block of their own since fix round 1 of R1 (the review's m4):
+// the English guide gives them in its prose only.
+const SYNC_VERIFY = 'brain-kit sync\nbrain-kit verify --pr 1';
+
+// The code blocks of the README's step by step, in order: the install, then the steps. The git
+// identity comes before the first commit since fix round 1 (whoever never used git on that
+// computer would hit the refusal first). They are the commands the English guide gives (the test
+// below holds that) and the ones run by hand in a scratch directory (the task reports list them);
+// only the words a Portuguese reader reads differ.
 const README_BLOCKS = [
   SNIPPET.join('\n'),
   'gh auth login',
   'brain-kit doctor',
   'brain-kit init ~/my-brain',
-  'cd ~/my-brain\ngit add -A\ngit commit -m "Inicia o vault"',
   'git config --global user.name "Seu Nome"\ngit config --global user.email "voce@example.com"',
+  'cd ~/my-brain\ngit add -A\ngit commit -m "Inicia o vault"',
   'gh repo create my-brain --private --source . --push',
   'brain-kit doctor',
   'claude',
   'brain-kit propose "Primeira captura" --only memoria/log.md',
-  ...EACCES_BLOCKS,
-  UPDATE_BLOCK,
+  SYNC_VERIFY,
 ];
 
 const toEnglishCommands = (block) => block
@@ -242,17 +257,16 @@ const toEnglishCommands = (block) => block
 // The second machine, in the order docs/scheduling.md gives (clone, register, push gate, doctor, schedule).
 const SECOND_MACHINE = ['gh repo clone my-brain ~/my-brain', 'cd ~/my-brain', 'brain-kit machine register --new', 'git config core.hooksPath .githooks', 'brain-kit doctor', 'brain-kit schedule install'];
 
-// ------------------------------------------------- the three documents together
+// ------------------------------------------------- the documents together
 
-test('the three documents exist, README.pt-BR.md is gone, and the package ships the two guides the README links', () => {
-  for (const file of DOCUMENTS) assert.ok(existsSync(join(KIT_ROOT, file)), `${file} is missing`);
+test('the documents exist, the package ships the guides and the step zero, and README.pt-BR.md is gone', () => {
+  for (const file of PAGES) assert.ok(existsSync(join(KIT_ROOT, file)), `${file} is missing`);
+  for (const file of [...DOCUMENTS, STEP_ZERO]) assert.ok(pkg.files.includes(file), `package.json files does not list ${file}`);
   assert.equal(existsSync(join(KIT_ROOT, 'README.pt-BR.md')), false, 'README.md is the Portuguese README now');
-  for (const file of DOCUMENTS) assert.ok(pkg.files.includes(file), `package.json files does not list ${file}`);
-  assert.ok(!pkg.files.includes('README.pt-BR.md'));
 });
 
-test('every relative link of the three documents lands on a file, and on a heading or an anchor, that exists', () => {
-  const problems = DOCUMENTS.flatMap((file) => brokenLinks(file));
+test('every relative link of the README, the guides and the step zero lands on a file, and on a heading or an anchor, that exists', () => {
+  const problems = PAGES.flatMap((file) => brokenLinks(file));
   assert.deepEqual(problems, []);
   const inPage = links(read(README)).filter((target) => target.startsWith('#'));
   const crossFile = links(read(README)).filter((target) => !/^(?:https?:|#)/.test(target));
@@ -268,21 +282,21 @@ test('self-check: the link guard reports a missing file, a missing anchor and a 
   assert.deepEqual(brokenLinks(README, '## Se aparecer `EACCES`\n\n<a id="passo-2"></a>[x](#se-aparecer-eacces) [y](#passo-2)'), []);
 });
 
-test('no em dash, no en dash and no emoji in the three documents', () => {
-  for (const file of DOCUMENTS) {
+test('no em dash, no en dash and no emoji in the README, the guides and the step zero', () => {
+  for (const file of PAGES) {
     const text = read(file);
     for (const [name, code] of [['em dash', 0x2014], ['en dash', 0x2013]]) {
       const at = text.indexOf(String.fromCharCode(code));
       assert.equal(at, -1, `${file}: an ${name} on line ${text.slice(0, at).split('\n').length}`);
     }
-    const emoji = /\p{Extended_Pictographic}|\uFE0F/u.exec(text);
+    const emoji = /\p{Extended_Pictographic}|️/u.exec(text);
     assert.equal(emoji, null, `${file}: an emoji (${emoji?.[0]})`);
   }
 });
 
 test('self-check: the dash and emoji patterns see what they are for', () => {
-  assert.ok(/\p{Extended_Pictographic}|\uFE0F/u.test('pronto \u{1F680}'));
-  assert.ok(!/\p{Extended_Pictographic}|\uFE0F/u.test('Privacidade: o que o curador guarda (ver o guia).'));
+  assert.ok(/\p{Extended_Pictographic}|️/u.test('pronto \u{1F680}'));
+  assert.ok(!/\p{Extended_Pictographic}|️/u.test('Privacidade: o que o curador guarda (ver o guia).'));
 });
 
 test('the release gate holds each document: one stamp right under its section, the latest-tag sentence in its language, no literal tag in a code block', () => {
@@ -297,29 +311,34 @@ test('the release gate holds each document: one stamp right under its section, t
 });
 
 test('the README and the English guide give the same first-run commands, only the Portuguese words differ', () => {
-  const readme = fencedBlocks(section(read(README), '## Passo a passo'));
+  // The README gives the update command in its prose and step 11's two commands in a block; the
+  // English guide the other way round. Everything else is the same set of blocks.
+  const readmeBlocks = fencedBlocks(read(README)).filter((block) => block !== SYNC_VERIFY && !block.startsWith('"privacy"') && !/^(?:---|\*\*Captura\*\*|Atrasadas)/.test(block));
   const guide = read(GUIDE);
-  const english = [...fencedBlocks(section(guide, '## Installing a fixed version')), ...fencedBlocks(section(guide, '## Your first vault'))];
-  assert.deepEqual(readme.map(toEnglishCommands).sort(), [...english].sort());
+  const english = [...fencedBlocks(section(guide, '## Installing a fixed version')), ...fencedBlocks(section(guide, '## Your first vault'))].filter((block) => block !== UPDATE_BLOCK);
+  assert.deepEqual(readmeBlocks.map(toEnglishCommands).sort(), [...english].sort());
+  assert.ok(read(README).includes(`\`${UPDATE_BLOCK}\``), 'the README gives the update command');
 });
 
 // ------------------------------------------------------ README.md, the front door
 
-// The sections the front door holds, in the order the owner asked for (02/10/2026): what it
-// is, why, what you gain, for whom, how it works, what you need, the step by step, what to do
-// when stuck, privacy, cost, stage and where to read more.
+// The sections the front door holds, in order. Since fix round 1 of R1, what decides whether to
+// spend an afternoon on it (cost, privacy, stage) comes before what it needs and the step by
+// step, and an example shows the result before any install.
 const FRONT_DOOR = [
   '## Em 30 segundos',
   '## Por que isso existe',
   '## O que você ganha',
   '## Para quem é',
   '## Como funciona',
+  '## Como fica na prática',
+  '## Quanto custa',
+  '## Privacidade',
+  '## Em que pé está',
   '## O que você precisa',
   '## Passo a passo',
   '## Se travar',
-  '## Privacidade',
-  '## Quanto custa',
-  '## Em que pé está',
+  '## Para atualizar depois',
   '## Quer mais?',
 ];
 
@@ -327,8 +346,12 @@ const readme = read(README);
 const step = (n) => itemOf(section(readme, '## Passo a passo'), n);
 const stepWords = (n) => norm(prose(step(n)));
 
-test('README.md: the front door has the twelve sections in order, and nothing else at that level', () => {
+test('README.md: the front door has its sections in order, the decision ones before the install, and nothing else at that level', () => {
   assert.deepEqual(headings(readme, 2), FRONT_DOOR);
+  const at = (heading) => FRONT_DOOR.indexOf(heading);
+  for (const decides of ['## Quanto custa', '## Privacidade', '## Em que pé está']) {
+    assert.ok(at(decides) < at('## O que você precisa') && at(decides) < at('## Passo a passo'), `${decides} comes before what you need and the step by step`);
+  }
 });
 
 test('README.md: a name and a one-line pitch, before any section', () => {
@@ -338,205 +361,262 @@ test('README.md: a name and a one-line pitch, before any section', () => {
   assert.equal(pitch.length, 1, `the pitch is one line: ${pitch.join(' | ')}`);
   assert.ok(pitch[0].length <= 140, `a pitch of ${pitch[0].length} characters`);
   // What the kit enforces, not a promise of zero errors: it records what it read, and asks first.
-  assert.match(pitch[0], /lembra/);
-  assert.match(pitch[0], /leu/);
-  assert.match(pitch[0], /licença/);
+  for (const word of [/lembra/, /leu nas suas conversas/, /licença/]) assert.match(pitch[0], word);
   assert.doesNotMatch(pitch[0], /não inventa|nunca erra|sem erro/);
 });
 
-test('README.md: under the line target, so the front door stays short', () => {
+test('README.md: under the line target, so the front door stays short (the step zero lives in its own page)', () => {
   const lines = readme.split('\n').length;
-  assert.ok(lines <= 300, `README.md has ${lines} lines`);
+  assert.ok(lines <= 350, `README.md has ${lines} lines`);
 });
 
-test('README.md: "Em 30 segundos" says it in three short lines: plain text files, an AI that reads and updates them, and your approval', () => {
-  const lines = bullets(section(readme, '## Em 30 segundos'));
-  assert.equal(lines.length, 3);
-  for (const line of lines) assert.ok(line.length <= 260, `a line of ${line.length} characters`);
-  assert.match(lines[0], /Markdown/);
+test('README.md: "Em 30 segundos" says in four lines what it is, what the curator reads and leaves out, and that you approve, then what the step by step delivers', () => {
+  const body = section(readme, '## Em 30 segundos');
+  const lines = bullets(body);
+  assert.equal(lines.length, 4);
+  for (const line of lines) assert.ok(line.length <= 290, `a line of ${line.length} characters`);
+  assert.match(lines[0], /arquivos de texto/);
+  assert.match(lines[0], /vault/);
   assert.match(lines[1], /Claude Code/);
-  assert.match(lines[2], /pull request/);
-  assert.match(lines[2], /aprova/);
+  assert.match(lines[1], /plano pago/);
+  // What the curator reads by default, and what it does not (fix round 1, point 2).
+  assert.match(lines[2], /lê só as suas conversas com o Claude Code feitas dentro do vault/);
+  assert.match(lines[2], /se você conectar, a Google Agenda e as notas de reunião do Google Drive/);
+  assert.match(lines[2], /E-mail, WhatsApp, ChatGPT, Outlook, Teams e o resto do computador ficam de fora/);
+  assert.match(lines[3], /pull request/);
+  assert.match(lines[3], /aprova/);
+  const after = norm(prose(body).split('\n').filter((line) => !line.startsWith('- ')).join(' '));
+  assert.match(after, /O passo a passo deste README monta o vault com a aprovação por pull request\. O curador diário e o briefing da manhã você liga depois/);
+  assert.ok(body.includes('(docs/guia.md#o-curador-agendado)') && body.includes('(#palavras-que-você-vai-ver)'));
+  // init lists the vault's own project, and nothing else, by default.
+  const defaults = JSON.parse(read('lang/pt-BR/config.defaults.json'));
+  const config = completeDefaults(defaults, { lang: 'pt-BR', name: 'Ana', handle: 'ana', title: 'Caderno da Ana', timezone: 'UTC' }, { project: VAULT_PROJECT });
+  assert.deepEqual(config.sources.transcripts.include_projects, ['{vault}']);
 });
 
-test('README.md: "Por que isso existe" names the problem and where the kit came from, with no name in it', () => {
+test('README.md: "Por que isso existe" names the problem, where the kit came from, and one dated failure told in Portuguese', () => {
   const body = norm(section(readme, '## Por que isso existe'));
-  for (const word of [/contexto/, /esquece/, /escreve/, /fundador/, /docs\/incidents\.md/]) assert.match(body, word);
+  for (const word of [/contexto/, /esquece/, /mexe onde quer/, /fundador/, /em setembro de 2026, o curador passou quatro dias parado/, /\(docs\/incidents\.md\)/]) assert.match(body, word);
+  assert.match(read('docs/incidents.md'), /### 13\/09\/2026: four days with no curation while the scheduler reported success/, 'the failure it tells is in the incidents page');
 });
 
-test('README.md: "O que você ganha" lists five or six benefits, one line each', () => {
+test('README.md: "O que você ganha" lists six benefits, one line each, none promising more than the default does', () => {
   const body = section(readme, '## O que você ganha');
   const list = bullets(body);
   assert.ok(list.length >= 5 && list.length <= 6, `${list.length} benefits`);
   assert.equal(body.split('\n').filter((line) => line.startsWith('- ')).length, body.split('\n').filter((line) => line.trim() !== '').length, 'one line each, and nothing but the list');
   const all = norm(list.join(' '));
-  for (const word of [/reunião/, /véspera/, /celular/, /briefing|manhã/, /editor/, /MIT/, /plano do Claude/]) assert.match(all, word);
+  for (const word of [/contou ao Claude/, /celular/, /manhã/, /editor/, /cadastro/, /grátis/, /plano pago/, /\(#quanto-custa\)/]) assert.match(all, word);
+  // The review of R1, m3: the daily update is switched on after the step by step, and reads the
+  // Claude Code conversations and only what is connected.
+  const daily = list.find((line) => line.includes('Atualização que chega sozinha'));
+  for (const word of [/depois do passo a passo/, /conversas da véspera com o Claude Code/, /se você conectar/]) assert.match(daily, word);
+  assert.match(list.find((line) => line.includes('briefing')), /depois/);
 });
 
-test('README.md: "Para quem é" has four to six personas with an example each, and says who it is not for yet', () => {
+test('README.md: "Para quem é" has four to six personas, and who it is not for yet as a short list, Windows said plainly', () => {
   const body = section(readme, '## Para quem é');
-  const personas = bullets(body);
+  const list = bullets(body);
+  const personas = list.filter((line) => /^- \*\*/.test(line));
   assert.ok(personas.length >= 4 && personas.length <= 6, `${personas.length} personas`);
-  for (const persona of personas) assert.match(persona, /^- \*\*[^*]+\*\* /, `a persona starts with who it is: ${persona}`);
-  const notYet = norm(prose(body)).slice(norm(prose(body)).indexOf('Ainda não'));
-  assert.ok(notYet.startsWith('Ainda não'), 'the section says who it is not for yet');
-  for (const word of [/GitHub/, /terminal/, /Windows/]) assert.match(notYet, word);
+  assert.ok(prose(body).includes('\nAinda não é para você se:\n'), 'the not-yet list has its own lead line');
+  const notYet = list.filter((line) => !/^- \*\*/.test(line));
+  assert.equal(notYet.length, 4);
+  for (const [index, word] of [[0, /conta no GitHub/], [1, /terminal/], [2, /plano pago do Claude e passar a conversar com ele pelo Claude Code/], [3, /Windows: este passo a passo é para o terminal do Linux e do macOS, os únicos testados/]]) assert.match(notYet[index], word);
 });
 
-test('README.md: "Como funciona" is the loop in three steps, the briefing, where the data lives and what the curator reads by default', () => {
+test('README.md: "Como funciona" is the loop in three steps, the curator held to what it read, the briefing, and where the data lives', () => {
   const body = section(readme, '## Como funciona');
   const loop = items(prose(body.slice(0, body.indexOf('### '))));
   assert.equal(loop.length, 3);
   assert.match(loop[0], /Você trabalha/);
+  assert.match(loop[0], /dentro da pasta do vault/);
   assert.match(loop[1], /curador/);
+  assert.match(loop[1], /sempre até ontem, porque hoje ainda não terminou/);
   assert.match(loop[2], /Você aprova/);
   const words = norm(body);
-  assert.match(words, /briefing/);
-  assert.ok(words.includes('`~/.local/state/brain-kit/`'), 'where the machine state lives');
-  // By default a round reads only the sessions run inside the vault's folder (init lists {vault}).
-  assert.match(words, /por padrão, as sessões do Claude Code abertas dentro da pasta do vault/);
-  assert.match(words, /Instrução não é garantia/);
-  assert.match(words, /nada entra sem o seu merge/);
+  for (const word of [/Instrução não é garantia/, /nada entra sem o seu merge/, /o briefing conta como o vault está/, /O kit não tem servidor/, /fora do vault/]) assert.match(words, word);
 });
 
-test('README.md: the glossary is shorter than the old one and holds the words the step by step uses', () => {
+test('README.md: the glossary explains the words the README uses, one entry each, main or master included', () => {
   const body = section(readme, '### Palavras que você vai ver');
   const rows = body.split('\n').filter((line) => line.startsWith('|')).slice(2);
-  assert.ok(rows.length >= 8 && rows.length <= 11, `${rows.length} entries`);
+  assert.ok(rows.length >= 12 && rows.length <= 16, `${rows.length} entries`);
   const words = rows.map((row) => row.split('|')[1].trim()).join(' ').toLowerCase();
-  for (const term of ['terminal', 'repositório', 'commit', 'push', 'pull request', 'merge', 'vault', 'trava de push', 'plugin', 'skill', 'hook']) assert.ok(words.includes(term), `the glossary lacks: ${term}`);
+  for (const term of ['terminal', 'git', 'github', 'repositório', 'commit', 'push', 'pull request', 'merge', 'branch', 'vault', 'log', 'curador', 'rodada', 'trava de push', 'plugin', 'marketplace', 'skill', 'hook']) assert.ok(words.includes(term), `the glossary lacks: ${term}`);
+  assert.match(rows.find((row) => row.startsWith('| branch')), /`main` ou `master`/);
 });
 
-test('README.md: "O que você precisa" names each tool with a line and a link, and the time the first run takes', () => {
+test('README.md: "Como fica na prática" shows an invented note, a log line, a pull request title and a few lines of a briefing', () => {
+  const body = section(readme, '## Como fica na prática');
+  const words = norm(prose(body));
+  for (const word of [/exemplo inventado/i, /Ana/, /Ben Okafor/]) assert.match(words, word);
+  const blocks = fencedBlocks(body);
+  assert.equal(blocks.length, 3);
+  const marker = JSON.parse(read('lang/pt-BR/config.defaults.json')).taxonomy.log_markers.capture;
+  assert.ok(blocks[0].startsWith(`**${marker}**`), 'one line of the log, with the marker the pack defines');
+  assert.match(blocks[1], /^---\ntype: person\ntitle: Ben Okafor\n/);
+  assert.match(blocks[1], /generated: \{ by: brain-kit-curator\/<modelo>, at: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2} \}/);
+  assert.match(blocks[1], /resource: \/memoria\/log\.md/);
+  assert.match(blocks[1], /example\.com/);
+  const prefix = JSON.parse(read('lang/pt-BR/config.defaults.json')).git.commit_prefix;
+  assert.match(words, new RegExp(`o pull request "${prefix} [^"]+"`), 'a pull request title as the kit writes it');
+  const pack = JSON.parse(read('lang/pt-BR/messages.json'));
+  const briefing = blocks[2].split('\n');
+  assert.ok(briefing.length >= 3 && briefing.length <= 4, `a briefing of ${briefing.length} lines`);
+  for (const title of briefing.filter((line) => !line.startsWith('- '))) assert.ok(Object.entries(pack).some(([key, value]) => key.startsWith('briefing.title_') && value === title), `"${title}" is a block title the briefing prints`);
+});
+
+test('README.md: the cost: no charge per round on a subscription, the plans as the official page gave them that day, and the measured figures only for an API key', () => {
+  const body = section(readme, '## Quanto custa');
+  const flat = norm(body);
+  for (const word of [/grátis e de código aberto/, /licença MIT/, /Em 02\/10\/2026, a \[página oficial de preços\]\(https:\/\/claude\.com\/pricing\) dizia: o plano grátis não inclui o Claude Code; o Pro custa US\$ 20 por mês \(ou US\$ 17 por mês no plano anual\); o Max, a partir de US\$ 100 por mês/, /Numa assinatura, não há cobrança por rodada/, /limites de uso do plano/, /Se o limite acabar, a rodada falha e o dia fica para a próxima/, /Uma rodada sem nada para ler termina sem chamar a IA e não gasta nada/, /Só quem usa o Claude Code com uma chave de API/]) assert.match(flat, word);
+  // The review of R1, m2: the figures are the rounds that had something to read, from the kit's
+  // round records, and the cap the README names is the one init writes.
+  assert.match(flat, /as rodadas que tiveram o que ler em 01 e 02\/10\/2026 custaram entre US\$ 0,78 e US\$ 4,45 cada, pelos registros de rodada do kit/);
+  assert.match(flat, /um teto de US\$ 5 por rodada, calculado do mesmo jeito \(`curate\.budget_usd`\)/);
+  assert.equal(JSON.parse(read('lang/pt-BR/config.defaults.json')).curate.budget_usd, 5);
+  assert.doesNotMatch(flat, /costUsd|last-run\.json/, 'no file name the reader cannot use');
+  assert.ok(flat.indexOf('Numa assinatura') < flat.indexOf('US$ 0,78'), 'the subscription first, the API key after');
+  // The prices are the step zero's, read on the same day.
+  for (const price of ['US$ 20', 'US$ 17', 'US$ 100']) assert.ok(read(STEP_ZERO).includes(price), price);
+});
+
+test('README.md: "O que você precisa" sends a newcomer to the step zero, names each tool with a link, and the time is for a machine that has them', () => {
   const body = section(readme, '## O que você precisa');
   const flat = norm(body);
+  assert.ok(flat.startsWith(' Nunca instalou nada disso? [Comece por aqui](docs/preparar-o-computador.md)'), 'the step zero is the first thing the section says');
   assert.match(flat, /Node\.js 22 ou mais novo \(o 24 LTS é o recomendado\)/);
   for (const link of ['https://nodejs.org', 'https://git-scm.com/downloads', 'https://github.com/signup', 'https://cli.github.com', 'https://code.claude.com/docs/en/overview']) assert.ok(body.includes(`(${link})`), `no link to ${link}`);
-  for (const word of [/`node --version`/, /\bgit\b/, /`gh`/, /Claude Code/, /conta no GitHub/]) assert.match(flat, word);
-  // The time, honest and arithmetic: the reading and the steps add up to at most the whole,
-  // which adds only a few minutes for the approval on GitHub. The second walkthrough estimated
-  // 30 to 40 for a person who is not a developer.
+  for (const word of [/\bgit\b/, /`gh`/, /Claude Code/, /Uma conta no GitHub\*\*, grátis, com repositórios privados à vontade/]) assert.match(flat, word);
+  // The review of R1, M1: the minutes are for a machine that already has all of it.
+  assert.match(flat, /Com tudo isso já instalado, conte com cerca de \d+ minutos/);
+  assert.match(flat, /não incluem o passo zero/);
+  assert.doesNotMatch(readme, /\bdo zero\b|máquina limpa/, 'the step by step does not start from a bare machine');
   const whole = Number(/cerca de (\d+) minutos/.exec(flat)?.[1]);
   const reading = Number(/uns (\d+) de leitura/.exec(flat)?.[1]);
   const steps = Number(/(\d+) nos passos/.exec(flat)?.[1]);
   assert.ok(whole >= 30 && whole <= 40, `${whole} minutes`);
   assert.ok(reading >= 10 && reading + steps <= whole && whole - (reading + steps) <= 5, `${reading} + ${steps} against ${whole}`);
   assert.match(flat, /São estimativas, não uma promessa/);
-  // What the first pull request does not need is named and sent to the guide, without the
-  // words that scare a first reader.
-  for (const word of [/systemd/i, /linger/i, /launchd/i, /\bcron\b/i, /Windows/, /desktop/i]) assert.doesNotMatch(body, word);
-  assert.match(flat, /opcionais/);
-  assert.ok(body.includes('(docs/guia.md#o-curador-agendado)'));
+  for (const word of [/systemd/i, /linger/i, /launchd/i, /\bcron\b/i]) assert.doesNotMatch(body, word);
 });
 
-test('README.md: the step by step is eleven numbered steps whose code blocks are the verified commands, in order', () => {
+test('README.md: the step by step is twelve numbered steps whose code blocks are the verified commands, in order', () => {
   const body = section(readme, '## Passo a passo');
   const steps = body.split('\n').filter((line) => /^\d+\. /.test(line));
-  assert.deepEqual(steps.map((line) => Number(/^(\d+)\./.exec(line)[1])), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+  assert.deepEqual(steps.map((line) => Number(/^(\d+)\./.exec(line)[1])), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
   assert.deepEqual(fencedBlocks(body), README_BLOCKS);
   for (const id of ['passo-2', 'passo-3', 'passo-4', 'passo-5', 'passo-6', 'passo-7', 'passo-11']) assert.ok(body.includes(`<a id="${id}"></a>`), id);
   assert.doesNotMatch(body, /\bexits? (with )?0\b|\bexit code\b|sai com 0|código de saída/i, 'the screen shows no exit code');
+  assert.match(norm(body), /Os onze primeiros passos montam o vault e o primeiro pull request aprovado/);
 });
 
-test('README.md: each step says what it does, the command, and what the screen shows', () => {
+test('README.md: each step says what it does, the command, and what the screen shows, with the traps of the reader test closed', () => {
+  const pack = JSON.parse(read('lang/pt-BR/messages.json'));
   const one = stepWords(1);
-  assert.ok(one.includes('A pasta `brain-kit` que a primeira linha baixou (ela fica onde você colou o trecho) não é mais usada e pode ser apagada'), 'the clone folder can go, and where it is');
+  // The success signal is the version, not the plugin's line, which shows even when npm failed.
+  assert.match(one, /Deu certo se `brain-kit --version` mostrar um número de versão \(não confie só no `Successfully installed`/);
+  assert.ok(one.includes('A pasta `brain-kit` que a primeira linha baixou (num terminal recém-aberto, ela fica na sua pasta de usuário) não é mais usada e pode ir para o lixo'));
   assert.match(one, /Já a pasta `~\/\.local\/share\/brain-kit\/`, que o trecho cria, \*\*não pode ser apagada\*\*/);
-  assert.ok(one.includes('`brain-kit --version`') && one.includes('Successfully installed'), 'what the screen shows');
   assert.ok(one.includes('(#se-aparecer-eacces)'));
-  assert.ok(stepWords(2).includes('Logged in as'));
+  const two = stepWords(2);
+  assert.match(two, /aperte Enter em cada uma/);
+  assert.ok(two.includes('Logged in as'));
   const three = stepWords(3);
   assert.match(three, /confere só a máquina: o Node, o git, o `gh` e o login dele, e o Claude Code\. Está tudo certo quando a linha que começa com `doctor:` termina em `0 falha\(s\)`/);
   assert.match(three, /A mensagem "nenhum vault brain-kit encontrado", que vem logo depois, é esperada/);
-  assert.ok(three.includes('`fail`') && three.includes('`0 fail`'), 'the words of a system in English');
+  // Step 4 says what to answer to every question (the review's m5), by the words on the screen.
   const four = stepWords(4);
-  const pack = JSON.parse(read('lang/pt-BR/messages.json'));
-  assert.ok(pack['init.ask_handle'].startsWith(pack['init.label_handle']));
-  assert.ok(four.includes(`Na pergunta "${pack['init.label_handle']}" (o nome curto que assina as suas aprovações), aceite a sugestão`), 'the question as the screen shows it');
-  assert.match(four, /Enter/);
-  assert.match(four, /sete perguntas/);
+  for (const key of ['lang', 'name', 'handle', 'title', 'repo', 'timezone']) {
+    const label = pack[`init.label_${key}`];
+    assert.ok(pack[`init.ask_${key}`].startsWith(label), `${key}: the prompt starts with its label`);
+    assert.ok(four.includes(`"${label}"`), `step 4 names the question "${label}"`);
+  }
+  const privateStart = pack['init.ask_private'].split(':')[0];
+  assert.ok(four.includes(`"${privateStart}"`), `step 4 names the question "${privateStart}"`);
+  assert.match(four, /Em "Primeiro nome", digite o seu\. Em todas as outras, aperte Enter/);
+  assert.match(four, /"Repositório no GitHub" \(fica "ainda não": o passo 6 cria o `my-brain`\)/);
+  assert.match(four, /`~\/my-brain` é a pasta `my-brain` dentro da sua pasta de usuário/);
+  // The git identity comes before the first commit, for whoever never used git on that computer.
   const five = step(5);
-  assert.ok(five.indexOf('Author identity unknown') > five.indexOf('git commit'), 'the identity commands only when git refuses');
-  assert.match(norm(five), /O git guarda quem fez cada commit/);
+  const identity = five.indexOf('git config --global user.name');
+  assert.ok(identity !== -1 && identity < five.indexOf('git commit -m'), 'the identity block comes before the commit block');
+  assert.ok(five.indexOf('Author identity unknown') > five.indexOf('git commit -m'), 'and the refusal is named after it, for whoever skipped it');
+  assert.match(norm(prose(five)), /Se é a primeira vez que você usa o git neste computador, diga antes a ele quem você é/);
   assert.ok(five.includes('example.com'));
+  // Step 6's success is two things to find, what the gate and gh print when it worked.
   const six = stepWords(6);
-  assert.match(six, /privado/);
-  assert.match(six, /trava de push/);
-  assert.ok(six.includes('`nothing matched`') && six.includes('`refusing to push`'), 'what a good push ends with, and what a refusal says');
+  for (const word of ['`nothing matched`', '`Pushed commits to`', '`git fetch origin`', '`refusing to push`', '(#se-travar)']) assert.ok(six.includes(word), `step 6 lacks ${word}`);
+  assert.match(six, /você só precisa achar duas coisas/);
   const seven = stepWords(7);
-  for (const word of ['`falha`', '`aviso`', '--verbose', 'só os avisos e as falhas, com a contagem das linhas `ok`', 'a última linha termina em `0 falha(s)`']) assert.ok(seven.includes(word), `step 7 lacks ${word}`);
+  for (const word of ['nenhuma linha `falha`', '`aviso`', 'a linha que começa com `doctor:` termina em `0 falha(s)`', '`watermark`', '`last-run`', '`schedule`', '`notify`', '`briefing`']) assert.ok(seven.includes(word), `step 7 lacks ${word}`);
   for (const word of ['`fail`', '`warn`']) assert.ok(!seven.includes(word), `step 7 uses ${word}, the English word`);
-  for (const word of ['`watermark`', '`last-run`', '`schedule`', '`notify`', '`briefing`']) assert.ok(seven.includes(word), `step 7 names the warning ${word}`);
-  assert.match(stepWords(8), /confia/);
-  const nine = step(9);
-  assert.ok(nine.includes('`**Captura**`') && nine.includes('`**Capture**`'), 'both markers');
-  assert.ok(nine.includes('`memoria/log.md`') && nine.includes('`memory/log.md`'), 'both log paths');
-  const marker = (code) => JSON.parse(read(`lang/${code}/config.defaults.json`)).taxonomy.log_markers.capture;
-  assert.deepEqual([marker('pt-BR'), marker('en')], ['Captura', 'Capture']);
+  const eight = stepWords(8);
+  for (const word of [/confia/, /abre o navegador/, /caixa para você escrever/]) assert.match(eight, word);
+  const nine = stepWords(9);
+  assert.ok(nine.includes('`capture`') && nine.includes('`memoria/log.md`'));
   const ten = stepWords(10);
-  for (const word of ['Stop', '`Pull request aberto`', '`--dry`', 'não faça commit desse arquivo', 'divergiram']) assert.ok(ten.includes(word), `step 10 lacks ${word}`);
+  for (const word of ['Stop', '`Pull request aberto`', '**Yes**', 'Se o Claude não abrir o pull request, rode você mesmo']) assert.ok(ten.includes(word), `step 10 lacks ${word}`);
+  // The rule that goes against the instinct of step 5 is a rule you can see, not a clause.
+  assert.ok(step(10).split('\n').some((line) => /^\s+> \*\*Regra de ouro:\*\* daqui para frente, quem salva no histórico é o `propose`, quando você aprova\./.test(line)), 'the rule is a quote block of its own');
+  assert.match(ten, /Não faça commit dos arquivos do vault você mesmo/);
+  // Step 11: the buttons as GitHub shows them, how to leave Claude Code, where the number is, and the block.
   const eleven = stepWords(11);
-  for (const word of ['merge', '`brain-kit sync`', '`brain-kit verify --pr <número>`', 'carimba `verified` (verificada)', 'nada a carimbar, e nada foi escrito']) assert.ok(eleven.includes(word), `step 11 lacks ${word}`);
-  // A message the README quotes is the one the tool prints.
+  for (const word of ['**Merge pull request**', '**Confirm merge**', 'digite `exit`', '/pull/', 'carimba `verified` (verificada)', 'nada a carimbar, e nada foi escrito']) assert.ok(eleven.includes(word), `step 11 lacks ${word}`);
+  assert.deepEqual(fencedBlocks(step(11)), [SYNC_VERIFY]);
   assert.ok(pack['verify.nothing_to_stamp'].includes('nada a carimbar, e nada foi escrito'));
   assert.ok(pack['propose.opened'].startsWith('Pull request aberto'), 'step 10 quotes the start of propose.opened');
+  // Step 12, the proof: what the kit asks the model to do, not a promise of a perfect answer.
+  const twelve = stepWords(12);
+  for (const word of [/o que eu registrei hoje no vault\?/, /skill `ask`/, /`memoria\/log\.md`/, /dizer que não sabe em vez de inventar/]) assert.match(twelve, word);
+  assert.ok(existsSync(join(KIT_ROOT, 'lang/pt-BR/skills/ask.md')) && read('lang/pt-BR/skills/ask.md').includes('Responda citando os caminhos'));
 });
 
-test('README.md: the EACCES block follows the steps, with the exact commands, why not sudo, what nvm users do, and the check', () => {
+test('README.md: "Se travar" gives the five likeliest traps and one secrets line, in at most 8 lines, then the EACCES block', () => {
+  const body = section(readme, '## Se travar');
+  const lines = body.slice(0, body.indexOf('\n### ')).split('\n').filter((line) => line.trim() !== '');
+  assert.ok(lines.length <= 8, `the list has ${lines.length} lines`);
+  const list = lines.filter((line) => line.startsWith('- '));
+  assert.equal(list.length, 6);
+  const traps = [/EACCES/, /`gh auth login`/, /`propose`.*commit.*não repita o passo 6.*`git push -u origin HEAD`/, /command not found.*Successfully installed.*bloco .*EACCES.* inteiro/, /`doctor`.*falha.*gh auth login --hostname github\.com/, /troque essa senha ou chave onde ela vale, antes de qualquer outra coisa.*incident-response\.md/];
+  traps.forEach((pattern, index) => assert.match(list[index], pattern, `trap ${index + 1}`));
+  assert.doesNotMatch(list[2], /configura/);
+  assert.doesNotMatch(list[3], /refaça o PATH/);
+  assert.equal(list.filter((line) => line.includes('docs/incident-response.md')).length, 1, 'the incident page is linked once, for secrets only');
+  assert.ok(list[0].includes('(#se-aparecer-eacces)'), 'the first trap links the EACCES block');
+  assert.ok(headings(body, 3).includes('### Se aparecer `EACCES`'), 'the EACCES block lives in this section');
+});
+
+test('README.md: the EACCES block has the exact commands, says why not sudo and what nvm users do, and ends with the check', () => {
   const body = section(readme, '### Se aparecer `EACCES`');
-  const passo = section(readme, '## Passo a passo');
-  assert.ok(passo.indexOf('### Se aparecer `EACCES`') > passo.indexOf('\n11. '), 'after the eleven steps');
   assert.deepEqual(fencedBlocks(body), EACCES_BLOCKS);
   const words = norm(prose(body));
-  for (const word of [/nvm/, /`sudo`/, /Feche o terminal e abra outro/]) assert.match(words, word);
+  for (const word of [/nvm/, /`sudo`/, /síndico/, /Feche o terminal e abra outro/, /\(docs\/preparar-o-computador\.md\)/, /o macOS, o zsh, a segunda/, /`fatal: destination path 'brain-kit' already exists`/]) assert.match(words, word);
   assert.ok(words.includes('a lista de pastas onde o terminal procura os comandos que você digita'), 'PATH is explained where it first matters');
   assert.ok(words.includes('cole o trecho de instalação de novo'), 'the snippet is pasted again after the fix');
 });
 
-test('README.md: moving to a newer version says to drop the old clone, paste again, record the version in Claude Code and which folders can go', () => {
-  const body = section(readme, '### Para atualizar depois');
-  const words = norm(prose(body));
+test('README.md: moving to a newer version says where new versions show up, to drop the old clone, paste again, record the version in Claude Code and which folders can go', () => {
+  const words = norm(section(readme, '## Para atualizar depois'));
+  assert.match(words, /As versões novas aparecem nas Releases do repositório e no \[CHANGELOG\]\(CHANGELOG\.md\)/);
   assert.match(words, /apague a pasta `brain-kit` que a primeira linha baixou, se ela ainda existir \(senão o trecho reaproveita essa cópia velha e instala a versão velha\)/);
+  assert.ok(words.includes(`\`${UPDATE_BLOCK}\``));
   assert.match(words, /As pastas das versões antigas em `~\/\.local\/share\/brain-kit\/` não são mais usadas e podem ser apagadas; a mais nova não/);
-  assert.deepEqual(fencedBlocks(body), [UPDATE_BLOCK]);
 });
 
-test('README.md: "Se travar" gives the five likeliest traps and one secrets line, in at most 8 lines', () => {
-  const body = section(readme, '## Se travar').split('\n').filter((line) => line.trim() !== '');
-  assert.ok(body.length <= 8, `the section has ${body.length} lines`);
-  const list = body.filter((line) => line.startsWith('- '));
-  assert.equal(list.length, 6);
-  const traps = [/EACCES/, /`gh auth login`/, /`propose`.*commit.*`git push -u origin HEAD`/, /command not found.*Successfully installed.*bloco .*EACCES.* inteiro/, /`doctor`.*falha.*gh auth login --hostname github\.com/, /incident-response\.md/];
-  traps.forEach((pattern, index) => assert.match(list[index], pattern, `trap ${index + 1}`));
-  // What the old wording said and no longer holds: a configuration complaint for the propose
-  // trap, and "redo the PATH" for a kit that was never installed.
-  assert.doesNotMatch(list[2], /configura/);
-  assert.doesNotMatch(list[3], /refaça o PATH/);
-  assert.equal(list.filter((line) => line.includes('docs/incident-response.md')).length, 1, 'the incident page is linked once, for secrets only');
-  assert.match(list[5], /senha|chave/i);
-  assert.ok(list[0].includes('(#se-aparecer-eacces)'), 'the first trap links the EACCES block');
-});
-
-test('README.md: the cost is the plan the person already has, with one measured figure, its source and its date', () => {
-  const flat = norm(section(readme, '## Quanto custa'));
-  for (const word of [/grátis/, /MIT/, /plano/, /US\$ 0,78/, /US\$ 4,45/, /`last-run\.json`/, /01 e 02\/10\/2026/, /API/, /limites do plano/, /`curate\.budget_usd`/]) assert.match(flat, word);
-  // The cap the README names is the one init writes.
-  assert.equal(JSON.parse(read('lang/pt-BR/config.defaults.json')).curate.budget_usd, 5);
-  assert.match(flat, /teto de US\$ 5 por rodada/);
-});
-
-test('README.md: "Em que pé está" says the stage in a few lines and sends the phase table to the guide', () => {
+test('README.md: "Em que pé está" says the stage in a few lines, honest about who tested it, and sends the phase table to the guide', () => {
   const body = section(readme, '## Em que pé está');
   const flat = norm(body);
   assert.ok(body.split('\n').filter((line) => line.trim() !== '').length <= 7, 'a few lines');
-  for (const word of [/em construção/, /0\.0\.1/, /npm/]) assert.match(flat, word);
+  for (const word of [/em construção/, /0\.0\.1/, /npm/, /testados pelo projeto, mas ninguém de fora fez o caminho todo ainda/]) assert.match(flat, word);
   assert.ok(body.includes('(docs/guia.md#status)'));
   assert.ok(flat.includes(PT_LATEST_TAG));
 });
 
-test('README.md: "Quer mais?" links the complete guide, the docs that matter, the English guide, the CHANGELOG, CONTRIBUTING and the license', () => {
+test('README.md: "Quer mais?" links the complete guide, the step zero, the docs that matter, the English guide, the CHANGELOG, CONTRIBUTING and the license', () => {
   const body = section(readme, '## Quer mais?');
-  for (const target of ['docs/guia.md', 'docs/scheduling.md', 'docs/connectors.md', 'docs/security.md', 'docs/incident-response.md', 'docs/guide.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'LICENSE']) {
+  for (const target of ['docs/guia.md', STEP_ZERO, 'docs/scheduling.md', 'docs/connectors.md', 'docs/security.md', 'docs/incident-response.md', 'docs/guide.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'LICENSE']) {
     assert.ok(body.includes(`](${target})`), `no link to ${target}`);
   }
   assert.ok(body.includes('[English version of the complete guide](docs/guide.md)'));
@@ -557,7 +637,6 @@ test('README.md: in Portuguese a non-developer reads: one name for the push chec
 // the simplest official way for each, on a Mac and on Ubuntu, with what the screen shows and a
 // check command; every price it quotes was read on the official page on the date it gives.
 
-const STEP_ZERO = 'docs/preparar-o-computador.md';
 const stepZero = read(STEP_ZERO);
 
 test('docs/preparar-o-computador.md: the step zero ships, opens with the terminal and has a part for the Mac, one for Ubuntu and the two accounts', () => {
@@ -629,7 +708,8 @@ test('docs/guia.md: opens with what the kit is, sends a newcomer to the README, 
   const opening = guia.slice(0, guia.indexOf('\n## '));
   assert.match(norm(opening), /Open Knowledge Format \(OKF\) v0\.2/);
   assert.match(opening, /pull request/);
-  assert.ok(opening.includes('](../README.md)') && opening.includes('](guide.md)'));
+  assert.ok(opening.includes('](../README.md)') && opening.includes('](guide.md)') && opening.includes('](preparar-o-computador.md)'));
+  assert.match(norm(opening), /The complete guide in English/, 'the English file is a complete guide, not the same one');
   assert.doesNotMatch(opening, /\bfase\b|em construção/i, 'the opening is not the phase history');
   const status = section(guia, '## Status');
   for (const fact of ['flock', 'watermark import', '01/10/2026', '0.1.0']) assert.ok(status.includes(fact), `Status lost: ${fact}`);
@@ -647,9 +727,12 @@ test('docs/guia.md: what moved to the README is linked, not repeated', () => {
 
 test('docs/guia.md: the install details and the first vault in detail keep what the README leaves out', () => {
   const install = norm(section(guia, '## Instalando uma versão fixa'));
-  for (const fact of ['`npm i -g github:aleckyann/brain-kit#<tag>`', '`EALLOWGIT`', '`claude plugin marketplace add aleckyann/brain-kit`', 'O trecho já apaga o arquivo `.tgz` que ele mesmo criou', 'As seis primeiras linhas instalam o kit']) assert.ok(install.includes(fact), `the install details lost: ${fact}`);
+  for (const fact of ['`npm i -g github:aleckyann/brain-kit#<tag>`', '`EALLOWGIT`', '`claude plugin marketplace add aleckyann/brain-kit`', 'O trecho já apaga o arquivo `.tgz` que ele mesmo criou', 'As seis primeiras linhas instalam o kit', 'o marketplace é a lista de onde o Claude Code instala o plugin']) assert.ok(install.includes(fact), `the install details lost: ${fact}`);
   const first = norm(section(guia, '## O primeiro vault, em detalhe'));
   for (const fact of ['`--from-answers <arquivo>`', '`--yes`', 'o `init` não cria repositório nem remoto', 'a skill `curate-session` também faz', 'A skill `approve` faz o mesmo', 'São os três comandos que o próprio `init` imprime']) assert.ok(first.includes(fact), `the first vault in detail lost: ${fact}`);
+  // What fix round 1 of R1 took out of the README to keep it short, kept here.
+  for (const fact of ['num sistema em inglês, as palavras saem como `fail` e `warn`, e a linha termina em `0 fail`', '`brain-kit doctor --verbose` lista todas', 'um título `## AAAA-MM-DD` com a data de hoje e, embaixo, uma linha que começa com `**Captura**`', 'Sem o `--push`, o remoto']) assert.ok(first.includes(fact), `the first vault in detail lost: ${fact}`);
+  assert.match(norm(section(guia, '## O que funciona hoje')), /`~\/\.local\/state\/brain-kit\/`, onde ficam também as marcas de leitura e os logs das rodadas/);
 });
 
 test('docs/guia.md: the sections are in order: install, first vault, second machine, the repository, the commands', () => {

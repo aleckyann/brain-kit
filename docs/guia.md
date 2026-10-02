@@ -11,8 +11,9 @@ repositório, cada comando, o curador agendado, a agenda e as notas de reunião,
 privacidade, o plugin, a segurança e em que pé está o projeto. Quem está chegando começa pelo
 [README](../README.md): o que você precisa, o passo a passo até o primeiro pull request e o que
 fazer se travar estão lá, e não se repetem aqui. As palavras técnicas estão explicadas em
-[Palavras que você vai ver](../README.md#palavras-que-você-vai-ver), no README. The same guide
-in English: [guide.md](guide.md).
+[Palavras que você vai ver](../README.md#palavras-que-você-vai-ver), no README, e o que instalar
+antes está no [passo zero](preparar-o-computador.md). The complete guide in English:
+[guide.md](guide.md).
 
 ## Instalando uma versão fixa
 
@@ -34,7 +35,8 @@ nova estão no README: [passo 1](../README.md#passo-a-passo),
 Onde o npm aceita baixar direto do git, `npm i -g github:aleckyann/brain-kit#<tag>` instala o
 kit de uma tag, sozinho; onde ele recusa (com o erro `EALLOWGIT`), o trecho empacota a tag por
 você, instala o `.tgz` e guarda a cópia desempacotada para o plugin. `claude plugin marketplace add aleckyann/brain-kit`
-segue, em vez disso, o branch padrão do repositório. O CI de um vault pode fixar o kit do mesmo
+segue, em vez disso, o branch padrão do repositório (o marketplace é a lista de onde o Claude Code
+instala o plugin). O CI de um vault pode fixar o kit do mesmo
 jeito, baixando-o no commit da tag ao lado do vault.
 
 ## O primeiro vault, em detalhe
@@ -46,6 +48,8 @@ primeiro pull request. O que ele deixa de fora, passo por passo:
   mesma ordem.
 - **Passo 2.** O `propose` abre os pull requests dele com o `gh`, e o `doctor` falha para um
   `gh` sem login.
+- **Passo 3.** Como ainda não há vault, o `doctor` usa o idioma do sistema: num sistema em inglês,
+  as palavras saem como `fail` e `warn`, e a linha termina em `0 fail`.
 - **Passo 4.** O `init` precisa de um terminal para fazer as perguntas: se você tentar passar
   as respostas por outro comando, ele recusa sem escrever nada. Onde não há terminal,
   `--from-answers <arquivo>` lê as respostas de um arquivo JSON e `--yes` aceita todos os
@@ -57,7 +61,9 @@ primeiro pull request. O que ele deixa de fora, passo por passo:
   nele e o `propose` não consegue funcionar. O push roda a trava de push do vault
   (`validate`, `lint` e uma busca por senhas e chaves), então um vault que falhe neles não é
   publicado.
-- **Passo 7.** As linhas `aviso` que estão bem neste ponto são as do curador agendado:
+- **Passo 7.** A saída mostra só os avisos e as falhas, com a contagem das linhas `ok`;
+  `brain-kit doctor --verbose` lista todas. As linhas `aviso` que estão bem neste ponto são as do
+  curador agendado:
   `watermark` (o último dia lido), `last-run` (a última rodada), `schedule` (o agendamento),
   `notify` (o comando de notificação) e `briefing`. O [docs/scheduling.md](scheduling.md)
   trata disso quando você quiser que uma rodada rode sozinha, num horário. Uma `falha` diz o
@@ -65,6 +71,9 @@ primeiro pull request. O que ele deixa de fora, passo por passo:
 - **Passo 8.** Com o plugin instalado, as nove skills e os hooks `Stop` e `SessionStart` dele
   funcionam na pasta do vault; [O plugin do Claude Code](#o-plugin-do-claude-code) diz o que
   cada um faz.
+- **Passo 9.** Para escrever a entrada você mesmo, acrescente em `memoria/log.md` (`memory/log.md`
+  num vault em inglês) um título `## AAAA-MM-DD` com a data de hoje e, embaixo, uma linha que
+  começa com `**Captura**` (`**Capture**` num vault em inglês).
 - **Passo 10.** O que o hook `Stop` pede ao Claude (validar, rodar o lint e propor) a skill
   `curate-session` também faz quando pedida. `--only` nomeia exatamente os arquivos a propor,
   e o `propose` nunca mexe no seu branch nem nos seus arquivos. O `--dry` recusa o que a
@@ -201,8 +210,9 @@ brain-kit schedule install --job briefing caminho/do/vault
 O `init` cria um vault novo num diretório vazio ou novo, em inglês ou português: o
 esqueleto, a configuração, um `.gitignore`, a trava de push (`.githooks/pre-push`, com o
 `core.hooksPath` apontando para ele), um manifesto do que o kit escreveu, um repositório
-git, e o `machine.json` num diretório de estado fora do vault. Ele faz uma pergunta por
-vez, o que exige um terminal; `--yes` (todos os padrões, listados) ou
+git, e o `machine.json` num diretório de estado fora do vault (por padrão em
+`~/.local/state/brain-kit/`, onde ficam também as marcas de leitura e os logs das rodadas). Ele
+faz uma pergunta por vez, o que exige um terminal; `--yes` (todos os padrões, listados) ou
 `--from-answers <arquivo>` (um objeto JSON) respondem por você onde não há um, e ele nunca
 faz o primeiro commit a menos que isso seja pedido.
 

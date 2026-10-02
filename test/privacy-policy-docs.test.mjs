@@ -157,24 +157,43 @@ for (const [lang, spec] of Object.entries(GUIDES)) {
   });
 }
 
-// The front door, README.md, says it in a few lines and sends a person to the guide's section.
-test('README.md: privacy in a few lines: everything is saved by default, how to limit it, the private repository, and the law', () => {
+// The front door, README.md, says it before the install (fix round 1 of R1): everything is saved by
+// default, the three levels in Portuguese with a three-line example, a way to change it without
+// editing the file, that it is an instruction and not a guarantee, and the law in short sentences.
+test('README.md: privacy before the install: the default, the three levels with an example, how to change it without editing JSON, what it is not, and the law', () => {
   const text = read('README.md');
+  const lines = text.split('\n');
+  assert.ok(lines.indexOf('## Privacidade') < lines.indexOf('## O que você precisa'), 'privacy is read before the install');
   const body = section(text, '## Privacidade');
   const flat = norm(body);
-  // Four sentences and the legal one, against the fourteen lines and the example of the guide's section.
-  assert.ok(body.split('\n').filter((line) => line.trim() !== '').length <= 10, 'a few lines');
-  assert.match(flat, /Por padrão, o curador guarda tudo o que as suas sessões, a agenda e as notas de reunião ensinam ao vault, inclusive informação pessoal e sensível/);
+  assert.ok(body.split('\n').filter((line) => line.trim() !== '').length <= 24, 'a short section');
+  assert.match(flat, /Por padrão, o curador guarda tudo o que as suas conversas, a agenda e as notas de reunião ensinam ao vault, inclusive informação pessoal e sensível/);
   assert.match(flat, /a sua e a de outras pessoas/);
-  assert.match(flat, /precisa continuar privado/);
-  assert.match(flat, /ajuste `privacy\.sensitive` no `brain-kit\.config\.json`/);
-  assert.ok(body.includes(`(docs/guia.md#privacidade-o-que-o-curador-guarda)`), 'the full section is in the guide');
+  assert.match(flat, /precisa continuar privado: só você e quem você convidar o veem/);
+  assert.match(flat, /você \(`owner`\), quem já tem nota no vault \(`people`\) e todas as outras pessoas \(`outsiders`\)/);
+  assert.match(flat, /`save` \(registra normalmente\), `summary` \(registra que o assunto apareceu e o que foi decidido, sem os detalhes íntimos\) e `skip` \(deixa de fora\)/);
+  const blocks = fenced(body);
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].info, 'json');
+  assert.equal(blocks[0].text.split('\n').length, 3, 'a three-line example');
+  const { sensitive } = JSON.parse(`{${blocks[0].text}}`).privacy;
+  assert.deepEqual(Object.keys(sensitive).sort(), [...PRIVACY_AUDIENCES].sort());
+  assert.deepEqual(Object.values(sensitive).sort(), [...PRIVACY_LEVELS].sort(), 'each level once');
+  // Changing it without editing JSON: a session in the vault edits the file, and the Stop hook
+  // turns the change into a pull request like any other.
+  assert.match(flat, /Não precisa editar o arquivo você mesmo: dentro do vault, peça ao Claude Code/);
+  assert.match(flat, /a mudança vira um pull request como qualquer outra/);
+  // The review of R1, m1.
+  assert.match(flat, /É uma instrução ao curador, não uma garantia: você confere no pull request o que ele escreveu/);
+  assert.ok(body.includes('(docs/guia.md#privacidade-o-que-o-curador-guarda)'), 'the full section is in the guide');
   assert.ok(read('docs/guia.md').split('\n').includes(GUIDES['pt-BR'].heading), 'which is there');
-  // The legal sentence the guide keeps, word for word (fix round 1 of 0.0.10, M2).
-  const law = /Para leis de privacidade como a LGPD e o GDPR, o que o vault guarda sobre outras pessoas é dado pessoal, e os dados sobre a saúde, a vida sexual, a convicção religiosa ou a opinião política delas, entre outras categorias que essas leis listam, são dados pessoais sensíveis; como dono do vault, é você quem responde por guardá-los, então registre dos outros o que você tem motivo para guardar\./;
-  assert.match(flat, law);
-  assert.match(norm(section(read('docs/guia.md'), GUIDES['pt-BR'].heading)), law);
-  assert.equal(fenced(body).length, 0, 'the example of each level is the guide\'s');
+  // The law, in short sentences; the guide keeps the long one, word for word.
+  const law = 'Pela LGPD, o que você anota sobre outras pessoas é dado pessoal. Saúde, religião, vida sexual e opinião política, entre outros, são dados sensíveis. Quem responde por eles é você, o dono do vault: anote dos outros só o que tem motivo para guardar.';
+  assert.ok(flat.includes(law), 'the legal remark');
+  for (const sentence of law.split(/(?<=\.) /)) assert.ok(sentence.split(' ').length <= 22, `a long sentence: ${sentence}`);
+  assert.match(norm(section(read('docs/guia.md'), GUIDES['pt-BR'].heading)), /Para leis de privacidade como a LGPD e o GDPR, o que o vault guarda sobre outras pessoas é dado pessoal/);
+  // Whether Anthropic may train on the conversations is the person's choice, by the official page.
+  assert.ok(body.includes('(https://code.claude.com/docs/en/data-usage)'));
 });
 
 const TEMPLATES = {
