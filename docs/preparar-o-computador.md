@@ -1,15 +1,32 @@
 # Preparar o computador
 
-O passo zero do [README](../README.md): o que instalar antes do passo a passo, no Mac e no
-Linux (Ubuntu), pelo caminho oficial mais simples de cada programa. Para cada um: o que ele é,
-como instalar, o que aparece na tela e como conferir. Se a conferência já mostrar um número,
-o programa já está aí: pule para o próximo.
+O passo zero do [README](../README.md): o que ter antes do passo a passo, no Mac e no Linux
+(Ubuntu), pelo caminho oficial mais simples de cada programa. Primeiro as duas contas, depois o
+terminal e os programas. Para cada programa: o que ele é, como instalar, o que aparece na tela e
+como conferir. Se a conferência já mostrar um número, o programa já está aí: pule para o próximo.
 
 Tudo aqui foi conferido nas páginas oficiais em 02/10/2026. Elas são em inglês e mudam com o
 tempo; quando a tela for diferente do que está aqui, vale a página oficial. Não damos estimativa
 de tempo para esta parte: depende da sua internet e do que o computador já tem.
 
-## Primeiro, o terminal
+## Antes de tudo, as duas contas
+
+As contas se criam no navegador, antes de instalar qualquer coisa.
+
+- **GitHub.** Crie a conta em [github.com/signup](https://github.com/signup). Em 02/10/2026, a
+  [página de preços do GitHub](https://github.com/pricing) dizia que o plano Free custa US$ 0 e
+  tem repositórios públicos e privados sem limite.
+- **Claude.** Para começar, o Pro; os outros planos pagos também servem. O Claude Code entra com a
+  mesma conta do site e do aplicativo do Claude, mas não no plano grátis: segundo a
+  [página do Claude Code](https://code.claude.com/docs/en/setup), ele precisa de um plano Pro, Max,
+  Team ou Enterprise, ou de uma conta do Console (a de API, paga por uso). Em 02/10/2026, a
+  [página de preços](https://claude.com/pricing) dizia: Pro, US$ 20 por mês, ou US$ 200 por ano
+  cobrados de uma vez (que a página apresenta como US$ 17 por mês); Max, a partir de US$ 100 por
+  mês; os preços sem impostos; e o Claude Code divide os mesmos limites de uso do resto do plano.
+  A assinatura se faz na própria página de preços. O que isso quer dizer para o kit está em
+  [Quanto custa](../README.md#quanto-custa).
+
+## O terminal
 
 O terminal é a janela onde você digita comandos (o [guia oficial do Claude Code para quem nunca
 usou um](https://code.claude.com/docs/en/terminal-guide) mostra o mesmo, em inglês).
@@ -17,9 +34,11 @@ usou um](https://code.claude.com/docs/en/terminal-guide) mostra o mesmo, em ingl
 - **No Mac:** aperte Command + espaço, digite `Terminal` e aperte Enter.
 - **No Ubuntu:** aperte Ctrl + Alt + T, ou procure "Terminal" nos aplicativos.
 
-Para colar um comando: Command + V no Mac, Ctrl + Shift + V no Ubuntu. Depois, aperte Enter.
-Quando um comando pedir a senha do computador, digite e aperte Enter: nada aparece enquanto você
-digita, e é assim mesmo.
+Para copiar um comando desta página, use o botão de copiar que aparece no canto de cada bloco. Para
+colar: Command + V no Mac, Ctrl + Shift + V no Ubuntu. Depois, aperte Enter. Quando um comando
+pedir a senha do computador, digite e aperte Enter: nada aparece enquanto você digita, e é assim
+mesmo. Quando esta página disser "abra um terminal novo", é uma janela nova: Command + N no Mac,
+Ctrl + Alt + T no Ubuntu.
 
 ## No Mac
 
@@ -48,8 +67,7 @@ Deu certo se aparecer `git version` e um número.
 
 O Node.js é o motor que roda o kit. Em [nodejs.org](https://nodejs.org/en/download), baixe o
 instalador para macOS (o arquivo `.pkg`) da versão marcada LTS, a de suporte longo: em
-02/10/2026 era a 24. Abra o arquivo e siga o instalador. Depois, feche o Terminal, abra outro e
-confira:
+02/10/2026 era a 24. Abra o arquivo e siga o instalador. Depois, abra um terminal novo e confira:
 
 ```bash
 node --version
@@ -69,22 +87,23 @@ npm config set prefix ~/.local
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 ```
 
-Feche o Terminal, abra outro e confira:
+Abra um terminal novo e confira:
 
 ```bash
 npm config get prefix
 ```
 
-Deu certo se aparecer o caminho da sua pasta de usuário terminando em `.local`. Essa mesma pasta
-serve ao Claude Code, no item 5.
+Deu certo se aparecer o caminho da sua pasta de usuário terminando em `.local`, algo como
+`/Users/seunome/.local`. Essa mesma pasta serve ao Claude Code, no item 5.
 
 ### 4. gh
 
 O `gh` é o GitHub no terminal: o kit abre os pull requests com ele. Na
 [página de versões do gh](https://github.com/cli/cli/releases/latest), em Assets, baixe o
-arquivo que termina em `_macOS_universal.pkg`, abra e siga o instalador. (Quem já usa o
-Homebrew pode rodar `brew install gh`, como mostra o [cli.github.com](https://cli.github.com).)
-Feche o Terminal, abra outro e confira:
+arquivo que termina em `_macOS_universal.pkg` (em 02/10/2026, o `gh_2.102.0_macOS_universal.pkg`;
+o número muda a cada versão). Ele abre o instalador do macOS: siga as telas até o fim, com a senha
+do computador quando ele pedir. (Quem já usa o Homebrew pode rodar `brew install gh`, como mostra o
+[cli.github.com](https://cli.github.com).) Abra um terminal novo e confira:
 
 ```bash
 gh --version
@@ -101,16 +120,17 @@ O Claude Code é o Claude que roda no terminal. O [instalador oficial](https://c
 curl -fsSL https://claude.ai/install.sh | bash
 ```
 
-Passa bastante texto pela tela; no fim aparece `Installation complete!`. Feche o Terminal, abra
-outro e confira:
+Passa bastante texto pela tela; no fim aparecem `Claude Code successfully installed!` e, na última
+linha, `Installation complete!`. Abra um terminal novo e confira:
 
 ```bash
 claude --version
 ```
 
 Deu certo se aparecer um número seguido de `(Claude Code)`. Se aparecer `command not found`,
-faltou o item 3. Para entrar na sua conta do Claude, rode `claude`: ele abre o navegador para
-você entrar. Para sair do Claude Code, digite `exit` (ou aperte Ctrl + D duas vezes).
+faltou o item 3. Para entrar na sua conta do Claude, rode `claude`: na primeira vez ele pede o
+login e abre o navegador; siga as instruções da tela. Para sair do Claude Code, digite `exit` (ou
+aperte Ctrl + D duas vezes).
 
 ## No Ubuntu
 
@@ -139,8 +159,8 @@ Deu certo se aparecer `git version` e um número.
 
 Em [nodejs.org](https://nodejs.org/en/download), escolha Linux, a versão marcada LTS (em
 02/10/2026, a 24) e o método nvm: a página mostra algumas linhas para colar, uma de cada vez.
-Com o nvm, o erro `EACCES` do passo 1 do README não acontece. Depois, feche o terminal, abra
-outro e confira:
+Com o nvm, o erro `EACCES` do passo 1 do README não acontece. Depois, abra um terminal novo e
+confira:
 
 ```bash
 node --version
@@ -167,29 +187,17 @@ O mesmo [instalador oficial](https://code.claude.com/docs/en/setup) do Mac:
 curl -fsSL https://claude.ai/install.sh | bash
 ```
 
-No fim aparece `Installation complete!`. Feche o terminal, abra outro e confira com
-`claude --version`: deu certo se aparecer um número seguido de `(Claude Code)`. Se aparecer
-`command not found`, ponha a pasta do Claude Code no PATH e abra outro terminal:
+No fim aparecem `Claude Code successfully installed!` e, na última linha, `Installation complete!`.
+Abra um terminal novo e confira com `claude --version`: deu certo se aparecer um número seguido de
+`(Claude Code)`. Se aparecer `command not found`, ponha a pasta do Claude Code no PATH e abra um
+terminal novo:
 
 ```bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 ```
 
-Para entrar na sua conta do Claude, rode `claude`: ele abre o navegador para você entrar. Para
-sair, digite `exit`.
-
-## As duas contas
-
-- **GitHub.** Crie a conta em [github.com/signup](https://github.com/signup). Em 02/10/2026, a
-  [página de preços do GitHub](https://github.com/pricing) dizia que o plano Free custa US$ 0 e
-  tem repositórios públicos e privados sem limite.
-- **Claude.** O Claude Code entra com a mesma conta do site e do aplicativo do Claude, mas não
-  no plano grátis: segundo a [página do Claude Code](https://code.claude.com/docs/en/setup), ele
-  precisa de um plano Pro, Max, Team ou Enterprise, ou de uma conta do Console (a de API, paga
-  por uso). Em 02/10/2026, a [página de preços](https://claude.com/pricing)
-  dizia: Pro, US$ 20 por mês (ou US$ 17 por mês no plano anual, com US$ 200 cobrados de uma vez);
-  Max, a partir de US$ 100 por mês; e o Claude Code divide os mesmos limites de uso do resto do
-  plano. O que isso quer dizer para o kit está em [Quanto custa](../README.md#quanto-custa).
+Para entrar na sua conta do Claude, rode `claude`: na primeira vez ele pede o login e abre o
+navegador. Para sair, digite `exit`.
 
 ## Tudo pronto?
 

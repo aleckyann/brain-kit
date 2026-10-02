@@ -798,15 +798,18 @@ test('README.md: in Portuguese a non-developer reads: one name for the push chec
 // The reader test of R1 (a Brazilian non-developer on a Mac) stopped before step 1: nothing said
 // how to open the terminal or install Node, git, gh and Claude Code (fix round 1). The page gives
 // the simplest official way for each, on a Mac and on Ubuntu, with what the screen shows and a
-// check command; every price it quotes was read on the official page on the date it gives.
+// check command; every price it quotes was read on the official page on the date it gives. Since
+// fix round 2 the accounts come first (the second reader would have reached the login with no
+// plan), and the page says how to copy, what "a new terminal" is, and what the screen shows.
 
 const stepZero = read(STEP_ZERO);
 
-test('docs/preparar-o-computador.md: the step zero ships, opens with the terminal and has a part for the Mac, one for Ubuntu and the two accounts', () => {
+test('docs/preparar-o-computador.md: the step zero ships, opens with the two accounts and the terminal, and has a part for the Mac and one for Ubuntu', () => {
   assert.ok(pkg.files.includes(STEP_ZERO), 'package.json files does not list the step zero');
-  assert.deepEqual(headings(stepZero, 2), ['## Primeiro, o terminal', '## No Mac', '## No Ubuntu', '## As duas contas', '## Tudo pronto?']);
-  const terminal = norm(section(stepZero, '## Primeiro, o terminal'));
-  for (const words of ['Command + espaço', '`Terminal`', 'Ctrl + Alt + T', 'Command + V', 'Ctrl + Shift + V', 'nada aparece enquanto você digita']) assert.ok(terminal.includes(words), `how to use the terminal lacks: ${words}`);
+  assert.deepEqual(headings(stepZero, 2), ['## Antes de tudo, as duas contas', '## O terminal', '## No Mac', '## No Ubuntu', '## Tudo pronto?']);
+  const terminal = norm(section(stepZero, '## O terminal'));
+  for (const words of ['Command + espaço', '`Terminal`', 'Ctrl + Alt + T', 'use o botão de copiar que aparece no canto de cada bloco', 'Command + V', 'Ctrl + Shift + V', 'nada aparece enquanto você digita', '"abra um terminal novo", é uma janela nova: Command + N no Mac']) assert.ok(terminal.includes(words), `how to use the terminal lacks: ${words}`);
+  assert.doesNotMatch(norm(stepZero), /feche o Terminal, abra outro|Feche o terminal, abra outro/, 'one way to say it: a new terminal');
   assert.deepEqual(brokenLinks(STEP_ZERO), []);
 });
 
@@ -818,15 +821,19 @@ test('docs/preparar-o-computador.md: each item says how to install it and how to
     for (const check of ['git --version', 'node --version', 'gh --version']) assert.ok(blocks.includes(check), `${part}: no block runs ${check}`);
     assert.ok(text.includes('claude --version'), `${part}: no claude --version`);
     assert.ok(blocks.includes('curl -fsSL https://claude.ai/install.sh | bash'), `${part}: the official Claude Code installer`);
-    // The official install.sh redirects to a bootstrap script that runs under `set -e` and ends
-    // with this line, so it only shows when the install worked (read on 02/10/2026).
-    assert.ok(text.includes('`Installation complete!`'), `${part}: what the installer prints last`);
-    assert.ok(!text.includes('successfully installed'), `${part}: a line read on no official page`);
+    // What the official terminal guide says the install ends with, then the last line of the
+    // bootstrap script install.sh redirects to (it runs under `set -e`, so the line shows only
+    // when the install worked). Both read on 02/10/2026.
+    assert.ok(norm(text).includes('aparecem `Claude Code successfully installed!` e, na última linha, `Installation complete!`'), `${part}: what the installer prints at the end`);
     for (const shows of ['`git version`', '`gh version`', '`(Claude Code)`']) assert.ok(text.includes(shows), `${part}: what the screen shows: ${shows}`);
+    assert.match(norm(text), /na primeira vez ele pede o login e abre o navegador/, `${part}: the first run of claude`);
   }
   assert.ok(fencedBlocks(mac).includes('xcode-select --install'), 'git on the Mac, the way git-scm.com gives');
   assert.ok(fencedBlocks(ubuntu).includes('sudo apt update\nsudo apt install git curl'), 'git and curl on Ubuntu');
-  assert.ok(mac.includes('_macOS_universal.pkg'), 'gh on the Mac from its releases');
+  // gh on the Mac from its releases, by the ending of the file name and a whole dated example.
+  assert.ok(mac.includes('arquivo que termina em `_macOS_universal.pkg` (em 02/10/2026, o `gh_2.102.0_macOS_universal.pkg`'));
+  assert.match(norm(mac), /Ele abre o instalador do macOS: siga as telas até o fim/);
+  assert.match(norm(mac), /algo como `\/Users\/seunome\/\.local`/);
   assert.deepEqual(fencedBlocks(section(stepZero, '## Tudo pronto?')), ['node --version\ngit --version\ngh --version\nclaude --version']);
   assert.ok(section(stepZero, '## Tudo pronto?').includes('(../README.md#passo-a-passo)'));
 });
@@ -856,10 +863,14 @@ test('docs/preparar-o-computador.md: the sources are the official pages, every p
     'https://github.com/pricing',
     'https://claude.com/pricing',
   ]) assert.ok(stepZero.includes(`](${url})`), `no link to ${url}`);
-  const accounts = norm(section(stepZero, '## As duas contas'));
+  const accounts = norm(section(stepZero, '## Antes de tudo, as duas contas'));
+  assert.match(accounts, /As contas se criam no navegador, antes de instalar qualquer coisa/);
   assert.match(accounts, /Em 02\/10\/2026, a \[página de preços do GitHub\]\(https:\/\/github\.com\/pricing\) dizia que o plano Free custa US\$ 0 e tem repositórios públicos e privados sem limite/);
+  // Which plan to take, first, then why the free one does not serve.
+  assert.match(accounts, /\*\*Claude\.\*\* Para começar, o Pro; os outros planos pagos também servem\./);
   assert.match(accounts, /mas não no plano grátis: segundo a \[página do Claude Code\]\(https:\/\/code\.claude\.com\/docs\/en\/setup\), ele precisa de um plano Pro, Max, Team ou Enterprise, ou de uma conta do Console/);
-  assert.match(accounts, /Em 02\/10\/2026, a \[página de preços\]\(https:\/\/claude\.com\/pricing\) dizia: Pro, US\$ 20 por mês \(ou US\$ 17 por mês no plano anual, com US\$ 200 cobrados de uma vez\); Max, a partir de US\$ 100 por mês/);
+  // The page's own figures: the annual plan is one charge of US$ 200, shown as US$ 17 a month.
+  assert.match(accounts, /Em 02\/10\/2026, a \[página de preços\]\(https:\/\/claude\.com\/pricing\) dizia: Pro, US\$ 20 por mês, ou US\$ 200 por ano cobrados de uma vez \(que a página apresenta como US\$ 17 por mês\); Max, a partir de US\$ 100 por mês; os preços sem impostos/);
   assert.match(accounts, /limites de uso/);
   // How long installing takes depends on the person's network and machine: nothing to source.
   assert.doesNotMatch(norm(prose(stepZero)), /\b\d+\s*(?:minutos?|min|horas?)\b/);
