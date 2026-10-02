@@ -175,9 +175,10 @@ function writeOverlay(root, text) {
 }
 
 test('prompt --check warns, and still passes, about a vault prompt whose privacy rule is the old fixed text, naming the file and the fix', async () => {
+  // Fix round 1, m2: the fix puts both paragraphs of the new rule in place of the old one.
   const words = {
-    en: /warning: the vault's curate prompt .*curate\.md carries the privacy rule as fixed text \(<!-- rule:third-party-privacy --> without \{\{privacy_policy\}\}\): privacy\.sensitive and privacy\.never_topics never reach its rounds\. Copy the paragraph under that marker from the language pack's prompt \(.*lang[/\\]en[/\\]prompts[/\\]curate\.md\) into it, or delete it to run the pack's prompt\./,
-    'pt-BR': /aviso: o prompt de curadoria do vault .*curate\.md traz a regra de privacidade como texto fixo \(<!-- rule:third-party-privacy --> sem \{\{privacy_policy\}\}\): privacy\.sensitive e privacy\.never_topics nunca chegam às rodadas dele\. Copie para ele o parágrafo dessa marca no prompt do pacote de idioma \(.*lang[/\\]pt-BR[/\\]prompts[/\\]curate\.md\), ou apague o arquivo para rodar o prompt do pacote\./,
+    en: /warning: the vault's curate prompt .*curate\.md carries the privacy rule as fixed text \(<!-- rule:third-party-privacy --> without \{\{privacy_policy\}\}\): privacy\.sensitive and privacy\.never_topics never reach its rounds\. Replace the old paragraph under that marker with the two paragraphs the language pack's prompt \(.*lang[/\\]en[/\\]prompts[/\\]curate\.md\) has there, or delete the file to run the pack's prompt\./,
+    'pt-BR': /aviso: o prompt de curadoria do vault .*curate\.md traz a regra de privacidade como texto fixo \(<!-- rule:third-party-privacy --> sem \{\{privacy_policy\}\}\): privacy\.sensitive e privacy\.never_topics nunca chegam às rodadas dele\. Troque o parágrafo antigo sob essa marca pelos dois parágrafos que o prompt do pacote de idioma \(.*lang[/\\]pt-BR[/\\]prompts[/\\]curate\.md\) tem ali, ou apague o arquivo para rodar o prompt do pacote\./,
   };
   for (const lang of LANGS) {
     const root = vaultWith(lang);
@@ -191,6 +192,32 @@ test('prompt --check warns, and still passes, about a vault prompt whose privacy
     const clean = await check(['--check', '--vault', fresh], { lang });
     assert.equal(clean.code, EXIT.OK);
     assert.equal(clean.err, '', `${lang}: ${clean.err}`);
+  }
+});
+
+// Fix round 1, P2 and m10.
+test('prompt --check warns about a vault prompt that carries the placeholder beside the old fixed sentence, and about a briefing prompt without the placeholder', async () => {
+  for (const lang of LANGS) {
+    const both = vaultWith(lang);
+    writeOverlay(both, oldTemplate(lang).replace('<!-- rule:third-party-privacy -->\n', '<!-- rule:third-party-privacy -->\n{{privacy_policy}}\n\n'));
+    const r = await check(['--check', '--vault', both], { lang });
+    assert.equal(r.code, EXIT.OK, r.out + r.err);
+    assert.match(r.err, lang === 'en'
+      ? /warning: the vault's curate prompt .*curate\.md carries \{\{privacy_policy\}\} and still the old fixed privacy sentence: the two rules contradict\./
+      : /aviso: o prompt de curadoria do vault .*curate\.md traz \{\{privacy_policy\}\} e ainda a frase fixa antiga de privacidade: as duas regras se contradizem\./);
+
+    const briefing = vaultWith(lang);
+    const pack = readFileSync(join(KIT_ROOT, 'lang', lang, 'prompts', 'briefing.md'), 'utf8');
+    mkdirSync(join(briefing, '.brain-kit', 'prompts'), { recursive: true });
+    writeFileSync(join(briefing, '.brain-kit', 'prompts', 'briefing.md'), pack.replace(/\n\{\{privacy_policy\}\}\n/, '\n'));
+    const b = await check(['--check', '--vault', briefing], { lang });
+    assert.equal(b.code, EXIT.OK, b.out + b.err);
+    assert.match(b.err, lang === 'en'
+      ? /warning: the vault's briefing prompt .*briefing\.md does not use \{\{privacy_policy\}\}: privacy\.sensitive and privacy\.never_topics do not reach what the briefing records\./
+      : /aviso: o prompt de briefing do vault .*briefing\.md não usa \{\{privacy_policy\}\}: privacy\.sensitive e privacy\.never_topics não chegam ao que o briefing registra\./);
+    writeFileSync(join(briefing, '.brain-kit', 'prompts', 'briefing.md'), pack);
+    const clean = await check(['--check', '--vault', briefing], { lang });
+    assert.doesNotMatch(clean.err, /privacy_policy/, `${lang}: ${clean.err}`);
   }
 });
 

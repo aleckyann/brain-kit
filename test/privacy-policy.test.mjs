@@ -18,6 +18,7 @@ import {
   DEFAULT_PRIVACY_LEVEL, PRIVACY_AUDIENCES, PRIVACY_LEVELS, PRIVACY_PLACEHOLDER, isDefaultPrivacy, neverTopics, overlayPrivacyRule, privacyLevels,
   privacyLine, privacyLineMessage, privacyProblems, renderPrivacyPolicy,
 } from '../src/privacy-policy.mjs';
+import { oldTemplate } from './helpers/privacy-old-rule.mjs';
 
 const LANGS = ['pt-BR', 'en'];
 const fixture = () => JSON.parse(readFileSync(join(KIT_ROOT, 'test', 'fixtures', 'config', 'valid.json'), 'utf8'));
@@ -264,4 +265,16 @@ test('a prompt of the vault\'s own carries the policy, a fixed rule (the marker 
   assert.equal(overlayPrivacyRule('x\n<!-- rule:third-party-privacy -->\nNever record anything about the private life of someone other than the owner.\n'), 'fixed');
   assert.equal(overlayPrivacyRule('x\n'), 'none');
   assert.equal(overlayPrivacyRule('x {{privacy_policy }} <!-- rule:third-party-privacy -->'), 'fixed', 'only the placeholder as the kit writes it counts');
+});
+
+// Fix round 1, P2: the placeholder pasted in, and the old fixed sentence kept
+// beside it, is two rules that contradict, in either language.
+test('a prompt of the vault\'s own that carries the placeholder and still the old fixed sentence is both, in either language', () => {
+  for (const lang of ['en', 'pt-BR']) {
+    const both = oldTemplate(lang).replace('<!-- rule:third-party-privacy -->\n', '<!-- rule:third-party-privacy -->\n{{privacy_policy}}\n\n');
+    assert.equal(overlayPrivacyRule(both), 'both', lang);
+    assert.equal(overlayPrivacyRule(both.normalize('NFD')), 'both', `${lang}: whatever the encoding of its accents`);
+    assert.equal(overlayPrivacyRule(oldTemplate(lang)), 'fixed', lang);
+  }
+  assert.equal(overlayPrivacyRule('{{privacy_policy}}\nNever record anything about the private life of someone other than the owner.'), 'both');
 });

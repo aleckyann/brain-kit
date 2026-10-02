@@ -200,12 +200,22 @@ export function privacyLine(config, t) {
   });
 }
 
+// Words only the fixed sentence of before 02/10/2026 held, in either pack:
+// a prompt that still holds them still carries that rule. The Portuguese is
+// spelt with escapes, so this file stays ASCII.
+const OLD_RULE_WORDS = Object.freeze([
+  'private life of someone other than the owner',
+  'vida particular de algu\u00e9m que n\u00e3o seja o dono',
+]);
+
 // Whether a prompt the vault wrote itself carries the policy: 'policy' when it
 // holds the placeholder as the kit writes it, 'fixed' when it holds the rule's
 // marker without it (a copy of the template of before 02/10/2026, or an edit
-// of one, whose privacy rule is fixed text the setting never reaches), 'none'
-// when it holds neither.
+// of one, whose privacy rule is fixed text the setting never reaches), 'both'
+// when it holds the placeholder and still the old fixed sentence (two rules
+// that contradict, fix round 1), 'none' when it holds neither.
 export function overlayPrivacyRule(text) {
-  if (text.includes(`{{${PRIVACY_PLACEHOLDER}}}`)) return 'policy';
+  const old = OLD_RULE_WORDS.some((words) => text.normalize('NFC').includes(words));
+  if (text.includes(`{{${PRIVACY_PLACEHOLDER}}}`)) return old ? 'both' : 'policy';
   return text.includes(`<!-- rule:${PRIVACY_RULE} -->`) ? 'fixed' : 'none';
 }

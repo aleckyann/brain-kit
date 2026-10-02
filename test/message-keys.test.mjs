@@ -181,6 +181,9 @@ function allSites() {
     ...extractRuleMessageSites(readSrc('src/briefing/questions.mjs'), 'src/briefing/questions.mjs'),
     // The privacy policy's line, as doctor renders it (02/10/2026).
     ...extractRuleMessageSites(readSrc('src/privacy-policy.mjs'), 'src/privacy-policy.mjs'),
+    // What the vault's own prompts do with that setting, as doctor reports it
+    // and update prints it (fix round 1).
+    ...extractRuleMessageSites(readSrc('src/commands/prompt.mjs'), 'src/commands/prompt.mjs'),
   ];
   const direct = [
     ...extractTranslatorCallSites(readSrc('src/cli.mjs'), 'src/cli.mjs'),

@@ -83,9 +83,9 @@ import { authorizationWhy, calendarsListedTwice } from '../sources/calendar-goog
 import { BLOCKED_BY_USER_RULES, chooseMode, MAX_TIMEOUT_MINUTES, offOnPurpose, offProblems, problemText, roundBudget, roundTimeoutMinutes, roundTurns, SECOND_DOOR, WAITING_FOR_CALENDAR } from '../commands/curate.mjs';
 // The prompt a round runs, found the way the round finds it, for the
 // privacy-policy check (02/10/2026).
-import { curatePromptSource, packCuratePrompt, promptOutsideVault, ruleMarker } from '../commands/prompt.mjs';
+import { overlayPrivacyFindings, overlayPrivacyMessage, promptOutsideVault } from '../commands/prompt.mjs';
 import {
-  PRIVACY_AUDIENCES, PRIVACY_LEVELS, PRIVACY_PLACEHOLDER, PRIVACY_RULE, overlayPrivacyRule, privacyLevels, privacyLineMessage, privacyProblems,
+  PRIVACY_AUDIENCES, PRIVACY_LEVELS, privacyLevels, privacyLineMessage, privacyProblems,
 } from '../privacy-policy.mjs';
 
 export const HOOKS_DIR = '.githooks';
@@ -1430,14 +1430,16 @@ function notifyCheck(ctx) {
 // whatever the levels: a limit the person set is a choice, not a problem. A
 // value the setting cannot use fails, one line each, in the report's
 // language, naming the values it takes: the schema refuses it too
-// (config-valid), but in a diagnostic of its own. And a vault's own curate
-// prompt that the setting never reaches warns, naming the file and the fix:
-// one holding the rule's marker without {{privacy_policy}} (a copy of the
-// template of before the setting, whose privacy rule is fixed text), or one
-// holding no privacy rule of the kit at all. The overlay is the person's
-// file: update never rewrites it, so the fix is to copy the rule from the
-// language pack's prompt, or to delete the overlay. A curate.prompt outside
-// the vault is never read here: the round refuses to run it.
+// (config-valid), but in a diagnostic of its own. And a vault's own prompt
+// that the setting does not reach as it should warns, one line each, naming
+// the file and the fix (src/commands/prompt.mjs, overlayPrivacyFindings): a
+// curate prompt holding the rule's marker without {{privacy_policy}} (a copy of
+// the template of before the setting, whose privacy rule is fixed text), one
+// holding the placeholder and still that old sentence, one holding no privacy
+// rule of the kit at all, and a briefing prompt without the placeholder (fix
+// round 1). An overlay is the person's file: update never rewrites it, so the
+// fix is to put the pack's paragraphs in it, or to delete it. A curate.prompt
+// outside the vault is never read here: the round refuses to run it.
 function privacyPolicy(ctx) {
   const id = 'privacy-policy';
   const read = ctx.config();
@@ -1451,24 +1453,8 @@ function privacyPolicy(ctx) {
   if (outside !== null) {
     return { id, status: 'warn', messageKey: 'doctor.privacy_policy.prompt_outside', params: { path: outside, file: ctx.configFile } };
   }
-  const { path, overlay } = curatePromptSource({ vaultRoot: ctx.root, config, lang: SUPPORTED_LANGS[0] });
-  if (overlay) {
-    let text;
-    try {
-      text = readFileSync(path, 'utf8');
-    } catch (error) {
-      return { id, status: 'warn', messageKey: 'doctor.privacy_policy.overlay_unreadable', params: { file: path, detail: error.code ?? error.message } };
-    }
-    const state = overlayPrivacyRule(text);
-    const placeholder = `{{${PRIVACY_PLACEHOLDER}}}`;
-    const template = packCuratePrompt(config);
-    if (state === 'fixed') {
-      return { id, status: 'warn', messageKey: 'doctor.privacy_policy.overlay_fixed', params: { file: path, rule: ruleMarker(PRIVACY_RULE), placeholder, template } };
-    }
-    if (state === 'none') {
-      return { id, status: 'warn', messageKey: 'doctor.privacy_policy.overlay_without', params: { file: path, rule: PRIVACY_RULE, placeholder, template } };
-    }
-  }
+  const findings = overlayPrivacyFindings(ctx.root, config);
+  if (findings.length > 0) return findings.map((finding) => ({ id, status: 'warn', ...overlayPrivacyMessage(finding, config) }));
   return { id, status: 'ok', messageKey: 'doctor.privacy_policy.ok', params: { policy: privacyLineMessage(config) } };
 }
 

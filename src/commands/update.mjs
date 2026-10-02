@@ -14,6 +14,7 @@ import {
   GITIGNORE_PATH, HOOK_PATH, TEMPLATE_HOOK, gitignoreText, isInside, isoStamp, listSkeleton, skeletonDir, stampGenerated, writeNew,
 } from '../init/skeleton.mjs';
 import { installGate } from '../init/gate.mjs';
+import { overlayPrivacyFindings, overlayPrivacyMessage } from './prompt.mjs';
 
 // brain-kit update [dir] [--check]
 // brain-kit update [dir] --accept <path>
@@ -454,6 +455,7 @@ export async function runUpdate(argv, io, t, {
       io.stdout.write(`${t('update.would_bump', { from: bump.from, to: running })}\n`);
       pending++;
     }
+    writeOverlayPrivacy(io, t, root, config);
     writeSummary(io, t, outcomes, true);
     if (pending > 0) {
       io.stdout.write(`${t('update.check_pending', { count: pending })}\n`);
@@ -530,10 +532,25 @@ export async function runUpdate(argv, io, t, {
       failed = true;
     }
   }
+  writeOverlayPrivacy(io, t, root, config);
   writeSummary(io, t, outcomes, false);
   if (failed) return EXIT.FAILURE;
   if (outcomes.some(({ outcome }) => ATTENTION.includes(outcome.kind))) return EXIT.DEGRADED;
   return EXIT.OK;
+}
+
+// A vault's own curate prompt is not a file update manages: it never reads or
+// writes it. But one that still carries the privacy rule of before 02/10/2026
+// as fixed text (alone, or beside the placeholder) keeps every round from the
+// vault's privacy setting, and an upgrade is when a person runs update, so it
+// says so in one line, the text doctor's privacy-policy gives (fix round 1,
+// m3). It changes no exit code: nothing here is update's to do.
+function writeOverlayPrivacy(io, t, root, config) {
+  for (const finding of overlayPrivacyFindings(root, config)) {
+    if (finding.section !== 'curate' || (finding.state !== 'fixed' && finding.state !== 'both')) continue;
+    const { messageKey, params } = overlayPrivacyMessage(finding, config);
+    io.stdout.write(`${t(messageKey, params)}\n`);
+  }
 }
 
 function writeSummary(io, t, outcomes, check) {

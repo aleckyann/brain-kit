@@ -108,9 +108,11 @@ for (const lang of LANGS) {
     assert.ok(c.message.includes(file), c.message);
     assert.ok(c.message.includes(template), c.message);
     assert.ok(c.message.includes('<!-- rule:third-party-privacy -->') && c.message.includes('{{privacy_policy}}'), c.message);
+    // Fix round 1, m2: the new rule is two paragraphs under the marker, and the
+    // fix says to put both in place of the old one, never to copy only the first.
     assert.match(c.message, lang === 'en'
-      ? /privacy\.sensitive and privacy\.never_topics do not apply to its rounds\. To take the new rule, copy the paragraph under that marker from the language pack's prompt/
-      : /privacy\.sensitive e privacy\.never_topics não valem para as rodadas dele\. Para adotar a regra nova, copie para ele o parágrafo dessa marca no prompt do pacote de idioma/);
+      ? /privacy\.sensitive and privacy\.never_topics do not apply to its rounds\. To take the new rule, replace the old paragraph under that marker with the two paragraphs the language pack's prompt, .*curate\.md, has there/
+      : /privacy\.sensitive e privacy\.never_topics não valem para as rodadas dele\. Para adotar a regra nova, troque o parágrafo antigo sob essa marca pelos dois parágrafos que o prompt do pacote de idioma, .*curate\.md, tem ali/);
     assert.match(c.message, lang === 'en' ? /brain-kit update never rewrites this file/ : /o brain-kit update nunca reescreve este arquivo/);
   });
 
@@ -119,12 +121,52 @@ for (const lang of LANGS) {
     const [warned] = results(none.report);
     assert.equal(warned.status, 'warn');
     assert.equal(warned.messageKey, 'doctor.privacy_policy.overlay_without');
+    assert.match(warned.message, lang === 'en' ? /its marker and the two paragraphs under it/ : /a marca dela e os dois parágrafos sob ela/);
     const pack = readFileSync(join(KIT_ROOT, 'lang', lang, 'prompts', 'curate.md'), 'utf8');
     const current = await doctor(vaultWith(lang, {}, pack));
     const [ok] = results(current.report);
     assert.equal(ok.status, 'ok', JSON.stringify(ok));
   });
+
+  // Fix round 1, P2: the placeholder pasted in beside the old fixed sentence.
+  test(`${lang}: a vault prompt that carries the placeholder and still the old fixed sentence warns that the two contradict`, async () => {
+    const both = oldTemplate(lang).replace('<!-- rule:third-party-privacy -->\n', '<!-- rule:third-party-privacy -->\n{{privacy_policy}}\n\n');
+    const { code, report } = await doctor(vaultWith(lang, {}, both));
+    assert.equal(code, EXIT.OK);
+    const [c] = results(report);
+    assert.equal(c.status, 'warn', JSON.stringify(c));
+    assert.equal(c.messageKey, 'doctor.privacy_policy.overlay_both');
+    assert.match(c.message, lang === 'en' ? /the two rules contradict/ : /as duas regras se contradizem/);
+    assert.ok(c.message.includes(join(KIT_ROOT, 'lang', lang, 'prompts', 'curate.md')), c.message);
+  });
+
+  // Fix round 1, m10: the briefing's own prompt, held to the same placeholder.
+  test(`${lang}: a vault briefing prompt without the placeholder warns, naming it and the pack's briefing prompt; one with it is ok`, async () => {
+    const pack = readFileSync(join(KIT_ROOT, 'lang', lang, 'prompts', 'briefing.md'), 'utf8');
+    const root = vaultWith(lang);
+    mkdirSync(join(root, '.brain-kit', 'prompts'), { recursive: true });
+    const file = join(root, '.brain-kit', 'prompts', 'briefing.md');
+    writeFileSync(file, pack.replace(/\n\{\{privacy_policy\}\}\n/, '\n'));
+    const { code, report } = await doctor(root);
+    assert.equal(code, EXIT.OK);
+    const [c] = results(report);
+    assert.equal(c.status, 'warn', JSON.stringify(c));
+    assert.equal(c.messageKey, 'doctor.privacy_policy.briefing_overlay_without');
+    assert.ok(c.message.includes(file), c.message);
+    assert.ok(c.message.includes(join(KIT_ROOT, 'lang', lang, 'prompts', 'briefing.md')), c.message);
+    assert.match(c.message, lang === 'en' ? /do not reach what its briefings record/ : /não chegam ao que os briefings dele registram/);
+    writeFileSync(file, pack);
+    const [ok] = results((await doctor(root)).report);
+    assert.equal(ok.status, 'ok', JSON.stringify(ok));
+  });
 }
+
+test('the curate prompt and the briefing prompt of a vault are each a line of their own when both miss the policy', async () => {
+  const root = vaultWith('en', {}, oldTemplate('en'));
+  writeFileSync(join(root, '.brain-kit', 'prompts', 'briefing.md'), '{{signature}}\n\n{{blocks}}\n');
+  const { report } = await doctor(root);
+  assert.deepEqual(results(report).map((c) => c.messageKey), ['doctor.privacy_policy.overlay_fixed', 'doctor.privacy_policy.briefing_overlay_without']);
+});
 
 test('the text report shows the warning line, and --only lists the ok line with the policy', async () => {
   const warned = await doctor(vaultWith('en', {}, oldTemplate('en')), { json: false });

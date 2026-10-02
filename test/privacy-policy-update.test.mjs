@@ -46,6 +46,7 @@ for (const lang of ['pt-BR', 'en']) {
     assert.equal(manifest.files.some((entry) => entry.path.startsWith('.brain-kit/prompts/')), false, 'the manifest records none');
     const checked = kit(['update', '--check']);
     assert.equal(checked.status, EXIT.OK, checked.stdout + checked.stderr);
+    assert.doesNotMatch(checked.stdout, /privacy_policy/, 'nothing to say of a prompt the vault does not have');
     const rendered = kit(['prompt', 'curate']);
     assert.equal(rendered.status, EXIT.OK, rendered.stderr);
     assert.ok(rendered.stdout.includes(t('privacy.policy_everyone_save')), 'the pack prompt carries the policy');
@@ -69,10 +70,25 @@ for (const lang of ['pt-BR', 'en']) {
       // macOS the temporary directory (/var/folders/...) is a link to /private/var/....
       assert.ok(line.message.includes(join(realpathSync(vault), OVERLAY)), line.message);
       assert.ok(line.message.includes(join(KIT_ROOT, 'lang', lang, 'prompts', 'curate.md')), line.message);
+      // Fix round 1, m3: update leaves the file alone but no longer says
+      // nothing: one line, the same text as doctor's, in a real run and a check.
+      assert.equal(updated.stdout.split('\n').filter((l) => l === line.message).length, 1, `update says it, once:\n${updated.stdout}`);
+      const checked = kit(['update', '--check']);
+      assert.equal(checked.stdout.split('\n').filter((l) => l === line.message).length, 1, checked.stdout);
+      assert.equal(checked.status, EXIT.OK, 'the overlay is not a managed file: update --check still has nothing pending');
       // The round runs the overlay as written: the old sentence, and no policy.
       const rendered = kit(['prompt', 'curate']);
       assert.match(rendered.stdout, OLD_WORDS[lang]);
       assert.equal(rendered.stdout.includes(t('privacy.policy_intro')), false);
     }
+  });
+
+  test(`${lang}: update says nothing of a vault's own curate prompt that carries the policy`, () => {
+    const { vault, kit } = newVault(lang);
+    mkdirSync(join(vault, '.brain-kit', 'prompts'), { recursive: true });
+    writeFileSync(join(vault, OVERLAY), readFileSync(join(KIT_ROOT, 'lang', lang, 'prompts', 'curate.md'), 'utf8'));
+    const updated = kit(['update']);
+    assert.equal(updated.status, EXIT.OK, updated.stdout + updated.stderr);
+    assert.doesNotMatch(updated.stdout, /\{\{privacy_policy\}\}|third-party-privacy/, updated.stdout);
   });
 }

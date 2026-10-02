@@ -867,13 +867,15 @@ function checkOverlay(t, io, startDir, problems) {
   }
   // An overlay written before 02/10/2026 carries the privacy rule as the
   // fixed sentence the template had then: the vault's privacy setting never
-  // reaches its rounds (doctor's privacy-policy says the same).
-  if (overlayPrivacyRule(text) === 'fixed') {
-    const rule = ruleMarker(PRIVACY_RULE);
-    const placeholder = `{{${PRIVACY_PLACEHOLDER}}}`;
-    const template = packCuratePrompt(config);
-    io.stderr.write(`${t('prompt.check_overlay_fixed_privacy', { path, rule, placeholder, template })}\n`);
-  }
+  // reaches its rounds (doctor's privacy-policy says the same). One that has
+  // the placeholder and still that sentence carries two rules that
+  // contradict (fix round 1).
+  const state = overlayPrivacyRule(text);
+  const rule = ruleMarker(PRIVACY_RULE);
+  const placeholder = `{{${PRIVACY_PLACEHOLDER}}}`;
+  const template = packCuratePrompt(config);
+  if (state === 'fixed') io.stderr.write(`${t('prompt.check_overlay_fixed_privacy', { path, rule, placeholder, template })}\n`);
+  if (state === 'both') io.stderr.write(`${t('prompt.check_overlay_both_privacy', { path, rule, placeholder, template })}\n`);
 }
 
 // The language pack's curate prompt a vault's overlay is compared with: the
@@ -882,6 +884,55 @@ function checkOverlay(t, io, startDir, problems) {
 export function packCuratePrompt(config) {
   const lang = SUPPORTED_LANGS.includes(config?.lang) ? config.lang : REFERENCE_LANG;
   return promptPath(join(KIT_ROOT, 'lang'), lang, 'curate');
+}
+
+// The same for the briefing prompt.
+export function packBriefingPrompt(config) {
+  const lang = SUPPORTED_LANGS.includes(config?.lang) ? config.lang : REFERENCE_LANG;
+  return promptPath(join(KIT_ROOT, 'lang'), lang, 'briefing');
+}
+
+// What the vault's own prompts do with the privacy setting (02/10/2026; fix
+// round 1, m3 and m10), found the way the round and the briefing find them:
+// one { section, path, state } for each overlay the setting does not reach as
+// it should. For the curate prompt, the state is overlayPrivacyRule's
+// ('fixed', 'both' or 'none'); for the briefing prompt, which never had a
+// privacy rule of its own, 'none' when it does not use the placeholder. An
+// overlay that cannot be read is 'unreadable', with `detail`. A prompt
+// outside the vault is never read here (the round and the briefing refuse
+// it), and an overlay that carries the policy, or none at all, says nothing.
+export function overlayPrivacyFindings(root, config) {
+  const findings = [];
+  for (const section of ['curate', 'briefing']) {
+    if (promptOutsideVault(root, config, section) !== null) continue;
+    const { path, overlay } = promptSource(section, { vaultRoot: root, config, lang: SUPPORTED_LANGS[0] });
+    if (!overlay) continue;
+    let text;
+    try {
+      text = readFileSync(path, 'utf8');
+    } catch (error) {
+      findings.push({ section, path, state: 'unreadable', detail: error.code ?? error.message });
+      continue;
+    }
+    const state = section === 'curate' ? overlayPrivacyRule(text) : (placeholdersOf(text).includes(PRIVACY_PLACEHOLDER) ? 'policy' : 'none');
+    if (state !== 'policy') findings.push({ section, path, state });
+  }
+  return findings;
+}
+
+// One finding as the message doctor's privacy-policy reports and `update`
+// prints: { messageKey, params }, each literal so test/message-keys.test.mjs
+// finds it.
+export function overlayPrivacyMessage(finding, config) {
+  const file = finding.path;
+  const rule = ruleMarker(PRIVACY_RULE);
+  const placeholder = `{{${PRIVACY_PLACEHOLDER}}}`;
+  if (finding.state === 'unreadable') return { messageKey: 'doctor.privacy_policy.overlay_unreadable', params: { file, detail: finding.detail } };
+  if (finding.section === 'briefing') return { messageKey: 'doctor.privacy_policy.briefing_overlay_without', params: { file, placeholder, template: packBriefingPrompt(config) } };
+  const template = packCuratePrompt(config);
+  if (finding.state === 'fixed') return { messageKey: 'doctor.privacy_policy.overlay_fixed', params: { file, rule, placeholder, template } };
+  if (finding.state === 'both') return { messageKey: 'doctor.privacy_policy.overlay_both', params: { file, rule, placeholder, template } };
+  return { messageKey: 'doctor.privacy_policy.overlay_without', params: { file, rule: PRIVACY_RULE, placeholder, template } };
 }
 
 // Whether an overlay still carries the sampling rule of before the
@@ -933,5 +984,12 @@ function checkBriefingOverlay(t, io, root, config, problems) {
   }
   for (const placeholder of placeholdersOf(text).filter((p) => !BRIEFING_PLACEHOLDERS.includes(p))) {
     io.stderr.write(`${t('prompt.check_briefing_overlay_unknown_placeholder', { path, placeholder: `{{${placeholder}}}` })}\n`);
+  }
+  // An overlay written before 02/10/2026 has no privacy line at all: what
+  // the briefing records is the model's own judgment again (fix round 1, m10).
+  if (!used.includes(PRIVACY_PLACEHOLDER)) {
+    const placeholder = `{{${PRIVACY_PLACEHOLDER}}}`;
+    const template = packBriefingPrompt(config);
+    io.stderr.write(`${t('prompt.check_briefing_overlay_no_privacy', { path, placeholder, template })}\n`);
   }
 }

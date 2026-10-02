@@ -254,7 +254,10 @@ test('--check warns about the briefing overlay and the blocks, fails for one wit
   for (const rule of BRIEFING_RULES.filter((x) => x !== 'never-read')) assert.ok(r.err.includes(`"${rule}"`), rule);
   assert.match(r.err, /"\{\{parameters\}\}", which the briefing does not fill/);
   assert.match(r.err, /warning: briefing\.blocks: entry 2, "agenda"/);
-  writeFileSync(overlay, `{{signature}}\n${BRIEFING_RULES.map((x) => `<!-- rule:${x} -->\n`).join('')}{{vault}}\n{{never_read}}\n{{read}}\n{{blocks}}\n`);
+  // Since 02/10/2026 what the briefing records follows the vault's privacy
+  // setting, which reaches an overlay only through its placeholder.
+  assert.match(r.err, /does not use \{\{privacy_policy\}\}: privacy\.sensitive and privacy\.never_topics do not reach what the briefing records/);
+  writeFileSync(overlay, `{{signature}}\n${BRIEFING_RULES.map((x) => `<!-- rule:${x} -->\n`).join('')}{{vault}}\n{{never_read}}\n{{read}}\n{{blocks}}\n{{privacy_policy}}\n`);
   const good = await briefing(world, { argv: ['--check', '--vault', world.vault] });
   assert.equal(good.code, EXIT.OK, good.out + good.err);
   assert.equal(good.err, 'warning: briefing.blocks: entry 2, "agenda": no block of the kit has this id (the kit\'s blocks: sources, due, upcoming, undated, open_prs, stale, questions, blind_spots, strategy, today_calendar); left out.\n');
