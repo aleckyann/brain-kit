@@ -5,22 +5,39 @@
 - The README is now in Portuguese, written for a person who uses Claude Code (or wants to) and
   is not a developer. The owner asked for it on 02/10/2026: the people who asked for the kit
   are Brazilian, and the page has to sell the idea and take a newcomer to the first pull
-  request step by step. `README.md` is the new front door, in under 300 lines: what the kit is
-  in thirty seconds, why it exists, what you gain, for whom (and for whom it is not yet), how it
-  works, what you need with the time the first run takes, the eleven steps to the first pull
-  request with the same verified commands, what to do when stuck, privacy, what it costs (with
-  the cost of a round as measured in the reference vault, its source and its date) and the
-  stage. `README.pt-BR.md` is gone, so a link to it lands nowhere: what it held that the front
-  door does not carry is in `docs/guia.md`, the complete guide in Portuguese, and the English
-  README is `docs/guide.md`, as it was. Both guides ship in the npm package.
+  request step by step. `README.md` is the new front door, in under 350 lines. It says first
+  what the kit is, what the curator reads (by default only the Claude Code conversations held
+  inside the vault, plus Google Calendar and Drive when connected) and what the step by step
+  delivers (the vault with approval by pull request; the daily curator and the morning
+  briefing are switched on later); then why it exists, what you gain, for whom and for whom it
+  is not yet, how it works, an invented example of a note, a log line, a pull request and a
+  briefing; then what decides before an afternoon is spent on it: what it costs (on a
+  subscription no round is charged, a round uses part of the plan's limits; only an API key
+  pays per round, with the figures measured in the reference vault), privacy (the three levels,
+  how to change them by asking Claude Code, the law in short sentences) and the stage; and only
+  then what you need, the twelve steps (the eleven to the first approved pull request with the
+  same verified commands, the traps a reader test found closed, and a twelfth that asks the
+  vault what was recorded today) and what to do when stuck. What it held that the front door
+  does not carry is in `docs/guia.md`, the complete guide in Portuguese. The English README is
+  `docs/guide.md`, as it was, so the English sections and their anchors (`#your-first-vault`,
+  `#installing-a-fixed-version`, the steps) live there now. `README.pt-BR.md` is a stub that
+  points to both, kept for old links and left out of the package. The guides ship in the npm
+  package.
+- A step zero, `docs/preparar-o-computador.md`, in Portuguese: how to open the terminal, and
+  how to install Node, git, `gh` and Claude Code on a Mac and on Ubuntu in the simplest official
+  way, with what the screen shows and the check command of each, then the two accounts and
+  what they cost as the official pages said on 02/10/2026. On a Mac it gives npm a folder of its
+  own before the install needs one, so the `EACCES` the official Node installer leads to does
+  not happen.
 - The release gate follows the documents: the stamp and the latest-tag sentence are checked in
   `README.md` (the Portuguese sentence, under "Em que pé está"), in `docs/guia.md` and in
   `docs/guide.md` (under "Status"), and no code block of the three may name a tag or a
   tarball. The maintainer's release checklist says what to re-read in each.
-- `init`'s last line about privacy, and the one for a configuration that sets a limit, send a
-  person to the guide of the pack's language (`docs/guia.md`, "Privacidade: o que o curador
-  guarda", or `docs/guide.md`, "Privacy: what the curator saves"), where each level is
-  explained; they named the README, which now keeps a short section only.
+- The line `init` prints about privacy, and the one for a configuration that sets a limit, end
+  with a link to the guide's section in the pack's language ("Privacidade: o que o curador
+  guarda" or "Privacy: what the curator saves"), on GitHub at the tag of the kit that wrote the
+  vault, where each level is explained. They named the README, which now keeps a short section
+  only, and a bare path a newcomer could look for inside the vault.
 
 ## 0.0.10 (tagged `v0.0.10`, not on npm)
 
