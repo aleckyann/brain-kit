@@ -367,6 +367,22 @@ for (const lang of LANGS) {
   });
 }
 
+// One exception, the rule third-party-privacy (fix round 1 of 02/10/2026,
+// B1): a real model stretched a paragraph about "someone else's schedule"
+// to a colleague's medical leave told in a meeting, and the wording tested
+// to stop it names the one source the limit is about (the calendar) and
+// examples of what the setting covers (a meeting, a colleague's leave). The
+// rest of the prompt stays domain neutral, and the exception is held to the
+// rule's own two paragraphs: from its marker to the next marker.
+function withoutPrivacyRule(text) {
+  const at = text.indexOf('<!-- rule:third-party-privacy -->');
+  const next = text.indexOf('<!-- rule:', at + 1);
+  assert.ok(at !== -1 && next !== -1, 'the rule and the marker after it');
+  const rule = text.slice(at, next);
+  assert.equal(rule.trimEnd().split('\n\n').length, 2, 'the exception covers the rule\'s two paragraphs and nothing else');
+  return text.slice(0, at) + text.slice(next);
+}
+
 test('the two packs\' curate prompts carry no em dash and no work vocabulary', () => {
   const banned = {
     en: /\b(company|companies|team|teams|calendar|meeting|meetings|CRM|sales|customer|customers|client|clients|colleague|colleagues|employee|manager|boss)\b/i,
@@ -375,7 +391,7 @@ test('the two packs\' curate prompts carry no em dash and no work vocabulary', (
   for (const lang of LANGS) {
     const text = readFileSync(join(KIT_ROOT, 'lang', lang, 'prompts', 'curate.md'), 'utf8');
     assert.ok(!text.includes(String.fromCodePoint(0x2014)), `${lang}: em dash`);
-    assert.doesNotMatch(text, banned[lang], `${lang}: work vocabulary`);
+    assert.doesNotMatch(withoutPrivacyRule(text), banned[lang], `${lang}: work vocabulary`);
   }
 });
 

@@ -55,7 +55,7 @@ Nunca copie uma transcrição, nem um trecho longo dela, para o vault. O vault g
 <!-- rule:third-party-privacy -->
 {{privacy_policy}}
 
-Os compromissos de outra pessoa são outra questão, decidida por quais eventos dela contam e não pela configuração acima: lidos com a autorização que a configuração registra, só contam os eventos que ela compartilha com outras pessoas, e um evento dela que não conta (uma ausência, uma consulta, uma tarefa particular) nunca vira conteúdo, nem como menção de que algo ficou de fora.
+A configuração acima vale para tudo o que você registra, seja qual for a fonte, inclusive o que uma pessoa conta sobre outra numa sessão, numa reunião ou num documento (a licença médica de um colega, a doença de um parente). Só os eventos listados da agenda de outra pessoa são decididos à parte: lidos com a autorização que a configuração registra, só contam os eventos que ela compartilha com outras pessoas, e um evento dela que não conta (uma ausência, uma consulta, uma tarefa particular) nunca vira conteúdo, nem como menção de que algo ficou de fora. Esse limite vale para os eventos listados da agenda dela, nunca para o que alguém diz numa sessão, numa reunião ou num documento.
 
 <!-- rule:only-kit-commands -->
 Nunca rode nenhum comando além dos três comandos do kit citados abaixo. Nada de contornar por outras ferramentas: se algo que você gostaria de usar não estiver disponível, siga sem ele e diga isso na sua mensagem final.

@@ -55,7 +55,7 @@ Never copy a transcript, or a long passage of one, into the vault. The vault kee
 <!-- rule:third-party-privacy -->
 {{privacy_policy}}
 
-Someone else's schedule is a different matter, decided by which of their events count and not by the setting above: read with the authorization the configuration records, only the events they share with other people count, and one of theirs that does not count (an absence, an appointment, an errand) is never content, not even as a mention that something was left out.
+The setting above covers everything you record, whatever the source, including what one person tells about another in a session, a meeting or a document (a colleague's medical leave, a relative's illness). Only events listed from someone else's calendar are decided apart from it: read with the authorization the configuration records, only the events they share with other people count, and one of theirs that does not count (an absence, an appointment, an errand) is never content, not even as a mention that something was left out. That limit is about events listed from their calendar, never about what someone says in a session, a meeting or a document.
 
 <!-- rule:only-kit-commands -->
 Never run any command other than the kit's three commands named below. No workarounds through other tools: if something you would like to use is not available, carry on without it and say so in your final message.

@@ -101,13 +101,31 @@ for (const lang of LANGS) {
     }
   });
 
-  test(`${lang}: someone else's schedule keeps its own sentence, in the paragraph after the policy`, async () => {
+  // Fix round 1, B1 (the review of 02/10/2026, a real model run 126 times):
+  // the paragraph kept here said that someone else's schedule is decided
+  // apart from the setting and that "an absence ... is never content", and
+  // the model stretched it to a colleague's medical leave the owner told in a
+  // meeting, leaving it out under `save` in most runs. The tested wording,
+  // verbatim, says the setting covers everything recorded, whatever the
+  // source, and scopes the limit to events listed from someone else's
+  // calendar, never what someone says in a session, a meeting or a document.
+  test(`${lang}: the paragraph after the policy says the setting covers everything recorded and scopes the calendar's limit to listed events`, async () => {
     const { out } = await promptCurate(vaultWith(lang, { sensitive: { people: 'skip' } }), lang);
     const at = out.indexOf('<!-- rule:third-party-privacy -->');
     const next = out.slice(out.indexOf('\n\n', at) + 2).split('\n\n')[0];
+    const expected = {
+      en: "The setting above covers everything you record, whatever the source, including what one person tells about another in a session, a meeting or a document (a colleague's medical leave, a relative's illness). Only events listed from someone else's calendar are decided apart from it: read with the authorization the configuration records, only the events they share with other people count, and one of theirs that does not count (an absence, an appointment, an errand) is never content, not even as a mention that something was left out. That limit is about events listed from their calendar, never about what someone says in a session, a meeting or a document.",
+      'pt-BR': 'A configuração acima vale para tudo o que você registra, seja qual for a fonte, inclusive o que uma pessoa conta sobre outra numa sessão, numa reunião ou num documento (a licença médica de um colega, a doença de um parente). Só os eventos listados da agenda de outra pessoa são decididos à parte: lidos com a autorização que a configuração registra, só contam os eventos que ela compartilha com outras pessoas, e um evento dela que não conta (uma ausência, uma consulta, uma tarefa particular) nunca vira conteúdo, nem como menção de que algo ficou de fora. Esse limite vale para os eventos listados da agenda dela, nunca para o que alguém diz numa sessão, numa reunião ou num documento.',
+    }[lang];
+    assert.equal(next, expected);
+    // What makes it hold, said apart so a rewording keeps it: the calendar is
+    // named, and the limit never reaches what someone says.
+    assert.match(next, lang === 'en' ? /\bcalendar\b/ : /\bagenda\b/);
     assert.match(next, lang === 'en'
-      ? /^Someone else's schedule is a different matter, decided by which of their events count and not by the setting above: read with the authorization the configuration records, only the events they share with other people count, and one of theirs that does not count \(an absence, an appointment, an errand\) is never content, not even as a mention that something was left out\.$/
-      : /^Os compromissos de outra pessoa são outra questão, decidida por quais eventos dela contam e não pela configuração acima: lidos com a autorização que a configuração registra, só contam os eventos que ela compartilha com outras pessoas, e um evento dela que não conta \(uma ausência, uma consulta, uma tarefa particular\) nunca vira conteúdo, nem como menção de que algo ficou de fora\.$/);
+      ? /never about what someone says in a session, a meeting or a document\.$/
+      : /nunca para o que alguém diz numa sessão, numa reunião ou num documento\.$/);
+    assert.match(next, lang === 'en' ? /^The setting above covers everything you record, whatever the source/ : /^A configuração acima vale para tudo o que você registra, seja qual for a fonte/);
+    assert.doesNotMatch(next, lang === 'en' ? /Someone else's schedule is a different matter/ : /Os compromissos de outra pessoa são outra questão/, 'the stretched wording is gone');
   });
 }
 

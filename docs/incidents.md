@@ -1260,7 +1260,8 @@ is written about anyone's private life is the vault's own setting, by default ev
 **Where it lives in brain-kit.** The privacy line in the calendar source's prompt block
 (only events with at least two attendees count, and one that does not is never written)
 and the event-type filter in its evidence (`src/sources/calendar-google.mjs`), the
-sentence on someone else's schedule under the curate prompt's rule `third-party-privacy`,
+paragraph under the curate prompt's rule `third-party-privacy` that holds this limit to
+events listed from someone else's calendar,
 `brain-kit lint` rule `privacy` on the lines a change adds when the vault lists phrases in
 `privacy.third_party_keywords` (`src/rules/privacy-keywords.mjs`; the packs shipped eight
 health words there until 02/10/2026, and ship none since), `brain-kit doctor` check
@@ -1287,7 +1288,13 @@ people's, and the default is to record everything: a person who wants limits set
 The setting reaches the model as plain sentences in the vault's language, and the default
 says in so many words to record normally, health, family, relationships, finances and
 anything intimate included, about the owner and about others. Which events of someone
-else's calendar count stays a filter of the calendar source. To get the old behaviour back,
+else's calendar count stays a filter of the calendar source, and the rule says so in words
+that cannot be stretched again: a real model, run against a first wording that said
+"someone else's schedule ... an absence ... is never content", left a colleague's medical
+leave told in a meeting out of the log under `save` in most runs. The rule now says that the
+setting covers everything recorded, whatever the source, including what one person tells
+about another, and that the calendar's limit is about events listed from someone else's
+calendar, never about what someone says in a session, a meeting or a document. To get the old behaviour back,
 set `people` and `outsiders` to `skip` and list the phrases to refuse in
 `privacy.third_party_keywords`.
 **Where it lives in brain-kit.** `privacy.sensitive` (`owner`, `people`, `outsiders`, each

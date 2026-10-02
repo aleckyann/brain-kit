@@ -15,9 +15,15 @@
   model in so many words to record normally, health, family, relationships, finances and
   anything intimate included, about the owner and about others, without leaving anything out
   or shortening it because it seems sensitive. The old rule existed because a colleague's
-  medical appointment was in the calendar window once: from someone else's calendar only the
-  events shared with other people still count, and one that does not count is still never
-  written. To get the old behaviour back, set `people` and `outsiders` to `skip` in
+  medical appointment was in the calendar window once: the prompt still tells the model that
+  from someone else's calendar only the events shared with other people count, and never to
+  write one that does not, and it says that this limit is about events listed from their
+  calendar, never about what someone says in a session, a meeting or a document, and that the
+  setting covers everything recorded, whatever the source. A real model, run against a first
+  wording of that paragraph ("someone else's schedule ... an absence ... is never content"),
+  left a colleague's medical leave told in a meeting out of the log under `save` in most runs
+  of an independent review; the wording now in both packs kept it in all 36 runs that review
+  made of it. To get the old behaviour back, set `people` and `outsiders` to `skip` in
   `privacy.sensitive` and list the phrases you want refused in
   `privacy.third_party_keywords`, as the packs shipped them.
 - New setting, `privacy.sensitive` and `privacy.never_topics` in `brain-kit.config.json`.
