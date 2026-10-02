@@ -7,15 +7,16 @@ Names of people, companies and tools were removed on purpose.
 
 Seventy three lessons were extracted from the original vault, written up as seventy
 two entries: the four day curation outage of September 2026 produced two lessons about
-the same incident and is written up once, under 13/09/2026. Eight entries were added
+the same incident and is written up once, under 13/09/2026. Nine entries were added
 since, each dated: the leak gate that blocked its own release tag (18/09/2026), the
 selection of transcripts by modification time (24/09/2026), the settings a headless
 run inherits (24/09/2026), which the kit's own build produced, the round that took its
 own parent for a competing curator (28/09/2026), found while moving a vault onto the
-kit, and, all four found in real runs on the kit, the attachments the connector
+kit, and, all five found in real runs on the kit, the attachments the connector
 answered "not found" (30/09/2026), the expired login a round reported with no reason
-(30/09/2026), the transcripts too big for the Read tool (01/10/2026) and the envelope
-the desktop application wraps a scheduled task's prompt in (01/10/2026). Eighty
+(30/09/2026), the transcripts too big for the Read tool (01/10/2026), the envelope
+the desktop application wraps a scheduled task's prompt in (01/10/2026) and the
+owner's own health left out of the log on purpose (02/10/2026). Eighty one
 entries follow. Where a lesson carries no date of its own,
 the entry says "Undated" and explains why.
 
@@ -1253,15 +1254,51 @@ near the vault. Found in calibration, so no incident date.
 **Rule.** A colleague's personal life is never content: out of office entries, health
 appointments and any event with no other person from the organisation are dropped
 entirely, with neither a mention nor an observation. Ingesting other people's
-calendars requires an explicit privacy filter and recorded consent.
-**Where it lives in brain-kit.** The privacy policy in the calendar source's prompt
-block and the event-type filter in its evidence (`src/sources/calendar-google.mjs`), the
-curate prompt's rule `third-party-privacy`, `brain-kit lint` rule `privacy` on the
-lines a change adds (`privacy.third_party_keywords`, `src/rules/privacy-keywords.mjs`),
-`brain-kit doctor` check `privacy-keywords`, the decision recorded in
-`sources.calendar.team_authorization` (who authorised reading the team's calendars, and
-when; until phase 5a, the consent flag `team_calendars_consent_noted`),
-`test/incidents/undated-colleague-health-in-calendar.test.mjs` (Phase 3).
+calendars requires an explicit privacy filter and recorded consent. Since 02/10/2026
+(next entry) the filter stays, as which events of someone else's calendar count, and what
+is written about anyone's private life is the vault's own setting, by default everything.
+**Where it lives in brain-kit.** The privacy line in the calendar source's prompt block
+(only events with at least two attendees count, and one that does not is never written)
+and the event-type filter in its evidence (`src/sources/calendar-google.mjs`), the
+sentence on someone else's schedule under the curate prompt's rule `third-party-privacy`,
+`brain-kit lint` rule `privacy` on the lines a change adds when the vault lists phrases in
+`privacy.third_party_keywords` (`src/rules/privacy-keywords.mjs`; the packs shipped eight
+health words there until 02/10/2026, and ship none since), `brain-kit doctor` check
+`privacy-keywords`, the decision recorded in `sources.calendar.team_authorization` (who
+authorised reading the team's calendars, and when; until phase 5a, the consent flag
+`team_calendars_consent_noted`), `test/incidents/undated-colleague-health-in-calendar.test.mjs`
+(Phase 3).
+
+### 02/10/2026: the curator left the owner's own health out of the log, on purpose
+**What happened.** Curating a one to one meeting, a round on the kit left the owner's own
+health and family topics out of the log, and wrote in the log that it had done so on
+purpose. No setting asked for it. The curate prompt's rule `third-party-privacy` forbade
+recording the private life of "someone other than the owner", and the model stretched it
+to the owner: the prompt said nothing of the owner's own private life, and that silence
+left the model to apply a judgment of its own.
+**Why the old rule existed.** "A colleague's medical appointment was in the calendar
+window" (the entry above): a teammate's teleconsultation, read from a shared calendar,
+belonged nowhere near the vault. So the template kept everyone's private life but the
+owner's out, in one fixed sentence, and each language pack shipped eight health words that
+`lint` refused on a line a change added.
+**Rule.** What the curator records is a setting of the kit, never a patch for one vault. A
+vault must be able to hold personal and sensitive information, the owner's and other
+people's, and the default is to record everything: a person who wants limits sets them.
+The setting reaches the model as plain sentences in the vault's language, and the default
+says in so many words to record normally, health, family, relationships, finances and
+anything intimate included, about the owner and about others. Which events of someone
+else's calendar count stays a filter of the calendar source. To get the old behaviour back,
+set `people` and `outsiders` to `skip` and list the phrases to refuse in
+`privacy.third_party_keywords`.
+**Where it lives in brain-kit.** `privacy.sensitive` (`owner`, `people`, `outsiders`, each
+`save`, `summary` or `skip`) and `privacy.never_topics` in the configuration, rendered by
+`src/privacy-policy.mjs` into the curate prompt's rule `third-party-privacy`
+(`{{privacy_policy}}`), the `curate-session` and `capture` skills and the briefing's
+recording section; the policy line of every round, `curate --check` and `curate --dry`;
+`brain-kit doctor` checks `privacy-policy` (with its warning for a vault's own curate prompt
+that kept the old fixed rule) and `privacy-keywords` (ok on an empty list);
+`privacy.third_party_keywords` empty by default;
+`test/incidents/2026-10-02-owner-health-left-out.test.mjs`.
 
 ### 18/08/2026: a one sided account became a confirmed pattern
 **What happened.** The brain started treating one party's account as a confirmed

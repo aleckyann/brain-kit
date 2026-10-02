@@ -1,5 +1,74 @@
 # Changelog
 
+## Unreleased
+
+- **Change of default: the curator now records everything, personal and sensitive
+  information included, about the owner and about other people.** Until now the curate
+  prompt of both packs carried one fixed sentence, "Never record anything about the private
+  life of someone other than the owner", and in a real vault the model stretched it to the
+  owner: curating a one to one meeting, a round left the owner's own health and family out of
+  the log and wrote that it had done so on purpose, with no setting asking for it. The owner
+  decided that what the curator keeps is a setting of the kit, never a patch for one vault,
+  that a vault must be able to hold personal and sensitive information, the owner's and other
+  people's, and that the default is to keep everything. So the rule `third-party-privacy`
+  now holds the vault's own setting, rendered in its language, and the default tells the
+  model in so many words to record normally, health, family, relationships, finances and
+  anything intimate included, about the owner and about others, without leaving anything out
+  or shortening it because it seems sensitive. The old rule existed because a colleague's
+  medical appointment was in the calendar window once: from someone else's calendar only the
+  events shared with other people still count, and one that does not count is still never
+  written. To get the old behaviour back, set `people` and `outsiders` to `skip` in
+  `privacy.sensitive` and list the phrases you want refused in
+  `privacy.third_party_keywords`, as the packs shipped them.
+- New setting, `privacy.sensitive` and `privacy.never_topics` in `brain-kit.config.json`.
+  `sensitive` gives one level to each of three audiences: `owner`, `people` (anyone who
+  already has a note in the vault) and `outsiders` (everyone else). The levels, written in
+  English in both languages, are `save` (record normally), `summary` (record that the subject
+  came up and what was decided or agreed, without the intimate details) and `skip` (leave it
+  out, without saying so). `never_topics` lists subjects never recorded for anyone, on top of
+  the levels. `init` writes `save` for all three and no topic; a configuration without the
+  keys, which `update` does not add, reads as that default. Any other level is refused with a
+  message naming the three, an unknown audience, a topic list that is not a list and a blank
+  topic too. One function renders the setting into the sentences a prompt carries, through the
+  new placeholder `{{privacy_policy}}`, which `brain-kit prompt curate`, the round, the
+  `curate-session` and `capture` skills and the morning briefing's recording section fill in;
+  in a session the skills tell the model to ask the person before leaving out or shortening
+  what they asked to record. A vault whose configuration does not load gets no level at all,
+  only what to do.
+- Every round says what it was told to record: one line with the policy in effect, in the
+  vault's language, in the round's parameters block, on its own output beside its limits,
+  and in `curate --check` and `curate --dry`. `brain-kit doctor` has a new check,
+  `privacy-policy`: `ok` with that line, whatever the levels, a failure in the vault's
+  language for a value it cannot use, and a warning for a vault whose own curate prompt
+  (`curate.prompt`) carries the rule's marker without the placeholder, a copy of the template
+  of before this change: its privacy rule is fixed text the setting never reaches. The warning
+  names the file and the pack prompt to copy the rule from, or says to delete the file to run
+  the pack's own; `update` never rewrites that file, which is the person's. `brain-kit prompt
+  --check` warns about the same file.
+- `privacy.third_party_keywords` is empty by default in both packs. It shipped eight health
+  words, and `lint` refused a line a change adds that held one outside the exempt paths, which
+  would fight the new default. An explicit list in an existing vault keeps working as before,
+  and a person who wants that backstop sets one. `doctor`'s `privacy-keywords` says `ok` for an
+  empty list ("no keywords set; the backstop is off") instead of warning; with no keyword
+  listed, a whole-vault `lint` adds no line about keywords, and a clean new vault still gets
+  `init`'s one line for its checks. The keyword finding no longer says another person's health
+  is never content, a rule the kit no longer holds.
+- The calendar source's privacy line keeps which events of someone else's calendar count and
+  defers to the setting for what is written about them, the owner's own included: it used to
+  say that nothing about anyone's private life is ever written. The morning briefing's
+  calendar block drops "nothing of anyone's private life is content", which kept the owner's
+  own appointments out of the owner's own briefing.
+- What the kit tells a person says the same: `init` ends with one line saying the curator
+  records everything by default and where to limit it, the `setup` skill says it when it
+  recommends a private repository, both READMEs have a section, "Privacy: what the curator
+  saves" and "Privacidade: o que o curador guarda", with an example of each level, and the
+  `SECURITY.md` every vault gets says plainly what the curator saves by default and how to keep
+  a person's sensitive subjects out after a removal on request (`update` refreshes an unedited
+  one and writes the new text beside an edited one). `docs/security.md` gains "What the curator
+  records", saying it is an instruction to a model and not a guarantee, and that it controls
+  what is written, not what the model reads; `docs/incidents.md` records the decision of
+  02/10/2026.
+
 ## 0.0.9 (tagged `v0.0.9`, not on npm)
 
 A first-time user can now follow `README.pt-BR.md` from a machine that has Node.js, git, `gh`

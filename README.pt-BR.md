@@ -416,9 +416,10 @@ manifesto, o `machine.json` e o diretório de estado dele, a versão do kit, o `
 a CLI de verdade e conhece todas as flags que isolam uma rodada, os projetos de onde vêm os
 transcripts, quantos dias de atraso tem a marca d'água de cada fonte, a última rodada (uma
 rodada que sai com 0 em segundos sem nenhum turno do modelo é apontada como morta), o timer
-e os próximos disparos, e se uma rodada que falha chega até você ou fica só no log; e,
+e os próximos disparos, e se uma rodada que falha chega até você ou fica só no log; o que o
+curador registra sobre assuntos pessoais e sensíveis, numa linha (`privacy-policy`); e,
 desde a fase 3, se o lint tem palavras-chave de privacidade para recusar nas linhas
-acrescentadas, tudo o que uma rodada pode alcançar além do vault, e cada fonte por
+acrescentadas (nenhuma por padrão), tudo o que uma rodada pode alcançar além do vault, e cada fonte por
 conector: desligada ou ligada, o estado que a última rodada viu com a data dela, um
 prefixo de ferramenta que não confere, agendas de outras pessoas sem o consentimento
 registrado, e uma regra de usuário que recusa o modo com conectores. O
@@ -444,7 +445,7 @@ O `lint` confere a saúde do vault com oito regras:
 | `tables` | forma da tabela: a linha em branco antes dela, linhas duplicadas, células longas demais |
 | `style` | caracteres que a configuração proíbe, nas linhas que uma mudança acrescentou |
 | `secrets` | formatos de credencial e padrões configurados, em todo arquivo que um push poderia publicar, incluindo arquivos com ponto como o `.env` |
-| `privacy` | notas confidenciais ficam em diretórios confidenciais e não recebem link de diretórios compartilhados, e uma linha que uma mudança acrescenta não tem nenhum dos termos de `privacy.third_party_keywords` (a saúde ou a vida privada de outra pessoa) |
+| `privacy` | notas confidenciais ficam em diretórios confidenciais e não recebem link de diretórios compartilhados, e uma linha que uma mudança acrescenta não tem nenhum dos termos de `privacy.third_party_keywords` (uma lista que você define; vazia por padrão) |
 | `attribution` | as fontes de uma nota e as notas de rodapé dela se ancoram umas nas outras |
 
 `--rule` restringe a rodada às regras nomeadas, `--base` escolhe o que conta como a
@@ -578,6 +579,44 @@ só quando o diretório de trabalho da tarefa é um projeto listado em
 `selfTrace`, as sessões que ela deixou de fora como do próprio kit; o
 [docs/briefing.md](docs/briefing.md), em "Which sessions the curator skips", tem os
 detalhes.
+
+## Privacidade: o que o curador guarda
+
+Por padrão o curador guarda tudo o que as suas sessões, a agenda e as notas de reunião
+ensinam ao vault, inclusive informação pessoal e sensível (saúde, família,
+relacionamentos, finanças, qualquer coisa íntima), a sua e a de outras pessoas: nada fica
+de fora nem é resumido por parecer sensível. Por isso o repositório do vault precisa
+continuar privado, e o `init` recusa um vault cujo repositório não seria.
+
+Para guardar menos, ajuste `privacy.sensitive` no `brain-kit.config.json`. Ele dá um nível
+a cada um de três públicos: `owner` (você), `people` (quem já tem nota no vault: equipe,
+família, mentores) e `outsiders` (todas as outras pessoas: clientes, potenciais clientes,
+desconhecidos). Os níveis são `save` (registra normalmente), `summary` (registra que o
+assunto apareceu e o que foi decidido ou combinado, sem os detalhes íntimos) e `skip`
+(deixa de fora, sem avisar). `privacy.never_topics` lista assuntos que nunca são
+registrados para ninguém, seja qual for o nível. Por exemplo, ao lado das chaves que a
+seção `privacy` já tem:
+
+```json
+"privacy": {
+  "sensitive": { "owner": "save", "people": "summary", "outsiders": "skip" },
+  "never_topics": ["saúde", "processos judiciais"]
+}
+```
+
+Uma configuração sem essas chaves guarda tudo. Toda rodada imprime numa linha a política
+que aplicou, e o `brain-kit curate --dry` e o `brain-kit doctor` (verificação
+`privacy-policy`) também. A rodada agendada, as skills `curate-session` e `capture` e o
+briefing matinal seguem essa configuração.
+
+Dois limites, ditos com clareza. A política é uma instrução para um modelo, não uma
+garantia: nenhum código confere o que a rodada escreveu contra os níveis, e você vê o que
+ela escreveu no pull request antes de fazer o merge. Para uma expressão que nunca pode
+entrar, liste-a em `privacy.third_party_keywords`, vazia por padrão: o `lint`, e portanto o
+`propose`, recusa uma linha acrescentada por uma mudança que a contenha. E a política
+controla o que é escrito no vault, não o que o modelo lê: a rodada continua lendo cada
+sessão, evento e documento que as fontes oferecem. O
+[docs/security.md](docs/security.md), em "What the curator records", tem o resto.
 
 ## O plugin do Claude Code
 

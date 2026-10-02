@@ -50,7 +50,8 @@ Some calendar settings in the configuration are read by no code of the round:
 `sources.calendar.privacy` (`exclude_event_types`, `exclude_keywords`,
 `team_personal_events`), `skip_events_with_owner`, `focus_blocks_as_ruler` and `dedup_by`.
 The event-type filter is fixed at `DEFAULT` whatever `exclude_event_types` says, and the
-privacy rules the model follows are the prompt's own (see "Privacy" below). Only the
+privacy rules the model follows are the prompt's own, filled from the vault's
+`privacy.sensitive` and `privacy.never_topics` (see "Privacy" below). Only the
 `seed-rituals` skill reads `exclude_keywords`, to leave matching titles out of the rituals
 table. A keyword you add there filters nothing in a round: `privacy.third_party_keywords`
 is the list that `lint` enforces.
@@ -341,18 +342,24 @@ why ToolSearch is in every round's pinned set.
 The policy is written for any profession and any life:
 
 - From someone else's calendar, only events shared with other people count (at least two
-  attendees), and nothing about anyone's private life (health, absence, family, personal
-  errands) is ever written, not even as a mention.
+  attendees), and one of theirs that does not count is never written, not even as a
+  mention.
+- What is written about the events that count, the owner's own included, is the vault's
+  privacy setting, `privacy.sensitive` and `privacy.never_topics`, which by default
+  records everything, personal and sensitive subjects included
+  ([security.md](security.md), "What the curator records"). Until 02/10/2026 this line said
+  that nothing about anyone's private life is ever written, which kept the owner's own
+  appointments out too.
 - The event-type filter is part of the evidence, so an out-of-office entry never reaches
   the model at all.
 - Someone else's calendar is read only with a `team_authorization`, the vault's record of
   who authorised reading the team's calendars and on which day. Record it only once that
   reading has been authorised.
 - `lint` refuses a line a change adds that holds one of the terms in
-  `privacy.third_party_keywords` (a list per language pack, about health and private life),
-  so a pull request that writes one is refused before it is published. `brain-kit doctor`
-  (check `privacy-keywords`) warns when the list is missing or empty, as it is in a vault
-  made before the list existed.
+  `privacy.third_party_keywords`, so a pull request that writes one is refused before it is
+  published. The list is empty by default since 02/10/2026 (each language pack shipped
+  eight health words until then); `brain-kit doctor` (check `privacy-keywords`) says how many
+  terms it holds, or that this backstop is off.
 
 ## Best effort, the notification, and `doctor --probe`
 

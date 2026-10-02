@@ -191,7 +191,9 @@ Within that, what limits how much the model reads is not the permission system:
   message within 1 800 characters, and the whole under 24 000 bytes as Read prints it,
   whole days only (below).
 - **The prompt.** It tells the model to read each digest whole and nothing else of the
-  transcripts, and states what it may not carry into the vault.
+  transcripts, and states what it may not carry into the vault: no transcript copied whole,
+  and on personal and sensitive subjects what the vault's own privacy setting says
+  ([below](#what-the-curator-records)).
 - **The cost ceiling.** Every round runs with `--max-turns` (`curate.max_turns`, default
   100) and `--max-budget-usd` (`curate.budget_usd`, default 5 USD); a configuration that
   leaves either key out still gets its default. A cap is a number above 0 (a whole number
@@ -218,6 +220,45 @@ What can still widen reads, each said by `doctor` or here:
   narrow read path;
 - a symbolic link inside the vault that points outside it: whether `Read(./**)` follows one
   is not measured. The model cannot create one.
+
+## What the curator records
+
+What a round writes about personal and sensitive subjects (health, family, relationships,
+finances, anything intimate) is a setting of the vault, `privacy.sensitive` and
+`privacy.never_topics` in `brain-kit.config.json`, and by default it records everything, the
+owner's and other people's alike. Each of three audiences, `owner`, `people` (anyone who
+already has a note in the vault) and `outsiders` (everyone else), takes `save` (record
+normally), `summary` (that the subject came up and what was decided or agreed, without the
+intimate details) or `skip` (leave it out, without saying so); a key left out is `save`, and
+`privacy.never_topics` lists subjects never recorded for anyone. The kit turns the setting
+into sentences in the vault's language, which the curate prompt carries under its rule
+`third-party-privacy` (the placeholder `{{privacy_policy}}`), as do the `curate-session` and
+`capture` skills and the morning briefing's recording section. Every round prints the policy
+in one line beside its limits, and so do `curate --check` and `curate --dry`. `doctor` (check
+`privacy-policy`) names it, fails a level it does not know, and warns about a vault's own
+curate prompt (`curate.prompt`) that carries the rule's marker without the placeholder: such
+a prompt keeps the fixed sentence the template held until 02/10/2026, the setting never
+reaches its rounds, and `update` never rewrites it, since it is yours; copy the rule from the
+language pack's prompt, or delete the file to run the pack's own.
+
+What the setting is not:
+
+- **A guarantee.** It is an instruction to the model. No code compares what a round wrote
+  with the levels; the pull request, which you read before the merge, is where it shows.
+- **A limit on what the model reads.** A round still reads every session, calendar event and
+  document its plan offers, whatever the levels say. The setting controls what is written
+  into the vault; what limits reading is the section above.
+- **The calendar's event filter.** From someone else's calendar only the events shared with
+  other people count (at least two attendees), and one that does not count is never written,
+  whatever the setting ([connectors.md](connectors.md), "Privacy").
+
+The mechanical backstop is `privacy.third_party_keywords`, a list of phrases `lint`, and so
+`propose`, refuses on a line a change adds. Since 02/10/2026 it is empty by default: each
+language pack shipped eight health words until then, which would fight the default above, and
+a vault made before keeps its list. `doctor` (check `privacy-keywords`) says how many
+phrases it holds, or that the backstop is off. To get back what the kit did before 02/10/2026,
+set `people` and `outsiders` to `skip` and list in `privacy.third_party_keywords` the phrases
+you want refused ([incidents.md](incidents.md), 02/10/2026).
 
 ## Connector mode
 

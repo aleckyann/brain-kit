@@ -134,8 +134,9 @@ once broke a real routine.
 2. **`--dry` stops here.** It prints the window, the sources and each one's days, the
    files each source would offer and how many digests a round would write for them, the
    launch mode with every user rule that refuses connector mode, the full command line of
-   the model and the cost cap, reading the configuration as it is in the working tree now,
-   unsynced. It takes no lock and writes nothing, no digest included.
+   the model, the round's limits and the privacy policy in effect, in one line, reading the
+   configuration as it is in the working tree now, unsynced. It takes no lock and writes
+   nothing, no digest included.
 3. **The vault lock.** Another writer holds it (a `propose` of yours, another round): exit
    75 naming the holder. Once it holds the lock, a round (never `--check`) removes the
    digests a round killed outright left behind. With `paths.legacy_lock` set, the legacy lock too
@@ -198,9 +199,13 @@ once broke a real routine.
     `blocked_by_user_rules` and the round runs isolated, on the transcripts alone. Without
     one, the isolated mode ([security.md](security.md), [connectors.md](connectors.md)).
     **`--check` stops here.** It prints the plan, the mode, every rule that refused it,
-    the command line, the round's three limits and the prompt's size.
+    the command line, the round's three limits, the privacy policy line and the prompt's
+    size.
 13. **The model.** The round writes the digests, says every one it had to cut, and then
-    its three limits. The cost cap: `curate.budget_usd`, the
+    its three limits and the privacy policy in effect, one line: what the model is told to
+    record about personal and sensitive subjects (`privacy.sensitive`,
+    `privacy.never_topics`; [security.md](security.md), "What the curator records"), the
+    same line the parameters block hands it. The cost cap: `curate.budget_usd`, the
     default of 5 USD when the key is left out, or none when it is `null`, in which case the
     command line carries no `--max-budget-usd` at all. The turn limit: `curate.max_turns`,
     the default of 100 when the key is left out, or none when it is `null` (no
@@ -335,6 +340,14 @@ the digests still tells the model to read a transcript from its `sampleLine`. Th
 denied, so such a round reads nothing and exits 4; `brain-kit prompt --check` warns about
 it, and the round's reason says so when its model tried. Copy the rule `sample-from-end`
 from the language pack's prompt into the overlay.
+
+A curate prompt of its own written before 02/10/2026 carries the privacy rule as the fixed
+sentence the template had then: its rule `third-party-privacy` holds no
+`{{privacy_policy}}`, so `privacy.sensitive` and `privacy.never_topics` never reach its rounds,
+whatever they say. `brain-kit doctor` (check `privacy-policy`) and `brain-kit prompt --check`
+warn about it, naming the file; `brain-kit update` never rewrites the overlay, which is yours.
+Copy the rule's paragraph from the language pack's prompt into it, or delete the overlay to
+run the pack's prompt.
 
 ## The watermark
 

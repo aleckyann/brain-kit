@@ -128,7 +128,7 @@ name is ever added. One that predates the setting reads its language pack's list
 | `questions` | fact | the escalated questions, then the other open ones, then room for new ones |
 | `blind_spots` | judgement | what the vault should know and does not, from the `briefing.read` notes and the headings of the log with the most recent section under them |
 | `strategy` | judgement | where the vault stands against the strategy document: the notes linked from `briefing.strategy_doc.index` whose link text contains `strategy_doc.title_contains`; skipped, and said so, when none is configured or found |
-| `today_calendar` | judgement | today's events from the calendar connector of your own session, with the calendar source's privacy policy; when that connector is not in the session, the briefing says so and skips the block. Not in the default list |
+| `today_calendar` | judgement | today's events from the calendar connector of your own session, with the calendar source's filters (of other people's events, only what they share with others counts); when that connector is not in the session, the briefing says so and skips the block. Not in the default list |
 
 A fact block is filled by the kit, in the vault's language, and the model only presents
 it. A judgement block is an instruction the model follows, with the paths it may read.
@@ -325,8 +325,11 @@ The prompt is `lang/<code>/prompts/briefing.md` in the vault's language, or the 
 own overlay at `briefing.prompt` (`.brain-kit/prompts/briefing.md` by default) when that
 file exists. An overlay outside the vault is refused. Its placeholders are
 `{{signature}}`, `{{today_human}}`, `{{today_iso}}`, `{{kit}}`, `{{vault}}`, `{{blocks}}`,
-`{{read}}`, `{{never_read}}`, `{{limits}}`, `{{log}}`, `{{capture_marker}}`, `{{agent}}` and
-`{{now_iso}}`.
+`{{read}}`, `{{never_read}}`, `{{limits}}`, `{{log}}`, `{{capture_marker}}`, `{{agent}}`,
+`{{now_iso}}` and `{{privacy_policy}}`, what the briefing may record about personal and
+sensitive subjects: the vault's `privacy.sensitive` and `privacy.never_topics`, rendered as
+the curate prompt renders them, in the section on recording ([security.md](security.md),
+"What the curator records").
 
 The desktop task's session does not start in the vault (see [The desktop task](#the-desktop-task)),
 and every kit command finds its vault from the working directory. So in the briefing

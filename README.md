@@ -414,8 +414,9 @@ git, the gate and `core.hooksPath`, `brain-kit` on PATH, the configuration, the 
 real CLI and knows every flag that isolates a round, the projects its transcripts come
 from, how far behind each source's watermark is, the last round (a round that exits 0 in
 seconds without a model turn is reported as dead), the timer and its next fire times, and
-whether a failed round reaches you or only the log; and, since phase 3, whether lint has
-privacy keywords to refuse on added lines, anything a round may reach beyond the vault,
+whether a failed round reaches you or only the log; what the curator records about personal
+and sensitive subjects, in one line (`privacy-policy`); and, since phase 3, whether lint has
+privacy keywords to refuse on added lines (none by default), anything a round may reach beyond the vault,
 and each connector source: off or on, the state the last round saw with its date, a tool
 prefix that does not match, other people's calendars without recorded consent, and a
 user rule that refuses connector mode. `doctor --only connectors --probe` asks the CLI for
@@ -441,7 +442,7 @@ that found nothing.
 | `tables` | table shape: the blank line before a table, duplicate rows, overlong cells |
 | `style` | characters the configuration forbids, on the lines a change added |
 | `secrets` | credential shapes and configured patterns, in every file a push could publish, dot-files such as `.env` included |
-| `privacy` | confidential notes stay in confidential directories and are not linked from shared ones, and a line a change adds holds none of the terms in `privacy.third_party_keywords` (someone else's health or private life) |
+| `privacy` | confidential notes stay in confidential directories and are not linked from shared ones, and a line a change adds holds none of the terms in `privacy.third_party_keywords` (a list you set; empty by default) |
 | `attribution` | a note's sources and its footnotes anchor each other |
 
 `--rule` restricts the run to named rules, `--base` chooses what counts as the change
@@ -568,6 +569,42 @@ propose again, visible in its diff, nothing lost), and only when the task's work
 directory is a project listed in `sources.transcripts.include_projects`. The round's log
 line `plan` counts the sessions it left out as the kit's own, under `selfTrace`;
 [docs/briefing.md](docs/briefing.md), "Which sessions the curator skips", has the details.
+
+## Privacy: what the curator saves
+
+By default the curator saves everything your sessions, calendar and meeting notes teach the
+vault, personal and sensitive information included (health, family, relationships,
+finances, anything intimate), yours and other people's: nothing is left out or shortened
+because it seems sensitive. That is why the vault's repository must stay private, and
+`init` refuses a vault whose repository would not be.
+
+To save less, set `privacy.sensitive` in `brain-kit.config.json`. It gives a level to each of
+three audiences: `owner` (you), `people` (anyone who already has a note in the vault: team,
+family, mentors) and `outsiders` (everyone else: clients, prospects, strangers). The levels
+are `save` (record normally), `summary` (record that the subject came up and what was
+decided or agreed, without the intimate details) and `skip` (leave it out, without saying
+so). `privacy.never_topics` lists subjects never recorded for anyone, whatever the levels
+say. For example, beside the keys the `privacy` section already holds:
+
+```json
+"privacy": {
+  "sensitive": { "owner": "save", "people": "summary", "outsiders": "skip" },
+  "never_topics": ["health", "legal cases"]
+}
+```
+
+A configuration without these keys saves everything. Every round prints the policy it
+applied in one line, and so do `brain-kit curate --dry` and `brain-kit doctor` (check
+`privacy-policy`). The scheduled round, the `curate-session` and `capture` skills and the
+morning briefing all follow it.
+
+Two limits, said plainly. The policy is an instruction to a model, not a guarantee: no code
+checks what a round wrote against the levels, and you see what it wrote in the pull request
+before you merge it. For a phrase that must never get in, list it in
+`privacy.third_party_keywords`, empty by default: `lint`, and so `propose`, refuses a line a
+change adds that holds one. And the policy controls what is written into the vault, not
+what the model reads: a round still reads every session, event and document its sources
+offer. [docs/security.md](docs/security.md), "What the curator records", has the rest.
 
 ## The Claude Code plugin
 

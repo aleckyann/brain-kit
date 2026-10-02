@@ -1,7 +1,7 @@
 ---
 type: guide
 title: Security and personal data
-description: How this vault treats data about third parties, how to remove it on request, and what to do if a secret gets in.
+description: What the curator saves by default, how this vault treats data about third parties, how to remove it on request, and what to do if a secret gets in.
 generated:
   by: process:brain-kit-init
   at: 2026-09-22T00:00:00+00:00
@@ -9,9 +9,13 @@ generated:
 
 # Security and personal data
 
+## What the curator saves
+
+By default the curator saves everything it learns, personal and sensitive information included (health, family, relationships, finances, anything intimate), yours and other people's. To save less, set `privacy.sensitive` in `brain-kit.config.json`, giving each of `owner`, `people` and `outsiders` one of `save`, `summary` or `skip`, and list in `privacy.never_topics` the subjects never to record. That setting is an instruction to the curator, not a guarantee: read each pull request before you merge it.
+
 ## Third-party data
 
-[people/](people/index.md) holds notes about other people: what they said, what they care about, how you work together. That is personal data about someone who never agreed to be written about. Keep it to what you need, keep this repository private, and never copy a note about a person into anything shared.
+[people/](people/index.md) holds notes about other people: what they said, what they care about, how you work together. That is personal data about someone who never agreed to be written about, and by default the curator records it in full, sensitive subjects included. Keep this repository private, and never copy a note about a person into anything shared.
 
 ## Removal on request
 
@@ -20,6 +24,7 @@ When someone asks to be removed:
 1. Delete their note and every mention of them in other notes and in the log.
 2. Open a pull request with the removal, and merge it.
 3. If the repository was ever shared or published, the data is still in its history: rewrite the history or recreate the repository, and ask anyone holding a copy to delete it.
+4. The curator records again whatever a session, an event or a document it reads still holds. To keep that person's sensitive subjects out from then on, set `privacy.sensitive.people` (or `outsiders`) to `skip`, or list the subject in `privacy.never_topics`; the step-by-step page below says what else keeps it from coming back.
 
 ## If a secret gets in
 

@@ -351,7 +351,12 @@ found and what you did.
    - `sources.calendar.enabled` and `sources.meeting_notes.enabled` turn a source off. Under
      `sources.calendar`, `calendars` and `team_calendars` choose which calendars are read, and
      someone else's calendar is read only while `team_authorization` records who allowed it.
-   - `privacy.third_party_keywords` is a list of phrases. `lint` refuses a line a change adds
+   - `privacy.sensitive` and `privacy.never_topics` decide what the curator records about
+     personal and sensitive subjects, and by default it records everything. Set the
+     person's audience to `skip` (`people` when they have a note in the vault, `outsiders`
+     when not), or list the subject in `privacy.never_topics`. Both are an instruction to the
+     model, not a filter: keep reading what each round proposes.
+   - `privacy.third_party_keywords` is a list of phrases, empty by default. `lint` refuses a line a change adds
      that holds one, and `propose` runs `lint`, so a round cannot publish such a line. It
      matches the phrase literally, so it stops a topic you name, not a person. The list lives
      in `brain-kit.config.json`, inside the repository: do not put the person's name in it if
@@ -536,8 +541,10 @@ you in an incident, can be an ordinary issue on the same terms.
    again. Write the date as DD/MM/YYYY. Do not write the secret or the data in it. Make it by
    pull request like any other change.
 2. If the cause was a shape the checks did not know, add it to `privacy.secret_patterns`; if it
-   was a phrase, add it to `privacy.third_party_keywords`; if the gate was not running,
-   fix that (`brain-kit doctor`). Run `brain-kit lint` again.
+   was a phrase, add it to `privacy.third_party_keywords`; if it was a kind of subject the
+   curator should not have recorded, set `privacy.sensitive` or add it to
+   `privacy.never_topics`; if the gate was not running, fix that (`brain-kit doctor`). Run
+   `brain-kit lint` again.
 3. If the cause is a gap in the kit, open an issue with a minimal example and no real data
    (a vulnerability goes to the advisory in section 8). The kit's own practice is the one to
    copy: each incident gets one regression test under `test/incidents/` and one entry in

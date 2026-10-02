@@ -1,7 +1,7 @@
 ---
 type: guide
 title: Segurança e dados pessoais
-description: Como este vault trata dados sobre terceiros, como removê-los a pedido e o que fazer se um segredo entrar.
+description: O que o curador guarda por padrão, como este vault trata dados sobre terceiros, como removê-los a pedido e o que fazer se um segredo entrar.
 generated:
   by: process:brain-kit-init
   at: 2026-09-22T00:00:00+00:00
@@ -9,9 +9,13 @@ generated:
 
 # Segurança e dados pessoais
 
+## O que o curador guarda
+
+Por padrão o curador guarda tudo o que aprende, inclusive informação pessoal e sensível (saúde, família, relacionamentos, finanças, qualquer coisa íntima), a sua e a de outras pessoas. Para guardar menos, ajuste `privacy.sensitive` no `brain-kit.config.json`, dando a cada um de `owner`, `people` e `outsiders` um destes níveis: `save`, `summary` ou `skip`, e liste em `privacy.never_topics` os assuntos que nunca devem ser registrados. Essa configuração é uma instrução para o curador, não uma garantia: leia cada pull request antes de fazer o merge.
+
 ## Dados de terceiros
 
-[pessoas/](pessoas/index.md) guarda notas sobre outras pessoas: o que disseram, o que importa para elas, como vocês trabalham juntos. São dados pessoais de alguém que nunca autorizou ser descrito. Guarde só o necessário, mantenha este repositório privado e nunca copie uma nota sobre uma pessoa para algo compartilhado.
+[pessoas/](pessoas/index.md) guarda notas sobre outras pessoas: o que disseram, o que importa para elas, como vocês trabalham juntos. São dados pessoais de alguém que nunca autorizou ser descrito, e por padrão o curador os registra por inteiro, inclusive os assuntos sensíveis. Mantenha este repositório privado e nunca copie uma nota sobre uma pessoa para algo compartilhado.
 
 ## Remoção a pedido
 
@@ -20,6 +24,7 @@ Quando alguém pedir para ser removido:
 1. Apague a nota da pessoa e toda menção a ela em outras notas e no log.
 2. Abra um pull request com a remoção e faça o merge.
 3. Se o repositório já foi compartilhado ou publicado, o dado continua no histórico: reescreva o histórico ou recrie o repositório, e peça a quem tiver uma cópia que a apague.
+4. O curador volta a registrar o que uma sessão, um evento ou um documento que ele lê ainda tiver. Para deixar de fora os assuntos sensíveis dessa pessoa daí em diante, ajuste `privacy.sensitive.people` (ou `outsiders`) para `skip`, ou liste o assunto em `privacy.never_topics`; a página passo a passo abaixo diz o que mais impede que isso volte.
 
 ## Se um segredo entrar
 

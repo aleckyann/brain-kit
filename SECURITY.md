@@ -6,6 +6,10 @@ choices that follow from that are documented in `docs/rationale.md`; the operati
 have landed with the code (allowlist per subcommand, no credentials in the vault,
 machine-specific paths and executables kept outside the repository, lint for secrets and
 privacy on the write path), and `docs/security.md` says what isolates the curator's model.
+By default the curator records everything it learns, personal and sensitive information
+included, the owner's and other people's; a vault's `privacy.sensitive` and
+`privacy.never_topics` limit what it records, as an instruction to the model, not a
+guarantee (`docs/security.md`, "What the curator records").
 
 Report a vulnerability through a private security advisory on GitHub (Security tab of the
 repository). Do not open a public issue for a secret or a leak.
