@@ -524,6 +524,7 @@
   "doctor.time_cap.unusable": "{setting} in {file} is {value}, and no round runs with that limit: set a number of minutes above 0 and at most {max}, or null for no limit.",
   "doctor.privacy_keywords.ok": "lint refuses a line a change adds that holds one of the {count} keyword(s) in {setting}",
   "doctor.privacy_keywords.off": "no keywords set in {setting}; the backstop is off, so lint refuses no added line for holding a phrase. To have lint refuse an added line that holds a phrase, whatever the curator was told, list the phrases there.",
+  "doctor.privacy_keywords.legacy": "{setting} in {file} is still the list of {count} phrases the language pack shipped until 02/10/2026, which init or adopt wrote and nobody chose: {phrases}. lint refuses any line a change adds that holds one, which fights privacy.sensitive at save: a round told to record a health subject normally cannot propose that line. Clear the list ([]) for the default to hold, or edit it to keep a list of your own; an edited list is a choice, and this check says nothing of it.",
   "doctor.privacy_policy.ok": "{policy}",
   "doctor.privacy_policy.bad_level": "{setting} in {file} is {value}, which is not a level: use one of {levels}. Until it is one, no round runs, and the skills do not know what to record.",
   "doctor.privacy_policy.bad_audience": "{setting} in {file} names no audience the kit knows: the three are {audiences}, each set to one of {levels}.",

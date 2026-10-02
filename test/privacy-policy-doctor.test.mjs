@@ -16,9 +16,11 @@ import { createTranslator } from '../src/lang.mjs';
 import { runDoctor } from '../src/commands/doctor.mjs';
 import { CHECK_IDS } from '../src/doctor/checks.mjs';
 import { privacyLine } from '../src/privacy-policy.mjs';
+import { LEGACY_PACK_KEYWORDS } from '../src/rules/privacy-keywords.mjs';
 import { makeVault } from './helpers/vault-fixture.mjs';
 import { makeTempDir } from './helpers/tmp.mjs';
 import { oldTemplate } from './helpers/privacy-old-rule.mjs';
+import { LEGACY_KEYWORDS } from './helpers/privacy-keywords.mjs';
 
 const LANGS = ['pt-BR', 'en'];
 
@@ -130,3 +132,66 @@ test('the text report shows the warning line, and --only lists the ok line with 
   const ok = await doctor(vaultWith('en'), { json: false });
   assert.match(ok.out, /privacy-policy {2}Privacy \(privacy\.sensitive in brain-kit\.config\.json\): owner=save, people=save, outsiders=save/, '--only lists the line it names');
 });
+
+// --- privacy-keywords and the list init wrote before 02/10/2026 (fix round 1, M1) ---
+//
+// Every vault init or adopt made until 02/10/2026 lists the eight phrases its
+// pack shipped, and nobody chose them: under the new default, a round told to
+// record a health subject normally cannot propose the line, since lint refuses
+// it. So privacy-keywords warns while the list is still exactly a pack's (as a
+// set) and any audience is at save; an edited list is the person's choice.
+
+async function keywords(root) {
+  let out = '';
+  const io = { stdout: { write: (s) => { out += s; } }, stderr: { write: () => {} } };
+  const env = { ...process.env, BRAIN_KIT_LANG: 'en', BRAIN_KIT_STATE_DIR: makeTempDir('brain-kit-privacy-doctor-state-') };
+  const code = await runDoctor(['--json', '--only', 'privacy-keywords', root], io, createTranslator('en'), { env, cwd: root });
+  const [line] = JSON.parse(out).checks;
+  return { code, line };
+}
+
+// The lists as a person reads them, accents and all: the single source in src
+// spells them with escapes, since src stays ASCII.
+const SHIPPED = {
+  en: ['medical appointment', 'doctor\'s appointment', 'sick leave', 'teleconsultation', 'therapy session', 'medical exam', 'hospital stay', 'pregnancy'],
+  'pt-BR': ['consulta médica', 'atestado médico', 'licença médica', 'teleconsulta', 'sessão de terapia', 'exame médico', 'internação', 'gravidez'],
+};
+
+test('the lists the packs shipped until 02/10/2026 have one source, in src, and it holds them as a person reads them', () => {
+  assert.deepEqual(LEGACY_PACK_KEYWORDS, SHIPPED);
+  assert.deepEqual(LEGACY_KEYWORDS, SHIPPED, 'the test helper is that source, not a copy');
+});
+
+for (const lang of LANGS) {
+  test(`${lang}: the list a pack shipped, still in the vault while an audience is at save, warns, naming the phrases and the two ways out`, async () => {
+    for (const listed of [SHIPPED[lang], [...SHIPPED[lang]].reverse(), [...SHIPPED[lang], SHIPPED[lang][0]]]) {
+      const { code, line } = await keywords(vaultWith(lang, { third_party_keywords: listed }));
+      assert.equal(code, EXIT.OK, 'a warning, never a failure');
+      assert.equal(line.status, 'warn', JSON.stringify(line));
+      assert.equal(line.messageKey, 'doctor.privacy_keywords.legacy');
+      for (const phrase of SHIPPED[lang]) assert.ok(line.message.includes(`"${phrase}"`), `${lang}: ${phrase}: ${line.message}`);
+      assert.match(line.message, lang === 'en'
+        ? /^privacy\.third_party_keywords in brain-kit\.config\.json is still the list of 8 phrases the language pack shipped until 02\/10\/2026, which init or adopt wrote and nobody chose: .*Clear the list \(\[\]\) for the default to hold, or edit it to keep a list of your own; an edited list is a choice, and this check says nothing of it\.$/
+        : /^privacy\.third_party_keywords em brain-kit\.config\.json ainda é a lista das 8 expressões que o pacote de idioma trazia até 02\/10\/2026, escrita pelo init ou pelo adopt e que ninguém escolheu: .*Esvazie a lista \(\[\]\) para o padrão valer, ou edite-a para manter uma lista sua; uma lista editada é uma escolha, e esta verificação não fala dela\.$/);
+    }
+    // Any audience at save is enough: the owner's own health is the incident.
+    const owner = await keywords(vaultWith(lang, { third_party_keywords: SHIPPED[lang], sensitive: { owner: 'save', people: 'skip', outsiders: 'skip' } }));
+    assert.equal(owner.line.status, 'warn');
+  });
+
+  test(`${lang}: a list the person changed in any way, or one kept with no audience at save, is ok with its count`, async () => {
+    const changed = [
+      SHIPPED[lang].slice(1),
+      [...SHIPPED[lang], 'parental leave'],
+      [...SHIPPED[lang].slice(1), `${SHIPPED[lang][0]}s`],
+    ];
+    for (const listed of changed) {
+      const { line } = await keywords(vaultWith(lang, { third_party_keywords: listed }));
+      assert.equal(line.status, 'ok', JSON.stringify(listed));
+      assert.equal(line.messageKey, 'doctor.privacy_keywords.ok');
+      assert.equal(line.params.count, new Set(listed).size);
+    }
+    const chosen = await keywords(vaultWith(lang, { third_party_keywords: SHIPPED[lang], sensitive: { owner: 'summary', people: 'skip', outsiders: 'skip' } }));
+    assert.equal(chosen.line.status, 'ok', 'no audience at save: the list agrees with the limits set');
+  });
+}

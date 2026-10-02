@@ -4,7 +4,6 @@
 // that refused a line holding a health word would fight that default. A vault
 // made before then keeps its list, and lint keeps refusing on it, so the tests
 // of that backstop list these phrases explicitly instead of reading the packs.
-export const LEGACY_KEYWORDS = Object.freeze({
-  en: Object.freeze(['medical appointment', 'doctor\'s appointment', 'sick leave', 'teleconsultation', 'therapy session', 'medical exam', 'hospital stay', 'pregnancy']),
-  'pt-BR': Object.freeze(['consulta médica', 'atestado médico', 'licença médica', 'teleconsulta', 'sessão de terapia', 'exame médico', 'internação', 'gravidez']),
-});
+// Their one source is src/rules/privacy-keywords.mjs, which doctor reads to
+// tell such a list from one a person chose (fix round 1, M1).
+export { LEGACY_PACK_KEYWORDS as LEGACY_KEYWORDS } from '../../src/rules/privacy-keywords.mjs';

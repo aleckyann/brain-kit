@@ -45,9 +45,11 @@ const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
 // A clone address is not an e-mail address: the sign is joined at run time so the
 // scan of tracked files (test/no-leak.test.mjs) does not read it as one.
 const AT = '@';
-// The list the en pack shipped until 02/10/2026, when the packs' default
-// became an empty list: a vault made before then keeps it.
-const PACK_KEYWORDS = LEGACY_KEYWORDS.en;
+// A list a person chose: three of the phrases the en pack shipped until
+// 02/10/2026, when the packs' default became an empty list. The pack's whole
+// list, unchanged, is not a choice, and privacy-keywords warns about it
+// (test/privacy-policy-doctor.test.mjs); this fixture is a ready vault.
+const PACK_KEYWORDS = LEGACY_KEYWORDS.en.slice(0, 3);
 const TEMPLATE_HOOK = join(KIT_ROOT, 'templates', 'githooks', 'pre-push');
 const A_ACUTE = String.fromCodePoint(0xc1);
 // A localised desktop folder, and a vault name carrying both quotes.
@@ -165,8 +167,7 @@ function fixtureGit(cwd, args, home) {
 // The fixture configuration, made ready for phase 3: the connector sources
 // are off on purpose (the fixture's calendar lists a calendar with no
 // `enabled`, the upgrade case a round reports as half configured), and the
-// privacy keywords are the list the en pack shipped until 02/10/2026, set
-// explicitly, as a vault made before then keeps it.
+// privacy keywords are a list the person chose (PACK_KEYWORDS above).
 function baseConfig() {
   const config = JSON.parse(readFileSync(join(KIT_ROOT, 'test', 'fixtures', 'config', 'valid.json'), 'utf8'));
   config.kit_version = kitVersion();

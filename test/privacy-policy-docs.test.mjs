@@ -200,3 +200,19 @@ test('the CHANGELOG calls it a change of default, says why, and how to get the o
   const prose = unreleased.replace(/`[^`]*`/g, '');
   assert.doesNotMatch(prose, /<[A-Za-z!/]/);
 });
+
+// Fix round 1, M1: the example shows what init writes now, never the list the
+// pack used to ship, which doctor would warn about.
+test('the example vault\'s configuration carries the privacy keys init writes now, and no keyword list', () => {
+  const { privacy } = JSON.parse(read('examples/minimal-vault/brain-kit.config.json'));
+  assert.deepEqual(privacy.sensitive, { owner: 'save', people: 'save', outsiders: 'save' });
+  assert.deepEqual(privacy.never_topics, []);
+  assert.deepEqual(privacy.third_party_keywords, []);
+});
+
+test('the CHANGELOG tells a person upgrading about the list init wrote before, and what doctor now says of it', () => {
+  const unreleased = norm(section(read('CHANGELOG.md'), '## Unreleased'));
+  assert.match(unreleased, /Upgrading a vault made before this change/);
+  assert.match(unreleased, /`brain-kit doctor` \(check `privacy-keywords`\) now warns/);
+  assert.match(unreleased, /clear it \(`\[\]`\) for the default to hold, or edit it to keep it as your choice/);
+});

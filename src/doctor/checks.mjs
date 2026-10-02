@@ -61,7 +61,7 @@ import { checkIsolation } from '../guards/isolation.mjs';
 import { CONNECTOR_STATES, connectorStateMessage, connectorStates } from '../guards/connectors.mjs';
 import { blockingMessage, userSettingsFiles } from '../curate/user-rules.mjs';
 import { unsafeRuleCharacters } from '../curate/rule-path.mjs';
-import { keywordMatchers } from '../rules/privacy-keywords.mjs';
+import { LEGACY_PACK_KEYWORDS, keywordMatchers, legacyPackList } from '../rules/privacy-keywords.mjs';
 import { SOURCES } from '../sources/index.mjs';
 import { addDays, daysBetween, localDay, readWatermark, WatermarkError } from '../guards/watermark.mjs';
 // A cycle on purpose: schedule.mjs imports resolveClaude and expandHome
@@ -85,7 +85,7 @@ import { BLOCKED_BY_USER_RULES, chooseMode, MAX_TIMEOUT_MINUTES, offOnPurpose, o
 // privacy-policy check (02/10/2026).
 import { curatePromptSource, packCuratePrompt, promptOutsideVault, ruleMarker } from '../commands/prompt.mjs';
 import {
-  PRIVACY_AUDIENCES, PRIVACY_LEVELS, PRIVACY_PLACEHOLDER, PRIVACY_RULE, overlayPrivacyRule, privacyLineMessage, privacyProblems,
+  PRIVACY_AUDIENCES, PRIVACY_LEVELS, PRIVACY_PLACEHOLDER, PRIVACY_RULE, overlayPrivacyRule, privacyLevels, privacyLineMessage, privacyProblems,
 } from '../privacy-policy.mjs';
 
 export const HOOKS_DIR = '.githooks';
@@ -1496,7 +1496,12 @@ function privacyProblemResult(id, problem) {
 // (privacy.sensitive, the check privacy-policy), and a list that refused a
 // line naming someone's health would fight that default. So the list is a
 // backstop a person turns on, and none listed is ok, said as such; a list
-// set is ok too, with how many phrases lint refuses.
+// set is ok too, with how many phrases lint refuses. One list is not a
+// choice (fix round 1, M1): the very list a pack shipped, which init and adopt
+// wrote into every vault they made until then. While it is there and any
+// audience is at save, a round told to record a health subject normally
+// cannot propose the line, so it warns, naming the phrases; a list the person
+// changed in any way is theirs, and says nothing.
 function privacyKeywords(ctx) {
   const id = 'privacy-keywords';
   const read = ctx.config();
@@ -1506,6 +1511,11 @@ function privacyKeywords(ctx) {
   const setting = 'privacy.third_party_keywords';
   const count = keywordMatchers(read.value).length;
   if (count === 0) return { id, status: 'ok', messageKey: 'doctor.privacy_keywords.off', params: { setting } };
+  const shipped = legacyPackList(read.value);
+  if (shipped !== null && Object.values(privacyLevels(read.value)).includes('save')) {
+    const phrases = LEGACY_PACK_KEYWORDS[shipped].map((phrase) => JSON.stringify(phrase));
+    return { id, status: 'warn', messageKey: 'doctor.privacy_keywords.legacy', params: { setting, file: CONFIG_FILENAME, count: phrases.length, phrases } };
+  }
   return { id, status: 'ok', messageKey: 'doctor.privacy_keywords.ok', params: { count, setting } };
 }
 

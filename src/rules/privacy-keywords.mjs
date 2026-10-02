@@ -79,6 +79,30 @@ function literal(text) {
   return text.replace(REGEXP_SYNTAX, '\\$&');
 }
 
+// The lists each language pack shipped in privacy.third_party_keywords until
+// 02/10/2026, which init and adopt wrote into every vault they made: the one
+// source of them (the tests import it). The Portuguese phrases are spelt
+// with escapes, so this file stays ASCII; test/privacy-policy-doctor.test.mjs
+// holds them to the phrases as a person reads them.
+export const LEGACY_PACK_KEYWORDS = Object.freeze({
+  en: Object.freeze(['medical appointment', "doctor's appointment", 'sick leave', 'teleconsultation', 'therapy session', 'medical exam', 'hospital stay', 'pregnancy']),
+  'pt-BR': Object.freeze(['consulta m\u00e9dica', 'atestado m\u00e9dico', 'licen\u00e7a m\u00e9dica', 'teleconsulta', 'sess\u00e3o de terapia', 'exame m\u00e9dico', 'interna\u00e7\u00e3o', 'gravidez']),
+});
+
+// The language whose shipped list the configuration still holds, compared as
+// a set (in any order, a phrase repeated or not, each read composed), or
+// null. A list changed in any way (a phrase added, removed or reworded) is the
+// person's choice, and so is not one of these.
+export function legacyPackList(config) {
+  const listed = config?.privacy?.third_party_keywords;
+  if (!Array.isArray(listed) || !listed.every((entry) => typeof entry === 'string')) return null;
+  const held = new Set(listed.map((entry) => entry.normalize('NFC')));
+  for (const [lang, phrases] of Object.entries(LEGACY_PACK_KEYWORDS)) {
+    if (held.size === phrases.length && phrases.every((phrase) => held.has(phrase))) return lang;
+  }
+  return null;
+}
+
 // The configured keywords, each beside the expression that finds it, in
 // the order the configuration lists them; [] when it lists none usable.
 export function keywordMatchers(config) {

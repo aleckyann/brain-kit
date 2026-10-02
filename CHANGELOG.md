@@ -59,6 +59,13 @@
   listed, a whole-vault `lint` adds no line about keywords, and a clean new vault still gets
   `init`'s one line for its checks. The keyword finding no longer says another person's health
   is never content, a rule the kit no longer holds.
+- Upgrading a vault made before this change: `init` and `adopt` wrote the pack's eight phrases
+  into `privacy.third_party_keywords`, and `update` adds and removes no key, so the list is
+  still there and `lint` refuses a line a change adds that holds one, which a round told to
+  record a health subject normally cannot get past. `brain-kit doctor` (check
+  `privacy-keywords`) now warns while the list is still exactly one a pack shipped and any
+  audience is at `save`, naming the phrases: clear it (`[]`) for the default to hold, or edit
+  it to keep it as your choice. A list changed in any way is a choice, and gets no warning.
 - The calendar source's privacy line keeps which events of someone else's calendar count and
   defers to the setting for what is written about them, the owner's own included: it used to
   say that nothing about anyone's private life is ever written. The morning briefing's
