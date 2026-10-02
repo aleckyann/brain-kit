@@ -194,7 +194,16 @@
         "keyword_exempt_paths": { "type": "array", "items": { "type": "string", "minLength": 1 } },
         "third_party_data_acknowledged": { "type": "boolean" },
         "retention_note": { "type": "string" },
-        "audiences": { "type": "object" }
+        "audiences": { "type": "object" },
+        "sensitive": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "owner": { "enum": ["save", "summary", "skip"] },
+            "people": { "enum": ["save", "summary", "skip"] },
+            "outsiders": { "enum": ["save", "summary", "skip"] }
+          }
+        },
+        "never_topics": { "type": "array", "items": { "type": "string", "pattern": "\\S" } }
       }
     },
     "git": {

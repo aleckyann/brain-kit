@@ -179,6 +179,8 @@ function allSites() {
     ...extractRuleMessageSites(readSrc('src/guards/isolation.mjs'), 'src/guards/isolation.mjs'),
     // The question queue's own lock refusals (task 2, fix round 1).
     ...extractRuleMessageSites(readSrc('src/briefing/questions.mjs'), 'src/briefing/questions.mjs'),
+    // The privacy policy's line, as doctor renders it (02/10/2026).
+    ...extractRuleMessageSites(readSrc('src/privacy-policy.mjs'), 'src/privacy-policy.mjs'),
   ];
   const direct = [
     ...extractTranslatorCallSites(readSrc('src/cli.mjs'), 'src/cli.mjs'),
@@ -208,6 +210,8 @@ function allSites() {
     // Phase 4, task 3: the briefing's blocks, rendered in the vault's language.
     ...extractTranslatorCallSites(readSrc('src/briefing/blocks.mjs'), 'src/briefing/blocks.mjs'),
     ...extractTranslatorCallSites(readSrc('src/sources/calendar-google.mjs'), 'src/sources/calendar-google.mjs'),
+    // The privacy policy's sentences and its one line (02/10/2026).
+    ...extractTranslatorCallSites(readSrc('src/privacy-policy.mjs'), 'src/privacy-policy.mjs'),
   ];
   return [...rule, ...direct];
 }
