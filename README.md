@@ -577,8 +577,9 @@ vault, personal and sensitive information included (health, family, relationship
 finances, anything intimate), yours and other people's: nothing is left out or shortened
 because it seems sensitive. That is why the vault's repository must stay private, and
 `init` refuses a vault whose repository would not be. Under privacy laws such as the LGPD
-and the GDPR, what the vault holds about other people is personal data, and their health,
-sex life, religious beliefs or political opinions are sensitive personal data; as the
+and the GDPR, what the vault holds about other people is personal data, and data about their
+health, sex life, religious beliefs or political opinions, among other categories these laws
+list, are sensitive personal data; as the
 vault's owner you answer for keeping them, so record about others what you have a reason
 to keep.
 

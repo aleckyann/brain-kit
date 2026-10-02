@@ -80,7 +80,7 @@ const READMES = {
       /the policy controls what is written into the vault, not what the model reads/,
       /`privacy\.third_party_keywords`, empty by default/,
       // Fix round 1, M2: the law, in one sentence.
-      /Under privacy laws such as the LGPD and the GDPR, what the vault holds about other people is personal data, and their health, sex life, religious beliefs or political opinions are sensitive personal data; as the vault's owner you answer for keeping them, so record about others what you have a reason to keep\./,
+      /Under privacy laws such as the LGPD and the GDPR, what the vault holds about other people is personal data, and data about their health, sex life, religious beliefs or political opinions, among other categories these laws list, are sensitive personal data; as the vault's owner you answer for keeping them, so record about others what you have a reason to keep\./,
     ],
     never: [/`brain-kit doctor` \(check/, /never recorded for anyone/],
   },
@@ -104,7 +104,7 @@ const READMES = {
       /A política é uma instrução para um modelo, não uma garantia/,
       /a política controla o que é escrito no vault, não o que o modelo lê/,
       /`privacy\.third_party_keywords`, vazia por padrão/,
-      /Para leis de privacidade como a LGPD e o GDPR, o que o vault guarda sobre outras pessoas é dado pessoal, e a saúde, a vida sexual, a convicção religiosa ou a opinião política delas são dados pessoais sensíveis; como dono do vault, é você quem responde por guardá-los, então registre dos outros o que você tem motivo para guardar\./,
+      /Para leis de privacidade como a LGPD e o GDPR, o que o vault guarda sobre outras pessoas é dado pessoal, e os dados sobre a saúde, a vida sexual, a convicção religiosa ou a opinião política delas, entre outras categorias que essas leis listam, são dados pessoais sensíveis; como dono do vault, é você quem responde por guardá-los, então registre dos outros o que você tem motivo para guardar\./,
     ],
     never: [/`brain-kit doctor` \(verificação/, /registrados para ninguém/, /cujo repositório não seria/, /contra os níveis/],
   },
@@ -150,7 +150,7 @@ const TEMPLATES = {
     /set `privacy\.sensitive` in `brain-kit\.config\.json`/,
     /That setting is an instruction to the curator, not a guarantee/,
     // Fix round 1, M2: the law in one sentence, and the minimisation line back.
-    /by default the curator records it in full, sensitive subjects included\. Under privacy laws such as the LGPD and the GDPR, their health, sex life, religious beliefs or political opinions are sensitive personal data, and you, as the vault's owner, answer for keeping them\. Keep it to what you need, keep this repository private, and never copy a note about a person into anything shared\./,
+    /by default the curator records it in full, sensitive subjects included\. Under privacy laws such as the LGPD and the GDPR, data about their health, sex life, religious beliefs or political opinions, among other categories these laws list, are sensitive personal data, and you, as the vault's owner, answer for keeping them\. Keep it to what you need, keep this repository private, and never copy a note about a person into anything shared\./,
     // Fix round 1, m5: step 1 deleted the note, so the person is an outsider now.
     /4\. The curator records again whatever a session, an event or a document it reads still holds\. Their note is gone, so they count as `outsiders`: to keep their sensitive subjects out from then on, set `privacy\.sensitive\.outsiders` to `skip` \(it applies to everyone without a note\), or list the subject in `privacy\.never_topics`/,
   ],
@@ -158,7 +158,7 @@ const TEMPLATES = {
     /## O que o curador guarda\n\nPor padrão o curador guarda tudo o que aprende, inclusive informação pessoal e sensível \(saúde, família, relacionamentos, finanças, qualquer coisa íntima\), a sua e a de outras pessoas\./,
     /ajuste `privacy\.sensitive` no `brain-kit\.config\.json`/,
     /Essa configuração é uma instrução para o curador, não uma garantia/,
-    /por padrão o curador os registra por inteiro, inclusive os assuntos sensíveis\. Para leis de privacidade como a LGPD e o GDPR, a saúde, a vida sexual, a convicção religiosa ou a opinião política dessa pessoa são dados pessoais sensíveis, e quem responde por guardá-los é você, como dono do vault\. Guarde só o necessário, mantenha este repositório privado e nunca copie uma nota sobre uma pessoa para algo compartilhado\./,
+    /por padrão o curador os registra por inteiro, inclusive os assuntos sensíveis\. Para leis de privacidade como a LGPD e o GDPR, os dados sobre a saúde, a vida sexual, a convicção religiosa ou a opinião política dessa pessoa, entre outras categorias que essas leis listam, são dados pessoais sensíveis, e quem responde por guardá-los é você, como dono do vault\. Guarde só o necessário, mantenha este repositório privado e nunca copie uma nota sobre uma pessoa para algo compartilhado\./,
     /4\. O curador volta a registrar o que uma sessão, um evento ou um documento que ele lê ainda tiver\. A nota da pessoa foi apagada, então ela conta como `outsiders`: para deixar de fora os assuntos sensíveis dela daí em diante, ajuste `privacy\.sensitive\.outsiders` para `skip` \(vale para todos que não têm nota\), ou liste o assunto em `privacy\.never_topics`/,
   ],
 };
@@ -187,7 +187,7 @@ test('docs/security.md says what the curator records, and what that setting is n
     /set `people` and `outsiders` to `skip`/,
     /`update` never rewrites it/,
     // Fix round 1, M2: the law, in one sentence.
-    /Under privacy laws such as the LGPD and the GDPR, what a vault holds about other people is personal data, and their health, sex life, religious beliefs or political opinions are sensitive personal data; the vault's owner answers for keeping them, and the default keeps them all\./,
+    /Under privacy laws such as the LGPD and the GDPR, what a vault holds about other people is personal data, and data about their health, sex life, religious beliefs or political opinions, among other categories these laws list, are sensitive personal data; the vault's owner answers for keeping them, and the default keeps them all\./,
     // m8: an instruction, not a filter of the code.
     /the prompt tells the model never to write one that does not count, whatever the setting; only the event type is filtered in code/,
     // m2, m3, m10 and P2: what doctor and update say of a vault's own prompts.
@@ -249,7 +249,7 @@ test('docs/incidents.md records the decision of 02/10/2026, why the old rule exi
   assert.match(entry, /the default is to record everything/);
   assert.match(entry, /test\/incidents\/2026-10-02-owner-health-left-out\.test\.mjs/);
   // Fix round 1, m6: the closest setting is not the old behaviour.
-  assert.match(entry, /comes closest to the old behaviour, but no setting keeps the owner's own private events out as the old calendar and briefing clauses did/);
+  assert.match(entry, /comes closest to the old behaviour \(`doctor` warns about that exact list while `owner` is at `save`; add or remove a phrase and it is yours\), but no setting keeps the owner's own private events out as the old calendar and briefing clauses did/);
   assert.doesNotMatch(entry, /To get the old behaviour back/);
   const entries = scan(text).filter((l) => !l.fenced && l.line.startsWith('### ')).length;
   assert.equal(entries, 81);

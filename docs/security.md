@@ -227,8 +227,9 @@ What a round writes about personal and sensitive subjects (health, family, relat
 finances, anything intimate) is a setting of the vault, `privacy.sensitive` and
 `privacy.never_topics` in `brain-kit.config.json`, and by default it records everything, the
 owner's and other people's alike. Under privacy laws such as the LGPD and the GDPR, what a
-vault holds about other people is personal data, and their health, sex life, religious
-beliefs or political opinions are sensitive personal data; the vault's owner answers for
+vault holds about other people is personal data, and data about their health, sex life,
+religious beliefs or political opinions, among other categories these laws list, are sensitive
+personal data; the vault's owner answers for
 keeping them, and the default keeps them all. Each of three audiences, `owner`, `people`
 (anyone who already has a note in the vault) and `outsiders` (everyone else), takes `save`
 (record normally), `summary` (that the subject came up and what was decided or agreed,
@@ -284,7 +285,10 @@ audience is at `save`: clear it for the default to hold, or edit it to keep a li
 own.
 
 To come closest to what the kit did before 02/10/2026, set `people` and `outsiders` to `skip`
-and list those phrases in `privacy.third_party_keywords`. That does not bring all of it back:
+and list those phrases in `privacy.third_party_keywords`. `brain-kit doctor` warns about that
+exact list while `owner` is at `save` (lint would refuse the owner's own health lines too);
+add or remove one phrase and the list counts as yours, with no warning. That does not bring
+all of it back:
 the old calendar line and the old briefing calendar block kept everyone's private events out,
 the owner's own included, and no setting does that now. The owner's events are written by the
 `owner` level like anything else, and the briefing shows the owner the day's events whatever

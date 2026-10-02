@@ -15,7 +15,7 @@ Por padrão o curador guarda tudo o que aprende, inclusive informação pessoal 
 
 ## Dados de terceiros
 
-[pessoas/](pessoas/index.md) guarda notas sobre outras pessoas: o que disseram, o que importa para elas, como vocês trabalham juntos. São dados pessoais de alguém que nunca autorizou ser descrito, e por padrão o curador os registra por inteiro, inclusive os assuntos sensíveis. Para leis de privacidade como a LGPD e o GDPR, a saúde, a vida sexual, a convicção religiosa ou a opinião política dessa pessoa são dados pessoais sensíveis, e quem responde por guardá-los é você, como dono do vault. Guarde só o necessário, mantenha este repositório privado e nunca copie uma nota sobre uma pessoa para algo compartilhado.
+[pessoas/](pessoas/index.md) guarda notas sobre outras pessoas: o que disseram, o que importa para elas, como vocês trabalham juntos. São dados pessoais de alguém que nunca autorizou ser descrito, e por padrão o curador os registra por inteiro, inclusive os assuntos sensíveis. Para leis de privacidade como a LGPD e o GDPR, os dados sobre a saúde, a vida sexual, a convicção religiosa ou a opinião política dessa pessoa, entre outras categorias que essas leis listam, são dados pessoais sensíveis, e quem responde por guardá-los é você, como dono do vault. Guarde só o necessário, mantenha este repositório privado e nunca copie uma nota sobre uma pessoa para algo compartilhado.
 
 ## Remoção a pedido
 

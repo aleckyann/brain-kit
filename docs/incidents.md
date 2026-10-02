@@ -1289,15 +1289,17 @@ The setting reaches the model as plain sentences in the vault's language, and th
 says in so many words to record normally, health, family, relationships, finances and
 anything intimate included, about the owner and about others. Which events of someone
 else's calendar count stays a filter of the calendar source, and the rule says so in words
-that cannot be stretched again: a real model, run against a first wording that said
-"someone else's schedule ... an absence ... is never content", left a colleague's medical
-leave told in a meeting out of the log under `save` in most runs. The rule now says that the
+scoped to events listed from a calendar, which a real model followed in every run measured
+(02/10/2026): run against a first wording that said "someone else's schedule ... an absence
+... is never content", it left a colleague's medical leave told in a meeting out of the log
+under `save` in most runs. The rule now says that the
 setting covers everything recorded, whatever the source, including what one person tells
 about another, and that the calendar's limit is about events listed from someone else's
 calendar, never about what someone says in a session, a meeting or a document. Setting
 `people` and `outsiders` to `skip` and listing the phrases to refuse in
-`privacy.third_party_keywords` comes closest to the old behaviour, but no setting keeps the
-owner's own private events out as the old calendar and briefing clauses did
+`privacy.third_party_keywords` comes closest to the old behaviour (`doctor` warns about that
+exact list while `owner` is at `save`; add or remove a phrase and it is yours), but no setting
+keeps the owner's own private events out as the old calendar and briefing clauses did
 ([security.md](security.md), "What the curator records", lists the phrases).
 **Where it lives in brain-kit.** `privacy.sensitive` (`owner`, `people`, `outsiders`, each
 `save`, `summary` or `skip`) and `privacy.never_topics` in the configuration, rendered by

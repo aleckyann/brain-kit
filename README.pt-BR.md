@@ -588,8 +588,8 @@ relacionamentos, finanças, qualquer coisa íntima), a sua e a de outras pessoas
 de fora nem é resumido por parecer sensível. Por isso o repositório do vault precisa
 continuar privado, e o `init` recusa um vault cujo repositório não fosse privado. Para
 leis de privacidade como a LGPD e o GDPR, o que o vault guarda sobre outras pessoas é dado
-pessoal, e a saúde, a vida sexual, a convicção religiosa ou a opinião política delas são
-dados pessoais sensíveis; como dono do vault, é você quem responde por guardá-los, então
+pessoal, e os dados sobre a saúde, a vida sexual, a convicção religiosa ou a opinião política
+delas, entre outras categorias que essas leis listam, são dados pessoais sensíveis; como dono do vault, é você quem responde por guardá-los, então
 registre dos outros o que você tem motivo para guardar.
 
 Para guardar menos, ajuste `privacy.sensitive` no `brain-kit.config.json`. Ele dá um nível

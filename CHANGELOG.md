@@ -19,15 +19,16 @@
   from someone else's calendar only the events shared with other people count, and never to
   write one that does not, and it says that this limit is about events listed from their
   calendar, never about what someone says in a session, a meeting or a document, and that the
-  setting covers everything recorded, whatever the source. A real model, run against a first
-  wording of that paragraph ("someone else's schedule ... an absence ... is never content"),
-  left a colleague's medical leave told in a meeting out of the log under `save` in most runs
-  of an independent review; the wording now in both packs kept it in all 36 runs that review
-  made of it. Setting `people` and `outsiders` to `skip` in `privacy.sensitive` and listing
-  in `privacy.third_party_keywords` the phrases the packs shipped (docs/security.md lists
-  them) comes closest to the old behaviour, but does not bring all of it back: the old
-  calendar line and the old briefing calendar block kept everyone's private events out, the
-  owner's own included, and no setting does that now.
+  setting covers everything recorded, whatever the source. Checked on 02/10/2026 with the
+  real model a round runs, on synthetic data: wherever an audience was at `save`, a
+  colleague's medical leave told in a meeting was kept in 45 of 45 runs and the owner's
+  health and divorce in 18 of 18, and the limits (`skip`, `summary`, `never_topics`) held.
+  Setting `people` and `outsiders` to `skip` in `privacy.sensitive` and listing in
+  `privacy.third_party_keywords` the phrases the packs shipped (docs/security.md lists them)
+  comes closest to the old behaviour, but does not bring all of it back: the old calendar
+  line and the old briefing calendar block kept everyone's private events out, the owner's
+  own included, and no setting does that now. `doctor` warns about that exact list while
+  `owner` is at `save`; adding or removing one phrase makes it yours.
 - New setting, `privacy.sensitive` and `privacy.never_topics` in `brain-kit.config.json`.
   `sensitive` gives one level to each of three audiences: `owner`, `people` (anyone who
   already has a note in the vault) and `outsiders` (everyone else). The levels, written in

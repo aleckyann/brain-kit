@@ -4,7 +4,7 @@ title: Security and personal data
 description: What the curator saves by default, how this vault treats data about third parties, how to remove it on request, and what to do if a secret gets in.
 generated:
   by: process:brain-kit-init
-  at: 2026-10-02T12:01:01+00:00
+  at: 2026-10-02T13:01:30+00:00
 ---
 
 # Security and personal data
@@ -15,7 +15,7 @@ By default the curator saves everything it learns, personal and sensitive inform
 
 ## Third-party data
 
-[people/](people/index.md) holds notes about other people: what they said, what they care about, how you work together. That is personal data about someone who never agreed to be written about, and by default the curator records it in full, sensitive subjects included. Under privacy laws such as the LGPD and the GDPR, their health, sex life, religious beliefs or political opinions are sensitive personal data, and you, as the vault's owner, answer for keeping them. Keep it to what you need, keep this repository private, and never copy a note about a person into anything shared.
+[people/](people/index.md) holds notes about other people: what they said, what they care about, how you work together. That is personal data about someone who never agreed to be written about, and by default the curator records it in full, sensitive subjects included. Under privacy laws such as the LGPD and the GDPR, data about their health, sex life, religious beliefs or political opinions, among other categories these laws list, are sensitive personal data, and you, as the vault's owner, answer for keeping them. Keep it to what you need, keep this repository private, and never copy a note about a person into anything shared.
 
 ## Removal on request
 
