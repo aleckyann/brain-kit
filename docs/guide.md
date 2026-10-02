@@ -702,4 +702,5 @@ Read [docs/rationale.md](rationale.md) for the reasoning and
 
 ## License
 
-MIT ([LICENSE](../LICENSE)). The complete guide in Portuguese: [guia.md](guia.md).
+MIT ([LICENSE](../LICENSE)). The front door of the repository, in Portuguese: [README.md](../README.md).
+The complete guide in Portuguese: [guia.md](guia.md).

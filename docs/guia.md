@@ -8,7 +8,7 @@ o clique que aprova o pedido, é a aprovação e a verificação.
 
 Este é o guia completo, em português: a instalação em detalhe, a segunda máquina, o que há no
 repositório, cada comando, o curador agendado, a agenda e as notas de reunião, o briefing, a
-privacidade, o plugin, a segurança e em que pé está cada fase. Quem está chegando começa pelo
+privacidade, o plugin, a segurança e em que pé está o projeto. Quem está chegando começa pelo
 [README](../README.md): o que você precisa, o passo a passo até o primeiro pull request e o que
 fazer se travar estão lá, e não se repetem aqui. As palavras técnicas estão explicadas em
 [Palavras que você vai ver](../README.md#palavras-que-você-vai-ver), no README. The same guide
@@ -74,9 +74,9 @@ primeiro pull request. O que ele deixa de fora, passo por passo:
   deixa o seu branch local em dia com o remoto. A skill `approve` faz o mesmo que o
   `brain-kit verify --pr <número>`.
 
-A partir daqui, [O curador agendado](#o-curador-agendado) alimenta o vault com as suas
-sessões do Claude Code sem você pedir, e [O briefing matinal](#o-briefing-matinal) diz
-toda manhã onde ele está.
+A partir daqui, depois de ligados, [O curador agendado](#o-curador-agendado) alimenta o vault
+com as suas sessões do Claude Code sem você pedir, e [O briefing matinal](#o-briefing-matinal)
+diz toda manhã onde ele está.
 
 ## O mesmo vault em uma segunda máquina
 

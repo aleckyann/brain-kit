@@ -43,9 +43,10 @@
 // no emoji); test/fixtures/config/valid-pt-BR.json exists specifically
 // to prove the configuration accepts non-English labels, file names
 // and column headings (config.test.mjs's own test names several of
-// them); and README.pt-BR.md is a deliberate translation of the
-// top-level README. Scanning any of those three for "no Portuguese"
-// would be scanning them for failing to do their one job.
+// them); and the Portuguese documents, README.md (the front door, in
+// Portuguese since 02/10/2026) and docs/guia.md (the complete guide in
+// Portuguese), are Portuguese on purpose. Scanning any of those for "no
+// Portuguese" would be scanning them for failing to do their one job.
 //
 // Slice D, task 3: each language now ships a vault skeleton and a
 // default configuration that `init` copies into a new vault
@@ -123,7 +124,8 @@ const DELIBERATELY_UNSCANNED = [
   'lang/pt-BR/vault',
   'lang/pt-BR/config.defaults.json',
   'test/fixtures/config/valid-pt-BR.json',
-  'README.pt-BR.md',
+  'README.md',
+  'docs/guia.md',
 ];
 
 const PORTUGUESE_WORDS = [

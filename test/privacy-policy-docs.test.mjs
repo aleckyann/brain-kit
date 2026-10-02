@@ -2,8 +2,10 @@
 // behaviour (02/10/2026, docs/incidents.md): every place that states a privacy
 // rule or tells a new user what the curator will do says that by default it
 // records everything, personal and sensitive information included, the owner's
-// and other people's, and how to limit it. Each README has a section of its
-// own; the SECURITY.md every vault gets says it plainly; docs/security.md says
+// and other people's, and how to limit it. Each complete guide has a section of
+// its own (docs/guia.md in Portuguese, docs/guide.md in English), and the
+// Portuguese README, the front door, a short one that points at it; the
+// SECURITY.md every vault gets says it plainly; docs/security.md says
 // what the setting is not; the incidents page records the decision; and the
 // CHANGELOG calls it a change of default, with the way back.
 import { test } from 'node:test';
@@ -60,9 +62,9 @@ function fenced(text) {
   return blocks;
 }
 
-const READMES = {
+const GUIDES = {
   en: {
-    file: 'README.md',
+    file: 'docs/guide.md',
     heading: '## Privacy: what the curator saves',
     before: '## The morning briefing',
     after: '## The Claude Code plugin',
@@ -85,7 +87,7 @@ const READMES = {
     never: [/`brain-kit doctor` \(check/, /never recorded for anyone/],
   },
   'pt-BR': {
-    file: 'README.pt-BR.md',
+    file: 'docs/guia.md',
     heading: '## Privacidade: o que o curador guarda',
     before: '## O briefing matinal',
     after: '## O plugin do Claude Code',
@@ -110,7 +112,7 @@ const READMES = {
   },
 };
 
-for (const [lang, spec] of Object.entries(READMES)) {
+for (const [lang, spec] of Object.entries(GUIDES)) {
   const text = read(spec.file);
 
   test(`${spec.file}: a section of its own says the curator saves everything by default, how to limit it, and what the setting is not`, () => {
@@ -135,7 +137,7 @@ for (const [lang, spec] of Object.entries(READMES)) {
     assert.doesNotMatch(blocks[0].text, /v\d+\.\d+\.\d+|second-brain-kit-\d+\.\d+\.\d+\.tgz/);
   });
 
-  test(`${spec.file}: the section init's last line sends a person to is this heading`, () => {
+  test(`${spec.file}: the section init's last line sends a person to is this heading, in the guide of the vault's language`, () => {
     const line = createTranslator(lang)('init.privacy_default', { sensitive: 'privacy.sensitive', topics: 'privacy.never_topics', file: 'brain-kit.config.json' });
     const title = /\(README, "([^"]+)"\)/.exec(line)?.[1];
     assert.equal(`## ${title}`, spec.heading);
@@ -143,6 +145,26 @@ for (const [lang, spec] of Object.entries(READMES)) {
     assert.ok(set.includes(`"${title}"`), set);
   });
 }
+
+// The front door, README.md, says it in a few lines and sends a person to the guide's section.
+test('README.md: privacy in a few lines: everything is saved by default, how to limit it, the private repository, and the law', () => {
+  const text = read('README.md');
+  const body = section(text, '## Privacidade');
+  const flat = norm(body);
+  // Four sentences and the legal one, against the fourteen lines and the example of the guide's section.
+  assert.ok(body.split('\n').filter((line) => line.trim() !== '').length <= 10, 'a few lines');
+  assert.match(flat, /Por padrão, o curador guarda tudo o que as suas sessões, a agenda e as notas de reunião ensinam ao vault, inclusive informação pessoal e sensível/);
+  assert.match(flat, /a sua e a de outras pessoas/);
+  assert.match(flat, /precisa continuar privado/);
+  assert.match(flat, /ajuste `privacy\.sensitive` no `brain-kit\.config\.json`/);
+  assert.ok(body.includes(`(docs/guia.md#privacidade-o-que-o-curador-guarda)`), 'the full section is in the guide');
+  assert.ok(read('docs/guia.md').split('\n').includes(GUIDES['pt-BR'].heading), 'which is there');
+  // The legal sentence the guide keeps, word for word (fix round 1 of 0.0.10, M2).
+  const law = /Para leis de privacidade como a LGPD e o GDPR, o que o vault guarda sobre outras pessoas é dado pessoal, e os dados sobre a saúde, a vida sexual, a convicção religiosa ou a opinião política delas, entre outras categorias que essas leis listam, são dados pessoais sensíveis; como dono do vault, é você quem responde por guardá-los, então registre dos outros o que você tem motivo para guardar\./;
+  assert.match(flat, law);
+  assert.match(norm(section(read('docs/guia.md'), GUIDES['pt-BR'].heading)), law);
+  assert.equal(fenced(body).length, 0, 'the example of each level is the guide\'s');
+});
 
 const TEMPLATES = {
   en: [

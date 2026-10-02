@@ -6,14 +6,17 @@ npm package.
 Two promises sit behind it. Every tag says what was done in it: the CHANGELOG section of
 the version is the specification of the tag, and the Release workflow publishes that
 section as the body of the GitHub Release. And the documentation cannot fall behind a
-release: the version in `package.json` must be the one the Status section of both READMEs
-was last re-read for. `scripts/release-notes.mjs` checks both, `test/release-docs.test.mjs`
+release: the version in `package.json` must be the one the stage section of each status
+document was last re-read for. There are three: `README.md`, the front door in Portuguese,
+whose section is "Em que pé está", and the complete guide, `docs/guia.md` in Portuguese and
+`docs/guide.md` in English, each with its phase table under "Status".
+`scripts/release-notes.mjs` checks both promises, `test/release-docs.test.mjs`
 runs the checks on every `npm test` (and so in CI, on every push), and
 `.github/workflows/release.yml` runs them again on the tag before it publishes anything.
 
 An ordinary commit is never stopped by this. What stops is a version bump that left the
-CHANGELOG heading, the READMEs' stamp or their latest-tag sentence behind, and a CHANGELOG
-or README that was broken.
+CHANGELOG heading, a status document's stamp or its latest-tag sentence behind, and a
+CHANGELOG or status document that was broken.
 
 ## Checklist
 
@@ -31,14 +34,17 @@ or README that was broken.
    Release body and one it knows is drawn instead of shown; `changelog-raw-html` checks). Entries left
    under `## Unreleased` fail the tag check, so move them all; an empty `## Unreleased`
    heading above the new section is fine.
-3. **Re-read the Status section of BOTH READMEs against reality** (`README.md` and
-   `README.pt-BR.md`): the phase table, the point the current phase has reached, and the
-   sentence about the latest tag and npm. Fix whatever is no longer true, then re-stamp both
-   files with `<!-- status-reviewed: X.Y.Z -->` (the comment sits right under the Status
-   heading) and update the sentence ``The latest tag is `vX.Y.Z`.`` and its Portuguese
-   counterpart. The stamp is a claim that a person did this reading, and bumping the version
-   without it fails the suite on purpose. Code blocks in the READMEs never name a tag or a
-   tarball; the install snippets find the latest tag themselves.
+3. **Re-read the stage section of ALL THREE status documents against reality**: "Em que pé
+   está" in `README.md` (a few lines: the stage, the latest tag, npm), and "Status" in
+   `docs/guia.md` and in `docs/guide.md` (the phase table, the point the current phase has
+   reached, and the sentence about the latest tag and npm). Fix whatever is no longer true,
+   then re-stamp the three files with `<!-- status-reviewed: X.Y.Z -->` (the comment sits
+   right under the section's heading) and update the latest-tag sentence of each: the
+   Portuguese ``A tag mais recente é a `vX.Y.Z`.`` in `README.md` and `docs/guia.md`, the
+   English ``The latest tag is `vX.Y.Z`.`` in `docs/guide.md`. The stamp is a claim that a
+   person did this reading, and bumping the version without it fails the suite on purpose.
+   Code blocks in the three never name a tag or a tarball; the install snippets find the
+   latest tag themselves.
 4. **Run the gate and the suite**: `node scripts/release-notes.mjs check`, then
    `npm test`. The first prints one line per problem, `<check id>: <what is wrong and the
    fix>`, or `release check ok`.
@@ -62,7 +68,8 @@ or README that was broken.
    with `--verify-tag`. If a Release for the tag already exists it edits it with the same
    title and body, so running the job again is safe.
 8. **Check the result**: `gh release view vX.Y.Z` shows the title and the body.
-9. **Install locally** from the tag, as in "Installing a fixed version" in the README.
+9. **Install locally** from the tag, with the snippet of step 1 of "Passo a passo" in the
+   README (the same snippet as "Installing a fixed version" in `docs/guide.md`).
 
 ## The checks
 
@@ -72,9 +79,9 @@ or README that was broken.
 | `changelog-section` | no `## X.Y.Z` heading (a suffix after the version is fine), two of them, a section with no text, a section over 120000 characters (GitHub refuses a Release body over 125000), or a CHANGELOG that ends inside an unclosed code fence |
 | `changelog-order` | version headings not strictly descending by semver, a version twice, `## Unreleased` twice or below a version heading, any other level-two heading above the first version heading (`## [Unreleased]`, `## Unreleased (next)`, `## Unreleased:`) |
 | `changelog-raw-html` | in the `## X.Y.Z` section only (older sections are history), text outside code fences and inline code spans that GitHub would read as an HTML tag (an element it does not know vanishes from the Release body, one it knows is drawn instead of shown): `<word>`, `<word attr>`, `</word>` or `<!--`. A placeholder such as `<folder>` goes in backticks, together with the command it belongs to. Autolinks (`<https://...>`, `<name@example.com>`), a backslash escape and a `<` followed by a space or a digit are fine |
-| `status-stamp` | a README without exactly one `<!-- status-reviewed: X.Y.Z -->`, or one whose version is not the one in `package.json` |
-| `status-latest-tag` | a Status section without the latest-tag sentence for this version, in either language |
-| `install-literals` | a literal tag (`v1.2.3`) or tarball name in a fenced code block of either README |
+| `status-stamp` | a status document (`README.md`, `docs/guia.md`, `docs/guide.md`) without exactly one `<!-- status-reviewed: X.Y.Z -->`, or one whose version is not the one in `package.json` |
+| `status-latest-tag` | a stage section ("Em que pé está" in `README.md`, "Status" in the guides) without the latest-tag sentence for this version, in the document's language |
+| `install-literals` | a literal tag (`v1.2.3`) or tarball name in a fenced code block of a status document |
 | `tag-version` | with `--tag`: a tag that is not `v` plus the version in `package.json` |
 | `tag-annotated` | with `--tag`: a tag that does not exist, is lightweight, or has an empty subject |
 | `unreleased-empty` | with `--tag`: entries left under `## Unreleased` |

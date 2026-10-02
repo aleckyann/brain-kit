@@ -35,7 +35,7 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: git fetch --force --no-tags origin "+refs/tags/$TAG:refs/tags/$TAG"
-      - name: Check the tag, the CHANGELOG and the READMEs
+      - name: Check the tag, the CHANGELOG, the README and the guides
         env:
           TAG: ${{ github.ref_name }}
         run: node scripts/release-notes.mjs check --tag "$TAG"
