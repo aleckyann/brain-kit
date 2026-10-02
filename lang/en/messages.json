@@ -523,7 +523,7 @@
   "doctor.time_cap.none": "no time limit: {setting} is null or not set in {file}, so a round's model runs until it ends; one that hangs holds the vault lock until you stop it",
   "doctor.time_cap.unusable": "{setting} in {file} is {value}, and no round runs with that limit: set a number of minutes above 0 and at most {max}, or null for no limit.",
   "doctor.privacy_keywords.ok": "lint refuses a line a change adds that holds one of the {count} keyword(s) in {setting}",
-  "doctor.privacy_keywords.off": "no keywords set in {setting}; the backstop is off: lint refuses no line for a phrase listed there. To have lint refuse an added line that holds a phrase, whatever the curator was told, list the phrases there.",
+  "doctor.privacy_keywords.off": "no keywords set in {setting}; the backstop is off, so lint refuses no added line for holding a phrase. To have lint refuse an added line that holds a phrase, whatever the curator was told, list the phrases there.",
   "doctor.privacy_policy.ok": "{policy}",
   "doctor.privacy_policy.bad_level": "{setting} in {file} is {value}, which is not a level: use one of {levels}. Until it is one, no round runs, and the skills do not know what to record.",
   "doctor.privacy_policy.bad_audience": "{setting} in {file} names no audience the kit knows: the three are {audiences}, each set to one of {levels}.",

@@ -523,7 +523,7 @@
   "doctor.time_cap.none": "sem limite de tempo: {setting} é null ou não está definido em {file}, então o modelo de uma rodada roda até terminar; um que trave segura a trava do vault até você pará-lo",
   "doctor.time_cap.unusable": "{setting} em {file} é {value}, e nenhuma rodada roda com esse limite: ponha um número de minutos acima de 0 e no máximo {max}, ou null para rodar sem limite.",
   "doctor.privacy_keywords.ok": "o lint recusa uma linha acrescentada por uma mudança que tenha uma das {count} palavra(s)-chave de {setting}",
-  "doctor.privacy_keywords.off": "nenhuma palavra-chave em {setting}; a rede de proteção do lint está desligada: ele não recusa nenhuma linha por causa de uma expressão dessa lista. Para o lint recusar uma linha acrescentada que tenha uma expressão, seja qual for a instrução do curador, liste as expressões ali.",
+  "doctor.privacy_keywords.off": "nenhuma palavra-chave em {setting}; a rede de proteção do lint está desligada, então ele não recusa nenhuma linha acrescentada por ter uma expressão. Para o lint recusar uma linha acrescentada que tenha uma expressão, seja qual for a instrução do curador, liste as expressões ali.",
   "doctor.privacy_policy.ok": "{policy}",
   "doctor.privacy_policy.bad_level": "{setting} em {file} é {value}, que não é um nível: use um destes: {levels}. Até lá, nenhuma rodada roda, e as skills não sabem o que registrar.",
   "doctor.privacy_policy.bad_audience": "{setting} em {file} não é um público que o kit conhece: os três são {audiences}, cada um com um destes níveis: {levels}.",
