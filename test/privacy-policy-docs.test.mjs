@@ -158,31 +158,24 @@ for (const [lang, spec] of Object.entries(GUIDES)) {
 }
 
 // The front door, README.md, says it before the install (fix round 1 of R1): everything is saved by
-// default, the three levels in Portuguese with a three-line example, a way to change it without
-// editing the file, that it is an instruction and not a guarantee, and the law in short sentences.
-test('README.md: privacy before the install: the default, the three levels with an example, how to change it without editing JSON, what it is not, and the law', () => {
+// default, how to save less without editing the file, that it is an instruction and not a
+// guarantee, and the law in short sentences. Since fix round 2 the way to save less comes first,
+// in plain words, and the levels, their English names and the JSON example live in the guide.
+test('README.md: privacy before the install: the default, how to save less by asking Claude Code, what it is not, the law, and the levels in the guide', () => {
   const text = read('README.md');
   const lines = text.split('\n');
   assert.ok(lines.indexOf('## Privacidade') < lines.indexOf('## O que você precisa'), 'privacy is read before the install');
   const body = section(text, '## Privacidade');
   const flat = norm(body);
-  assert.ok(body.split('\n').filter((line) => line.trim() !== '').length <= 24, 'a short section');
+  assert.ok(body.split('\n').filter((line) => line.trim() !== '').length <= 16, 'a short section');
   assert.match(flat, /Por padrão, o curador guarda tudo o que as suas conversas, a agenda e as notas de reunião ensinam ao vault, inclusive informação pessoal e sensível/);
   assert.match(flat, /a sua e a de outras pessoas/);
   assert.match(flat, /precisa continuar privado: só você e quem você convidar o veem/);
-  assert.match(flat, /você \(`owner`\), quem já tem nota no vault \(`people`\) e todas as outras pessoas \(`outsiders`\)/);
-  assert.match(flat, /`save` \(registra normalmente\), `summary` \(registra que o assunto apareceu e o que foi decidido, sem os detalhes íntimos\) e `skip` \(deixa de fora\)/);
-  const blocks = fenced(body);
-  assert.equal(blocks.length, 1);
-  assert.equal(blocks[0].info, 'json');
-  assert.equal(blocks[0].text.split('\n').length, 3, 'a three-line example');
-  const { sensitive } = JSON.parse(`{${blocks[0].text}}`).privacy;
-  assert.deepEqual(Object.keys(sensitive).sort(), [...PRIVACY_AUDIENCES].sort());
-  assert.deepEqual(Object.values(sensitive).sort(), [...PRIVACY_LEVELS].sort(), 'each level once');
-  // Changing it without editing JSON: a session in the vault edits the file, and the Stop hook
-  // turns the change into a pull request like any other.
-  assert.match(flat, /Não precisa editar o arquivo você mesmo: dentro do vault, peça ao Claude Code/);
-  assert.match(flat, /a mudança vira um pull request como qualquer outra/);
+  // Saving less without editing JSON: a session in the vault edits the file, and the Stop hook turns
+  // the change into a pull request like any other.
+  assert.match(flat, /Para guardar menos, peça ao Claude Code, dentro do vault, algo como "guarde só um resumo do que for sensível sobre as outras pessoas"\. Ele muda a configuração, e a mudança vira um pull request como qualquer outra/);
+  assert.deepEqual(fenced(body), [], 'the JSON example is in the guide');
+  assert.doesNotMatch(flat, /`(?:owner|people|outsiders|save|summary|skip)`|privacy\.sensitive/, 'the levels and their English names are in the guide');
   // The review of R1, m1.
   assert.match(flat, /É uma instrução ao curador, não uma garantia: você confere no pull request o que ele escreveu/);
   assert.ok(body.includes('(docs/guia.md#privacidade-o-que-o-curador-guarda)'), 'the full section is in the guide');
@@ -192,7 +185,12 @@ test('README.md: privacy before the install: the default, the three levels with 
   assert.ok(flat.includes(law), 'the legal remark');
   for (const sentence of law.split(/(?<=\.) /)) assert.ok(sentence.split(' ').length <= 22, `a long sentence: ${sentence}`);
   assert.match(norm(section(read('docs/guia.md'), GUIDES['pt-BR'].heading)), /Para leis de privacidade como a LGPD e o GDPR, o que o vault guarda sobre outras pessoas é dado pessoal/);
-  // Whether Anthropic may train on the conversations is the person's choice, by the official page.
+  // Work data is the company's to allow (the second reader's question), in one line.
+  assert.match(flat, /Com dados da empresa, confira antes a política dela\./);
+  // Whether Anthropic may train on the conversations is the person's choice on a consumer plan,
+  // where the official page says it is made.
+  assert.match(flat, /O kit não tem servidor: o que a IA lê passa pela sua conta do Claude, e num plano Pro ou Max o uso das suas conversas para treinar os modelos da Anthropic depende de uma opção sua/);
+  assert.ok(body.includes('[configurações de privacidade](https://claude.ai/settings/data-privacy-controls)'));
   assert.ok(body.includes('(https://code.claude.com/docs/en/data-usage)'));
 });
 
