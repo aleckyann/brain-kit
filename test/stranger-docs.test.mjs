@@ -550,6 +550,77 @@ test('README.md: in Portuguese a non-developer reads: one name for the push chec
   assert.doesNotMatch(norm(readme), /Node\.js 24 ou mais novo/);
 });
 
+// ---------------------------------- docs/preparar-o-computador.md, the step zero
+//
+// The reader test of R1 (a Brazilian non-developer on a Mac) stopped before step 1: nothing said
+// how to open the terminal or install Node, git, gh and Claude Code (fix round 1). The page gives
+// the simplest official way for each, on a Mac and on Ubuntu, with what the screen shows and a
+// check command; every price it quotes was read on the official page on the date it gives.
+
+const STEP_ZERO = 'docs/preparar-o-computador.md';
+const stepZero = read(STEP_ZERO);
+
+test('docs/preparar-o-computador.md: the step zero ships, opens with the terminal and has a part for the Mac, one for Ubuntu and the two accounts', () => {
+  assert.ok(pkg.files.includes(STEP_ZERO), 'package.json files does not list the step zero');
+  assert.deepEqual(headings(stepZero, 2), ['## Primeiro, o terminal', '## No Mac', '## No Ubuntu', '## As duas contas', '## Tudo pronto?']);
+  const terminal = norm(section(stepZero, '## Primeiro, o terminal'));
+  for (const words of ['Command + espaço', '`Terminal`', 'Ctrl + Alt + T', 'Command + V', 'Ctrl + Shift + V', 'nada aparece enquanto você digita']) assert.ok(terminal.includes(words), `how to use the terminal lacks: ${words}`);
+  assert.deepEqual(brokenLinks(STEP_ZERO), []);
+});
+
+test('docs/preparar-o-computador.md: each item says how to install it and how to check it, and the four checks close the page', () => {
+  const mac = section(stepZero, '## No Mac');
+  const ubuntu = section(stepZero, '## No Ubuntu');
+  for (const [part, text] of [['Mac', mac], ['Ubuntu', ubuntu]]) {
+    const blocks = fencedBlocks(text).join('\n');
+    for (const check of ['git --version', 'node --version', 'gh --version']) assert.ok(blocks.includes(check), `${part}: no block runs ${check}`);
+    assert.ok(text.includes('claude --version'), `${part}: no claude --version`);
+    assert.ok(blocks.includes('curl -fsSL https://claude.ai/install.sh | bash'), `${part}: the official Claude Code installer`);
+    assert.ok(text.includes('Claude Code successfully installed!'), `${part}: what the installer prints`);
+    for (const shows of ['`git version`', '`gh version`', '`(Claude Code)`']) assert.ok(text.includes(shows), `${part}: what the screen shows: ${shows}`);
+  }
+  assert.ok(fencedBlocks(mac).includes('xcode-select --install'), 'git on the Mac, the way git-scm.com gives');
+  assert.ok(fencedBlocks(ubuntu).includes('sudo apt update\nsudo apt install git curl'), 'git and curl on Ubuntu');
+  assert.ok(mac.includes('_macOS_universal.pkg'), 'gh on the Mac from its releases');
+  assert.deepEqual(fencedBlocks(section(stepZero, '## Tudo pronto?')), ['node --version\ngit --version\ngh --version\nclaude --version']);
+  assert.ok(section(stepZero, '## Tudo pronto?').includes('(../README.md#passo-a-passo)'));
+});
+
+test('docs/preparar-o-computador.md: the Mac gets a folder of its own for npm with the README\'s own commands, and Ubuntu, on nvm, does not', () => {
+  const mac = section(stepZero, '## No Mac');
+  const folder = fencedBlocks(mac).find((block) => block.startsWith('npm config set prefix'));
+  assert.equal(folder, `${EACCES_BLOCKS[0]}\n${EACCES_BLOCKS[1].split('\n')[1]}`, 'the same lines as the EACCES fix, the zsh one for the Mac');
+  assert.ok(fencedBlocks(mac).includes('npm config get prefix'), 'and how to check it');
+  // nvm refuses to work with an npm prefix of its own, and with nvm there is no EACCES to avoid.
+  const ubuntu = section(stepZero, '## No Ubuntu');
+  assert.doesNotMatch(ubuntu, /npm config set prefix/);
+  assert.match(norm(ubuntu), /nvm/);
+});
+
+test('docs/preparar-o-computador.md: the sources are the official pages, every price and plan is quoted with the day it was read, and no time is promised', () => {
+  for (const url of [
+    'https://code.claude.com/docs/en/terminal-guide',
+    'https://code.claude.com/docs/en/setup',
+    'https://nodejs.org/en/download',
+    'https://git-scm.com/install/mac',
+    'https://git-scm.com/install/linux',
+    'https://github.com/cli/cli/releases/latest',
+    'https://cli.github.com',
+    'https://github.com/cli/cli/blob/trunk/docs/install_linux.md',
+    'https://github.com/signup',
+    'https://github.com/pricing',
+    'https://claude.com/pricing',
+  ]) assert.ok(stepZero.includes(`](${url})`), `no link to ${url}`);
+  const accounts = norm(section(stepZero, '## As duas contas'));
+  assert.match(accounts, /Em 02\/10\/2026, a \[página de preços do GitHub\]\(https:\/\/github\.com\/pricing\) dizia que o plano Free custa US\$ 0 e tem repositórios públicos e privados sem limite/);
+  assert.match(accounts, /mas não no plano grátis: segundo a \[página do Claude Code\]\(https:\/\/code\.claude\.com\/docs\/en\/setup\), ele precisa de um plano Pro, Max, Team ou Enterprise, ou de uma conta do Console/);
+  assert.match(accounts, /Em 02\/10\/2026, a \[página de preços\]\(https:\/\/claude\.com\/pricing\) dizia: Pro, US\$ 20 por mês \(ou US\$ 17 por mês no plano anual, com US\$ 200 cobrados de uma vez\); Max, a partir de US\$ 100 por mês/);
+  assert.match(accounts, /limites de uso/);
+  // How long installing takes depends on the person's network and machine: nothing to source.
+  assert.doesNotMatch(norm(prose(stepZero)), /\b\d+\s*(?:minutos?|min|horas?)\b/);
+  assert.match(norm(stepZero), /Não damos estimativa de tempo/);
+});
+
 // ------------------------------------------- docs/guia.md, the guide in Portuguese
 
 const guia = read(GUIA);
