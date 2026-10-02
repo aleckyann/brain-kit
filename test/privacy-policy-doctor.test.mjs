@@ -206,7 +206,11 @@ test('the lists the packs shipped until 02/10/2026 have one source, in src, and 
 
 for (const lang of LANGS) {
   test(`${lang}: the list a pack shipped, still in the vault while an audience is at save, warns, naming the phrases and the two ways out`, async () => {
-    for (const listed of [SHIPPED[lang], [...SHIPPED[lang]].reverse(), [...SHIPPED[lang], SHIPPED[lang][0]]]) {
+    // The same phrases whatever the encoding of their accents (a list typed
+    // again on a system that writes them decomposed is still the pack's).
+    const decomposed = SHIPPED[lang].map((phrase) => phrase.normalize('NFD'));
+    if (lang === 'pt-BR') assert.notDeepEqual(decomposed, SHIPPED[lang], 'the Portuguese phrases do change when decomposed');
+    for (const listed of [SHIPPED[lang], [...SHIPPED[lang]].reverse(), [...SHIPPED[lang], SHIPPED[lang][0]], decomposed]) {
       const { code, line } = await keywords(vaultWith(lang, { third_party_keywords: listed }));
       assert.equal(code, EXIT.OK, 'a warning, never a failure');
       assert.equal(line.status, 'warn', JSON.stringify(line));

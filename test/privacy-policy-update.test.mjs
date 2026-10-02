@@ -83,6 +83,37 @@ for (const lang of ['pt-BR', 'en']) {
     }
   });
 
+  // Fix round 1, m3 and P2: a curate prompt that carries both rules is named by
+  // update too, with doctor's line; the shapes doctor alone names (a curate
+  // prompt with no privacy rule of the kit, a briefing prompt without the
+  // placeholder) are not update's to say.
+  test(`${lang}: update prints doctor's line for a curate prompt that carries both rules, and nothing for the shapes only doctor names`, () => {
+    const both = newVault(lang);
+    mkdirSync(join(both.vault, '.brain-kit', 'prompts'), { recursive: true });
+    writeFileSync(join(both.vault, OVERLAY), oldTemplate(lang).replace('<!-- rule:third-party-privacy -->\n', '<!-- rule:third-party-privacy -->\n{{privacy_policy}}\n\n'));
+    const [line] = JSON.parse(both.kit(['doctor', '--only', 'privacy-policy', '--json']).stdout).checks;
+    assert.equal(line.messageKey, 'doctor.privacy_policy.overlay_both');
+    for (const argv of [['update'], ['update', '--check']]) {
+      const r = both.kit(argv);
+      assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
+      assert.equal(r.stdout.split('\n').filter((l) => l === line.message).length, 1, `${argv.join(' ')}:\n${r.stdout}`);
+    }
+
+    const other = newVault(lang);
+    mkdirSync(join(other.vault, '.brain-kit', 'prompts'), { recursive: true });
+    writeFileSync(join(other.vault, OVERLAY), '{{signature}}\n\nA prompt of the vault\'s own.\n');
+    const briefing = readFileSync(join(KIT_ROOT, 'lang', lang, 'prompts', 'briefing.md'), 'utf8');
+    writeFileSync(join(other.vault, '.brain-kit', 'prompts', 'briefing.md'), briefing.replace(/\n\{\{privacy_policy\}\}\n/, '\n'));
+    const lines = JSON.parse(other.kit(['doctor', '--only', 'privacy-policy', '--json']).stdout).checks;
+    assert.deepEqual(lines.map((c) => c.messageKey), ['doctor.privacy_policy.overlay_without', 'doctor.privacy_policy.briefing_overlay_without'], 'doctor names both');
+    for (const argv of [['update'], ['update', '--check']]) {
+      const r = other.kit(argv);
+      assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
+      for (const c of lines) assert.equal(r.stdout.includes(c.message), false, `${argv.join(' ')}:\n${r.stdout}`);
+      assert.doesNotMatch(r.stdout, /\{\{privacy_policy\}\}/, r.stdout);
+    }
+  });
+
   test(`${lang}: update says nothing of a vault's own curate prompt that carries the policy`, () => {
     const { vault, kit } = newVault(lang);
     mkdirSync(join(vault, '.brain-kit', 'prompts'), { recursive: true });
