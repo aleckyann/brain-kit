@@ -138,23 +138,25 @@ const TEMPLATES = {
     /## What the curator saves\n\nBy default the curator saves everything it learns, personal and sensitive information included \(health, family, relationships, finances, anything intimate\), yours and other people's\./,
     /set `privacy\.sensitive` in `brain-kit\.config\.json`/,
     /That setting is an instruction to the curator, not a guarantee/,
-    /by default the curator records it in full, sensitive subjects included\. Keep this repository private/,
-    /4\. The curator records again whatever a session, an event or a document it reads still holds\. To keep that person's sensitive subjects out from then on, set `privacy\.sensitive\.people` \(or `outsiders`\) to `skip`, or list the subject in `privacy\.never_topics`/,
+    // Fix round 1, M2: the law in one sentence, and the minimisation line back.
+    /by default the curator records it in full, sensitive subjects included\. Under privacy laws such as the LGPD and the GDPR, their health, sex life, religious beliefs or political opinions are sensitive personal data, and you, as the vault's owner, answer for keeping them\. Keep it to what you need, keep this repository private, and never copy a note about a person into anything shared\./,
+    // Fix round 1, m5: step 1 deleted the note, so the person is an outsider now.
+    /4\. The curator records again whatever a session, an event or a document it reads still holds\. Their note is gone, so they count as `outsiders`: to keep their sensitive subjects out from then on, set `privacy\.sensitive\.outsiders` to `skip` \(it applies to everyone without a note\), or list the subject in `privacy\.never_topics`/,
   ],
   'pt-BR': [
     /## O que o curador guarda\n\nPor padrão o curador guarda tudo o que aprende, inclusive informação pessoal e sensível \(saúde, família, relacionamentos, finanças, qualquer coisa íntima\), a sua e a de outras pessoas\./,
     /ajuste `privacy\.sensitive` no `brain-kit\.config\.json`/,
     /Essa configuração é uma instrução para o curador, não uma garantia/,
-    /por padrão o curador os registra por inteiro, inclusive os assuntos sensíveis\. Mantenha este repositório privado/,
-    /4\. O curador volta a registrar o que uma sessão, um evento ou um documento que ele lê ainda tiver\. Para deixar de fora os assuntos sensíveis dessa pessoa daí em diante, ajuste `privacy\.sensitive\.people` \(ou `outsiders`\) para `skip`, ou liste o assunto em `privacy\.never_topics`/,
+    /por padrão o curador os registra por inteiro, inclusive os assuntos sensíveis\. Para leis de privacidade como a LGPD e o GDPR, a saúde, a vida sexual, a convicção religiosa ou a opinião política dessa pessoa são dados pessoais sensíveis, e quem responde por guardá-los é você, como dono do vault\. Guarde só o necessário, mantenha este repositório privado e nunca copie uma nota sobre uma pessoa para algo compartilhado\./,
+    /4\. O curador volta a registrar o que uma sessão, um evento ou um documento que ele lê ainda tiver\. A nota da pessoa foi apagada, então ela conta como `outsiders`: para deixar de fora os assuntos sensíveis dela daí em diante, ajuste `privacy\.sensitive\.outsiders` para `skip` \(vale para todos que não têm nota\), ou liste o assunto em `privacy\.never_topics`/,
   ],
 };
 
 for (const [lang, patterns] of Object.entries(TEMPLATES)) {
-  test(`${lang}: the SECURITY.md init writes into every vault says plainly what the curator saves by default, and how a removal on request keeps it out`, () => {
+  test(`${lang}: the SECURITY.md init writes into every vault says plainly what the curator saves by default, what the law says of it, and how a removal on request keeps it out`, () => {
     const text = read(`lang/${lang}/vault/SECURITY.md`);
     for (const pattern of patterns) assert.match(text, pattern, `${lang}: ${pattern}`);
-    assert.doesNotMatch(text, lang === 'en' ? /Keep it to what you need/ : /Guarde só o necessário/, `${lang}: no advice that contradicts the default`);
+    assert.doesNotMatch(text, /privacy\.sensitive\.people/, `${lang}: step 4 does not point at people, whose note step 1 deletes`);
   });
 }
 

@@ -15,7 +15,7 @@ Por padrão o curador guarda tudo o que aprende, inclusive informação pessoal 
 
 ## Dados de terceiros
 
-[pessoas/](pessoas/index.md) guarda notas sobre outras pessoas: o que disseram, o que importa para elas, como vocês trabalham juntos. São dados pessoais de alguém que nunca autorizou ser descrito, e por padrão o curador os registra por inteiro, inclusive os assuntos sensíveis. Mantenha este repositório privado e nunca copie uma nota sobre uma pessoa para algo compartilhado.
+[pessoas/](pessoas/index.md) guarda notas sobre outras pessoas: o que disseram, o que importa para elas, como vocês trabalham juntos. São dados pessoais de alguém que nunca autorizou ser descrito, e por padrão o curador os registra por inteiro, inclusive os assuntos sensíveis. Para leis de privacidade como a LGPD e o GDPR, a saúde, a vida sexual, a convicção religiosa ou a opinião política dessa pessoa são dados pessoais sensíveis, e quem responde por guardá-los é você, como dono do vault. Guarde só o necessário, mantenha este repositório privado e nunca copie uma nota sobre uma pessoa para algo compartilhado.
 
 ## Remoção a pedido
 
@@ -24,7 +24,7 @@ Quando alguém pedir para ser removido:
 1. Apague a nota da pessoa e toda menção a ela em outras notas e no log.
 2. Abra um pull request com a remoção e faça o merge.
 3. Se o repositório já foi compartilhado ou publicado, o dado continua no histórico: reescreva o histórico ou recrie o repositório, e peça a quem tiver uma cópia que a apague.
-4. O curador volta a registrar o que uma sessão, um evento ou um documento que ele lê ainda tiver. Para deixar de fora os assuntos sensíveis dessa pessoa daí em diante, ajuste `privacy.sensitive.people` (ou `outsiders`) para `skip`, ou liste o assunto em `privacy.never_topics`; a página passo a passo abaixo diz o que mais impede que isso volte.
+4. O curador volta a registrar o que uma sessão, um evento ou um documento que ele lê ainda tiver. A nota da pessoa foi apagada, então ela conta como `outsiders`: para deixar de fora os assuntos sensíveis dela daí em diante, ajuste `privacy.sensitive.outsiders` para `skip` (vale para todos que não têm nota), ou liste o assunto em `privacy.never_topics`; a página passo a passo abaixo diz o que mais impede que isso volte.
 
 ## Se um segredo entrar
 
