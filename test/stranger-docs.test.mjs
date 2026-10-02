@@ -785,6 +785,28 @@ test('docs/guia.md: the scheduled curator, the calendar and the briefing keep wh
   assert.match(norm(section(guia, '## O briefing matinal')), /exige o aplicativo Claude para desktop/);
 });
 
+// What fix round 2 of R1 took out of the README's middle, kept here: what a round costs with an API
+// key, and one dated failure, told in plain words.
+test('docs/guia.md: what a round costs with an API key, with its source, and the cap init writes', () => {
+  const body = norm(section(guia, '### Quanto custa uma rodada'));
+  assert.match(body, /Numa assinatura do Claude, uma rodada não é cobrada à parte: ela gasta do mesmo limite de uso das suas conversas/);
+  // The review of R1, m2: the rounds that had something to read, and where the figure is recorded.
+  assert.match(body, /as rodadas que tiveram o que ler em 01 e 02\/10\/2026 custaram entre US\$ 0,78 e US\$ 4,45 cada, pelo `costUsd` que cada rodada grava no `last-run\.json` e no log dela; as que não chegaram a chamar o modelo não custaram nada/);
+  assert.match(body, /um teto de US\$ 5 por rodada, calculado do mesmo jeito: o `curate\.budget_usd`, que o kit passa ao Claude Code como `--max-budget-usd`/);
+  assert.equal(JSON.parse(read('lang/pt-BR/config.defaults.json')).curate.budget_usd, 5);
+  assert.match(read('src/harness/claude-code.mjs'), /argv\.push\('--max-budget-usd', String\(budgetUsd\)\)/);
+  assert.ok(headings(section(guia, '## O curador agendado'), 3).includes('### Quanto custa uma rodada'), 'under the scheduled curator');
+});
+
+test('docs/guia.md: one dated failure of the curator, in plain words, and the incidents page for the rest', () => {
+  const body = norm(section(guia, '### De onde vêm as travas'));
+  assert.match(body, /Cada trava do curador nasceu de uma falha real, com data/);
+  assert.match(body, /em setembro de 2026, a rodada diária do vault de referência passou quatro dias sem curar nada enquanto o agendador dizia que estava tudo certo, e ninguém foi avisado\. Hoje, uma rodada que não pode rodar sai com falha, avisa e diz o motivo/);
+  assert.ok(body.includes('[docs/incidents.md](incidents.md)'));
+  assert.match(read('docs/incidents.md'), /### 13\/09\/2026: four days with no curation while the scheduler reported success/, 'the failure it tells is in the incidents page');
+  assert.ok(headings(section(guia, '## O curador agendado'), 3).includes('### De onde vêm as travas'), 'under the scheduled curator');
+});
+
 test('docs/guia.md: the second machine is a section of its own, in the order docs/scheduling.md gives', () => {
   const body = section(guia, '## O mesmo vault em uma segunda máquina');
   assert.deepEqual(fencedBlocks(body).flatMap((block) => block.split('\n')), SECOND_MACHINE);

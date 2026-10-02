@@ -331,6 +331,23 @@ fazer em cada um. O
 [docs/security.md](security.md) explica o que isola o modelo e as medições por trás
 disso.
 
+### Quanto custa uma rodada
+
+Numa assinatura do Claude, uma rodada não é cobrada à parte: ela gasta do mesmo limite de uso das
+suas conversas. Com uma chave de API, cada rodada é cobrada pelo uso. No vault de referência, as
+rodadas que tiveram o que ler em 01 e 02/10/2026 custaram entre US$ 0,78 e US$ 4,45 cada, pelo
+`costUsd` que cada rodada grava no `last-run.json` e no log dela; as que não chegaram a chamar o
+modelo não custaram nada. Um vault novo já vem com um teto de US$ 5 por rodada, calculado do mesmo
+jeito: o `curate.budget_usd`, que o kit passa ao Claude Code como `--max-budget-usd`.
+
+### De onde vêm as travas
+
+Cada trava do curador nasceu de uma falha real, com data. Um exemplo: em setembro de 2026, a
+rodada diária do vault de referência passou quatro dias sem curar nada enquanto o agendador dizia
+que estava tudo certo, e ninguém foi avisado. Hoje, uma rodada que não pode rodar sai com falha,
+avisa e diz o motivo. As falhas e as regras que saíram delas estão no
+[docs/incidents.md](incidents.md), em inglês.
+
 ## Agenda e notas de reunião
 
 Uma rodada também pode ler a sua agenda, pelo conector Google Calendar do claude.ai, e as
