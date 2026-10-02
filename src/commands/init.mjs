@@ -2,7 +2,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import { constants as osConstants } from 'node:os';
 import { dirname, join, resolve, basename } from 'node:path';
 import { EXIT } from '../exit-codes.mjs';
-import { kitVersion } from '../version.mjs';
+import { kitDocsUrl, kitVersion } from '../version.mjs';
 import { createTranslator, SUPPORTED_LANGS } from '../lang.mjs';
 import { CONFIG_FILENAME, MACHINE_FILENAME, validateConfig, validateMachine } from '../config.mjs';
 import { stateDirFor } from '../state.mjs';
@@ -592,11 +592,13 @@ export async function runInit(argv, io, t, {
 // line, the last thing init says about the vault before the next steps
 // (02/10/2026): the configuration it wrote records everything, which a person
 // who never reads the README would not guess, and the line says so and where to
-// limit it. A configuration that is not the default (an inference that kept a
-// setting) is said as the policy in effect.
+// limit it, ending with a link to the guide's section that a person can open
+// from anywhere (the guide on GitHub at this kit's tag). A configuration that
+// is not the default (an inference that kept a setting) is said as the policy
+// in effect.
 function privacySummary(t, config) {
-  if (isDefaultPrivacy(config)) return t('init.privacy_default', { sensitive: SENSITIVE_SETTING, topics: TOPICS_SETTING, file: CONFIG_FILENAME });
-  return t('init.privacy_set', { policy: privacyLine(config, t) });
+  if (isDefaultPrivacy(config)) return t('init.privacy_default', { sensitive: SENSITIVE_SETTING, topics: TOPICS_SETTING, file: CONFIG_FILENAME, docs: kitDocsUrl() });
+  return t('init.privacy_set', { policy: privacyLine(config, t), docs: kitDocsUrl() });
 }
 
 // validate and lint on the result, and what is said about them.

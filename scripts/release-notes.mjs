@@ -10,8 +10,11 @@
 // done in it (the CHANGELOG section of its version is the specification of
 // the tag, and the Release workflow publishes it as the Release body), and
 // the documentation cannot fall behind a release (the version in
-// package.json must be the one the READMEs' Status section was last
-// re-read for). Without --tag it runs on every `npm test` and in CI on every
+// package.json must be the one the stage section of each status document
+// was last re-read for: README.md, the Portuguese front door, under its own
+// stage heading, and the two complete guides, docs/guia.md in Portuguese and
+// docs/guide.md in English, under "Status"; STATUS_DOCUMENTS below names
+// them). Without --tag it runs on every `npm test` and in CI on every
 // push; with --tag it also judges the tag the Release workflow was started
 // by. Each problem is one line, `<check id>: <what is wrong and the fix>`,
 // and the ids are stable: tests and the maintainer checklist name them. They
@@ -61,15 +64,23 @@ const HEADING_RE = /^ {0,3}(#{1,2})(?:[ \t]+(.*))?$/;
 const STAMP_RE = /<!--\s*status-reviewed:\s*(.*?)\s*-->/g;
 const LITERAL_RES = [/v\d+\.\d+\.\d+/, /second-brain-kit-\d+\.\d+\.\d+\.tgz/];
 
-// The sentence each README must hold in its Status section. The Portuguese
-// one carries an accented letter, built from its code point so this file
-// stays ASCII.
+// The status documents: each with the level-two heading of the section that
+// says the stage (the stamp sits right under it) and the latest-tag sentence
+// that section must hold, in the document's language. README.md has been the
+// Portuguese front door since 02/10/2026, with a short stage section; the
+// complete guides carry the phase table under "Status". The Portuguese words
+// carry accented letters, built from their code points so this file stays
+// ASCII.
 const E_ACUTE = String.fromCharCode(0xe9);
-const LATEST_TAG_SENTENCE = {
-  'README.md': (version) => `The latest tag is \`v${version}\`.`,
-  'README.pt-BR.md': (version) => `A tag mais recente ${E_ACUTE} a \`v${version}\`.`,
+const A_ACUTE = String.fromCharCode(0xe1);
+const PORTUGUESE_SENTENCE = (version) => `A tag mais recente ${E_ACUTE} a \`v${version}\`.`;
+const ENGLISH_SENTENCE = (version) => `The latest tag is \`v${version}\`.`;
+const STATUS_DOCUMENTS = {
+  'README.md': { heading: `Em que p${E_ACUTE} est${A_ACUTE}`, sentence: PORTUGUESE_SENTENCE },
+  'docs/guia.md': { heading: 'Status', sentence: PORTUGUESE_SENTENCE },
+  'docs/guide.md': { heading: 'Status', sentence: ENGLISH_SENTENCE },
 };
-export const README_FILES = Object.keys(LATEST_TAG_SENTENCE);
+export const STATUS_FILES = Object.keys(STATUS_DOCUMENTS);
 
 const quote = (value) => JSON.stringify(String(value));
 const problem = (id, message) => ({ id, message });
@@ -387,10 +398,11 @@ export function checkUnreleasedEmpty(text) {
     .map((entry) => problem('unreleased-empty', `CHANGELOG.md still has entries under "## Unreleased" (line ${entry.line}); a release must not leave entries behind, move them into the "## X.Y.Z" section of this release`));
 }
 
-// ------------------------------------------------------------------ READMEs
+// ---------------------------------------------------------- status documents
 
 export function checkStatusStamp(file, text, version) {
   const id = 'status-stamp';
+  const { heading } = STATUS_DOCUMENTS[file];
   if (text === null || text === undefined) return [problem(id, `${file} is missing or unreadable`)];
   const stamps = [];
   for (const item of scanLines(text)) {
@@ -399,20 +411,20 @@ export function checkStatusStamp(file, text, version) {
   }
   const wanted = `<!-- status-reviewed: ${version} -->`;
   if (stamps.length === 0) {
-    return [problem(id, `${file} has no status-reviewed comment; re-read its Status section against reality, fix it, and put ${wanted} right under the Status heading`)];
+    return [problem(id, `${file} has no status-reviewed comment; re-read its "## ${heading}" section against reality, fix it, and put ${wanted} right under that heading`)];
   }
   if (stamps.length > 1) {
     return [problem(id, `${file} has ${stamps.length} status-reviewed comments; it must have exactly one`)];
   }
   if (stamps[0] !== version) {
-    return [problem(id, `${file} was last reviewed for ${stamps[0] === '' ? '(no version)' : quote(stamps[0])} but package.json is ${version}; re-read the Status section against reality, fix it, and re-stamp it with ${wanted}`)];
+    return [problem(id, `${file} was last reviewed for ${stamps[0] === '' ? '(no version)' : quote(stamps[0])} but package.json is ${version}; re-read its "## ${heading}" section against reality, fix it, and re-stamp it with ${wanted}`)];
   }
   return [];
 }
 
-// The lines of the level-two "Status" section outside code fences, or null
-// when the README has none.
-function statusSection(text) {
+// The lines of the level-two section titled `title`, outside code fences, or
+// null when the document has none.
+function stageSection(text, title) {
   let found = false;
   const lines = [];
   for (const item of scanLines(text)) {
@@ -420,7 +432,7 @@ function statusSection(text) {
       const heading = HEADING_RE.exec(item.text.trimEnd());
       if (heading) {
         if (found) break;
-        if (heading[1].length === 2 && heading[2] === 'Status') found = true;
+        if (heading[1].length === 2 && heading[2] === title) found = true;
         continue;
       }
     }
@@ -432,14 +444,15 @@ function statusSection(text) {
 export function checkStatusLatestTag(file, text, version) {
   const id = 'status-latest-tag';
   if (text === null || text === undefined) return [];
-  const sentence = LATEST_TAG_SENTENCE[file](version);
-  const section = statusSection(text);
+  const { heading, sentence: sentenceFor } = STATUS_DOCUMENTS[file];
+  const sentence = sentenceFor(version);
+  const section = stageSection(text, heading);
   if (section === null) {
-    return [problem(id, `${file} has no "## Status" section; it must say "${sentence}"`)];
+    return [problem(id, `${file} has no "## ${heading}" section; it must say "${sentence}"`)];
   }
   // A line break inside the sentence is fine.
   if (!section.join(' ').replace(/\s+/g, ' ').includes(sentence)) {
-    return [problem(id, `the Status section of ${file} does not say "${sentence}"; re-read the section against reality and fix the sentence`)];
+    return [problem(id, `the "## ${heading}" section of ${file} does not say "${sentence}"; re-read the section against reality and fix the sentence`)];
   }
   return [];
 }
@@ -507,11 +520,11 @@ export function readTagInfo(tag, cwd) {
 // ------------------------------------------------------------------- checks
 
 // Every check over what was read, nothing else touched: `version` is the
-// package.json one, `changelog` the CHANGELOG text, `readmes` a map from
-// README file name to its text (null for a file that could not be read),
-// and `tag` with `tagInfo` only when a tag is being judged. The order of the
-// problems is the order of the checks.
-export function checkInputs({ version, changelog, readmes = {}, tag, tagInfo }) {
+// package.json one, `changelog` the CHANGELOG text, `docs` a map from each
+// status document's path (STATUS_FILES) to its text (null or absent for a file
+// that could not be read), and `tag` with `tagInfo` only when a tag is being
+// judged. The order of the problems is the order of the checks.
+export function checkInputs({ version, changelog, docs = {}, tag, tagInfo }) {
   if (typeof version !== 'string' || !SEMVER_RE.test(version)) {
     return [problem('package-version', 'package.json has no valid "version" (expected X.Y.Z); every other check is relative to it')];
   }
@@ -519,9 +532,9 @@ export function checkInputs({ version, changelog, readmes = {}, tag, tagInfo }) 
     ...checkChangelogSection(changelog, version),
     ...checkChangelogOrder(changelog),
     ...checkChangelogRawHtml(changelog, version),
-    ...README_FILES.flatMap((file) => checkStatusStamp(file, readmes[file], version)),
-    ...README_FILES.flatMap((file) => checkStatusLatestTag(file, readmes[file], version)),
-    ...README_FILES.flatMap((file) => checkInstallLiterals(file, readmes[file])),
+    ...STATUS_FILES.flatMap((file) => checkStatusStamp(file, docs[file], version)),
+    ...STATUS_FILES.flatMap((file) => checkStatusLatestTag(file, docs[file], version)),
+    ...STATUS_FILES.flatMap((file) => checkInstallLiterals(file, docs[file])),
   ];
   if (tag !== undefined && tag !== null) {
     problems.push(...checkTagVersion(tag, version));
@@ -547,9 +560,9 @@ export function readInputs(root) {
   } catch {
     version = undefined;
   }
-  const readmes = {};
-  for (const file of README_FILES) readmes[file] = readOrNull(join(root, file));
-  return { version, changelog: readOrNull(join(root, 'CHANGELOG.md')), readmes };
+  const docs = {};
+  for (const file of STATUS_FILES) docs[file] = readOrNull(join(root, file));
+  return { version, changelog: readOrNull(join(root, 'CHANGELOG.md')), docs };
 }
 
 export function checkRepository(root, { tag } = {}) {

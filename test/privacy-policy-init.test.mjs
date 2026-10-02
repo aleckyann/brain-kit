@@ -16,6 +16,7 @@ import { createTranslator } from '../src/lang.mjs';
 import { walkVault } from '../src/vault.mjs';
 import { runInit } from '../src/commands/init.mjs';
 import { privacyLine } from '../src/privacy-policy.mjs';
+import { docsUrlFor, kitDocsUrl } from '../src/version.mjs';
 import { CLEAN_ENV } from './helpers/git-repo.mjs';
 import { makeTempDir } from './helpers/tmp.mjs';
 
@@ -68,11 +69,15 @@ for (const lang of ['pt-BR', 'en']) {
   test(`${lang}: init ends with one line saying the curator records everything by default and where to change it, before the next steps`, () => {
     const { r, vault } = init(lang);
     assert.equal(r.status, EXIT.OK, r.stdout + r.stderr);
-    const line = t('init.privacy_default', { sensitive: 'privacy.sensitive', topics: 'privacy.never_topics', file: 'brain-kit.config.json' });
+    const line = t('init.privacy_default', { sensitive: 'privacy.sensitive', topics: 'privacy.never_topics', file: 'brain-kit.config.json', docs: kitDocsUrl() });
     assert.equal(line.includes('\n'), false);
-    assert.match(line, lang === 'en'
-      ? /^Privacy: by default the curator records everything, personal and sensitive information included, yours and other people's\. To limit it, set privacy\.sensitive and privacy\.never_topics in brain-kit\.config\.json \(README, "Privacy: what the curator saves"\)\.$/
-      : /^Privacidade: por padrão o curador guarda tudo, inclusive informação pessoal e sensível, a sua e a de outras pessoas\. Para limitar, ajuste privacy\.sensitive e privacy\.never_topics no brain-kit\.config\.json \(README, "Privacidade: o que o curador guarda"\)\.$/);
+    // The line ends with a link a person can open from the vault (the review of R1, m7): the
+    // guide's section on GitHub, at the tag of the kit that wrote the vault.
+    const url = `${kitDocsUrl()}/${lang === 'en' ? 'docs/guide.md#privacy-what-the-curator-saves' : 'docs/guia.md#privacidade-o-que-o-curador-guarda'}`;
+    assert.ok(url.startsWith('https://github.com/'), url);
+    assert.equal(line, lang === 'en'
+      ? `Privacy: by default the curator records everything, personal and sensitive information included, yours and other people's. To limit it, set privacy.sensitive and privacy.never_topics in brain-kit.config.json. Each level is explained in the kit's guide, under "Privacy: what the curator saves": ${url}`
+      : `Privacidade: por padrão o curador guarda tudo, inclusive informação pessoal e sensível, a sua e a de outras pessoas. Para limitar, ajuste privacy.sensitive e privacy.never_topics no brain-kit.config.json. Cada nível está explicado no guia do kit, em "Privacidade: o que o curador guarda": ${url}`);
     const lines = r.stdout.trimEnd().split('\n');
     assert.equal(lines.filter((l) => l === line).length, 1, r.stdout);
     const at = lines.indexOf(line);
@@ -96,7 +101,7 @@ for (const lang of ['pt-BR', 'en']) {
     // Adopted: the configuration is written, whatever validate and lint then
     // say of a one-line index (their verdict is the exit code).
     assert.ok(readFileSync(join(vault, 'brain-kit.config.json'), 'utf8').includes('"sensitive"'), r.stdout + r.stderr);
-    const line = t('init.privacy_default', { sensitive: 'privacy.sensitive', topics: 'privacy.never_topics', file: 'brain-kit.config.json' });
+    const line = t('init.privacy_default', { sensitive: 'privacy.sensitive', topics: 'privacy.never_topics', file: 'brain-kit.config.json', docs: kitDocsUrl() });
     assert.ok(r.stdout.endsWith(`${t('init.adopt_no_commit')}\n${line}\n`), r.stdout.slice(-600));
   });
 }
@@ -122,8 +127,29 @@ test('a configuration that sets a limit is said as the policy in effect', async 
   });
   const written = JSON.parse(readFileSync(join(vault, 'brain-kit.config.json'), 'utf8'));
   assert.equal(written.privacy.sensitive.people, 'skip');
-  const expected = t('init.privacy_set', { policy: privacyLine(written, t) });
+  const expected = t('init.privacy_set', { policy: privacyLine(written, t), docs: kitDocsUrl() });
   assert.ok(out.endsWith(`${expected}\n`), out.slice(-400));
   assert.ok(expected.includes('people=skip'));
-  assert.equal(out.includes(t('init.privacy_default', { sensitive: 'privacy.sensitive', topics: 'privacy.never_topics', file: 'brain-kit.config.json' })), false);
+  assert.ok(expected.endsWith(`${kitDocsUrl()}/docs/guide.md#privacy-what-the-curator-saves`), expected);
+  assert.equal(out.includes(t('init.privacy_default', { sensitive: 'privacy.sensitive', topics: 'privacy.never_topics', file: 'brain-kit.config.json', docs: kitDocsUrl() })), false);
+});
+
+// Where a vault user opens the guide: the GitHub repository package.json names, at the tag of
+// the running version, so the text matches the kit that wrote the vault (the review of R1, m7).
+test('docsUrlFor reads the repository package.json names, in each form npm accepts, and the version gives the tag', () => {
+  for (const repository of [
+    { type: 'git', url: 'git+https://github.com/ana/brain-kit.git' },
+    'https://github.com/ana/brain-kit',
+    // The ssh form, joined at run time so test/no-leak.test.mjs does not read it as an e-mail address.
+    ['git', 'github.com:ana/brain-kit.git'].join('@'),
+    'github:ana/brain-kit',
+  ]) {
+    assert.equal(docsUrlFor({ version: '1.2.3', repository }), 'https://github.com/ana/brain-kit/blob/v1.2.3', JSON.stringify(repository));
+  }
+  assert.equal(docsUrlFor({ version: '1.2.3', repository: 'https://gitlab.example.com/ana/brain-kit.git' }), null, 'not on GitHub');
+  assert.equal(docsUrlFor({ version: '1.2.3' }), null, 'no repository');
+  assert.equal(docsUrlFor({ repository: 'github:ana/brain-kit' }), null, 'no version, no tag');
+  const pkg = JSON.parse(readFileSync(join(KIT_ROOT, 'package.json'), 'utf8'));
+  assert.equal(kitDocsUrl(), docsUrlFor(pkg));
+  assert.match(kitDocsUrl(), new RegExp(`^https://github\\.com/[^/]+/[^/]+/blob/v${pkg.version.replace(/\./g, '\\.')}$`));
 });

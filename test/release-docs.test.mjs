@@ -1,7 +1,10 @@
 // The release gate: every tag carries its specification (the CHANGELOG
 // section of its version, published as the GitHub Release body), and the
-// documentation cannot fall behind a release (the READMEs' Status section
-// is re-read and re-stamped whenever the version moves).
+// documentation cannot fall behind a release (the stage section of each status
+// document is re-read and re-stamped whenever the version moves). The status
+// documents are three since the README rework of 02/10/2026: README.md, the
+// Portuguese front door ("Em que pé está"), and the complete guide in
+// Portuguese and in English, docs/guia.md and docs/guide.md (each "Status").
 //
 // Why a gate and not a habit: until 0.0.6 the newest tag was lightweight
 // (no message), no GitHub Release existed, and nothing related the version
@@ -14,8 +17,8 @@
 // the gate runs on every `npm test` and on every push in CI.
 //
 // The live test fails an ordinary feature commit never: it fails on a
-// version bump that left the CHANGELOG heading, the READMEs' stamp or the
-// READMEs' latest-tag sentence behind, and on a CHANGELOG or README that
+// version bump that left the CHANGELOG heading, a status document's stamp or
+// its latest-tag sentence behind, and on a CHANGELOG or status document that
 // was broken. Tests here never call the real `gh` or `claude` and never
 // touch the network.
 import { test } from 'node:test';
@@ -47,15 +50,17 @@ function changelog({ unreleased = null, sections } = {}) {
   return parts.join('\n');
 }
 
-function readmeEn({
+// A status document: an intro, an install block, the stage section with its stamp, a
+// phase table and the latest-tag sentence, then one more section.
+function statusDoc({
+  heading,
+  sentence,
   version = V,
   stamp = `<!-- status-reviewed: ${version} -->`,
-  sentence = `The latest tag is \`v${version}\`.`,
   intro = 'Older work lives in v0.0.5 and in second-brain-kit-0.0.5.tgz, mentioned outside any fence.',
   install = 'git clone https://example.com/second-brain-kit.git\nTAG=$(git describe --tags --abbrev=0)\n',
-  heading = '## Status',
   after = '',
-} = {}) {
+}) {
   return [
     '# brain-kit', '', intro, '',
     '## Install', '', `${FENCE}bash`, `${install}${FENCE}`, '',
@@ -66,37 +71,39 @@ function readmeEn({
   ].join('\n');
 }
 
-function readmePt({
-  version = V,
-  stamp = `<!-- status-reviewed: ${version} -->`,
-  sentence = `A tag mais recente é a \`v${version}\`.`,
-  intro = 'Trabalho antigo na v0.0.5, fora de qualquer bloco de código.',
-  install = 'git clone https://example.com/second-brain-kit.git\nTAG=$(git describe --tags --abbrev=0)\n',
-  heading = '## Status',
-  after = '',
-} = {}) {
-  return [
-    '# brain-kit', '', intro, '',
-    '## Instalação', '', `${FENCE}bash`, `${install}${FENCE}`, '',
-    heading, '', stamp, '',
-    '| Fase | Estado |', '|---|---|', '| 0 | concluída |', '',
-    `${sentence} Toda versão a partir da 0.0.2 é só uma tag do git.`, '',
-    '## Segurança', '', 'Texto.', after, '',
-  ].join('\n');
+const PT = (version) => `A tag mais recente é a \`v${version}\`.`;
+const EN = (version) => `The latest tag is \`v${version}\`.`;
+
+// README.md, the Portuguese front door: its stage section is "Em que pé está".
+function readme({ version = V, sentence = PT(version), heading = '## Em que pé está', ...rest } = {}) {
+  return statusDoc({ heading, sentence, version, intro: 'Trabalho antigo na v0.0.5, fora de qualquer bloco de código.', ...rest });
+}
+
+// docs/guia.md, the complete guide in Portuguese.
+function guia({ version = V, sentence = PT(version), heading = '## Status', ...rest } = {}) {
+  return statusDoc({ heading, sentence, version, ...rest });
+}
+
+// docs/guide.md, the complete guide in English.
+function guide({ version = V, sentence = EN(version), heading = '## Status', ...rest } = {}) {
+  return statusDoc({ heading, sentence, version, ...rest });
+}
+
+function docsFor(version = V) {
+  return { 'README.md': readme({ version }), 'docs/guia.md': guia({ version }), 'docs/guide.md': guide({ version }) };
 }
 
 function inputs(over = {}) {
   return {
     version: V,
     changelog: changelog(),
-    readmes: { 'README.md': readmeEn(), 'README.pt-BR.md': readmePt() },
+    docs: docsFor(),
     ...over,
   };
 }
 
-function readmesFor(version) {
-  return { 'README.md': readmeEn({ version }), 'README.pt-BR.md': readmePt({ version }) };
-}
+// The status documents with one of them replaced.
+const docsWith = (file, text) => ({ ...docsFor(), [file]: text });
 
 const ids = (problems) => problems.map((problem) => problem.id);
 const shown = (problems) => problems.map(rn.formatProblem).join('\n');
@@ -295,9 +302,9 @@ test('changelog-order: a level-two heading above the first version that is not e
 
 test('changelog-order: 0.0.10 sits above 0.0.9 (numeric order), and a prerelease sits below its release', () => {
   const text = changelog({ sections: [['0.0.10', '', '- a'], ['0.0.9', '', '- b'], ['0.0.9-rc.1', '', '- c']] });
-  assert.deepEqual(rn.checkInputs(inputs({ version: '0.0.10', changelog: text, readmes: readmesFor('0.0.10') })), []);
+  assert.deepEqual(rn.checkInputs(inputs({ version: '0.0.10', changelog: text, docs: docsFor('0.0.10') })), []);
   const upside = changelog({ sections: [['0.0.9', '', '- b'], ['0.0.10', '', '- a']] });
-  onlyId(rn.checkInputs(inputs({ version: '0.0.10', changelog: upside, readmes: readmesFor('0.0.10') })), 'changelog-order');
+  onlyId(rn.checkInputs(inputs({ version: '0.0.10', changelog: upside, docs: docsFor('0.0.10') })), 'changelog-order');
 });
 
 // -------------------------------------------------------- changelog-raw-html
@@ -442,143 +449,176 @@ test('changelog-raw-html: every id the script reports is in the table of docs/re
   }
 });
 
-// ------------------------------------------------------------- status-stamp
+// --------------------------------------------------------- the documents
 
-test('status-stamp: a README without the stamp, and the message names the file', () => {
-  const problem = onlyId(rn.checkInputs(inputs({ readmes: { 'README.md': readmeEn({ stamp: 'No stamp here.' }), 'README.pt-BR.md': readmePt() } })), 'status-stamp');
-  assert.match(problem.message, /README\.md/);
-  assert.match(problem.message, /no status-reviewed comment/);
-  assert.doesNotMatch(problem.message, /README\.pt-BR\.md/);
+test('the gate reads three status documents, each with its stage heading and the sentence in its language', () => {
+  assert.deepEqual(rn.STATUS_FILES, ['README.md', 'docs/guia.md', 'docs/guide.md']);
+  assert.ok(!rn.STATUS_FILES.includes('README.pt-BR.md'), 'README.md is the Portuguese README now');
+  assert.deepEqual(rn.checkInputs(inputs()), []);
+  // A document missing from the inputs is a problem, not a pass: the gate never skips one.
+  for (const file of rn.STATUS_FILES) {
+    const docs = docsFor();
+    delete docs[file];
+    const problem = onlyId(rn.checkInputs(inputs({ docs })), 'status-stamp');
+    assert.ok(problem.message.includes(file), problem.message);
+  }
 });
 
-test('status-stamp: the Portuguese README is checked on its own', () => {
-  const problem = onlyId(rn.checkInputs(inputs({ readmes: { 'README.md': readmeEn(), 'README.pt-BR.md': readmePt({ stamp: '' }) } })), 'status-stamp');
-  assert.match(problem.message, /README\.pt-BR\.md/);
+// ------------------------------------------------------------- status-stamp
+
+test('status-stamp: a document without the stamp, and the message names the file and its stage heading', () => {
+  const problem = onlyId(rn.checkInputs(inputs({ docs: docsWith('README.md', readme({ stamp: 'Sem carimbo.' })) })), 'status-stamp');
+  assert.match(problem.message, /README\.md/);
+  assert.match(problem.message, /no status-reviewed comment/);
+  assert.match(problem.message, /"## Em que pé está"/);
+  assert.doesNotMatch(problem.message, /docs\/gui[ad]e?\.md/);
+});
+
+test('status-stamp: each guide is checked on its own', () => {
+  for (const [file, text] of [['docs/guia.md', guia({ stamp: '' })], ['docs/guide.md', guide({ stamp: '' })]]) {
+    const problem = onlyId(rn.checkInputs(inputs({ docs: docsWith(file, text) })), 'status-stamp');
+    assert.ok(problem.message.includes(file), problem.message);
+    assert.match(problem.message, /"## Status"/);
+  }
 });
 
 test('status-stamp: a stamp that holds another version (the forcing function of a version bump)', () => {
-  const problem = onlyId(rn.checkInputs(inputs({ readmes: { 'README.md': readmeEn({ stamp: '<!-- status-reviewed: 0.0.6 -->' }), 'README.pt-BR.md': readmePt() } })), 'status-stamp');
+  const problem = onlyId(rn.checkInputs(inputs({ docs: docsWith('README.md', readme({ stamp: '<!-- status-reviewed: 0.0.6 -->' })) })), 'status-stamp');
   assert.match(problem.message, /0\.0\.6/);
   assert.match(problem.message, /0\.0\.7/);
-  onlyId(rn.checkInputs(inputs({ readmes: { 'README.md': readmeEn(), 'README.pt-BR.md': readmePt({ stamp: '<!-- status-reviewed: 0.0.6 -->' }) } })), 'status-stamp');
+  onlyId(rn.checkInputs(inputs({ docs: docsWith('docs/guia.md', guia({ stamp: '<!-- status-reviewed: 0.0.6 -->' })) })), 'status-stamp');
+  onlyId(rn.checkInputs(inputs({ docs: docsWith('docs/guide.md', guide({ stamp: '<!-- status-reviewed: 0.0.6 -->' })) })), 'status-stamp');
 });
 
 test('status-stamp: a stamp with no version is a stamp with the wrong version', () => {
-  onlyId(rn.checkInputs(inputs({ readmes: { 'README.md': readmeEn({ stamp: '<!-- status-reviewed: -->' }), 'README.pt-BR.md': readmePt() } })), 'status-stamp');
+  onlyId(rn.checkInputs(inputs({ docs: docsWith('README.md', readme({ stamp: '<!-- status-reviewed: -->' })) })), 'status-stamp');
 });
 
 test('status-stamp: two stamps, even both right, are a problem', () => {
   const two = '<!-- status-reviewed: 0.0.7 -->\n\n<!-- status-reviewed: 0.0.7 -->';
-  const problem = onlyId(rn.checkInputs(inputs({ readmes: { 'README.md': readmeEn(), 'README.pt-BR.md': readmePt({ stamp: two }) } })), 'status-stamp');
-  assert.match(problem.message, /README\.pt-BR\.md/);
+  const problem = onlyId(rn.checkInputs(inputs({ docs: docsWith('docs/guia.md', guia({ stamp: two })) })), 'status-stamp');
+  assert.match(problem.message, /docs\/guia\.md/);
   assert.match(problem.message, /exactly one/);
 });
 
 test('status-stamp: a stamp shown inside a code fence is documentation, not a stamp', () => {
   const example = `${FENCE}html\n<!-- status-reviewed: 0.0.1 -->\n${FENCE}`;
-  assert.deepEqual(rn.checkInputs(inputs({ readmes: { 'README.md': readmeEn({ after: example }), 'README.pt-BR.md': readmePt() } })), []);
-  onlyId(rn.checkInputs(inputs({ readmes: { 'README.md': readmeEn({ stamp: example }), 'README.pt-BR.md': readmePt() } })), 'status-stamp');
+  assert.deepEqual(rn.checkInputs(inputs({ docs: docsWith('README.md', readme({ after: example })) })), []);
+  onlyId(rn.checkInputs(inputs({ docs: docsWith('README.md', readme({ stamp: example })) })), 'status-stamp');
 });
 
-test('status-stamp: a README that cannot be read is a problem, not a crash', () => {
-  const problem = onlyId(rn.checkInputs(inputs({ readmes: { 'README.md': null, 'README.pt-BR.md': readmePt() } })), 'status-stamp');
+test('status-stamp: a document that cannot be read is a problem, not a crash', () => {
+  const problem = onlyId(rn.checkInputs(inputs({ docs: docsWith('README.md', null) })), 'status-stamp');
   assert.match(problem.message, /README\.md/);
+  assert.match(onlyId(rn.checkInputs(inputs({ docs: docsWith('docs/guide.md', null) })), 'status-stamp').message, /docs\/guide\.md/);
 });
 
 // -------------------------------------------------------- status-latest-tag
 
-test('status-latest-tag: a stale tag in the English README', () => {
-  const problem = onlyId(rn.checkInputs(inputs({ readmes: { 'README.md': readmeEn({ sentence: 'The latest tag is `v0.0.6`.' }), 'README.pt-BR.md': readmePt() } })), 'status-latest-tag');
-  assert.match(problem.message, /README\.md/);
+test('status-latest-tag: a stale tag in the English guide', () => {
+  const problem = onlyId(rn.checkInputs(inputs({ docs: docsWith('docs/guide.md', guide({ sentence: 'The latest tag is `v0.0.6`.' })) })), 'status-latest-tag');
+  assert.match(problem.message, /docs\/guide\.md/);
   assert.match(problem.message, /v0\.0\.7/);
 });
 
-test('status-latest-tag: a stale tag in the Portuguese README', () => {
-  const problem = onlyId(rn.checkInputs(inputs({ readmes: { 'README.md': readmeEn(), 'README.pt-BR.md': readmePt({ sentence: 'A tag mais recente é a `v0.0.6`.' }) } })), 'status-latest-tag');
-  assert.match(problem.message, /README\.pt-BR\.md/);
+test('status-latest-tag: a stale tag in the Portuguese README and in the Portuguese guide', () => {
+  const problem = onlyId(rn.checkInputs(inputs({ docs: docsWith('README.md', readme({ sentence: 'A tag mais recente é a `v0.0.6`.' })) })), 'status-latest-tag');
+  assert.match(problem.message, /README\.md/);
+  assert.ok(problem.message.includes('A tag mais recente é a `v0.0.7`.'), 'the message gives the sentence to write');
+  onlyId(rn.checkInputs(inputs({ docs: docsWith('docs/guia.md', guia({ sentence: 'A tag mais recente é a `v0.0.6`.' })) })), 'status-latest-tag');
 });
 
-test('status-latest-tag: each README needs its own language sentence', () => {
-  // The English sentence in the Portuguese README (and the other way round) is not the sentence.
-  onlyId(rn.checkInputs(inputs({ readmes: { 'README.md': readmeEn(), 'README.pt-BR.md': readmePt({ sentence: 'The latest tag is `v0.0.7`.' }) } })), 'status-latest-tag');
-  onlyId(rn.checkInputs(inputs({ readmes: { 'README.md': readmeEn({ sentence: 'A tag mais recente é a `v0.0.7`.' }), 'README.pt-BR.md': readmePt() } })), 'status-latest-tag');
+test('status-latest-tag: each document needs the sentence in its own language', () => {
+  // The README is Portuguese now: the English sentence there is not the sentence, and the other way round in the English guide.
+  onlyId(rn.checkInputs(inputs({ docs: docsWith('README.md', readme({ sentence: 'The latest tag is `v0.0.7`.' })) })), 'status-latest-tag');
+  onlyId(rn.checkInputs(inputs({ docs: docsWith('docs/guia.md', guia({ sentence: 'The latest tag is `v0.0.7`.' })) })), 'status-latest-tag');
+  onlyId(rn.checkInputs(inputs({ docs: docsWith('docs/guide.md', guide({ sentence: 'A tag mais recente é a `v0.0.7`.' })) })), 'status-latest-tag');
 });
 
 test('status-latest-tag: a line break inside the sentence is tolerated', () => {
-  const en = readmeEn({ sentence: 'The latest tag\nis `v0.0.7`.' });
-  const en2 = readmeEn({ sentence: 'The latest\ntag is\n`v0.0.7`.' });
-  const pt = readmePt({ sentence: 'A tag mais recente\né a `v0.0.7`.' });
+  const en = guide({ sentence: 'The latest tag\nis `v0.0.7`.' });
+  const en2 = guide({ sentence: 'The latest\ntag is\n`v0.0.7`.' });
+  const pt = readme({ sentence: 'A tag mais recente\né a `v0.0.7`.' });
   // An indented continuation line (a list item) and a doubled space are whitespace too.
-  const indented = readmeEn({ sentence: '- The latest tag\n  is  `v0.0.7`.' });
-  assert.deepEqual(rn.checkInputs(inputs({ readmes: { 'README.md': indented, 'README.pt-BR.md': readmePt() } })), []);
-  assert.deepEqual(rn.checkInputs(inputs({ readmes: { 'README.md': en, 'README.pt-BR.md': pt } })), []);
-  assert.deepEqual(rn.checkInputs(inputs({ readmes: { 'README.md': en2, 'README.pt-BR.md': readmePt() } })), []);
+  const indented = guide({ sentence: '- The latest tag\n  is  `v0.0.7`.' });
+  assert.deepEqual(rn.checkInputs(inputs({ docs: docsWith('docs/guide.md', indented) })), []);
+  assert.deepEqual(rn.checkInputs(inputs({ docs: { ...docsFor(), 'docs/guide.md': en, 'README.md': pt } })), []);
+  assert.deepEqual(rn.checkInputs(inputs({ docs: docsWith('docs/guide.md', en2) })), []);
 });
 
 test('status-latest-tag: a sentence that names no tag or a longer version is not the sentence', () => {
-  onlyId(rn.checkInputs(inputs({ readmes: { 'README.md': readmeEn({ sentence: 'The latest tag is `v0.0.70`.' }), 'README.pt-BR.md': readmePt() } })), 'status-latest-tag');
-  onlyId(rn.checkInputs(inputs({ readmes: { 'README.md': readmeEn({ sentence: 'The latest tag is 0.0.7.' }), 'README.pt-BR.md': readmePt() } })), 'status-latest-tag');
+  onlyId(rn.checkInputs(inputs({ docs: docsWith('docs/guide.md', guide({ sentence: 'The latest tag is `v0.0.70`.' })) })), 'status-latest-tag');
+  onlyId(rn.checkInputs(inputs({ docs: docsWith('docs/guide.md', guide({ sentence: 'The latest tag is 0.0.7.' })) })), 'status-latest-tag');
 });
 
-test('status-latest-tag: the sentence must sit in the Status section, not elsewhere in the README', () => {
-  // Only before the Status heading.
-  const before = readmeEn({ sentence: 'Nothing about tags.', intro: 'The latest tag is `v0.0.7`.' });
-  onlyId(rn.checkInputs(inputs({ readmes: { 'README.md': before, 'README.pt-BR.md': readmePt() } })), 'status-latest-tag');
+test('status-latest-tag: the sentence must sit in the stage section, not elsewhere in the document', () => {
+  // Only before the stage heading.
+  const before = guide({ sentence: 'Nothing about tags.', intro: 'The latest tag is `v0.0.7`.' });
+  onlyId(rn.checkInputs(inputs({ docs: docsWith('docs/guide.md', before) })), 'status-latest-tag');
   // Only after the next heading.
-  const after = readmeEn({ sentence: 'Nothing about tags.', after: 'The latest tag is `v0.0.7`.' });
-  onlyId(rn.checkInputs(inputs({ readmes: { 'README.md': after, 'README.pt-BR.md': readmePt() } })), 'status-latest-tag');
+  const after = readme({ sentence: 'Nada sobre tags.', after: 'A tag mais recente é a `v0.0.7`.' });
+  onlyId(rn.checkInputs(inputs({ docs: docsWith('README.md', after) })), 'status-latest-tag');
 });
 
-test('status-latest-tag: a README with no Status section', () => {
-  const problem = onlyId(rn.checkInputs(inputs({ readmes: { 'README.md': readmeEn({ heading: '## Progress' }), 'README.pt-BR.md': readmePt() } })), 'status-latest-tag');
-  assert.match(problem.message, /Status/);
+test('status-latest-tag: the README\'s stage section is "Em que pé está", and a "Status" there is not it', () => {
+  const problem = onlyId(rn.checkInputs(inputs({ docs: docsWith('README.md', readme({ heading: '## Status' })) })), 'status-latest-tag');
+  assert.match(problem.message, /README\.md has no "## Em que pé está" section/);
+  // And the guides keep "Status": the README's heading is not theirs.
+  onlyId(rn.checkInputs(inputs({ docs: docsWith('docs/guia.md', guia({ heading: '## Em que pé está' })) })), 'status-latest-tag');
 });
 
-test('status-latest-tag: a Status heading inside a code fence is no heading', () => {
+test('status-latest-tag: a document with no stage section', () => {
+  const problem = onlyId(rn.checkInputs(inputs({ docs: docsWith('docs/guide.md', guide({ heading: '## Progress' })) })), 'status-latest-tag');
+  assert.match(problem.message, /"## Status"/);
+});
+
+test('status-latest-tag: a stage heading inside a code fence is no heading', () => {
   const text = [FENCE, '## Status', 'Nothing.', FENCE, '', 'The latest tag is `v0.0.7`.', '', '<!-- status-reviewed: 0.0.7 -->', ''].join('\n');
-  onlyId(rn.checkInputs(inputs({ readmes: { 'README.md': text, 'README.pt-BR.md': readmePt() } })), 'status-latest-tag');
+  onlyId(rn.checkInputs(inputs({ docs: docsWith('docs/guide.md', text) })), 'status-latest-tag');
 });
 
 // ---------------------------------------------------------- install-literals
 
 test('install-literals: a literal tag inside a fence, and the message names file and line', () => {
-  const problem = onlyId(rn.checkInputs(inputs({ readmes: { 'README.md': readmeEn({ install: 'git checkout v0.0.6\n' }), 'README.pt-BR.md': readmePt() } })), 'install-literals');
+  const problem = onlyId(rn.checkInputs(inputs({ docs: docsWith('README.md', readme({ install: 'git checkout v0.0.6\n' })) })), 'install-literals');
   assert.match(problem.message, /README\.md:/);
   assert.match(problem.message, /v0\.0\.6/);
 });
 
-test('install-literals: a literal tarball name inside a fence, in the Portuguese README', () => {
-  const problem = onlyId(rn.checkInputs(inputs({ readmes: { 'README.md': readmeEn(), 'README.pt-BR.md': readmePt({ install: 'npm install ./second-brain-kit-0.0.6.tgz\n' }) } })), 'install-literals');
-  assert.match(problem.message, /README\.pt-BR\.md:/);
+test('install-literals: a literal tarball name inside a fence of either guide', () => {
+  for (const [file, text] of [['docs/guia.md', guia({ install: 'npm install ./second-brain-kit-0.0.6.tgz\n' })], ['docs/guide.md', guide({ install: 'git checkout v0.0.6\n' })]]) {
+    const problem = onlyId(rn.checkInputs(inputs({ docs: docsWith(file, text) })), 'install-literals');
+    assert.ok(problem.message.startsWith(`${file}:`), problem.message);
+  }
 });
 
-test('install-literals: the same literals outside a fence are allowed (the fixture intro and the Status prose carry them)', () => {
-  // readmeEn's intro names v0.0.5 and a tarball, and its Status sentence names v0.0.7, all outside fences.
+test('install-literals: the same literals outside a fence are allowed (the fixture intro and the stage prose carry them)', () => {
+  // The intros name v0.0.5 and a tarball, and the stage sentences name v0.0.7, all outside fences.
   assert.deepEqual(rn.checkInputs(inputs()), []);
 });
 
 test('install-literals: a tilde fence is a fence, and a literal after the closing fence is outside it', () => {
-  const tilde = readmeEn({ intro: ['~~~', 'git checkout v0.0.6', '~~~'].join('\n') });
-  onlyId(rn.checkInputs(inputs({ readmes: { 'README.md': tilde, 'README.pt-BR.md': readmePt() } })), 'install-literals');
-  const closed = readmeEn({ intro: [FENCE, 'echo hello', FENCE, 'Back to prose with v0.0.6.'].join('\n') });
-  assert.deepEqual(rn.checkInputs(inputs({ readmes: { 'README.md': closed, 'README.pt-BR.md': readmePt() } })), []);
+  const tilde = guide({ intro: ['~~~', 'git checkout v0.0.6', '~~~'].join('\n') });
+  onlyId(rn.checkInputs(inputs({ docs: docsWith('docs/guide.md', tilde) })), 'install-literals');
+  const closed = guide({ intro: [FENCE, 'echo hello', FENCE, 'Back to prose with v0.0.6.'].join('\n') });
+  assert.deepEqual(rn.checkInputs(inputs({ docs: docsWith('docs/guide.md', closed) })), []);
 });
 
 test('install-literals: a fence of four backticks holding a three-backtick line stays open until a four-backtick line', () => {
-  const nested = readmeEn({ intro: ['`'.repeat(4), FENCE, 'git checkout v0.0.6', FENCE, '`'.repeat(4)].join('\n') });
-  onlyId(rn.checkInputs(inputs({ readmes: { 'README.md': nested, 'README.pt-BR.md': readmePt() } })), 'install-literals');
+  const nested = readme({ intro: ['`'.repeat(4), FENCE, 'git checkout v0.0.6', FENCE, '`'.repeat(4)].join('\n') });
+  onlyId(rn.checkInputs(inputs({ docs: docsWith('README.md', nested) })), 'install-literals');
 });
 
 test('install-literals: triple backticks in the middle of a line, or opening and closing on one line, open no fence', () => {
-  const middle = readmeEn({ intro: `Use ${FENCE}x${FENCE} inline.\nThen prose with v0.0.6 right after.` });
-  assert.deepEqual(rn.checkInputs(inputs({ readmes: { 'README.md': middle, 'README.pt-BR.md': readmePt() } })), []);
-  const whole = readmeEn({ intro: `${FENCE}x${FENCE} is inline code.\nThen prose with v0.0.6 right after.` });
-  assert.deepEqual(rn.checkInputs(inputs({ readmes: { 'README.md': whole, 'README.pt-BR.md': readmePt() } })), []);
+  const middle = readme({ intro: `Use ${FENCE}x${FENCE} inline.\nThen prose with v0.0.6 right after.` });
+  assert.deepEqual(rn.checkInputs(inputs({ docs: docsWith('README.md', middle) })), []);
+  const whole = readme({ intro: `${FENCE}x${FENCE} is inline code.\nThen prose with v0.0.6 right after.` });
+  assert.deepEqual(rn.checkInputs(inputs({ docs: docsWith('README.md', whole) })), []);
 });
 
 test('install-literals: a fence indented inside a list item is still a fence', () => {
-  const listed = readmeEn({ intro: ['- step one:', '', `   ${FENCE}bash`, '   git checkout v0.0.6', `   ${FENCE}`].join('\n') });
-  onlyId(rn.checkInputs(inputs({ readmes: { 'README.md': listed, 'README.pt-BR.md': readmePt() } })), 'install-literals');
+  const listed = readme({ intro: ['- passo um:', '', `   ${FENCE}bash`, '   git checkout v0.0.6', `   ${FENCE}`].join('\n') });
+  onlyId(rn.checkInputs(inputs({ docs: docsWith('README.md', listed) })), 'install-literals');
 });
 
 // ----------------------------------------------------------- tag-version
@@ -735,12 +775,12 @@ const SCRIPT_SOURCE = readFileSync(SCRIPT_PATH, 'utf8');
 
 // A repository with the script copied in (the script finds the repository
 // from its own location) and src/ linked so its one import resolves.
-function scratch({ version = V, changelogText = changelog(), en = readmeEn(), pt = readmePt() } = {}) {
+function scratch({ version = V, changelogText = changelog(), docs = {} } = {}) {
   const root = makeRepo({
     'package.json': `${JSON.stringify({ name: 'second-brain-kit', version }, null, 2)}\n`,
     'CHANGELOG.md': changelogText,
-    'README.md': en,
-    'README.pt-BR.md': pt,
+    ...docsFor(version),
+    ...docs,
     'scripts/release-notes.mjs': SCRIPT_SOURCE,
   }, 'brain-kit-release-');
   symlinkSync(join(KIT_ROOT, 'src'), join(root, 'src'));
@@ -759,7 +799,7 @@ test('cli check: a clean repository prints "release check ok" and exits 0', () =
 });
 
 test('cli check: one line per problem, each starting with its check id, and exit 1', () => {
-  const root = scratch({ en: readmeEn({ stamp: '<!-- status-reviewed: 0.0.6 -->', sentence: 'The latest tag is `v0.0.6`.' }) });
+  const root = scratch({ docs: { 'docs/guide.md': guide({ stamp: '<!-- status-reviewed: 0.0.6 -->', sentence: 'The latest tag is `v0.0.6`.' }) } });
   const result = cli(root, ['check']);
   assert.equal(result.status, 1);
   const lines = result.stdout.trimEnd().split('\n');
@@ -841,10 +881,11 @@ test('LIVE: the live run read real files, so a pass is not an empty pass', () =>
   const pkg = JSON.parse(readFileSync(join(KIT_ROOT, 'package.json'), 'utf8'));
   assert.equal(read.version, pkg.version);
   assert.ok(read.changelog.includes(`## ${pkg.version}`), 'CHANGELOG.md was not read');
-  for (const name of ['README.md', 'README.pt-BR.md']) {
-    assert.ok(read.readmes[name].includes(`<!-- status-reviewed: ${pkg.version} -->`), `${name} was not read or carries no stamp`);
-    assert.ok(read.readmes[name].includes('## Status'), `${name} has no Status section`);
+  for (const [name, heading] of [['README.md', '## Em que pé está'], ['docs/guia.md', '## Status'], ['docs/guide.md', '## Status']]) {
+    assert.ok(read.docs[name].includes(`<!-- status-reviewed: ${pkg.version} -->`), `${name} was not read or carries no stamp`);
+    assert.ok(read.docs[name].split('\n').includes(heading), `${name} has no ${heading} section`);
   }
+  assert.deepEqual(Object.keys(read.docs), rn.STATUS_FILES, 'every status document, and only those, was read');
 });
 
 test('LIVE: the script, run as a command over this repository, prints "release check ok"', () => {

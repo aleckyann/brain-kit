@@ -47,8 +47,10 @@
     "docs/rationale.md",
     "docs/incidents.md",
     "docs/incident-response.md",
+    "docs/guia.md",
+    "docs/guide.md",
+    "docs/preparar-o-computador.md",
     "README.md",
-    "README.pt-BR.md",
     "LICENSE",
     "CHANGELOG.md",
     "SECURITY.md"

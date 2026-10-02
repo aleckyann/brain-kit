@@ -781,12 +781,13 @@ test('S3: --new whose machine.json write fails midway (a file-size limit) rolls 
 
 // --- S4: the push gate -----------------------------------------------------------------------------
 
-test('S4: the second-machine steps give the clone its push gate: the section, both READMEs, the incident page and the next steps', () => {
+test('S4: the second-machine steps give the clone its push gate: the section, both complete guides, the incident page and the next steps', () => {
   const doc = readFileSync(join(KIT_ROOT, 'docs', 'scheduling.md'), 'utf8');
   const section = doc.slice(doc.indexOf('## The same vault on a second machine'), doc.indexOf('## Moving from a legacy lock'));
   const gate = 'git config core.hooksPath .githooks';
   assert.ok(section.includes(gate), 'docs/scheduling.md');
-  for (const file of ['README.md', 'README.pt-BR.md']) {
+  // The second machine moved from the READMEs to the complete guides (02/10/2026).
+  for (const file of ['docs/guide.md', 'docs/guia.md']) {
     const text = readFileSync(join(KIT_ROOT, file), 'utf8');
     const at = text.indexOf('machine register --new');
     assert.ok(at >= 0 && text.slice(at - 600, at + 900).includes(gate), file);

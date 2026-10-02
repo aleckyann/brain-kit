@@ -1,705 +1,348 @@
 # brain-kit
 
-brain-kit keeps a second brain in plain markdown (text files), in the Open Knowledge Format
-(OKF) v0.2: an AI agent reads it through an index and feeds it every day from your own work
-(your Claude Code sessions, your calendar, your meeting notes). The agent only changes the
-brain through a pull request, a change request that you read on GitHub, and your merge, the
-click that approves the request, is the approval and the verification.
+Um segundo cérebro que lembra o que você contou ao Claude e pede licença antes de mexer.
 
-> **Start here.** Once you have Node.js 22 or newer (24 LTS is recommended), git, `gh` (the GitHub
-> app for the terminal), Claude Code and a GitHub account ready, the path to your first pull request
-> takes about 35 minutes the first time: about 10 of reading, 21 for the steps below and a few more
-> to approve it on GitHub. The times are estimates, not a promise. See [Your first vault](#your-first-vault).
->
-> 1. Install the kit and the plugin by pasting the [install snippet](#installing-a-fixed-version) into the terminal (2 min).
-> 2. Log in to GitHub with `gh auth login` ([step 2](#step-2), 3 min).
-> 3. Check the machine with `brain-kit doctor`, outside any vault ([step 3](#step-3), 1 min).
-> 4. Create the vault with `brain-kit init ~/my-brain` ([step 4](#step-4), 3 min).
-> 5. Make the first commit with `git add -A` and `git commit` ([step 5](#step-5), 3 min).
-> 6. Push to GitHub with `gh repo create my-brain --private --source . --push` ([step 6](#step-6), 1 min).
-> 7. Open the first pull request with `brain-kit propose` ([steps 7 to 10](#step-7), 8 min) and approve it on GitHub ([step 11](#step-11)).
+## Em 30 segundos
 
-**Words you will see**
+- Suas notas são arquivos de texto comuns numa pasta do seu computador, que o kit chama de vault, com uma cópia privada no GitHub, um site que guarda cada versão dos arquivos.
+- Você conversa com o Claude pelo Claude Code, o Claude que roda no terminal (a janela de comandos), num plano pago: o mais barato que serve é o Pro, de US$ 20 por mês ([Quanto custa](#quanto-custa)). Ele lê as notas antes de responder.
+- Um curador, a IA que mantém o vault em dia, lê só as suas conversas com o Claude Code feitas dentro do vault e, se você conectar, a Google Agenda e as notas de reunião do Google Drive. E-mail, WhatsApp, ChatGPT, Outlook, Teams e o resto do computador ficam de fora.
+- Cada mudança chega como um pull request, um pedido de mudança que você lê e aprova no GitHub. Sem a sua aprovação, nada entra.
 
-| Word | What it means |
+**No fim do passo a passo**, você tem um vault seu, em que toda mudança passa pela sua aprovação,
+e o Claude respondendo a partir dele. **Depois, se quiser**: o [curador agendado](docs/guia.md#o-curador-agendado),
+que lê sozinho as conversas da véspera, se liga com um comando; o [briefing da manhã](docs/guia.md#o-briefing-matinal)
+pede dois passos, instalar o aplicativo Claude para desktop e, nele, pedir que o briefing seja registrado.
+As palavras novas estão em [Palavras que você vai ver](#palavras-que-você-vai-ver).
+
+## Por que isso existe
+
+Quem usa IA todo dia conhece o ritual: colar o mesmo contexto no começo de cada conversa, explicar de
+novo quem é quem e o que ficou combinado, e torcer para ela não preencher as lacunas com imaginação.
+Ela esquece o que você disse ontem, e o que ela lembra fica guardado dentro do aplicativo dela.
+
+O brain-kit nasceu de um segundo cérebro de verdade, usado todo dia por um fundador para guardar
+pessoas, decisões, promessas e o que saiu de cada reunião. Cada proteção do kit nasceu de um
+problema de verdade, com data ([um exemplo, no guia](docs/guia.md#de-onde-vêm-as-travas)).
+
+## E o ChatGPT?
+
+A memória de um aplicativo de IA fica dentro dele. Aqui ela é um arquivo de texto seu: você lê cada
+linha, corrige o que quiser e aprova cada mudança antes de ela entrar, e o git guarda cada versão. O
+vault aprende com as suas conversas com o Claude Code e, se você conectar, com a agenda e as notas de
+reunião; o que você conta ao ChatGPT ele não vê.
+
+No dia a dia, você conversa com o Claude Code no terminal, na pasta do vault, e aprova os pull
+requests no GitHub, até pelo celular. Contar uma novidade ao vault, por enquanto, é no computador.
+
+## O que você ganha
+
+- **Memória que não some.** O que você contou ao Claude sobre a reunião da semana passada está numa nota, e não na boa vontade da IA.
+- **Atualização que chega sozinha.** Ligado o curador, todo dia ele lê as suas conversas da véspera com o Claude Code e, se você conectar, a agenda e as notas de reunião, e abre o pull request por você.
+- **Nada muda sem você.** Toda mudança é um pull request que você aprova no GitHub, até pelo celular, na fila do pão.
+- **Um briefing de manhã.** O que vence hoje, o que atrasou e o que espera a sua aprovação, num resumo só.
+- **Seus dados são seus.** Arquivos de texto numa pasta sua e numa cópia privada no GitHub, que abrem em qualquer editor. O kit em si não tem servidor nem cadastro: se você sair, as notas ficam.
+- **O kit é grátis.** O código é aberto, e o trabalho de IA sai de um plano pago do Claude (veja [Quanto custa](#quanto-custa)).
+
+## Para quem é
+
+- **Quem lidera gente.** Fundador, gestor, coordenador: as reuniões 1:1, as decisões com o porquê e a promessa de mandar o feedback para a Ana até sexta.
+- **Quem atende muitos clientes.** Consultor, freelancer, agência: uma nota por cliente, o que ficou combinado em cada reunião e o que ainda está pendente.
+- **Quem estuda.** Pesquisador, estudante, leitor compulsivo: uma nota por livro, com as suas reflexões ligadas umas às outras.
+- **Quem vive dentro do Claude Code.** E cansou de colar contexto: abra o Claude Code na pasta do vault e pergunte; a resposta vem das notas, com o caminho de cada uma, ou um "não sei" honesto.
+- **Quem decide e depois esquece por quê.** A decisão fica com a data e o motivo, e ninguém precisa rediscutir tudo daqui a seis meses.
+
+Ainda não é para você se:
+
+- não quer criar uma conta no GitHub;
+- não quer assinar um plano pago do Claude e passar a conversar com ele pelo Claude Code;
+- usa Windows: este passo a passo é para o terminal do Linux e do macOS, os únicos testados, e o curador agendado não roda no Windows.
+
+Nunca usou o terminal? Tudo bem: o [passo zero](docs/preparar-o-computador.md) ensina, e é copiar e colar.
+
+## Como funciona
+
+1. **Você trabalha.** Você abre o Claude Code na pasta do vault (o passo 8 mostra como) e conversa normalmente. O que você pede para registrar, ele anota no log e nas notas, e no fim da resposta o kit lembra a ele de propor a mudança para você aprovar.
+2. **O curador lê e propõe.** No horário que você escolher (ou quando você pedir), o curador faz uma rodada, uma passada pelas novidades. Ele lê as conversas dos dias que ainda não leu, sempre até ontem, porque hoje ainda não terminou; anota no log, o diário do vault, o que elas trouxeram de novo; atualiza as notas; confere tudo e abre um pull request.
+3. **Você aprova.** Lê o pull request no GitHub e faz o merge, o clique que aprova. É a única porta de entrada do vault.
+
+O curador não navega na internet nem lê o resto do computador, e é instruído a nunca inventar:
+o que não está numa fonte que ele leu, ele não sabe. Instrução não é garantia, e IA erra; é por
+isso que nada entra sem o seu merge.
+
+De manhã, o briefing conta como o vault está: o que vence hoje, o que atrasou, os pull requests
+esperando você e as perguntas que ele precisa que você responda. Com horário, ele aparece nos dias
+úteis numa conversa do aplicativo Claude para desktop; sem horário, você pede numa conversa no vault.
+
+### Palavras que você vai ver
+
+| Palavra | O que quer dizer |
 |---|---|
-| terminal | the window where you type commands |
-| PATH | the list of folders where the terminal looks for the commands you type |
-| repository | a folder whose history git keeps; GitHub keeps a copy of it on the internet |
-| branch | a line of work in the repository; the main one is usually called `main` or `master` |
-| commit | a saved point in the history, with a message saying what changed |
-| pull request | a request to merge changes into the main branch, which you read and approve on GitHub |
-| merge | approving a pull request: its changes go into the main branch |
-| vault | the folder of your notes (your second brain), which is a repository |
-| push gate | the check that runs before you send (push) the vault to GitHub and stops forgotten passwords and keys |
-| hook | a program that runs by itself when something happens, such as before a push to GitHub |
-| skill | a ready-made instruction Claude Code follows when you ask for it, such as `capture` |
-| plugin, marketplace | a plugin adds skills and hooks to Claude Code; the marketplace is the list it installs them from |
+| terminal e `cd` | a janela onde você digita comandos; o `cd` entra numa pasta, e `cd ~/my-brain` entra no vault |
+| git e GitHub | o git anota cada versão dos arquivos; o GitHub guarda uma cópia na internet |
+| repositório | uma pasta com esse histórico; o vault é um |
+| commit e push | um commit é um ponto salvo no histórico; o push envia os commits ao GitHub |
+| pull request e merge | o pedido de mudança que você lê no GitHub, e o clique que o aprova |
+| branch | uma versão paralela das notas, onde uma mudança espera a sua aprovação; a principal se chama `main` ou `master` |
+| vault | a pasta das suas notas, o seu segundo cérebro |
+| log | o diário do vault: cada novidade numa linha com data; as notas são escritas a partir dele |
+| curador e rodada | a IA que mantém o vault em dia, e cada passada dela pelas novidades |
+| trava de push | a conferência que roda antes de cada push e barra senhas e códigos de acesso secretos |
+| plugin e marketplace | o plugin é um complemento do Claude Code; o marketplace, a lista de onde ele o instala |
+| skill | uma instrução pronta que o Claude segue quando você pede, como a `capture`, que registra uma novidade |
+| hook | um programa que roda sozinho quando algo acontece, como no fim de cada resposta do Claude |
 
-## Requirements
+## Como fica na prática
 
-To reach the first pull request you need Node.js 22 or newer (24 LTS is recommended) with
-its npm (`node --version` shows which one you have), git, `gh` (the GitHub app for the
-terminal) logged in (`gh auth login`), Claude Code and a GitHub account. The scheduled
-curator rounds, the calendar and meeting-notes sources and the briefing on a schedule are
-optional and can wait: [The scheduled curator](#the-scheduled-curator) and
-[docs/scheduling.md](docs/scheduling.md) introduce them, with what each one needs.
+Um exemplo inventado. Na quinta, 01/10/2026, você conta ao Claude Code, na pasta do vault, que na
+reunião de hoje o Carlos Mendes, um cliente, pediu a proposta revisada até sexta. O Claude anota
+uma linha no log, `memoria/log.md`:
 
-## Installing a fixed version
-
-A vault you depend on should run a fixed version of the kit, not whatever the default
-branch holds today. Every version from 0.0.2 on is a git tag (a version marker), and the
-latest tag is the one to install. The list of versions, and what each one did, is in the
-[CHANGELOG](CHANGELOG.md) and on the Releases page of the repository. The snippet below does
-it all at once: it clones the repository, finds the latest tag (the second line, so nothing
-below names a version), packs that tag into a `.tgz` file, installs `brain-kit` from it and
-installs the plugin. Paste it whole into the terminal:
-
-```bash
-git clone https://github.com/aleckyann/brain-kit.git
-TAG=$(git -C brain-kit describe --tags --abbrev=0)
-mkdir -p ~/.local/share/brain-kit/$TAG
-git -C brain-kit archive $TAG | tar -x -C ~/.local/share/brain-kit/$TAG
-cd ~/.local/share/brain-kit/$TAG && npm pack --silent && npm i -g ./second-brain-kit-${TAG#v}.tgz
-rm -f ~/.local/share/brain-kit/$TAG/second-brain-kit-${TAG#v}.tgz
-claude plugin marketplace add ~/.local/share/brain-kit/$TAG
-claude plugin install brain-kit@brain-kit --scope user
+```markdown
+**Captura** Na reunião de 01/10/2026, o cliente Carlos Mendes pediu a proposta revisada até sexta, 02/10/2026.
 ```
 
-`brain-kit --version` prints the version you installed. The snippet already deletes the `.tgz`
-file it made, so that no copy of it stays inside the plugin's folder. The `brain-kit` folder
-that the first line cloned (it sits in the folder where you pasted the snippet) is no longer
-used and can be deleted. The `~/.local/share/brain-kit/` folder that the snippet creates, on
-the other hand, **must not be deleted**: Claude Code loads the plugin from it.
+No fim da resposta, ele transforma essa linha numa pendência com o prazo e numa nota do Carlos, e
+abre o pull request "curadoria: pedido do Carlos Mendes". A nota só tem o que a linha diz:
 
-To move to a newer version later, delete the `brain-kit` folder that the first line cloned, if
-it is still there (otherwise the snippet reuses that old copy and installs the old version),
-paste the snippet again, and then record the new version in Claude Code:
+```markdown
+# Carlos Mendes
 
-```bash
-claude plugin update brain-kit@brain-kit
+Cliente.
+
+- 01/10/2026: pediu a proposta revisada até sexta, 02/10/2026.
 ```
 
-Open Claude Code again afterwards. The folders of older versions under
-`~/.local/share/brain-kit/` are no longer used and can be deleted; the newest must stay.
+Em cima, o arquivo leva um pequeno cabeçalho que o kit preenche (o tipo da nota, um resumo, quem a
+escreveu e quando). Depois do merge, o briefing de sexta de manhã traz, entre outras coisas:
 
-Where npm may fetch git packages, `npm i -g github:aleckyann/brain-kit#<tag>` installs the kit
-from a tag by itself; where it may not (npm refuses with `EALLOWGIT`), the snippet packs the
-tag for you, installs the `.tgz` and keeps the unpacked copy for the plugin.
-`claude plugin marketplace add aleckyann/brain-kit` follows the repository's default branch
-instead. A vault's CI can pin the kit the same way, checking it out at the tag's commit next
-to the vault.
+```text
+Atrasadas e para hoje
+- Mandar a proposta revisada para o Carlos Mendes: vence hoje.
+Perguntas
+- A proposta revisada já foi para o Carlos Mendes?
+```
 
-### If you see `EACCES`
+## Quanto custa
 
-`EACCES` means "permission denied": npm tried to install into a system folder you cannot
-write to. This usually happens when Node came from the system installer; if you installed
-Node with nvm you do not get this error and can skip this block. Avoid `sudo` (running as
-administrator), which tends to leave administrator-owned files in your folder and cause more
-permission errors later: tell npm to install into a folder of your own instead. Run once:
+O kit é grátis e de código aberto (licença MIT: use, copie e mude à vontade). O que custa é o
+Claude: o Claude Code pede um plano pago. Em 02/10/2026, a [página oficial de preços](https://claude.com/pricing)
+dizia: o plano grátis não inclui o Claude Code; o mais barato que inclui, para uma pessoa, é o
+Pro, de US$ 20 por mês, ou US$ 200 por ano cobrados de uma vez (que a página apresenta como US$ 17
+por mês); o Max começa em US$ 100 por mês; e os preços não incluem impostos.
+
+Numa assinatura, não há cobrança por rodada: o plano tem um limite de uso só, e o curador gasta dele
+como as suas conversas; quanto, o projeto ainda não mediu. Se o limite acabar, ele acaba também para
+as suas conversas, e a rodada daquele dia fica para a próxima, sem perder nada. Uma rodada sem nada
+para ler termina sem chamar a IA e não gasta nada. Com uma chave de API (a conta de desenvolvedor,
+paga por uso), cada rodada é cobrada à parte: [quanto, no guia](docs/guia.md#quanto-custa-uma-rodada).
+
+## Privacidade
+
+Por padrão, o curador guarda tudo o que as suas conversas, a agenda e as notas de reunião ensinam
+ao vault, inclusive informação pessoal e sensível (saúde, família, finanças), a sua e a de outras
+pessoas. Por isso o repositório precisa continuar privado: só você e quem você convidar o veem.
+
+Para guardar menos, peça ao Claude Code, dentro do vault, algo como "guarde só um resumo do que
+for sensível sobre as outras pessoas". Ele muda a configuração, e a mudança vira um pull request
+como qualquer outra; os níveis e o arquivo estão [no guia](docs/guia.md#privacidade-o-que-o-curador-guarda).
+É uma instrução ao curador, não uma garantia: você confere no pull request o que ele escreveu.
+
+Pela LGPD, o que você anota sobre outras pessoas é dado pessoal. Saúde, religião, vida sexual e
+opinião política, entre outros, são dados sensíveis. Quem responde por eles é você, o dono do
+vault: anote dos outros só o que tem motivo para guardar. Com dados da empresa, confira antes a
+política dela. O kit não tem servidor: o que a IA lê passa pela sua conta do Claude, e num plano
+Pro ou Max o uso das suas conversas para treinar os modelos da Anthropic depende de uma opção sua,
+nas [configurações de privacidade](https://claude.ai/settings/data-privacy-controls) ([a política](https://code.claude.com/docs/en/data-usage)).
+
+## Em que pé está
+
+<!-- status-reviewed: 0.0.10 -->
+
+O kit está em construção, mas o vault de referência, usado todo dia, já roda pelo kit, e desde
+01/10/2026 também o curador agendado e o briefing. Cada versão é uma tag do git (um marcador de
+versão). A tag mais recente é a `v0.0.10`. O pacote `second-brain-kit` no site do npm é um esqueleto
+antigo, a 0.0.1: o passo 1 usa o npm de outro jeito e instala a versão certa. Os comandos do passo a
+passo foram testados pelo projeto, mas ninguém de fora fez o caminho todo ainda: você estaria entre os
+primeiros. Se travar, [abra uma issue](https://github.com/aleckyann/brain-kit/issues) com a mensagem
+que apareceu na tela, ou peça ajuda a quem mandou o link. Cada fase está no [guia](docs/guia.md#status).
+
+## O que você precisa
+
+Nunca instalou nada disso? [Comece por aqui](docs/preparar-o-computador.md): o passo zero, para
+Mac e Linux, começa pelas duas contas e mostra como abrir o terminal e instalar cada item.
+
+- **Node.js 22 ou mais novo (o 24 LTS é o recomendado)**, o motor que roda o kit; LTS é a versão de suporte longo: [nodejs.org](https://nodejs.org).
+- **git**, que guarda o histórico das notas: [git-scm.com](https://git-scm.com/downloads).
+- **Uma conta no GitHub**, grátis, com repositórios privados à vontade: [github.com/signup](https://github.com/signup).
+- **O `gh`**, o GitHub no terminal: [cli.github.com](https://cli.github.com).
+- **O Claude Code**, com um plano pago do Claude: [code.claude.com](https://code.claude.com/docs/en/overview) (em inglês).
+
+Com tudo isso já instalado, conte com cerca de 35 minutos até o primeiro pull request: uns 10 de
+leitura, uns 20 nos passos abaixo e mais alguns para aprovar no GitHub. São estimativas, não uma
+promessa, e não incluem o passo zero.
+
+## Passo a passo
+
+Os onze primeiros passos montam o vault e o primeiro pull request aprovado; o décimo segundo é a
+prova. Cada um diz o que faz, o comando para colar no terminal e o que deve aparecer. Algumas
+mensagens saem em inglês mesmo num computador em português: cada passo diz qual procurar.
+
+> **Do passo 5 em diante**, sempre que abrir um terminal novo, comece com `cd ~/my-brain`. O `cd`
+> entra numa pasta, e os comandos do vault só funcionam de dentro dela.
+
+1. **Instale o kit e o plugin.** Parece feitiço de filme de hacker, mas são só oito linhas que baixam o kit, descobrem a versão mais recente e instalam o comando `brain-kit` e o plugin do Claude Code. Cole as oito de uma vez e espere o terminal parar de falar:
+
+   ```bash
+   git clone https://github.com/aleckyann/brain-kit.git
+   TAG=$(git -C brain-kit describe --tags --abbrev=0)
+   mkdir -p ~/.local/share/brain-kit/$TAG
+   git -C brain-kit archive $TAG | tar -x -C ~/.local/share/brain-kit/$TAG
+   cd ~/.local/share/brain-kit/$TAG && npm pack --silent && npm i -g ./second-brain-kit-${TAG#v}.tgz
+   rm -f ~/.local/share/brain-kit/$TAG/second-brain-kit-${TAG#v}.tgz
+   claude plugin marketplace add ~/.local/share/brain-kit/$TAG
+   claude plugin install brain-kit@brain-kit --scope user
+   ```
+
+   Passa muito texto, parte em inglês; é normal. Quando o terminal parar, confira:
+
+   ```bash
+   brain-kit --version
+   ```
+
+   Deu certo se aparecer um número de versão (não confie só no `Successfully installed` do plugin, que aparece mesmo quando o npm falha). Se aparecer `command not found`, siga [Se aparecer `EACCES`](#se-aparecer-eacces), que resolve os dois. A pasta `brain-kit` que a primeira linha baixou não é mais usada: apague-a, ou ela atrapalha a próxima atualização (num terminal recém-aberto, ela fica na sua pasta de usuário, que o Finder do Mac abre com Command + Shift + H). Já a pasta `~/.local/share/brain-kit/`, que o trecho cria, **não pode ser apagada**: é dela que o Claude Code carrega o plugin.
+2. <a id="passo-2"></a>**Entre no GitHub.** O kit abre os pull requests com o `gh`, que precisa do seu login:
+
+   ```bash
+   gh auth login
+   ```
+
+   Ele faz algumas perguntas em inglês, e as respostas sugeridas servem (GitHub.com e o login pelo navegador): aperte Enter em cada uma. Depois ele mostra um código e abre o navegador, onde você cola o código e autoriza. No fim, o terminal diz `Logged in as` e o seu usuário.
+3. <a id="passo-3"></a>**Confira a máquina.** Sem vault ainda, o `doctor` confere só a máquina: o Node, o git, o `gh` e o login dele, e o Claude Code.
+
+   ```bash
+   brain-kit doctor
+   ```
+
+   Está tudo certo quando a linha que começa com `doctor:` termina em `0 falha(s)`. A mensagem "nenhum vault brain-kit encontrado", que vem logo depois, é esperada: o vault vem no próximo passo. Uma linha `falha` diz o que rodar para corrigir.
+4. <a id="passo-4"></a>**Crie o vault**, numa pasta nova (ou vazia). `~/my-brain` é a pasta `my-brain` dentro da sua pasta de usuário; se trocar o nome, troque também nos passos seguintes.
+
+   ```bash
+   brain-kit init ~/my-brain
+   ```
+
+   Ele faz sete perguntas, uma de cada vez, cada uma com uma sugestão entre colchetes. Em "Primeiro nome", digite o seu. Em todas as outras, aperte Enter: "Idioma", "Apelido curto" (o nome curto que vai nas suas aprovações), "Título do vault", "Repositório no GitHub" (fica "ainda não": o passo 6 cria o `my-brain`), "O repositório precisa ser privado" (sim) e "Fuso horário" (o do seu computador). No fim, ele diz que conferiu o vault sem achar problema ("nenhuma ocorrência") e que ainda não salvou nada no histórico: é normal, isso é o passo 5.
+5. <a id="passo-5"></a>**Faça o primeiro commit**, o primeiro ponto salvo no histórico. Se é a primeira vez que você usa o git neste computador, diga antes a ele quem você é. No terminal não dá para clicar no meio da linha, então cole as duas linhas abaixo num editor de texto, troque `Seu Nome` e `voce@example.com` pelos seus sem apagar as aspas (o e-mail da conta do GitHub serve) e cole o resultado no terminal. Se errar, rode a linha de novo com o certo.
+
+   ```bash
+   git config --global user.name "Seu Nome"
+   git config --global user.email "voce@example.com"
+   ```
+
+   Depois, o commit:
+
+   ```bash
+   cd ~/my-brain
+   git add -A
+   git commit -m "Inicia o vault"
+   ```
+
+   Deu certo quando ele mostra "Inicia o vault" e a lista dos arquivos salvos. Se ele disser `Author identity unknown` ou `Please tell me who you are`, faltou o primeiro bloco: rode-o e repita o `git commit`.
+6. <a id="passo-6"></a>**Mande o vault para o GitHub**, num repositório privado (o vault guarda notas sobre pessoas), com um comando só:
+
+   ```bash
+   gh repo create my-brain --private --source . --push
+   ```
+
+   O relatório da trava de push é comprido e meio em inglês, como bula de remédio: você só precisa achar duas coisas. Deu certo se aparecer `nothing matched` (a trava não achou senha nem código secreto) e, no fim, `Pushed commits to` (o envio terminou). A linha sobre `git fetch origin` é normal no primeiro envio: ignore. Se aparecer `refusing to push`, a trava achou um problema e não enviou nada; a mensagem logo acima diz qual, e [Se travar](#se-travar) ajuda.
+7. <a id="passo-7"></a>**Confira de novo, agora com o vault:**
+
+   ```bash
+   brain-kit doctor
+   ```
+
+   Como no passo 3, saudável é não ter nenhuma linha `falha`: a linha que começa com `doctor:` termina em `0 falha(s)`. Por enquanto, as linhas `aviso` sobre o curador agendado (`watermark`, `last-run`, `schedule`, `notify` e `briefing`) são normais: você ainda não ligou nada disso.
+8. **Abra o Claude Code dentro do vault:**
+
+   ```bash
+   claude
+   ```
+
+   Se você ainda não entrou na sua conta do Claude, ele abre o navegador para isso. Se perguntar se você confia nesta pasta, responda que sim. Está pronto quando aparece a caixa para você escrever.
+9. **Conte a primeira novidade**, uma promessa de verdade. Peça ao Claude algo como "Registre no log que prometi mandar o feedback para a Ana até sexta": a skill `capture` escreve a entrada com a data no log do vault, `memoria/log.md`. Ele mostra a mudança e pede licença para editar o arquivo: aprove com Enter no **Yes**. Deu certo quando ele diz, numa linha, o que registrou.
+10. **O Claude abre o primeiro pull request.** Quando ele termina a resposta, o kit lembra a ele de conferir o vault e propor a mudança. Ele pede licença para rodar alguns comandos do `brain-kit`, como o `propose`: pode aprovar, com Enter no **Yes**. Deu certo quando aparece `Pull request aberto` e o endereço do pull request no GitHub. Se ele terminar a resposta sem isso, saia do Claude Code (digite `exit`) e rode no terminal, na pasta do vault, pondo depois do `--only` cada arquivo que o `git status` mostrar como mudado (na primeira vez, o `memoria/log.md` e, se o Claude também anotou a promessa, o `pendencias/promessas.md`):
+
+    ```bash
+    brain-kit propose "Primeira captura" --only memoria/log.md
+    ```
+
+    > **Regra de ouro:** daqui para frente, quem salva no histórico é o `propose`, e o que ele salva só entra no vault quando você faz o merge no GitHub. Não faça commit dos arquivos do vault você mesmo: é pagar o boleto duas vezes e dar confusão depois (o `sync` recusa, dizendo que os branches divergiram).
+11. <a id="passo-11"></a>**Aprove no GitHub.** Copie o endereço que o `propose` mostrou e abra no navegador. Na aba **Files changed**, as linhas em verde são o que entra no vault. Se estiver certo, clique em **Merge pull request** e depois em **Confirm merge** (o GitHub é em inglês). É a sua aprovação, e a única forma de o vault mudar. Depois, saia do Claude Code (digite `exit`), se ele estiver aberto, e rode no terminal, na pasta do vault:
+
+    ```bash
+    brain-kit sync
+    brain-kit verify --pr 1
+    ```
+
+    O `sync` vale para todo merge, até o que você fizer pelo celular: rode-o antes de voltar a mexer no vault, para trazer o que você aprovou. O `verify` é opcional: marca como verificadas as notas que você aprovou (o Claude avisa quando usa uma que ainda não foi), e quando carimba alguma, faz um commit e mostra o comando de push para você rodar. Se o pull request só mexeu no log (o log não é uma nota), ele diz "nada a carimbar, e nada foi escrito": é isso mesmo. O número do primeiro pull request é 1; nos próximos, use o que vem depois de `/pull/` no endereço.
+12. **A prova.** Abra o Claude Code de novo (`claude`) e pergunte "o que eu prometi esta semana?". O kit pede a ele que responda a partir das notas e diga o caminho de onde tirou (é a skill `ask`), como o `memoria/log.md` ou o `pendencias/promessas.md`. Quando o vault não tem a resposta, ele deve dizer que não sabe em vez de inventar; o caminho citado é o que você confere.
+
+Pronto: esse é o vault com a aprovação por pull request; o curador e o briefing são o
+[depois, se você quiser](#em-30-segundos). Outra máquina? [O guia tem o caminho](docs/guia.md#o-mesmo-vault-em-uma-segunda-máquina).
+
+## Se travar
+
+- `EACCES` ao instalar (o npm não pode gravar onde queria): use os comandos de [Se aparecer `EACCES`](#se-aparecer-eacces).
+- O `gh` pede login: rode `gh auth login` ([passo 2](#passo-2)) e tente de novo.
+- O `propose` pede o primeiro commit ([passo 5](#passo-5)) ou o `origin`, o endereço do GitHub ([passo 6](#passo-6)); se ele diz "Envie o branch padrão primeiro", o repositório já existe: não repita o passo 6, rode `git push -u origin HEAD`.
+- `command not found` (ou `comando não encontrado`) para o `brain-kit` depois de instalar: o npm pode ter recusado no meio da saída, que termina em "Successfully installed" mesmo assim; siga o bloco [Se aparecer `EACCES`](#se-aparecer-eacces) inteiro, do começo.
+- O `doctor` diz `falha` no `gh-auth`: o login do `gh` venceu ou nunca foi feito; rode o comando que a linha mostra, `gh auth login --hostname github.com`.
+- Uma senha ou chave apareceu no vault: pare, troque essa senha ou chave onde ela vale, antes de qualquer outra coisa, e siga o [docs/incident-response.md](docs/incident-response.md) (em inglês).
+
+### Se aparecer `EACCES`
+
+`EACCES` quer dizer "permissão negada": o npm (o instalador que vem com o Node) tentou instalar
+numa pasta do sistema, onde você não pode gravar. O [passo zero](docs/preparar-o-computador.md) já
+evita isso, e quem instalou o Node com o nvm não vê este erro. Evite o `sudo` (rodar como
+administrador): é chamar o síndico para abrir a porta da sua própria casa, resolve hoje e complica
+amanhã. Mande o npm instalar numa pasta sua. Rode uma vez:
 
 ```bash
 npm config set prefix ~/.local
 ```
 
-Now put that folder (`~/.local/bin`) on the PATH, the list of folders where the terminal looks
-for the commands you type. Use the line for your terminal (Linux usually uses bash and macOS
-uses zsh; if in doubt, run both):
+Agora ponha essa pasta (`~/.local/bin`) no PATH, a lista de pastas onde o terminal procura os
+comandos que você digita. Use a linha do seu terminal (o Linux costuma usar o bash, a primeira;
+o macOS, o zsh, a segunda; na dúvida, rode as duas):
 
 ```bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 ```
 
-Close the terminal and open a new one (that is how the new PATH takes effect), then paste the
-install snippet again: the first line may complain that the `brain-kit` folder already exists,
-and the plugin lines will say it is already installed; that is fine. Check:
+Feche o terminal e abra outro (é assim que o PATH novo passa a valer) e cole o trecho de instalação
+de novo: a primeira linha vai reclamar que a pasta já existe (`fatal: destination path 'brain-kit'
+already exists`), e as do plugin, que ele já está instalado; está tudo certo. Confira:
 
 ```bash
 brain-kit --version
 ```
 
-## Your first vault
-
-From a machine with the requirements above to your first pull request, in order (the "Start
-here" box at the top of the page sums up the same steps, with the time of each). Three of the
-commands, marked "(`init` prints this at its end)", are the ones `init` itself prints when it
-finishes.
-
-1. Install the kit and the plugin: paste the whole snippet of
-   [Installing a fixed version](#installing-a-fixed-version) into the terminal. The first six
-   lines install the kit and put `brain-kit` on your PATH, where the vault's push gate also
-   looks for it; the last two install the Claude Code plugin. If `EACCES` appears, the block
-   [If you see `EACCES`](#if-you-see-eacces), just below the snippet, fixes it.
-2. <a id="step-2"></a>Log in to GitHub, in your own terminal (`init` prints this at its end).
-   `propose` opens its pull requests with `gh`, and `doctor` fails for a `gh` that is not
-   logged in. `gh` asks a few questions and opens the browser for you to confirm a code:
-
-   ```bash
-   gh auth login
-   ```
-
-3. <a id="step-3"></a>Check the machine:
-
-   ```bash
-   brain-kit doctor
-   ```
-
-   Outside a vault (you do not have one yet), `doctor` checks only the machine: Node, git, `gh`
-   and its login, and Claude Code. All is well when the line that starts with `doctor:` ends
-   with `0 fail`. The message "no brain-kit vault found", which comes right after it, is
-   expected: you do not have a vault yet. A `fail` line says what to run to fix it. As there is
-   no vault yet, it uses your system's language: on a Portuguese system the words come out as
-   `falha` and `aviso`, and the line ends with `0 falha(s)`.
-4. <a id="step-4"></a>Create the vault in a new or empty folder:
-
-   ```bash
-   brain-kit init ~/my-brain
-   ```
-
-   It asks seven questions, one at a time, and needs a terminal to ask them (if you try to feed
-   it the answers from another command, it refuses and writes nothing). At the "Short id"
-   question (the one that signs your approvals), accept the suggestion: just press Enter.
-   Where there is no terminal, `--from-answers <file>` reads the answers from a JSON
-   file and `--yes` takes every default. `init` writes the skeleton and the push gate, runs
-   `validate` and `lint` over it (they check that the vault follows the format and is healthy),
-   says in a single line that it found nothing, and makes no commit. The repository question
-   only records a name: `init` creates no repository and no remote.
-5. <a id="step-5"></a>Make the first commit:
-
-   ```bash
-   cd ~/my-brain
-   git add -A
-   git commit -m "Start the vault"
-   ```
-
-   git records who made each commit, so it needs to know who you are. If it refuses, saying
-   `Author identity unknown` or `Please tell me who you are`, run these two commands, with your
-   own name and e-mail instead of the examples (`example.com` is only an example), and repeat
-   the `git commit`:
-
-   ```bash
-   git config --global user.name "Your Name"
-   git config --global user.email "you@example.com"
-   ```
-
-6. <a id="step-6"></a>Create the repository on GitHub and push the vault, in one command (`init`
-   prints this at its end):
-
-   ```bash
-   gh repo create my-brain --private --source . --push
-   ```
-
-   The repository is private because the vault holds notes about people, and a public
-   repository shows them to anyone. The command pushes (`--push`) because without it the
-   remote (the copy on GitHub) is empty, there is no default branch on it, and `propose`
-   cannot work. The push runs the vault's push gate (`validate`, `lint` and a scan for
-   credentials), so a vault that fails them is not published.
-7. <a id="step-7"></a>Check the machine and the vault:
-
-   ```bash
-   brain-kit doctor
-   ```
-
-   The output shows only the warnings and the failures, with a count of the `ok` lines
-   (`brain-kit doctor --verbose` lists them all). A healthy result has no `fail` line: its last
-   line ends with `0 fail`. At this point `warn` lines about the scheduled curator
-   (`watermark`, the last day read; `last-run`, the last round; `schedule`, the schedule;
-   `notify`, the notify command; and `briefing`) are fine: you have not set one up, and
-   [docs/scheduling.md](docs/scheduling.md) covers it when you want a round to run by itself,
-   on a timer. A `fail` says what to run to fix it; one for `gh` says `gh auth login`.
-8. Open Claude Code inside the vault folder (`cd ~/my-brain`, if you opened another terminal;
-   `init` prints this at its end):
-
-   ```bash
-   claude
-   ```
-
-   If Claude Code asks whether you trust this folder, answer yes. With the plugin installed,
-   its nine skills and its `Stop` and `SessionStart` hooks work in this folder;
-   [The Claude Code plugin](#the-claude-code-plugin) says what each does.
-9. Write one fact in the vault's log, `memory/log.md` (`memoria/log.md` in a Portuguese
-   vault). Either tell Claude something new, such as "Capture in the log that I started
-   this vault today" (the `capture` skill writes the dated entry), or add it yourself: a
-   `## YYYY-MM-DD` heading with today's date, and under it a line that starts with
-   `**Capture**` (`**Captura**` in a Portuguese vault).
-10. Open the pull request. The `Stop` hook runs when Claude finishes a reply: it sees the
-    changed file and asks Claude to validate, lint and propose it, which the
-    `curate-session` skill does too when asked. To do it yourself:
-
-    ```bash
-    brain-kit propose "First capture" --only memory/log.md
-    ```
-
-    `--only` names exactly the files to propose, and `propose` never moves your branch or
-    your files. Add `--dry` first to see the plan: it refuses what the real run would refuse
-    (no `gh`, not logged in, no `origin`, the address of the repository on GitHub, or the
-    default branch not yet pushed). Leave the changed file uncommitted until the pull request
-    is merged (step 11): `propose` builds its commit on the side, and committing the same file
-    on your default branch makes `sync` refuse later, saying the branches have diverged.
-11. <a id="step-11"></a>Merge the pull request on GitHub: your merge is the approval, and the
-    only way the vault changes. Then `brain-kit sync` replaces the file you left uncommitted
-    with the merged one and brings your local branch level with the remote, and
-    `brain-kit verify --pr <number>` stamps `verified` on the notes that pull request
-    changed (the `approve` skill does the same). The log is not a note, so for this first
-    pull request, which changed only the log, `verify` ends by saying "nothing to stamp, and
-    nothing was written", with no error; that is expected.
-
-From here on, [The scheduled curator](#the-scheduled-curator) feeds the vault from your
-Claude Code sessions without you asking, and [The morning briefing](#the-morning-briefing)
-tells you each morning where it stands.
-
-**If you get stuck**
-
-- `EACCES` when installing (npm cannot write where it wanted): use the commands in [If you see `EACCES`](#if-you-see-eacces).
-- `gh` asks you to log in: run `gh auth login` ([step 2](#step-2)) and try again.
-- `propose` asks for the first commit ([step 5](#step-5)) or for `origin`, the GitHub address ([step 6](#step-6)); if it says "Push the default branch first", the repository already exists: run `git push -u origin HEAD` (repeating `gh repo create` fails).
-- `command not found` for `brain-kit` after installing: npm may have refused in the middle of the output, which ends in "Successfully installed" anyway; go through the whole [If you see `EACCES`](#if-you-see-eacces) block, from the start.
-- `doctor` says `fail` on `gh-auth`: the `gh` login expired or was never done; run the command the line shows, `gh auth login --hostname github.com`.
-- A password or key showed up in the vault: stop and follow [docs/incident-response.md](docs/incident-response.md).
-
-## The same vault on a second machine
-
-A vault you have already set up opens on another machine with a clone. What the clone does not
-bring is that machine's own state (`machine.json`, the read marks and the logs), which lives
-outside the vault and never goes into git. On the second machine, install the kit and the
-plugin and log in to GitHub as in steps 1 and 2 of [Your first vault](#your-first-vault);
-then, in this order:
-
-1. Clone the vault (replace `my-brain` with the name you gave the repository):
-
-   ```bash
-   gh repo clone my-brain ~/my-brain
-   cd ~/my-brain
-   ```
-
-2. Register the machine. `machine register --new` writes its `machine.json`, outside the
-   vault, and touches no file of the vault:
-
-   ```bash
-   brain-kit machine register --new
-   ```
-
-3. Give the clone the vault's push gate (git does not version its own configuration, so a
-   clone is born without it):
-
-   ```bash
-   git config core.hooksPath .githooks
-   ```
-
-4. Check. A healthy result has no `fail` line:
-
-   ```bash
-   brain-kit doctor
-   ```
-
-5. Only on the machine that will run the curator's rounds, install the schedule:
-
-   ```bash
-   brain-kit schedule install
-   ```
-
-Let only one machine run the curator's rounds: state is per machine, so two scheduled machines
-would each propose the same day. On the other, use the vault by hand.
-
-`brain-kit machine register --new` prints the same three steps after it finishes, in the same
-order (it leaves out the clone and the register line, which you have just run).
-
-A vault created by this version of `init` needs no edit on the second machine, even with the
-clone in another folder: it lists its own project as `{vault}` in `include_projects`, which
-stands for the vault's folder on each machine.
-
-A vault created before 0.0.9 lists its project by the name it had on the first machine, and the
-second machine's `doctor` gives `fail include-projects`. Do not put this machine's project name
-in `brain-kit.config.json` to silence the `doctor`: the file is the same on both machines, and
-the first one would stop reading its own sessions. The way out has an order. First install this
-version of the kit on every machine that opens the vault: a kit older than 0.0.9 reads
-`"{vault}"` as the name of a project, and fails the same check. Second, run `brain-kit update`
-in the vault once, on the machine where you will edit the file; the other machines only install
-the kit, and receive the change with `brain-kit sync` after the merge. Third, replace the name
-in `sources.transcripts.include_projects` with `"{vault}"`, propose the change with
-`brain-kit propose "Use {vault}" --only brain-kit.config.json` (after `--only`, add any other
-file that `update` said it changed), merge it on GitHub and run `brain-kit sync` on both
-machines; the `doctor` then ends with `0 fail`. Do not commit that file yourself before the
-pull request is merged.
-[docs/scheduling.md](docs/scheduling.md#before-the-first-round) explains this in "Before the
-first round", and has the
-[details of the second machine](docs/scheduling.md#the-same-vault-on-a-second-machine),
-including how to move the rounds from one machine to the other.
-
-## What is in the repository
-
-brain-kit is one repository that is meant to be, at the same time:
-
-- an npm package (the format Node uses to ship programs), `second-brain-kit`, with a single
-  executable, `brain-kit`. Today it creates a vault or adopts an existing one, installs its
-  push gate, keeps the kit's own files current, checks the machine with `doctor`, validates a
-  vault and checks its health (`lint`), runs the pull request loop (`sync`, `propose`,
-  `verify`), and runs the scheduled curator (`curate`, `watermark`, `schedule`) and the
-  morning briefing's facts and question queue (`preflight`, `questions`);
-- a Claude Code plugin (nine skills, the Stop and SessionStart hooks, a read-only
-  subagent) that calls the same engine;
-- a plugin marketplace of one, so that `claude plugin marketplace add aleckyann/brain-kit`
-  followed by `claude plugin install brain-kit@brain-kit` installs it.
-
-The npm registry refused the name `brain-kit`: an unrelated package named `brainkit`
-already exists there, and the two were judged too similar. So the package is published
-as `second-brain-kit`, while the repository, the plugin, the marketplace and the command
-you type afterwards are all `brain-kit`.
-
-The engine is Node.js with zero dependencies, runtime and development, and it runs on
-Node.js 22 and 24 (both are tested on every change). The vault it generates is yours:
-markdown files, each note with a header (the frontmatter, in YAML), and a configuration file
-that holds only data, nothing else.
-
-## What works today
-
-A vault is a directory holding a `brain-kit.config.json` and a root `index.md`; the
-commands take its path, or find it by walking up from the current directory. The commands
-below assume `brain-kit` is on your PATH (see
-[Installing a fixed version](#installing-a-fixed-version)); to run one from a clone without
-installing, replace `brain-kit` with `node <clone>/bin/brain-kit.mjs`.
-
-```bash
-brain-kit init path/to/new-vault
-brain-kit init --adopt path/to/existing-vault
-brain-kit update path/to/vault
-brain-kit doctor path/to/vault
-brain-kit validate path/to/vault
-brain-kit lint path/to/vault
-brain-kit sync path/to/vault
-brain-kit propose "summary" --only notes/changed.md
-brain-kit verify --pr 12
-brain-kit curate path/to/vault
-brain-kit watermark show path/to/vault
-brain-kit schedule install path/to/vault
-brain-kit preflight path/to/vault
-brain-kit questions list path/to/vault
-brain-kit schedule install --job briefing path/to/vault
-```
-
-`init` makes a new vault in an empty or new directory, in English or Portuguese: the
-skeleton, the configuration, a `.gitignore`, the push gate (`.githooks/pre-push`, with
-`core.hooksPath` pointed at it), a manifest of what the kit wrote, a git repository, and
-`machine.json` in a state directory outside the vault. It asks one question at a time,
-which needs a terminal; `--yes` (every default, listed) or `--from-answers <file>` (a JSON
-object) answer for you where there is none, and it never makes the first commit unless
-told to.
-
-A vault speaks the language chosen for it at `init`, with its first question or with
-`init --lang en|pt-BR`: `validate`, `lint`, `doctor`, the skills and the hooks use it. Everything else the
-kit prints, and every command outside a vault, takes its language from `BRAIN_KIT_LANG`
-(`en` or `pt-BR`) when that is set, else from the first of `LC_ALL`, `LC_MESSAGES` and `LANG`
-that is: a value starting with `pt` is Portuguese, anything else English.
-
-`init --adopt` brings an existing vault under the kit. The vault must already be a git
-repository (write its `.gitignore`, then `git init`); a folder that is not one is refused
-with nothing written. It infers the configuration from the notes git would publish (a
-folder or a note git ignores contributes nothing) and prints every inference, writes the configuration and a manifest that records the files git would
-publish as yours, by path only (a file git ignores is never recorded, and no hash of your
-content is stored), and installs the push gate. A hook of your own, or a `core.hooksPath` pointing elsewhere, is left
-exactly as it is, and adopt prints the one line that adds the gate to it. `--no-hook` skips
-the gate. It never changes a note and never commits.
-
-`update` refreshes the files the kit manages (the root contract files, `.gitignore` and the
-hook) by checksum: one you have not edited is replaced, one you edited is never
-overwritten, and a newer version is written beside it as `<name>.brain-kit-new`.
-`update --install-hook` installs the push gate into a vault that does not have it, with
-the same care for a hook of your own.
-
-`doctor` reports, check by check, whether this machine and this vault are ready: Node and
-git, the gate and `core.hooksPath`, `brain-kit` on PATH, the configuration, the manifest,
-`machine.json` and its state directory, the kit version, `gh`, `claude`, and
-`node_modules/` in `.gitignore`; and for the scheduled curator, whether `claude` is the
-real CLI and knows every flag that isolates a round, the projects its transcripts come
-from, how far behind each source's watermark is, the last round (a round that exits 0 in
-seconds without a model turn is reported as dead), the timer and its next fire times, and
-whether a failed round reaches you or only the log; what the curator records about personal
-and sensitive subjects, in one line (`privacy-policy`); and, since phase 3, whether lint has
-privacy keywords to refuse on added lines (none by default), anything a round may reach beyond the vault,
-and each connector source: off or on, the state the last round saw with its date, a tool
-prefix that does not match, other people's calendars without recorded consent, and a
-user rule that refuses connector mode. `doctor --only connectors --probe` asks the CLI for
-each connector's state now, without a round. Since phase 4 it also checks the morning
-briefing: its signatures, its blocks, its question queue and its desktop task. Each failure
-names the command that fixes it. By default the output shows only the warnings and the
-failures, with a count of the `ok` lines; `--verbose` lists them all, and so does
-`--only <id,...>` for the checks it names.
-
-`validate` checks the vault against OKF v0.2 and reports two rulers apart: the format's
-own conformance, and the vault's house rules, which are stricter on purpose. A vault can
-conform to the format and still depart from its own rules, and the report says which is
-which. `--json` gives machine-readable output and `--only-problems` leaves out the groups
-that found nothing.
-
-`lint` checks the vault's health with eight rules:
-
-| Rule | What it checks |
-|---|---|
-| `index-completeness` | every directory holding notes has an index, and the root index links every first-level directory |
-| `orphans` | every note can be reached by following links from the root index |
-| `columns` | tables use the column headings the configuration declares |
-| `tables` | table shape: the blank line before a table, duplicate rows, overlong cells |
-| `style` | characters the configuration forbids, on the lines a change added |
-| `secrets` | credential shapes and configured patterns, in every file a push could publish, dot-files such as `.env` included |
-| `privacy` | confidential notes stay in confidential directories and are not linked from shared ones, and a line a change adds holds none of the terms in `privacy.third_party_keywords` (a list you set; empty by default) |
-| `attribution` | a note's sources and its footnotes anchor each other |
-
-`--rule` restricts the run to named rules, `--base` chooses what counts as the change
-(`auto`, `worktree`, `merge-base` or `all`), and `--json` gives machine-readable output.
-The `secrets` rule ignores `--base` and always reads everything a push could publish,
-because a credential that is already there is the finding a new vault most needs.
-
-`sync` brings the default branch level with its remote before anything is written:
-it fast-forwards a branch that is behind and refuses one that diverged. `propose` turns
-the paths you list into a pull request against the default branch without moving HEAD,
-the index or the working tree, so another session's files are never swept in; without
-`gh`, or when the pull request cannot be opened against the right base, it exits 3 with
-the commit in place and says what to run. `verify` is the owner's command after a merge:
-it stamps `verified` on the notes the merged pull request changed and commits with the
-owner's own identity. `machine` shows and edits the machine-local `machine.json`.
-
-## The scheduled curator
-
-Scheduled rounds are optional: your first pull request does not need them. Linux is the
-reference platform for scheduling (systemd user timers, which need `loginctl enable-linger` to
-run while you are logged out); macOS (launchd) and cron entries are rendered and tested without
-being installed by the test suite; Windows is out of scope for scheduling.
-
-`curate` runs one round: it reads the Claude Code sessions of the projects your
-configuration lists, selected by the time of their messages, and gives them to a model
-that can act only through the kit's own `validate`, `lint` and `propose`. The round ends
-with a pull request against your vault. The model runs isolated from your own Claude Code
-settings: no settings file of yours or of the project is loaded, no hook, no MCP server,
-no skill and no built-in tool beyond the seven it needs; it reads only the vault and a
-digest of each transcript the round lists, and everything its own rules do not allow is denied. The
-round checks the isolation from the CLI's first event and stops the model if it does not
-hold. The steps run in one
-fixed, tested order (lock, network, sync, then the configuration as synced), and every way
-a round can fail ends with a non-zero exit, a reason in `last-run.json` and the log, and
-your notify command. `--dry` shows what a round would do and `--check` runs every step up
-to the model.
-
-`watermark` shows and moves the last day each source was swept. Each source reads the
-days after its own mark, oldest first and whole (as many as fit in
-`curate.caps.transcripts`; the rest wait for the next round), and its mark moves only when
-the round's record shows the source read and the model reported it; no day is ever closed
-unread. `watermark import --from <file>` carries over the mark of a legacy setup that kept
-one date in a file of its own, as the last day swept of every enabled source (or of the
-ones `--sources` names). A vault still run by a legacy job that holds a `flock` on a file
-can point `machine.json` `paths.legacy_lock` at that file, so the kit's writers and that
-job are never in the tree at once. `schedule install|uninstall|status`
-installs the round in daytime windows (09:30, 14:00 and 20:00 by default), named by what it
-does, with no dependency on a network target: systemd user timers are the reference, and
-launchd and cron are rendered too.
-
-[docs/scheduling.md](docs/scheduling.md) explains the round step by step, the windows, the
-watermark and its import, moving from a legacy lock, the exit codes and what to do for each. [docs/security.md](docs/security.md)
-explains what isolates the model and the measurements behind it.
-
-## Calendar and meeting notes
-
-A round can also read your calendar, through the claude.ai Google Calendar connector, and
-your meeting notes, through the claude.ai Google Drive connector; both connectors must be
-connected in claude.ai and enabled for Claude Code. Both are off until you turn them on: the calendar by naming the calendars to read, the meeting notes by copying
-the literal title of your automatic notes, accents included, from one of your own
-documents. Both are best effort: a round that cannot read one keeps that source's day open
-and still curates and proposes the rest, and neither can write anything through its
-connector.
-
-To reach the connectors a round loads your Claude Code user settings, and switches off
-everything they bring besides the connectors: your hooks, your skills, every built-in tool
-beyond the pinned set, and every allow rule of yours, mirrored as a deny (a rule that
-cannot be mirrored refuses that mode, and the round runs on the transcripts alone). Each
-connector's state comes from the round's own first event: one that needs authentication,
-failed, is absent (never connected, or disabled for Claude Code) or lacks its tools makes
-the round stop the model before its first turn and launch once more without it. What a
-source counts as read is the record of the calls the model made, never its word: every
-calendar listed over its whole window, with the private-event filter and every page, and
-the literal title search with its bound. A state that changes is announced once through
-your notify command, and the session's status line names a connector that was not
-connected in the last round.
-
-The `seed-rituals` skill fills the vault's weekly rhythm table from your calendar, in your
-own session, with your confirmation for every row. [docs/connectors.md](docs/connectors.md)
-explains what each source reads, how to turn it on, the states and what to do for each,
-and the privacy policy.
-
-## The morning briefing
-
-Each working morning, or whenever you ask, the briefing gives you, in a session of your
-own, where the vault stands: the curator's last round and each source's state, what is
-overdue, due today and coming up, pending items with no date, the pull requests waiting
-for your merge, the notes due for review, blind spots, the vault against its strategy, and
-the questions it needs you to answer. Its content is the vault's own `briefing.blocks`,
-chosen from the kit's catalog or written by you (a title, the notes to read, your
-instruction), and a prompt overlay can replace the whole prompt.
-
-Every date, count and deadline in it is computed by the kit: `preflight` prints the same
-facts, reading the pending tables by column name and bucketing each item by the first real
-date in its cell, with "no date" a bucket of its own and anything ambiguous named next to
-its item. The judgement is the model's. The kit never puts the content of a path in
-`briefing.never_read` in the prompt: a path it must mention, such as a stale note, is
-marked "(never read)", and its own checks, like `validate`, read each note and use only
-its frontmatter. The model is told never to open, list or search those paths; that is
-an instruction to the model, not a sandbox. No limit applies unless you set one
-(`max_words`, `max_questions` and `write_caps` are `null` by default), and
-`briefing.enabled: false` turns the briefing off in the vault.
-
-`questions` keeps the queue of open questions across mornings: deduplicated by their
-normalised text, escalated once asked on three days and archived after 45 days (both by
-default) by `questions sweep`, which prints each one it archives. What you answer, and what the
-briefing captures, becomes one pull request through `propose --only`; with nothing to
-record there is none. The briefing on a schedule needs the Claude desktop application:
-`schedule install --job briefing` prints the task to create in it, which the `setup` skill
-registers for you; it runs while the application is open, and on its next launch when it was
-closed. A session that starts with the task's prompt never reaches the curator; a briefing
-you ask for in your own session is yours, and the curator reads it. [docs/briefing.md](docs/briefing.md) explains
-the blocks, the facts and where each comes from, the queue, the desktop task and what
-never changes.
-
-The desktop application does not hand the task's prompt to the session as it is. Measured
-on the first real run, the session's first message is the prompt wrapped in an envelope: an
-opening `<scheduled-task ...>` tag, a paragraph in the application's own wording, the prompt
-and a closing tag. The curator looks through it, by the task's name or by the prompt inside,
-so the signature must stay the prompt's first line. If the application ever changes the
-envelope into a shape the curator does not recognize, the session is read like one of your
-own: the cost is the one of a briefing you ask for yourself (a capture the next round may
-propose again, visible in its diff, nothing lost), and only when the task's working
-directory is a project listed in `sources.transcripts.include_projects`. The round's log
-line `plan` counts the sessions it left out as the kit's own, under `selfTrace`;
-[docs/briefing.md](docs/briefing.md), "Which sessions the curator skips", has the details.
-
-## Privacy: what the curator saves
-
-By default the curator saves everything your sessions, calendar and meeting notes teach the
-vault, personal and sensitive information included (health, family, relationships,
-finances, anything intimate), yours and other people's: nothing is left out or shortened
-because it seems sensitive. That is why the vault's repository must stay private, and
-`init` refuses a vault whose repository would not be. Under privacy laws such as the LGPD
-and the GDPR, what the vault holds about other people is personal data, and data about their
-health, sex life, religious beliefs or political opinions, among other categories these laws
-list, are sensitive personal data; as the
-vault's owner you answer for keeping them, so record about others what you have a reason
-to keep.
-
-To save less, set `privacy.sensitive` in `brain-kit.config.json`. It gives a level to each of
-three audiences: `owner` (you), `people` (anyone who already has a note in the vault: team,
-family, mentors) and `outsiders` (everyone else: clients, prospects, strangers). The levels
-are `save` (record normally), `summary` (record that the subject came up and what was
-decided or agreed, without the intimate details) and `skip` (leave it out, without saying
-so). `privacy.never_topics` lists subjects never recorded about anyone, whatever the levels
-say. For example, beside the keys the `privacy` section already holds:
-
-```json
-"privacy": {
-  "sensitive": { "owner": "save", "people": "summary", "outsiders": "skip" },
-  "never_topics": ["health", "legal cases"]
-}
-```
-
-A configuration without these keys saves everything. Every round prints the policy it
-applied in one line, and so do `brain-kit curate --dry` and `brain-kit doctor --verbose`
-(check `privacy-policy`). The scheduled round, the `curate-session` and `capture` skills and
-the morning briefing all follow it.
-
-Two limits, said plainly. The policy is an instruction to a model, not a guarantee: no code
-checks what a round wrote against the levels, and you see what it wrote in the pull request
-before you merge it. For a phrase that must never get in, list it in
-`privacy.third_party_keywords`, empty by default: `lint`, and so `propose`, refuses a line a
-change adds that holds one. And the policy controls what is written into the vault, not
-what the model reads: a round still reads every session, event and document its sources
-offer. [docs/security.md](docs/security.md), "What the curator records", has the rest.
-
-## The Claude Code plugin
-
-Load it from a clone with `claude --plugin-dir path/to/brain-kit`, or install it from the
-marketplace. Inside a vault:
-
-- the `SessionStart` hook records which files were already dirty when the session
-  began, and keeps that record across compaction;
-- the `Stop` hook asks the session to curate only what it changed itself. It never
-  blocks outside a vault, in a copy away from the registered vault path, while another
-  writer holds the lock, or twice in a row, and it leaves out a file whose bytes are
-  still exactly what an earlier `propose` pushed (a proposal never moves the working
-  tree, so its files stay changed until the next `sync` brings them back to the default
-  branch's content; one byte edited after the push makes the file the session's work
-  again);
-- nine skills drive the engine in the vault's own language: `setup`, `curate-session`,
-  `capture`, `ask`, `lint`, `review-stale`, `approve`, `seed-rituals` and `briefing`;
-- the `vault-reader` subagent reads notes with Read, Grep and Glob only.
-
-`evals/` holds one `claude plugin eval` case per skill and language; see
-[docs/testing.md](docs/testing.md).
-
-## Status
-
-<!-- status-reviewed: 0.0.10 -->
-
-| Phase | Content | State |
-|---|---|---|
-| 0 | Skeleton, exit codes, language packs, config schemas, anti-leak gate, CI, docs | done, 0.0.1 on npm |
-| 1 | Validator, lint, propose (PR loop), Stop hook, init, doctor, skills | done |
-| 2 | Scheduled curator over local transcripts, scheduler templates | done |
-| 3 | Calendar and meeting-notes sources (best effort by design) | done |
-| 4 | Morning briefing | done |
-| 5 | Migration of the original vault onto the kit | in progress. Done: 5a (what a migrating vault needs, since 0.0.2); the vault's scheduled curator moved from its legacy scripts to the kit on 01/10/2026 (a systemd user timer at 09:30 with retries at 14:00 and 20:00, the legacy timer disabled) and its first real rounds were supervised; the model reads a text digest of each transcript (0.0.5); the morning briefing runs as a desktop application task and ran for the first time on 01/10/2026, and since 0.0.6 the curator recognizes its session through the envelope the application wraps around the task's prompt. Since 0.0.10 what the curator records is a setting of the kit, and by default it records everything, personal and sensitive information included. Open for the exit of the phase: five curator rounds and three briefings without an unexplained failure, the cleanup of the legacy scripts after seven stable days, and the first `verify` on the vault |
-| 6 | 0.1.0 release on npm | in progress. Done: `docs/incident-response.md`, `examples/minimal-vault`, two walkthroughs on a clean machine by an agent playing a first-time user, not a person (the first found the gaps between `init` and the first pull request, which 0.0.8 closed; the second followed only the Portuguese README, reached the first pull request, and found what 0.0.9 closed: a README for someone who is not a developer, a Node older than the minimum, a `doctor` that checked nothing before the first vault, and a vault's project that only worked on the machine that made it), the supported Node set at 22 (0.0.9), and a GitHub Release with the CHANGELOG text for every tag. Open: a run by an external adopter, a person who is not the maintainer (the 0.1.0 criterion: from a clean machine to a validated vault, the plugin installed, the hook active and a first pull request in under 30 minutes by the adopter's own clock; the README's estimate, with the reading, is about 35, and no person has timed the path yet), and the exit of Phase 5 |
-| 7 | Other forges, other harnesses, more sources, each only when a second real case needs it | planned |
-
-The latest tag is `v0.0.10`. Every version from 0.0.2 on is a git tag only: the package
-`second-brain-kit` on npm still has only 0.0.1, the Phase 0 skeleton.
-
-The kit is under construction. Phase 1 is complete: the validator, the linter, the push
-gates, `init`, `init --adopt`, `update`, `doctor`, the pull request loop (`sync`, `propose`,
-`verify`) and the Claude Code plugin (hooks, skills, a read-only subagent) work today, from
-a clone of this repository or from the install above. Phase 2 is complete too: the
-scheduled curator (`curate`, `watermark`, `schedule`) reads your recent Claude Code
-sessions and opens a pull request from an unattended round. Phase 3 is complete as well:
-the round also reads your calendar and meeting notes through the claude.ai connectors,
-once you turn them on. Phase 4 is complete: the morning briefing (`preflight`,
-`questions`, the `briefing` skill and its desktop task). Phase 5a added what a vault
-moving from scripts of its own needs: `watermark import`, a bridge to a legacy `flock`
-lock, and rounds with no cost, turn or time limit when the configuration asks for none.
-Phase 5 is in progress: the reference vault this kit was extracted from now runs its
-configuration, CI, push gate and Stop hook from the kit, and since 01/10/2026 its
-scheduled curator runs on the kit too (its legacy timer is disabled) and its morning
-briefing runs as a desktop task; what is still open before the phase ends is in the table
-above. The 0.1.0 release on npm is Phase 6, which is in progress (see its row).
-
-Phase 1 is built in five slices:
-
-| Slice | Content | State |
-|---|---|---|
-| 1A | Vault reader, frontmatter, markdown, `validate` | done |
-| 1B | `lint` and its eight rules, the leak scanner, the two push gates | done |
-| 1C | `propose` (the PR loop) and `sync` | done |
-| 1D | `init`, `init --adopt`, `update`, `doctor` | done |
-| 1E | Plugin surface: skills, Stop and SessionStart hooks, read-only subagent, evals | done |
-
-## Security
-
-There are two push gates, with different reach. This repository's own gate scans every
-object a push carries against a personal pattern list kept outside the repository. The
-template hook meant for a vault, in `templates/githooks/`, runs `validate` and `lint` over
-the working tree, then the same object scan over what the push carries, against the
-vault's own configured patterns, those of its working tree, of every pushed tip and of its
-default branch together. `init` installs it into every new vault, `init --adopt` into an
-existing one unless a hook of the person's own is already there, and `brain-kit update
---install-hook` later. A refusal for a match ends with what to do: rotate the credential,
-remove it from history, and follow the vault's `SECURITY.md`. [SECURITY.md](SECURITY.md)
-lists what the gates do not cover.
-
-## Contributing
-
-Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Every clone must run
-`.githooks/install-gate` once, or that clone has no leak gate at all.
-
-## Why
-
-Read [docs/rationale.md](docs/rationale.md) for the reasoning and
-[docs/incidents.md](docs/incidents.md) for the dated failures that produced every guard.
-
-## License
-
-MIT. Portuguese README: [README.pt-BR.md](README.pt-BR.md).
+## Para atualizar depois
+
+As versões novas aparecem nas Releases do repositório e no [CHANGELOG](CHANGELOG.md). Para passar
+a uma, apague a pasta `brain-kit` que a primeira linha baixou, se ela ainda existir (senão o
+trecho reaproveita essa cópia velha e instala a versão velha), cole o trecho do passo 1 de novo,
+registre a versão nova no Claude Code com `claude plugin update brain-kit@brain-kit` e abra o
+Claude Code de novo. As pastas das versões antigas em `~/.local/share/brain-kit/` não são mais
+usadas e podem ser apagadas; a mais nova não.
+
+## Quer mais?
+
+- [Guia completo](docs/guia.md): tudo em detalhe e em português, dos comandos à segunda máquina, do curador agendado à tabela de fases.
+- [Preparar o computador](docs/preparar-o-computador.md): o passo zero, no Mac e no Linux.
+- [docs/scheduling.md](docs/scheduling.md) e [docs/connectors.md](docs/connectors.md): as rodadas agendadas, e a agenda e as notas de reunião pelos conectores do claude.ai (em inglês).
+- [docs/security.md](docs/security.md) e [SECURITY.md](SECURITY.md): o que isola a IA e o que as travas não cobrem (em inglês).
+- [docs/incident-response.md](docs/incident-response.md): o que fazer se uma senha ou um dado pessoal vazar (em inglês).
+- [English version of the complete guide](docs/guide.md).
+- [CHANGELOG](CHANGELOG.md), [CONTRIBUTING](CONTRIBUTING.md) e a [licença MIT](LICENSE).

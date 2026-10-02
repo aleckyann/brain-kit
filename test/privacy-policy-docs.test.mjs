@@ -2,8 +2,10 @@
 // behaviour (02/10/2026, docs/incidents.md): every place that states a privacy
 // rule or tells a new user what the curator will do says that by default it
 // records everything, personal and sensitive information included, the owner's
-// and other people's, and how to limit it. Each README has a section of its
-// own; the SECURITY.md every vault gets says it plainly; docs/security.md says
+// and other people's, and how to limit it. Each complete guide has a section of
+// its own (docs/guia.md in Portuguese, docs/guide.md in English), and the
+// Portuguese README, the front door, a short one that points at it; the
+// SECURITY.md every vault gets says it plainly; docs/security.md says
 // what the setting is not; the incidents page records the decision; and the
 // CHANGELOG calls it a change of default, with the way back.
 import { test } from 'node:test';
@@ -14,6 +16,10 @@ import { KIT_ROOT } from '../src/version.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { PRIVACY_AUDIENCES, PRIVACY_LEVELS } from '../src/privacy-policy.mjs';
 import { LEGACY_PACK_KEYWORDS } from '../src/rules/privacy-keywords.mjs';
+import { kitDocsUrl } from '../src/version.mjs';
+
+// GitHub's anchor for a heading: lower case, punctuation dropped, spaces to hyphens.
+const slugOf = (heading) => heading.toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, '').trim().replace(/\s+/g, '-');
 
 const read = (path) => readFileSync(join(KIT_ROOT, path), 'utf8');
 const norm = (text) => text.replace(/\s+/g, ' ');
@@ -60,9 +66,9 @@ function fenced(text) {
   return blocks;
 }
 
-const READMES = {
+const GUIDES = {
   en: {
-    file: 'README.md',
+    file: 'docs/guide.md',
     heading: '## Privacy: what the curator saves',
     before: '## The morning briefing',
     after: '## The Claude Code plugin',
@@ -85,7 +91,7 @@ const READMES = {
     never: [/`brain-kit doctor` \(check/, /never recorded for anyone/],
   },
   'pt-BR': {
-    file: 'README.pt-BR.md',
+    file: 'docs/guia.md',
     heading: '## Privacidade: o que o curador guarda',
     before: '## O briefing matinal',
     after: '## O plugin do Claude Code',
@@ -110,7 +116,7 @@ const READMES = {
   },
 };
 
-for (const [lang, spec] of Object.entries(READMES)) {
+for (const [lang, spec] of Object.entries(GUIDES)) {
   const text = read(spec.file);
 
   test(`${spec.file}: a section of its own says the curator saves everything by default, how to limit it, and what the setting is not`, () => {
@@ -135,14 +141,58 @@ for (const [lang, spec] of Object.entries(READMES)) {
     assert.doesNotMatch(blocks[0].text, /v\d+\.\d+\.\d+|second-brain-kit-\d+\.\d+\.\d+\.tgz/);
   });
 
-  test(`${spec.file}: the section init's last line sends a person to is this heading`, () => {
-    const line = createTranslator(lang)('init.privacy_default', { sensitive: 'privacy.sensitive', topics: 'privacy.never_topics', file: 'brain-kit.config.json' });
-    const title = /\(README, "([^"]+)"\)/.exec(line)?.[1];
+  // The line init prints about privacy names the guide's section by a link a vault user can
+  // open (the review of R1, m7): the guide on GitHub, at the tag of the running kit.
+  test(`${spec.file}: the section init's privacy line sends a person to is this heading, by a link to the guide of the vault's language`, () => {
+    const line = createTranslator(lang)('init.privacy_default', { sensitive: 'privacy.sensitive', topics: 'privacy.never_topics', file: 'brain-kit.config.json', docs: kitDocsUrl() });
+    const [, base, file, anchor] = /"[^"]+": (https:\/\/\S+?)\/(docs\/[\w.-]+\.md)#([\w-]+)$/.exec(line) ?? [];
+    assert.equal(base, kitDocsUrl(), line);
+    assert.equal(file, spec.file, line);
+    assert.equal(anchor, slugOf(spec.heading.replace(/^## /, '')), 'the anchor is the slug of the heading');
+    const title = /"([^"]+)": https:/.exec(line)?.[1];
     assert.equal(`## ${title}`, spec.heading);
-    const set = createTranslator(lang)('init.privacy_set', { policy: 'x' });
-    assert.ok(set.includes(`"${title}"`), set);
+    const set = createTranslator(lang)('init.privacy_set', { policy: 'x', docs: kitDocsUrl() });
+    assert.ok(set.includes(`"${title}"`) && set.endsWith(`${kitDocsUrl()}/${spec.file}#${anchor}`), set);
+    assert.doesNotMatch(`${line}\n${set}`, /README/, 'the README holds a short section only');
   });
 }
+
+// The front door, README.md, says it before the install (fix round 1 of R1): everything is saved by
+// default, how to save less without editing the file, that it is an instruction and not a
+// guarantee, and the law in short sentences. Since fix round 2 the way to save less comes first,
+// in plain words, and the levels, their English names and the JSON example live in the guide.
+test('README.md: privacy before the install: the default, how to save less by asking Claude Code, what it is not, the law, and the levels in the guide', () => {
+  const text = read('README.md');
+  const lines = text.split('\n');
+  assert.ok(lines.indexOf('## Privacidade') < lines.indexOf('## O que você precisa'), 'privacy is read before the install');
+  const body = section(text, '## Privacidade');
+  const flat = norm(body);
+  assert.ok(body.split('\n').filter((line) => line.trim() !== '').length <= 16, 'a short section');
+  assert.match(flat, /Por padrão, o curador guarda tudo o que as suas conversas, a agenda e as notas de reunião ensinam ao vault, inclusive informação pessoal e sensível/);
+  assert.match(flat, /a sua e a de outras pessoas/);
+  assert.match(flat, /precisa continuar privado: só você e quem você convidar o veem/);
+  // Saving less without editing JSON: a session in the vault edits the file, and the Stop hook turns
+  // the change into a pull request like any other.
+  assert.match(flat, /Para guardar menos, peça ao Claude Code, dentro do vault, algo como "guarde só um resumo do que for sensível sobre as outras pessoas"\. Ele muda a configuração, e a mudança vira um pull request como qualquer outra/);
+  assert.deepEqual(fenced(body), [], 'the JSON example is in the guide');
+  assert.doesNotMatch(flat, /`(?:owner|people|outsiders|save|summary|skip)`|privacy\.sensitive/, 'the levels and their English names are in the guide');
+  // The review of R1, m1.
+  assert.match(flat, /É uma instrução ao curador, não uma garantia: você confere no pull request o que ele escreveu/);
+  assert.ok(body.includes('(docs/guia.md#privacidade-o-que-o-curador-guarda)'), 'the full section is in the guide');
+  assert.ok(read('docs/guia.md').split('\n').includes(GUIDES['pt-BR'].heading), 'which is there');
+  // The law, in short sentences; the guide keeps the long one, word for word.
+  const law = 'Pela LGPD, o que você anota sobre outras pessoas é dado pessoal. Saúde, religião, vida sexual e opinião política, entre outros, são dados sensíveis. Quem responde por eles é você, o dono do vault: anote dos outros só o que tem motivo para guardar.';
+  assert.ok(flat.includes(law), 'the legal remark');
+  for (const sentence of law.split(/(?<=\.) /)) assert.ok(sentence.split(' ').length <= 22, `a long sentence: ${sentence}`);
+  assert.match(norm(section(read('docs/guia.md'), GUIDES['pt-BR'].heading)), /Para leis de privacidade como a LGPD e o GDPR, o que o vault guarda sobre outras pessoas é dado pessoal/);
+  // Work data is the company's to allow (the second reader's question), in one line.
+  assert.match(flat, /Com dados da empresa, confira antes a política dela\./);
+  // Whether Anthropic may train on the conversations is the person's choice on a consumer plan,
+  // where the official page says it is made.
+  assert.match(flat, /O kit não tem servidor: o que a IA lê passa pela sua conta do Claude, e num plano Pro ou Max o uso das suas conversas para treinar os modelos da Anthropic depende de uma opção sua/);
+  assert.ok(body.includes('[configurações de privacidade](https://claude.ai/settings/data-privacy-controls)'));
+  assert.ok(body.includes('(https://code.claude.com/docs/en/data-usage)'));
+});
 
 const TEMPLATES = {
   en: [

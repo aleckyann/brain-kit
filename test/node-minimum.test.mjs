@@ -4,9 +4,11 @@
 // whole suite and only the doctor's own version policy failed, so the floor is 22,
 // and CI runs the suite on 22 and on 24. That number is stated in many places, in
 // different words and two languages: package.json's `engines`, the guard in front
-// of the launcher, the doctor's check, the sentence each of them prints, both
-// READMEs (the box at the top, the requirements, the line about the engine),
-// CONTRIBUTING.md, docs/testing.md, the setup skill and the evals that grade it,
+// of the launcher, the doctor's check, the sentence each of them prints, the
+// README (what you need, in Portuguese), the two complete guides (the English one's
+// box at the top, its requirements and its line about the engine; the Portuguese
+// one's line about the engine), CONTRIBUTING.md, docs/testing.md, the setup skill
+// and the evals that grade it,
 // and the CI matrix. A change of the floor that reaches some of them and not the
 // others leaves a kit whose documents promise a Node its guard refuses, or whose
 // CI never runs the Node it supports.
@@ -45,8 +47,8 @@ function numberIn(text, pattern, where) {
   return Number(match[1]);
 }
 
-// The text between a line and the next level-two heading (no README section read
-// here holds a code block).
+// The text between a line and the next level-two heading (no section read here
+// holds a code block).
 function section(text, heading) {
   const lines = text.split('\n');
   const start = lines.indexOf(heading);
@@ -82,8 +84,8 @@ const STATES_A_MINIMUM = [
   /(?:at least|minimum of|pelo menos|no m\u00ednimo|no minimo) (?:the )?(?:o )?Node(?:\.js)? v?(\d+)/gi,
 ];
 
-// The README's "start here" box and everything before the first section, read as
-// prose (the box is a blockquote, and its lines break inside sentences).
+// The English guide's "start here" box and everything before the first section, read
+// as prose (the box is a blockquote, and its lines break inside sentences).
 const opening = (text) => text.slice(0, text.indexOf('\n## ')).split('\n').map((line) => line.replace(/^>\s?/, '')).join('\n');
 
 // The doctor's node-version check, run for real on a context that reads no vault,
@@ -167,16 +169,14 @@ test('every place that states the minimum Node states the same one', () => {
     add(`doctor's PATH sentence (${language})`, numberIn(renderMessage(t, onPathTooOld.messageKey, onPathTooOld.params), pattern, `the doctor's PATH sentence (${language})`));
   }
 
-  // --- the documents a person reads
-  for (const [file, requirements, named, engine] of [
-    ['README.md', '## Requirements', /Node\.js (\d+) or newer/, /runs on Node\.js (\d+) and \d+/],
-    ['README.pt-BR.md', '## Requisitos', /Node\.js (\d+) ou mais novo/, /roda no Node\.js (\d+) e no \d+/],
-  ]) {
-    const text = read(file);
-    add(`${file}, the "start here" box`, numberIn(opening(text), named, `${file}, the box`));
-    add(`${file}, the requirements`, numberIn(section(text, requirements), named, `${file}, the requirements`));
-    add(`${file}, the line about the engine`, numberIn(text, engine, `${file}, the line about the engine`));
-  }
+  // --- the documents a person reads: the README (the Portuguese front door) says what the
+  // first run needs, and the two complete guides carry the rest
+  add('README.md, "O que você precisa"', numberIn(section(read('README.md'), '## O que você precisa'), /Node\.js (\d+) ou mais novo/, 'README.md, "O que você precisa"'));
+  const guide = read('docs/guide.md');
+  add('docs/guide.md, the "start here" box', numberIn(opening(guide), /Node\.js (\d+) or newer/, 'docs/guide.md, the box'));
+  add('docs/guide.md, the requirements', numberIn(section(guide, '## Requirements'), /Node\.js (\d+) or newer/, 'docs/guide.md, the requirements'));
+  add('docs/guide.md, the line about the engine', numberIn(guide, /runs on Node\.js (\d+) and \d+/, 'docs/guide.md, the line about the engine'));
+  add('docs/guia.md, the line about the engine', numberIn(read('docs/guia.md'), /roda no Node\.js (\d+) e no \d+/, 'docs/guia.md, the line about the engine'));
   add('CONTRIBUTING.md', numberIn(read('CONTRIBUTING.md'), /Node\.js >= (\d+)/, 'CONTRIBUTING.md'));
   add('docs/testing.md', numberIn(read('docs/testing.md'), /needs Node (\d+) or newer/, 'docs/testing.md'));
 
@@ -228,17 +228,15 @@ test('every place that recommends a Node recommends the same one, and it is newe
     add(`doctor's PATH sentence (${language})`, numberIn(renderMessage(t, onPathTooOld.messageKey, onPathTooOld.params), pattern, `the doctor's PATH sentence (${language})`));
   }
 
-  // --- the documents a person reads: the box, the requirements and the line about the engine
-  // (it names the two Nodes CI runs; the second is the recommended one)
-  for (const [file, requirements, recommended, engine] of [
-    ['README.md', '## Requirements', /Node\.js \d+ or newer \((\d+) LTS is recommended\)/, /runs on Node\.js \d+ and (\d+)/],
-    ['README.pt-BR.md', '## Requisitos', /Node\.js \d+ ou mais novo \(o (\d+) LTS \u00e9 o recomendado\)/, /roda no Node\.js \d+ e no (\d+)/],
-  ]) {
-    const text = read(file);
-    add(`${file}, the "start here" box`, numberIn(opening(text), recommended, `${file}, the box`));
-    add(`${file}, the requirements`, numberIn(section(text, requirements), recommended, `${file}, the requirements`));
-    add(`${file}, the line about the engine`, numberIn(text, engine, `${file}, the line about the engine`));
-  }
+  // --- the documents a person reads: what the README says the first run needs, the English
+  // guide's box and requirements, and the line about the engine in both guides (it names the
+  // two Nodes CI runs; the second is the recommended one)
+  add('README.md, "O que você precisa"', numberIn(section(read('README.md'), '## O que você precisa'), /Node\.js \d+ ou mais novo \(o (\d+) LTS \u00e9 o recomendado\)/, 'README.md, "O que você precisa"'));
+  const guide = read('docs/guide.md');
+  add('docs/guide.md, the "start here" box', numberIn(opening(guide), /Node\.js \d+ or newer \((\d+) LTS is recommended\)/, 'docs/guide.md, the box'));
+  add('docs/guide.md, the requirements', numberIn(section(guide, '## Requirements'), /Node\.js \d+ or newer \((\d+) LTS is recommended\)/, 'docs/guide.md, the requirements'));
+  add('docs/guide.md, the line about the engine', numberIn(guide, /runs on Node\.js \d+ and (\d+)/, 'docs/guide.md, the line about the engine'));
+  add('docs/guia.md, the line about the engine', numberIn(read('docs/guia.md'), /roda no Node\.js \d+ e no (\d+)/, 'docs/guia.md, the line about the engine'));
   add('CONTRIBUTING.md', numberIn(read('CONTRIBUTING.md'), /\((\d+) LTS is the one to develop on/, 'CONTRIBUTING.md'));
 
   // --- the setup skill, which tells the agent where to send a person whose Node is too old

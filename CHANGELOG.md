@@ -1,5 +1,48 @@
 # Changelog
 
+## Unreleased
+
+- The README is now in Portuguese, written for a person who uses Claude Code (or wants to) and
+  is not a developer. The owner asked for it on 02/10/2026: the people who asked for the kit
+  are Brazilian, and the page has to sell the idea and take a newcomer to the first pull
+  request step by step. `README.md` is the new front door, in under 350 lines. It says first
+  what the kit is, what the curator reads (by default only the Claude Code conversations held
+  inside the vault, plus Google Calendar and Drive when connected), what you have at the end of
+  the step by step (a vault where every change waits for your approval, and Claude answering
+  from it) and what comes after it (the scheduled curator is one command, the morning briefing
+  two steps); then why it exists, how a file you own differs from a chat's own memory ("E o
+  ChatGPT?"), what you gain, for whom and for whom it is not yet, how it works, and an invented
+  example: a log line, the note made from it with nothing the line does not say, a pull request
+  title and a briefing; then what decides before an afternoon is spent on it: what it costs (the
+  cheapest plan that includes Claude Code, as the official page gave it; on a subscription no
+  round is charged; with an API key each round is), privacy (saving less by asking Claude Code,
+  the law in short sentences) and the stage, with where to ask for help (the repository's
+  issues); and only then what you need, the twelve steps (the eleven to the first approved pull
+  request with the same verified commands, a rule to start with `cd ~/my-brain` from step 5 on,
+  the traps two reader tests found closed, and a twelfth that asks the vault about the promise
+  recorded in step 9) and what to do when stuck. What it held that the front door does not
+  carry is in `docs/guia.md`, the complete guide in Portuguese, which also gains what a round
+  costs with an API key and one dated failure of the curator told in plain words. The English
+  README is `docs/guide.md`, as it was, so the English sections and their anchors
+  (`#your-first-vault`, `#installing-a-fixed-version`, the steps) live there now.
+  `README.pt-BR.md` is a stub that points to both, kept for old links and left out of the
+  package. The guides ship in the npm package.
+- A step zero, `docs/preparar-o-computador.md`, in Portuguese: first the two accounts (GitHub,
+  and the Claude plan, with what they cost as the official pages said on 02/10/2026), then how
+  to open the terminal, and how to install Node, git, `gh` and Claude Code on a Mac and on
+  Ubuntu in the simplest official way, with what the screen shows and the check command of
+  each. On a Mac it gives npm a folder of its own before the install needs one, so the `EACCES`
+  the official Node installer leads to does not happen.
+- The release gate follows the documents: the stamp and the latest-tag sentence are checked in
+  `README.md` (the Portuguese sentence, under "Em que pé está"), in `docs/guia.md` and in
+  `docs/guide.md` (under "Status"), and no code block of the three may name a tag or a
+  tarball. The maintainer's release checklist says what to re-read in each.
+- The line `init` prints about privacy, and the one for a configuration that sets a limit, end
+  with a link to the guide's section in the pack's language ("Privacidade: o que o curador
+  guarda" or "Privacy: what the curator saves"), on GitHub at the tag of the kit that wrote the
+  vault, where each level is explained. They named the README, which now keeps a short section
+  only, and a bare path a newcomer could look for inside the vault.
+
 ## 0.0.10 (tagged `v0.0.10`, not on npm)
 
 What the curator saves is now a setting of the kit, and the default is to save everything. The
