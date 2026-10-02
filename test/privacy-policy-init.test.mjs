@@ -71,8 +71,8 @@ for (const lang of ['pt-BR', 'en']) {
     const line = t('init.privacy_default', { sensitive: 'privacy.sensitive', topics: 'privacy.never_topics', file: 'brain-kit.config.json' });
     assert.equal(line.includes('\n'), false);
     assert.match(line, lang === 'en'
-      ? /^Privacy: by default the curator records everything, personal and sensitive information included, yours and other people's\. To limit it, set privacy\.sensitive and privacy\.never_topics in brain-kit\.config\.json \(README, "Privacy: what the curator saves"\)\.$/
-      : /^Privacidade: por padrão o curador guarda tudo, inclusive informação pessoal e sensível, a sua e a de outras pessoas\. Para limitar, ajuste privacy\.sensitive e privacy\.never_topics no brain-kit\.config\.json \(README, "Privacidade: o que o curador guarda"\)\.$/);
+      ? /^Privacy: by default the curator records everything, personal and sensitive information included, yours and other people's\. To limit it, set privacy\.sensitive and privacy\.never_topics in brain-kit\.config\.json \(docs\/guide\.md, "Privacy: what the curator saves"\)\.$/
+      : /^Privacidade: por padrão o curador guarda tudo, inclusive informação pessoal e sensível, a sua e a de outras pessoas\. Para limitar, ajuste privacy\.sensitive e privacy\.never_topics no brain-kit\.config\.json \(docs\/guia\.md, "Privacidade: o que o curador guarda"\)\.$/);
     const lines = r.stdout.trimEnd().split('\n');
     assert.equal(lines.filter((l) => l === line).length, 1, r.stdout);
     const at = lines.indexOf(line);

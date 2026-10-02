@@ -137,12 +137,16 @@ for (const [lang, spec] of Object.entries(GUIDES)) {
     assert.doesNotMatch(blocks[0].text, /v\d+\.\d+\.\d+|second-brain-kit-\d+\.\d+\.\d+\.tgz/);
   });
 
+  // init's last line names the file and the section (the README rework of 02/10/2026 moved the
+  // full section, with each level, from the READMEs to the complete guides).
   test(`${spec.file}: the section init's last line sends a person to is this heading, in the guide of the vault's language`, () => {
     const line = createTranslator(lang)('init.privacy_default', { sensitive: 'privacy.sensitive', topics: 'privacy.never_topics', file: 'brain-kit.config.json' });
-    const title = /\(README, "([^"]+)"\)/.exec(line)?.[1];
+    const [, file, title] = /\(([^,()]+), "([^"]+)"\)\.$/.exec(line) ?? [];
+    assert.equal(file, spec.file, line);
     assert.equal(`## ${title}`, spec.heading);
     const set = createTranslator(lang)('init.privacy_set', { policy: 'x' });
-    assert.ok(set.includes(`"${title}"`), set);
+    assert.ok(set.includes(`"${title}"`) && set.includes(spec.file), set);
+    assert.doesNotMatch(`${line}\n${set}`, /README/, 'the README holds a short section only');
   });
 }
 
