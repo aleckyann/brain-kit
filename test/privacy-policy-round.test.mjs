@@ -19,26 +19,9 @@ import { PRIVACY_AUDIENCES, PRIVACY_LEVELS } from '../src/privacy-policy.mjs';
 import { makeCurateWorld } from './helpers/curate-world.mjs';
 import { makeVault } from './helpers/vault-fixture.mjs';
 import { makeTempDir } from './helpers/tmp.mjs';
+import { OLD_WORDS, oldTemplate } from './helpers/privacy-old-rule.mjs';
 
 const LANGS = ['pt-BR', 'en'];
-
-// The sentence the packs' template carried until 02/10/2026, as this file's
-// own synthetic copy (never a real vault's text): an overlay that still holds
-// it is a vault whose privacy rule is fixed text.
-export const OLD_RULE = {
-  en: "Never record anything about the private life of someone other than the owner: health, family, relationships, personal matters. Leave it out entirely, without even mentioning that you left it out. The same holds for someone else's schedule, read with the authorization the configuration records: only the events they share with other people count, and nothing about their private life (an absence, an appointment, an errand) is ever content, not even as a mention that something was left out.",
-  'pt-BR': 'Nunca registre nada sobre a vida particular de alguém que não seja o dono: saúde, família, relacionamentos, assuntos pessoais. Deixe de fora por completo, sem nem mencionar que deixou. O mesmo vale para os compromissos de outra pessoa, lidos com a autorização que a configuração registra: só contam os eventos que ela compartilha com outras pessoas, e nada da vida particular dela (uma ausência, uma consulta, uma tarefa particular) vira conteúdo, nem como menção de que algo ficou de fora.',
-};
-
-const OLD_WORDS = { en: /private life of someone other than the owner/, 'pt-BR': /vida particular de alguém que não seja o dono/ };
-
-// The pack's own template with its privacy rule put back to the old fixed
-// sentence: the copy a vault would hold in .brain-kit/prompts/curate.md.
-export function oldTemplate(lang) {
-  const pack = readFileSync(join(KIT_ROOT, 'lang', lang, 'prompts', 'curate.md'), 'utf8');
-  assert.ok(pack.includes('{{privacy_policy}}'), `${lang}: the pack carries the placeholder`);
-  return pack.replace('{{privacy_policy}}', OLD_RULE[lang]);
-}
 
 function collector() {
   let out = '';

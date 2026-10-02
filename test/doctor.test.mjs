@@ -377,7 +377,7 @@ test('a ready vault under a path with a space, an accented letter and both quote
 test('the check table is exactly the phase 1, 2, 3, 4, 5a and 6 set, each named by what it prevents', () => {
   assert.deepEqual(CHECK_IDS, [
     'node-version', 'git-present', 'default-branch-known', 'hooks-path', 'brain-kit-on-path', 'config-valid', 'manifest-valid', 'machine-valid',
-    'state-dir-resolves', 'state-dir-mode', 'digest-dir', 'legacy-lock', 'kit-version', 'gh-present', 'gh-auth', 'claude-present', 'gitignore-node-modules', 'privacy-keywords',
+    'state-dir-resolves', 'state-dir-mode', 'digest-dir', 'legacy-lock', 'kit-version', 'gh-present', 'gh-auth', 'claude-present', 'gitignore-node-modules', 'privacy-policy', 'privacy-keywords',
     'claude-real', 'claude-isolation-flags', 'round-scope', 'cost-cap', 'turn-cap', 'time-cap', 'include-projects', 'connectors', 'watermark', 'last-run', 'schedule', 'notify',
     'briefing',
   ]);
