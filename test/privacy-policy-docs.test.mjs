@@ -16,6 +16,10 @@ import { KIT_ROOT } from '../src/version.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { PRIVACY_AUDIENCES, PRIVACY_LEVELS } from '../src/privacy-policy.mjs';
 import { LEGACY_PACK_KEYWORDS } from '../src/rules/privacy-keywords.mjs';
+import { kitDocsUrl } from '../src/version.mjs';
+
+// GitHub's anchor for a heading: lower case, punctuation dropped, spaces to hyphens.
+const slugOf = (heading) => heading.toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, '').trim().replace(/\s+/g, '-');
 
 const read = (path) => readFileSync(join(KIT_ROOT, path), 'utf8');
 const norm = (text) => text.replace(/\s+/g, ' ');
@@ -137,15 +141,18 @@ for (const [lang, spec] of Object.entries(GUIDES)) {
     assert.doesNotMatch(blocks[0].text, /v\d+\.\d+\.\d+|second-brain-kit-\d+\.\d+\.\d+\.tgz/);
   });
 
-  // init's last line names the file and the section (the README rework of 02/10/2026 moved the
-  // full section, with each level, from the READMEs to the complete guides).
-  test(`${spec.file}: the section init's last line sends a person to is this heading, in the guide of the vault's language`, () => {
-    const line = createTranslator(lang)('init.privacy_default', { sensitive: 'privacy.sensitive', topics: 'privacy.never_topics', file: 'brain-kit.config.json' });
-    const [, file, title] = /\(([^,()]+), "([^"]+)"\)\.$/.exec(line) ?? [];
+  // The line init prints about privacy names the guide's section by a link a vault user can
+  // open (the review of R1, m7): the guide on GitHub, at the tag of the running kit.
+  test(`${spec.file}: the section init's privacy line sends a person to is this heading, by a link to the guide of the vault's language`, () => {
+    const line = createTranslator(lang)('init.privacy_default', { sensitive: 'privacy.sensitive', topics: 'privacy.never_topics', file: 'brain-kit.config.json', docs: kitDocsUrl() });
+    const [, base, file, anchor] = /"[^"]+": (https:\/\/\S+?)\/(docs\/[\w.-]+\.md)#([\w-]+)$/.exec(line) ?? [];
+    assert.equal(base, kitDocsUrl(), line);
     assert.equal(file, spec.file, line);
+    assert.equal(anchor, slugOf(spec.heading.replace(/^## /, '')), 'the anchor is the slug of the heading');
+    const title = /"([^"]+)": https:/.exec(line)?.[1];
     assert.equal(`## ${title}`, spec.heading);
-    const set = createTranslator(lang)('init.privacy_set', { policy: 'x' });
-    assert.ok(set.includes(`"${title}"`) && set.includes(spec.file), set);
+    const set = createTranslator(lang)('init.privacy_set', { policy: 'x', docs: kitDocsUrl() });
+    assert.ok(set.includes(`"${title}"`) && set.endsWith(`${kitDocsUrl()}/${spec.file}#${anchor}`), set);
     assert.doesNotMatch(`${line}\n${set}`, /README/, 'the README holds a short section only');
   });
 }
