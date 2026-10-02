@@ -50,12 +50,14 @@ test('privacy.sensitive takes each level for each audience, and a configuration 
   assert.deepEqual(validateConfig(withPrivacy({}, [])), [], 'an empty setting is the default');
 });
 
-test('a value that is not a level is refused with a message naming the three allowed ones', () => {
-  for (const bad of ['always', 'Save', 'SKIP', '', 'drop', 1, true, null]) {
-    const errors = validateConfig(withPrivacy({ people: bad }));
-    const error = errors.find((e) => e.startsWith('$.privacy.sensitive.people'));
-    assert.ok(error, `${JSON.stringify(bad)} is refused: ${JSON.stringify(errors)}`);
-    assert.equal(error, '$.privacy.sensitive.people: must be one of ["save","summary","skip"]', `the message names the three levels: ${error}`);
+test('a value that is not a level is refused for each audience, with a message naming the three allowed ones', () => {
+  for (const audience of PRIVACY_AUDIENCES) {
+    for (const bad of ['always', 'Save', 'SKIP', '', 'drop', 1, true, null]) {
+      const errors = validateConfig(withPrivacy({ [audience]: bad }));
+      const error = errors.find((e) => e.startsWith(`$.privacy.sensitive.${audience}`));
+      assert.ok(error, `${audience}=${JSON.stringify(bad)} is refused: ${JSON.stringify(errors)}`);
+      assert.equal(error, `$.privacy.sensitive.${audience}: must be one of ["save","summary","skip"]`, `the message names the three levels: ${error}`);
+    }
   }
   assert.ok(validateConfig(withPrivacy({ team: 'skip' })).some((e) => e.startsWith('$.privacy.sensitive.team: unknown key')), 'an audience the kit does not know');
   assert.ok(validateConfig(withPrivacy('save')).some((e) => e.startsWith('$.privacy.sensitive: expected object')), 'not an object');
