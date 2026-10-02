@@ -17,7 +17,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { KIT_ROOT } from '../../src/version.mjs';
 import { EXIT } from '../../src/exit-codes.mjs';
@@ -68,6 +68,7 @@ for (const lang of ['pt-BR', 'en']) {
     const [line] = JSON.parse(r.stdout).checks;
     assert.equal(line.status, 'warn');
     assert.equal(line.messageKey, 'doctor.privacy_policy.overlay_fixed');
-    assert.ok(line.message.includes(join(root, '.brain-kit', 'prompts', 'curate.md')), line.message);
+    // The real path, as doctor prints it: on macOS the temporary directory is a link.
+    assert.ok(line.message.includes(join(realpathSync(root), '.brain-kit', 'prompts', 'curate.md')), line.message);
   });
 }

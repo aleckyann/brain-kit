@@ -13,7 +13,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
@@ -65,7 +65,9 @@ for (const lang of ['pt-BR', 'en']) {
       const [line] = JSON.parse(doctor.stdout).checks;
       assert.equal(line.status, 'warn', doctor.stdout);
       assert.equal(line.messageKey, 'doctor.privacy_policy.overlay_fixed');
-      assert.ok(line.message.includes(join(vault, OVERLAY)), line.message);
+      // The real path: doctor finds the vault from its working directory, and on
+      // macOS the temporary directory (/var/folders/...) is a link to /private/var/....
+      assert.ok(line.message.includes(join(realpathSync(vault), OVERLAY)), line.message);
       assert.ok(line.message.includes(join(KIT_ROOT, 'lang', lang, 'prompts', 'curate.md')), line.message);
       // The round runs the overlay as written: the old sentence, and no policy.
       const rendered = kit(['prompt', 'curate']);
