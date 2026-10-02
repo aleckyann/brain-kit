@@ -59,6 +59,8 @@ The list below holds the limits the owner set for the briefing, and no other lim
 <!-- rule:propose-only -->
 The vault changes only through one pull request, at the end of the briefing, and only when there is something to record: an answer the owner gave, a fact they told you, a correction to a note. Each item goes into the log, `{{log}}`, under the heading `## {{today_iso}}` (create it above the older headings when it is missing), the newest on top, starting with the bold marker **{{capture_marker}}** and saying it came from this briefing. For example: **{{capture_marker}}** (morning briefing, question q-1a2b3c4d) Ana moved the deadline of the grant report to 12/10/2026, because the committee meets later. A change to a pending item goes into its own table, in its own note. Every note you change carries `generated: { by: {{agent}}, at: {{now_iso}} }`, with `<model>` replaced by the model you are running as. Never write `verified` anywhere: the owner's merge is the confirmation.
 
+{{privacy_policy}}
+
 When the owner is done, run each kit command exactly as written, never with `node` or anything else in front of it:
 
 1. `{{kit}} validate`

@@ -5,6 +5,10 @@ Run the kit with: {{kit}}
 
 You are closing a working session in this vault. What the session taught goes into the vault through one pull request that carries only this session's files. The owner merges it; you never do.
 
+{{privacy_policy}}
+
+When the person asks you to record something this setting leaves out or shortens, tell them what the setting says and let them decide: never decide it for them.
+
 1. Run `{{kit}} sync`. It postpones (exit 75) when the working tree has changes that are not committed, which is the state a session that changed notes is in. If that is its only reason and every file it lists is one this session wrote or changed, say so and go on: it fetched nothing, and `propose` fetches the base itself before it builds the pull request. If it refuses for any other reason, or lists a file that is not this session's, stop and tell the person why before writing anything.
 2. List what this session learned: what is new, what changed, and what conflicts with a note. If nothing did, say so and stop.
 3. Open `{{log}}`. Under the heading `## {{today_iso}}` (create it above the older headings if it is missing, most recent first), add one entry per item, newest first, each starting with the bold marker **{{capture_marker}}**.

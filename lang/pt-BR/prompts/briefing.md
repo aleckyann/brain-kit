@@ -59,6 +59,8 @@ A lista abaixo traz os limites que o dono definiu para o briefing, e nenhum outr
 <!-- rule:propose-only -->
 O vault só muda por um único pull request, no fim do briefing, e só quando há algo a registrar: uma resposta que o dono deu, um fato que ele contou, uma correção a uma nota. Cada item vai para o log, `{{log}}`, sob o título `## {{today_iso}}` (crie-o acima dos títulos mais antigos quando ele faltar), o mais novo no topo, começando com o marcador em negrito **{{capture_marker}}** e dizendo que veio deste briefing. Por exemplo: **{{capture_marker}}** (briefing matinal, pergunta q-1a2b3c4d) Ana mudou o prazo do relatório do edital para 12/10/2026, porque o comitê se reúne mais tarde. Uma mudança numa pendência vai para a própria tabela dela, na própria nota. Toda nota que você alterar leva `generated: { by: {{agent}}, at: {{now_iso}} }`, com `<model>` trocado pelo modelo em que você está rodando. Nunca escreva `verified` em lugar nenhum: o merge do dono é a confirmação.
 
+{{privacy_policy}}
+
 Quando o dono terminar, rode cada comando do kit exatamente como está escrito, nunca com `node` nem nada na frente:
 
 1. `{{kit}} validate`

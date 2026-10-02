@@ -100,8 +100,10 @@ export const SKILL_NAMES = Object.freeze(['setup', 'curate-session', 'capture', 
 
 // Every placeholder a body may use. Anything else left in a body's text
 // (`{{x}}`) is never filled in: `skill` prints it back literally, and
-// `--check` reports it as a problem.
-const KNOWN_PLACEHOLDERS = Object.freeze(['today', 'today_iso', 'vault', 'log', 'capture_marker', 'human', 'agent', 'kit']);
+// `--check` reports it as a problem. `privacy_policy` (02/10/2026) is the
+// vault's privacy setting, rendered as the curate prompt renders it, for the
+// skills that write what a session taught (curate-session, capture).
+const KNOWN_PLACEHOLDERS = Object.freeze(['today', 'today_iso', 'vault', 'log', 'capture_marker', 'human', 'agent', 'kit', PRIVACY_PLACEHOLDER]);
 
 const PLACEHOLDER_RE = /\{\{(\w+)\}\}/g;
 
@@ -119,8 +121,11 @@ const KNOWN_PROMPT_PLACEHOLDERS = Object.freeze(['parameters', 'kit', 'log', 'ca
 // captures go under (`## YYYY-MM-DD`), given so the model never derives it.
 // `kit` is the kit's command with `-C "<vault>"` and `vault` the vault's
 // absolute path: the session may run anywhere (final review, C2).
+// `privacy_policy` (02/10/2026) is what the briefing may record about
+// personal and sensitive subjects, the vault's setting as the curate prompt
+// renders it.
 export const BRIEFING_PLACEHOLDERS = Object.freeze([
-  'signature', 'today_human', 'today_iso', 'kit', 'vault', 'blocks', 'read', 'never_read', 'limits', 'log', 'capture_marker', 'agent', 'now_iso',
+  'signature', 'today_human', 'today_iso', 'kit', 'vault', 'blocks', 'read', 'never_read', 'limits', 'log', 'capture_marker', 'agent', 'now_iso', PRIVACY_PLACEHOLDER,
 ]);
 const PLACEHOLDERS_BY_PROMPT = Object.freeze({ curate: KNOWN_PROMPT_PLACEHOLDERS, briefing: BRIEFING_PLACEHOLDERS });
 function promptPlaceholders(name) {
@@ -243,6 +248,7 @@ function buildVars({ root, config, lang, packsDir, now, skillT }) {
     human: config?.actors?.human ?? defaults.actors.human,
     agent: `${config?.actors?.agent_prefix ?? defaults.actors.agent_prefix}/<model>`,
     kit: `node "${kitPath}"`,
+    [PRIVACY_PLACEHOLDER]: privacyPolicyFor({ vaultRoot: root, config, t: skillT }),
   };
 }
 
@@ -434,6 +440,7 @@ export function briefingVars({ vaultRoot, config, lang, blocks, now = new Date()
     capture_marker: config?.taxonomy?.log_markers?.capture ?? defaults.taxonomy.log_markers.capture,
     agent: `${config?.actors?.agent_prefix ?? defaults.actors.agent_prefix}/<model>`,
     now_iso: clock.iso,
+    [PRIVACY_PLACEHOLDER]: privacyPolicyFor({ vaultRoot, config, t }),
   };
 }
 
