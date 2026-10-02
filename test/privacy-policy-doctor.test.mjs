@@ -178,7 +178,7 @@ test('the text report shows the warning line, and --only lists the ok line with 
 // --- privacy-keywords and the list init wrote before 02/10/2026 (fix round 1, M1) ---
 //
 // Every vault init or adopt made until 02/10/2026 lists the eight phrases its
-// pack shipped, and nobody chose them: under the new default, a round told to
+// pack shipped, and the person never wrote them: under the new default, a round told to
 // record a health subject normally cannot propose the line, since lint refuses
 // it. So privacy-keywords warns while the list is still exactly a pack's (as a
 // set) and any audience is at save; an edited list is the person's choice.
@@ -217,8 +217,8 @@ for (const lang of LANGS) {
       assert.equal(line.messageKey, 'doctor.privacy_keywords.legacy');
       for (const phrase of SHIPPED[lang]) assert.ok(line.message.includes(`"${phrase}"`), `${lang}: ${phrase}: ${line.message}`);
       assert.match(line.message, lang === 'en'
-        ? /^privacy\.third_party_keywords in brain-kit\.config\.json is still the list of 8 phrases the language pack shipped until 02\/10\/2026, which init or adopt wrote and nobody chose: .*Clear the list \(\[\]\) for the default to hold, or edit it to keep a list of your own; an edited list is a choice, and this check says nothing of it\.$/
-        : /^privacy\.third_party_keywords em brain-kit\.config\.json ainda é a lista das 8 expressões que o pacote de idioma trazia até 02\/10\/2026, escrita pelo init ou pelo adopt e que ninguém escolheu: .*Esvazie a lista \(\[\]\) para o padrão valer, ou edite-a para manter uma lista sua; uma lista editada é uma escolha, e esta verificação não fala dela\.$/);
+        ? /^privacy\.third_party_keywords in brain-kit\.config\.json is still exactly the list of 8 phrases the language pack shipped until 02\/10\/2026, which init and adopt wrote into every vault they made: .*Clear the list \(\[\]\) for the default to hold, or edit it to keep a list of your own; an edited list is a choice, and this check says nothing of it\.$/
+        : /^privacy\.third_party_keywords em brain-kit\.config\.json ainda é exatamente a lista das 8 expressões que o pacote de idioma trazia até 02\/10\/2026, que o init e o adopt escreviam em todo vault que criavam: .*Esvazie a lista \(\[\]\) para o padrão valer, ou edite-a para manter uma lista sua; uma lista editada é uma escolha, e esta verificação não fala dela\.$/);
     }
     // Any audience at save is enough: the owner's own health is the incident.
     const owner = await keywords(vaultWith(lang, { third_party_keywords: SHIPPED[lang], sensitive: { owner: 'save', people: 'skip', outsiders: 'skip' } }));
