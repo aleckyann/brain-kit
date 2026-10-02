@@ -18,6 +18,7 @@ import { KIT_ROOT } from '../src/version.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { makeVault } from './helpers/vault-fixture.mjs';
 import { makeTempDir } from './helpers/tmp.mjs';
+import { LEGACY_KEYWORDS } from './helpers/privacy-keywords.mjs';
 
 const TEMPLATE_HOOK = join(KIT_ROOT, 'templates', 'githooks', 'pre-push');
 const REAL_BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
@@ -402,11 +403,12 @@ test('a vault that escalated style to error refuses a feature-branch push over a
 // branch, and the gate's lint says in one line that keywords were not
 // checked. A keyword a proposal adds is refused by propose's own
 // `lint --base worktree` (test/propose.test.mjs), never here.
+// The list is the one the en pack shipped until 02/10/2026 (the packs ship
+// none since), set explicitly, as a vault made before then keeps it.
 test('a committed privacy keyword refuses no push: the gate lints the whole vault, which judges no keyword, and says so', () => {
-  const { privacy } = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', 'en', 'config.defaults.json'), 'utf8'));
   const notChecked = createTranslator('en')('lint.privacy_keywords_not_checked');
   const files = { ...cleanFiles(), 'memory/log.md': `${CLEAN_LOG}Bruno is on sick leave until Friday.\n` };
-  const { work } = setup({ files, config: { privacy: { third_party_keywords: privacy.third_party_keywords } } });
+  const { work } = setup({ files, config: { privacy: { third_party_keywords: [...LEGACY_KEYWORDS.en] } } });
   commitEverything(work, 'init');
   const seeded = git(work, ['push', '-q', 'origin', 'main']);
   assert.equal(seeded.status, 0, seeded.stderr);

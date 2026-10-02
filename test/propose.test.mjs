@@ -25,6 +25,7 @@ import { walkVault } from '../src/vault.mjs';
 import { KIT_ROOT } from '../src/version.mjs';
 import { git } from './helpers/git-repo.mjs';
 import { nonUtf8NameRefusal } from './helpers/tmp.mjs';
+import { LEGACY_KEYWORDS } from './helpers/privacy-keywords.mjs';
 import { configText, gitProbe, repoState } from './helpers/sync-world.mjs';
 import { BRANCH, NOW, PR_URL, fingerprint, makeProposeWorld, note } from './helpers/propose-world.mjs';
 
@@ -296,15 +297,15 @@ test('a lint failure: exit 1 with its report, nothing pushed', async () => {
   assert.deepEqual(world.ghCalls(), []);
 });
 
-// Phase 3, task 6: privacy.third_party_keywords, as the English pack ships
-// it, published on the remote so the tree the gate judges carries it (the
-// example configuration lists no keyword of its own).
+// Phase 3, task 6: privacy.third_party_keywords, as the English pack shipped
+// it until 02/10/2026 (the packs ship none since, and a vault made before
+// keeps its list), published on the remote so the tree the gate judges
+// carries it (the example configuration lists no keyword of its own).
 function publishPackKeywords(world) {
   const file = join(world.vault, 'brain-kit.config.json');
   const config = JSON.parse(readFileSync(file, 'utf8'));
-  const { privacy } = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', 'en', 'config.defaults.json'), 'utf8'));
-  config.privacy.third_party_keywords = privacy.third_party_keywords;
-  config.privacy.keyword_exempt_paths = privacy.keyword_exempt_paths;
+  config.privacy.third_party_keywords = [...LEGACY_KEYWORDS.en];
+  config.privacy.keyword_exempt_paths = [];
   writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`);
   git(world.vault, ['commit', '-q', '-am', 'keywords']);
   git(world.vault, ['push', '-q', 'origin', 'main']);

@@ -27,6 +27,7 @@ import {
 import { delimiter, dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { makeTempDir } from './helpers/tmp.mjs';
+import { LEGACY_KEYWORDS } from './helpers/privacy-keywords.mjs';
 import { KIT_ROOT, kitVersion } from '../src/version.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { stateDirFor } from '../src/state.mjs';
@@ -44,7 +45,9 @@ const BIN = join(KIT_ROOT, 'bin', 'brain-kit.mjs');
 // A clone address is not an e-mail address: the sign is joined at run time so the
 // scan of tracked files (test/no-leak.test.mjs) does not read it as one.
 const AT = '@';
-const PACK_KEYWORDS = JSON.parse(readFileSync(join(KIT_ROOT, 'lang', 'en', 'config.defaults.json'), 'utf8')).privacy.third_party_keywords;
+// The list the en pack shipped until 02/10/2026, when the packs' default
+// became an empty list: a vault made before then keeps it.
+const PACK_KEYWORDS = LEGACY_KEYWORDS.en;
 const TEMPLATE_HOOK = join(KIT_ROOT, 'templates', 'githooks', 'pre-push');
 const A_ACUTE = String.fromCodePoint(0xc1);
 // A localised desktop folder, and a vault name carrying both quotes.
@@ -162,7 +165,8 @@ function fixtureGit(cwd, args, home) {
 // The fixture configuration, made ready for phase 3: the connector sources
 // are off on purpose (the fixture's calendar lists a calendar with no
 // `enabled`, the upgrade case a round reports as half configured), and the
-// privacy keywords are the en pack's.
+// privacy keywords are the list the en pack shipped until 02/10/2026, set
+// explicitly, as a vault made before then keeps it.
 function baseConfig() {
   const config = JSON.parse(readFileSync(join(KIT_ROOT, 'test', 'fixtures', 'config', 'valid.json'), 'utf8'));
   config.kit_version = kitVersion();
@@ -3384,7 +3388,10 @@ test('privacy-keywords: the fixture\'s list passes, naming how many keywords lin
   assert.deepEqual(c.params, { count: PACK_KEYWORDS.length, setting: 'privacy.third_party_keywords' });
 });
 
-test('privacy-keywords: no list, an empty one, or only blank entries warns and names the list the vault\'s language pack ships', async () => {
+// Since 02/10/2026 the packs ship no keyword: the curator records everything
+// by default, and the list is a backstop a person turns on. No list, an empty
+// one or only blank entries is that default, said as such, never a warning.
+test('privacy-keywords: no list, an empty one, or only blank entries is ok, saying the backstop is off', async () => {
   for (const keywords of [undefined, [], ['   ', '']]) {
     const config = configWith((c) => {
       if (keywords === undefined) delete c.privacy.third_party_keywords;
@@ -3392,13 +3399,15 @@ test('privacy-keywords: no list, an empty one, or only blank entries warns and n
     });
     const fx = setup({ config });
     const { report, code } = await doctor(fx, ['--only', 'privacy-keywords']);
-    const c = assertCheck(report, 'privacy-keywords', 'warn', 'doctor.privacy_keywords.none');
-    assert.deepEqual(c.params, { setting: 'privacy.third_party_keywords', file: 'brain-kit.config.json', defaults: join(KIT_ROOT, 'lang', 'en', 'config.defaults.json') });
-    assert.equal(code, EXIT.OK, 'a warning, never a failure');
+    const c = assertCheck(report, 'privacy-keywords', 'ok', 'doctor.privacy_keywords.off');
+    assert.deepEqual(c.params, { setting: 'privacy.third_party_keywords' });
+    assert.match(c.message, /^no keywords set in privacy\.third_party_keywords; the backstop is off/);
+    assert.equal(code, EXIT.OK);
   }
   const pt = setup({ config: configWith((c) => { c.lang = 'pt-BR'; c.privacy.third_party_keywords = []; }) });
   const c = check((await doctor(pt, ['--only', 'privacy-keywords'])).report, 'privacy-keywords');
-  assert.equal(c.params.defaults, join(KIT_ROOT, 'lang', 'pt-BR', 'config.defaults.json'));
+  assert.equal(c.status, 'ok');
+  assert.match(c.message, /^nenhuma palavra-chave em privacy\.third_party_keywords; a rede de proteção do lint está desligada/);
   const broken = setup({ configText: '{ not json' });
   assertCheck((await doctor(broken, ['--only', 'privacy-keywords'])).report, 'privacy-keywords', 'warn', 'doctor.curate.config_unknown');
 });

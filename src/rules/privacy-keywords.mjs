@@ -9,9 +9,14 @@
 // read here too, so both of the clause's settings are read in one place.
 //
 // docs/incidents.md, "Undated: a colleague's medical appointment was in the
-// calendar window": someone else's health or private life is never content.
-// The words are the vault's own, from its language pack's defaults, which
-// init writes; a configuration that lists none is asked about none.
+// calendar window": the clause is the mechanical backstop for a subject a
+// vault never wants written. The words are the vault's own. Until 02/10/2026
+// each language pack shipped eight health words here, which init wrote; since
+// then the packs ship none (docs/incidents.md, 02/10/2026: the curator records
+// everything by default, privacy.sensitive, and a list that refused a line
+// naming someone's health would fight that default). A vault made before
+// keeps its list, a person who wants the backstop sets one, and a
+// configuration that lists none is asked about none.
 //
 // How a keyword matches, each choice pinned by
 // test/rules-privacy-keywords.test.mjs:

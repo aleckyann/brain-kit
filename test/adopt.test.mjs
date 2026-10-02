@@ -249,11 +249,13 @@ for (const c of CASES) {
 }
 
 // Phase 3, task 6, fix round 1: a privacy keyword already in the vault
-// changes nothing about adopt's exit. The configuration carries the
-// language's keywords, which are judged only on lines a change adds, and
-// adopt's check is `lint --base all`, which is no change: its report says
-// the keywords were not checked.
-test('a privacy keyword already in the adopted vault leaves adopt\'s exit as it was, and the lint report says keywords were not checked', () => {
+// changes nothing about adopt's exit. Since 02/10/2026 the adopted
+// configuration carries the pack's privacy defaults, which record everything
+// and list no keyword for lint to refuse: so a health mention already in the
+// vault is no finding, and adopt's `lint --base all` has no keyword clause in
+// play, and says nothing about one (the lines saying keywords were not
+// checked are for a vault that lists some, test/rules-privacy-keywords.test.mjs).
+test('a health mention already in the adopted vault leaves adopt\'s exit as it was; the configuration records everything and lists no keyword, and lint says nothing of keywords', () => {
   const copy = freshCopy('pt-BR');
   appendFileSync(join(copy.vault, 'memoria', 'log.md'), '\n- Bruno em licença médica até sexta.\n');
   for (const args of [['add', '-A'], ['commit', '-q', '-m', 'An older capture']]) {
@@ -262,8 +264,11 @@ test('a privacy keyword already in the adopted vault leaves adopt\'s exit as it 
   }
   const r = adopt(copy, ANSWERS['pt-BR']);
   assert.equal(r.status, EXIT.OK, `${r.stdout}\n${r.stderr}`);
-  assert.ok(loadConfig(copy.vault).privacy.third_party_keywords.includes('licença médica'), 'the adopted configuration carries the pack\'s keywords');
-  assert.ok(r.stdout.includes(`${createTranslator('pt-BR')('lint.privacy_keywords_not_checked')}\n`), r.stdout);
+  const { privacy } = loadConfig(copy.vault);
+  assert.deepEqual(privacy.sensitive, { owner: 'save', people: 'save', outsiders: 'save' }, 'the adopted configuration records everything');
+  assert.deepEqual(privacy.never_topics, []);
+  assert.deepEqual(privacy.third_party_keywords, [], 'and lists no keyword');
+  assert.equal(r.stdout.includes(createTranslator('pt-BR')('lint.privacy_keywords_not_checked')), false, r.stdout);
 });
 
 // --- what adopt infers ------------------------------------------------------------

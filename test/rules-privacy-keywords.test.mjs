@@ -2,8 +2,10 @@
 // words privacy.third_party_keywords lists (src/rules/privacy-keywords.mjs
 // for the matching, src/rules/lint.mjs "--- privacy" for which lines are
 // asked). docs/incidents.md, "Undated: a colleague's medical appointment was
-// in the calendar window": someone else's health or private life is never
-// content, and this is where `brain-kit lint`, and so `propose`, refuses it.
+// in the calendar window": this is where `brain-kit lint`, and so `propose`,
+// refuses a phrase a vault lists. Since 02/10/2026 the packs list none (the
+// curator records everything by default, docs/incidents.md of that day): the
+// list is a backstop the person turns on, and a vault made before keeps its.
 //
 // Three layers, each where its clause can be observed: the rule through
 // runLintRules with a hand-built scope (which lines count as added, and
@@ -34,13 +36,18 @@ import { makeReadFile, makeScanFile } from '../src/commands/validate.mjs';
 import { buildSecretScan, runLint } from '../src/commands/lint.mjs';
 import { makeVault, writeVaultFile } from './helpers/vault-fixture.mjs';
 import { git } from './helpers/git-repo.mjs';
+import { LEGACY_KEYWORDS } from './helpers/privacy-keywords.mjs';
 
 function packDefaults(lang) {
   return JSON.parse(readFileSync(join(KIT_ROOT, 'lang', lang, 'config.defaults.json'), 'utf8'));
 }
 
-const EN = packDefaults('en').privacy.third_party_keywords;
-const PT = packDefaults('pt-BR').privacy.third_party_keywords;
+// The lists each pack shipped until 02/10/2026. The packs ship none since
+// (the curator records everything by default), and a vault made before keeps
+// its list, which is what this clause still judges: so the tests list the
+// phrases explicitly.
+const EN = [...LEGACY_KEYWORDS.en];
+const PT = [...LEGACY_KEYWORDS['pt-BR']];
 const T_EN = createTranslator('en');
 const NOT_CHECKED_EN = T_EN('lint.privacy_keywords_not_checked');
 
@@ -318,19 +325,22 @@ test('no keyword listed, the key absent or every entry blank, means nothing is l
 
 // --- the packs' defaults ----------------------------------------------------------------
 
-test('both packs ship their own keywords, verbatim, and no exempt path', () => {
-  assert.deepEqual(EN, ['medical appointment', 'doctor\'s appointment', 'sick leave', 'teleconsultation', 'therapy session', 'medical exam', 'hospital stay', 'pregnancy']);
-  assert.deepEqual(PT, ['consulta médica', 'atestado médico', 'licença médica', 'teleconsulta', 'sessão de terapia', 'exame médico', 'internação', 'gravidez']);
+// 02/10/2026: the packs ship no keyword and no exempt path, so a vault init
+// makes has the backstop off; the phrases each pack shipped before are still
+// a list a person can set, each stored composed.
+test('both packs ship no keyword and no exempt path; the phrases they shipped until 02/10/2026 are stored composed', () => {
   for (const lang of ['en', 'pt-BR']) {
+    assert.deepEqual(packDefaults(lang).privacy.third_party_keywords, [], lang);
     assert.deepEqual(packDefaults(lang).privacy.keyword_exempt_paths, [], lang);
-    for (const keyword of packDefaults(lang).privacy.third_party_keywords) assert.equal(keyword, keyword.normalize('NFC'), `${lang}: "${keyword}" is stored composed`);
+    for (const keyword of LEGACY_KEYWORDS[lang]) assert.equal(keyword, keyword.normalize('NFC'), `${lang}: "${keyword}" is stored composed`);
   }
+  assert.equal(EN.length, 8);
+  assert.equal(PT.length, 8);
 });
 
-test('in a vault configured with its own pack, every keyword fails an added line; without its accents a pt-BR keyword does not', () => {
+test('in a vault that lists the phrases its pack shipped, every keyword fails an added line; without its accents a pt-BR keyword does not', () => {
   for (const [lang, keywords] of [['en', EN], ['pt-BR', PT]]) {
-    const defaults = packDefaults(lang).privacy;
-    const config = { lang, privacy: { third_party_keywords: defaults.third_party_keywords, keyword_exempt_paths: defaults.keyword_exempt_paths } };
+    const config = { lang, privacy: { third_party_keywords: keywords, keyword_exempt_paths: [] } };
     const files = {};
     keywords.forEach((keyword, i) => {
       files[`notes/k${i}.md`] = `# K${i}\n\nBruno: ${keyword}, Friday.\n`;

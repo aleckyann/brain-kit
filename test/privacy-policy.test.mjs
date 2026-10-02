@@ -85,10 +85,14 @@ test('privacyProblems names each value the setting cannot use, by its key, and n
 // --- the defaults ---------------------------------------------------------------
 
 for (const lang of LANGS) {
-  test(`${lang}: the pack's defaults save everything, about everyone, and set no topic aside`, () => {
+  test(`${lang}: the pack's defaults save everything, about everyone, set no topic aside, and list no keyword for lint to refuse`, () => {
     const { privacy } = packDefaults(lang);
     assert.deepEqual(privacy.sensitive, { owner: 'save', people: 'save', outsiders: 'save' });
     assert.deepEqual(privacy.never_topics, []);
+    // The mechanical backstop is off by default: a list of health words that
+    // lint refuses on an added line would fight the default above.
+    assert.deepEqual(privacy.third_party_keywords, []);
+    assert.deepEqual(privacy.keyword_exempt_paths, []);
   });
 }
 

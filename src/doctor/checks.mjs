@@ -1489,11 +1489,14 @@ function privacyProblemResult(id, problem) {
 
 // docs/incidents.md, "Undated: a colleague's medical appointment was in the
 // calendar window": lint refuses a line a change adds when it holds one of
-// privacy.third_party_keywords (src/rules/privacy-keywords.mjs). A
-// configuration written before that list existed holds none, and `update`
-// adds no key to a configuration, so such a vault checks nothing and says
-// nothing (review M5 of task 6, 25/09/2026): it is said here. The list the
-// language pack ships is named, since that is what init writes.
+// privacy.third_party_keywords (src/rules/privacy-keywords.mjs). Until
+// 02/10/2026 each language pack shipped eight health words there, and a
+// vault without them was warned about (review M5 of task 6, 25/09/2026).
+// Since then the packs ship none: the curator records everything by default
+// (privacy.sensitive, the check privacy-policy), and a list that refused a
+// line naming someone's health would fight that default. So the list is a
+// backstop a person turns on, and none listed is ok, said as such; a list
+// set is ok too, with how many phrases lint refuses.
 function privacyKeywords(ctx) {
   const id = 'privacy-keywords';
   const read = ctx.config();
@@ -1502,11 +1505,7 @@ function privacyKeywords(ctx) {
   }
   const setting = 'privacy.third_party_keywords';
   const count = keywordMatchers(read.value).length;
-  if (count === 0) {
-    const lang = SUPPORTED_LANGS.includes(read.value.lang) ? read.value.lang : 'en';
-    const defaults = join(KIT_ROOT, 'lang', lang, 'config.defaults.json');
-    return { id, status: 'warn', messageKey: 'doctor.privacy_keywords.none', params: { setting, file: CONFIG_FILENAME, defaults } };
-  }
+  if (count === 0) return { id, status: 'ok', messageKey: 'doctor.privacy_keywords.off', params: { setting } };
   return { id, status: 'ok', messageKey: 'doctor.privacy_keywords.ok', params: { count, setting } };
 }
 
