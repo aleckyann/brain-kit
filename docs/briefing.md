@@ -329,7 +329,11 @@ file exists. An overlay outside the vault is refused. Its placeholders are
 `{{now_iso}}` and `{{privacy_policy}}`, what the briefing may record about personal and
 sensitive subjects: the vault's `privacy.sensitive` and `privacy.never_topics`, rendered as
 the curate prompt renders them, in the section on recording ([security.md](security.md),
-"What the curator records").
+"What the curator records"). The sentence after it tells the model to ask the owner before
+leaving out or shortening what they asked to record. An overlay written before 02/10/2026
+has no such line, so what its briefings record is the model's own judgment: `prompt --check`
+and `doctor` (check `privacy-policy`) warn about an overlay without `{{privacy_policy}}`,
+naming the file.
 
 The desktop task's session does not start in the vault (see [The desktop task](#the-desktop-task)),
 and every kit command finds its vault from the working directory. So in the briefing

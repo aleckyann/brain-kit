@@ -51,10 +51,15 @@ Some calendar settings in the configuration are read by no code of the round:
 `team_personal_events`), `skip_events_with_owner`, `focus_blocks_as_ruler` and `dedup_by`.
 The event-type filter is fixed at `DEFAULT` whatever `exclude_event_types` says, and the
 privacy rules the model follows are the prompt's own, filled from the vault's
-`privacy.sensitive` and `privacy.never_topics` (see "Privacy" below). Only the
-`seed-rituals` skill reads `exclude_keywords`, to leave matching titles out of the rituals
-table. A keyword you add there filters nothing in a round: `privacy.third_party_keywords`
-is the list that `lint` enforces.
+`privacy.sensitive` and `privacy.never_topics` (see "Privacy" below). Outside the round,
+two places read part of it: the `seed-rituals` skill reads `exclude_keywords`, to leave
+matching titles out of the rituals table, and the morning briefing's `today_calendar` block
+reads `exclude_event_types` and `exclude_keywords`, telling the model to leave events of
+those types, and events whose titles hold those words, out of the day's list (an
+instruction, since the model lists the events with its own tools; see
+[briefing.md](briefing.md)). `team_personal_events` is read by nothing. A keyword you add
+there filters nothing in a round: `privacy.third_party_keywords` is the list that `lint`
+enforces.
 
 ### The meeting notes
 
@@ -342,8 +347,8 @@ why ToolSearch is in every round's pinned set.
 The policy is written for any profession and any life:
 
 - From someone else's calendar, only events shared with other people count (at least two
-  attendees), and one of theirs that does not count is never written, not even as a
-  mention.
+  attendees), and the prompt tells the model never to write one of theirs that does not
+  count, not even as a mention.
 - What is written about the events that count, the owner's own included, is the vault's
   privacy setting, `privacy.sensitive` and `privacy.never_topics`, which by default
   records everything, personal and sensitive subjects included

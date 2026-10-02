@@ -23,34 +23,42 @@
   wording of that paragraph ("someone else's schedule ... an absence ... is never content"),
   left a colleague's medical leave told in a meeting out of the log under `save` in most runs
   of an independent review; the wording now in both packs kept it in all 36 runs that review
-  made of it. To get the old behaviour back, set `people` and `outsiders` to `skip` in
-  `privacy.sensitive` and list the phrases you want refused in
-  `privacy.third_party_keywords`, as the packs shipped them.
+  made of it. Setting `people` and `outsiders` to `skip` in `privacy.sensitive` and listing
+  in `privacy.third_party_keywords` the phrases the packs shipped (docs/security.md lists
+  them) comes closest to the old behaviour, but does not bring all of it back: the old
+  calendar line and the old briefing calendar block kept everyone's private events out, the
+  owner's own included, and no setting does that now.
 - New setting, `privacy.sensitive` and `privacy.never_topics` in `brain-kit.config.json`.
   `sensitive` gives one level to each of three audiences: `owner`, `people` (anyone who
   already has a note in the vault) and `outsiders` (everyone else). The levels, written in
   English in both languages, are `save` (record normally), `summary` (record that the subject
   came up and what was decided or agreed, without the intimate details) and `skip` (leave it
-  out, without saying so). `never_topics` lists subjects never recorded for anyone, on top of
+  out, without saying so). `never_topics` lists subjects never recorded about anyone, on top of
   the levels. `init` writes `save` for all three and no topic; a configuration without the
   keys, which `update` does not add, reads as that default. Any other level is refused with a
   message naming the three, an unknown audience, a topic list that is not a list and a blank
   topic too. One function renders the setting into the sentences a prompt carries, through the
   new placeholder `{{privacy_policy}}`, which `brain-kit prompt curate`, the round, the
   `curate-session` and `capture` skills and the morning briefing's recording section fill in;
-  in a session the skills tell the model to ask the person before leaving out or shortening
-  what they asked to record. A vault whose configuration does not load gets no level at all,
-  only what to do.
+  in a session the skills and the briefing tell the model to ask the person before leaving
+  out or shortening what they asked to record. A vault whose configuration does not load
+  gets no level at all, only what to do.
 - Every round says what it was told to record: one line with the policy in effect, in the
   vault's language, in the round's parameters block, on its own output beside its limits,
   and in `curate --check` and `curate --dry`. `brain-kit doctor` has a new check,
   `privacy-policy`: `ok` with that line, whatever the levels, a failure in the vault's
-  language for a value it cannot use, and a warning for a vault whose own curate prompt
-  (`curate.prompt`) carries the rule's marker without the placeholder, a copy of the template
-  of before this change: its privacy rule is fixed text the setting never reaches. The warning
-  names the file and the pack prompt to copy the rule from, or says to delete the file to run
-  the pack's own; `update` never rewrites that file, which is the person's. `brain-kit prompt
-  --check` warns about the same file.
+  language for a value it cannot use, and a warning, one line each, for a vault prompt the
+  setting does not reach as it should: a curate prompt (`curate.prompt`) that carries the
+  rule's marker without the placeholder, a copy of the template of before this change whose
+  privacy rule is fixed text the setting never reaches; one that carries the placeholder and
+  still the old fixed sentence, two rules that contradict; one with no privacy rule of the
+  kit; and a briefing prompt of its own (`briefing.prompt`) without the placeholder. Each
+  warning names the file and the pack prompt, and for the fixed text says to replace the old
+  paragraph under the marker with the two paragraphs the pack's prompt has there, or to
+  delete the file to run the pack's own. `update` never rewrites that file, which is the
+  person's, but for a curate prompt that is fixed or carries both rules `update` prints the
+  doctor's line, once, in a real run and with `--check`, and its exit code does not change.
+  `brain-kit prompt --check` warns about the same files.
 - `privacy.third_party_keywords` is empty by default in both packs. It shipped eight health
   words, and `lint` refused a line a change adds that held one outside the exempt paths, which
   would fight the new default. An explicit list in an existing vault keeps working as before,

@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { PRIVACY_AUDIENCES, PRIVACY_LEVELS } from '../src/privacy-policy.mjs';
+import { LEGACY_PACK_KEYWORDS } from '../src/rules/privacy-keywords.mjs';
 
 const read = (path) => readFileSync(join(KIT_ROOT, path), 'utf8');
 const norm = (text) => text.replace(/\s+/g, ' ');
@@ -71,13 +72,17 @@ const READMES = {
       /To save less, set `privacy\.sensitive` in `brain-kit\.config\.json`/,
       /`owner` \(you\), `people` \(anyone who already has a note in the vault: team, family, mentors\) and `outsiders` \(everyone else: clients, prospects, strangers\)/,
       /`save` \(record normally\), `summary` \(record that the subject came up and what was decided or agreed, without the intimate details\) and `skip` \(leave it out, without saying so\)/,
-      /`privacy\.never_topics` lists subjects never recorded for anyone/,
+      /`privacy\.never_topics` lists subjects never recorded about anyone/,
       /A configuration without these keys saves everything\./,
-      /`brain-kit curate --dry` and `brain-kit doctor` \(check `privacy-policy`\)/,
+      // Fix round 1, m4: a plain doctor lists only what is not ok.
+      /`brain-kit curate --dry` and `brain-kit doctor --verbose` \(check `privacy-policy`\)/,
       /The policy is an instruction to a model, not a guarantee/,
       /the policy controls what is written into the vault, not what the model reads/,
       /`privacy\.third_party_keywords`, empty by default/,
+      // Fix round 1, M2: the law, in one sentence.
+      /Under privacy laws such as the LGPD and the GDPR, what the vault holds about other people is personal data, and their health, sex life, religious beliefs or political opinions are sensitive personal data; as the vault's owner you answer for keeping them, so record about others what you have a reason to keep\./,
     ],
+    never: [/`brain-kit doctor` \(check/, /never recorded for anyone/],
   },
   'pt-BR': {
     file: 'README.pt-BR.md',
@@ -90,13 +95,18 @@ const READMES = {
       /Para guardar menos, ajuste `privacy\.sensitive` no `brain-kit\.config\.json`/,
       /`owner` \(você\), `people` \(quem já tem nota no vault: equipe, família, mentores\) e `outsiders` \(todas as outras pessoas: clientes, potenciais clientes, desconhecidos\)/,
       /`save` \(registra normalmente\), `summary` \(registra que o assunto apareceu e o que foi decidido ou combinado, sem os detalhes íntimos\) e `skip` \(deixa de fora, sem avisar\)/,
-      /`privacy\.never_topics` lista assuntos que nunca são registrados para ninguém/,
+      // Fix round 1, m7: "sobre ninguém", "não fosse privado", "compara ... com".
+      /`privacy\.never_topics` lista assuntos que nunca são registrados sobre ninguém/,
+      /o `init` recusa um vault cujo repositório não fosse privado/,
+      /nenhum código compara o que a rodada escreveu com os níveis/,
       /Uma configuração sem essas chaves guarda tudo\./,
-      /o `brain-kit curate --dry` e o `brain-kit doctor` \(verificação `privacy-policy`\)/,
+      /o `brain-kit curate --dry` e o `brain-kit doctor --verbose` \(verificação `privacy-policy`\)/,
       /A política é uma instrução para um modelo, não uma garantia/,
       /a política controla o que é escrito no vault, não o que o modelo lê/,
       /`privacy\.third_party_keywords`, vazia por padrão/,
+      /Para leis de privacidade como a LGPD e o GDPR, o que o vault guarda sobre outras pessoas é dado pessoal, e a saúde, a vida sexual, a convicção religiosa ou a opinião política delas são dados pessoais sensíveis; como dono do vault, é você quem responde por guardá-los, então registre dos outros o que você tem motivo para guardar\./,
     ],
+    never: [/`brain-kit doctor` \(verificação/, /registrados para ninguém/, /cujo repositório não seria/, /contra os níveis/],
   },
 };
 
@@ -110,6 +120,7 @@ for (const [lang, spec] of Object.entries(READMES)) {
     assert.ok(lines.indexOf(spec.before) < at && at < lines.indexOf(spec.after), `${spec.file}: after the briefing, before the plugin`);
     const body = norm(section(text, spec.heading));
     for (const pattern of spec.says) assert.match(body, pattern, `${spec.file}: ${pattern}`);
+    for (const pattern of spec.never) assert.doesNotMatch(body, pattern, `${spec.file}: ${pattern}`);
   });
 
   test(`${spec.file}: the section's one JSON example gives each level to an audience and sets a topic aside, and names no tag or tarball`, () => {
@@ -175,7 +186,59 @@ test('docs/security.md says what the curator records, and what that setting is n
     /`privacy\.third_party_keywords`.*Since 02\/10\/2026 it is empty by default/,
     /set `people` and `outsiders` to `skip`/,
     /`update` never rewrites it/,
+    // Fix round 1, M2: the law, in one sentence.
+    /Under privacy laws such as the LGPD and the GDPR, what a vault holds about other people is personal data, and their health, sex life, religious beliefs or political opinions are sensitive personal data; the vault's owner answers for keeping them, and the default keeps them all\./,
+    // m8: an instruction, not a filter of the code.
+    /the prompt tells the model never to write one that does not count, whatever the setting; only the event type is filtered in code/,
+    // m2, m3, m10 and P2: what doctor and update say of a vault's own prompts.
+    /replace the old paragraph under the rule's marker with the two paragraphs the language pack's prompt has there/,
+    /`update` prints the same line/,
+    /a briefing prompt of its own \(`briefing\.prompt`\) without the placeholder/,
+    /carries the placeholder and still the old fixed sentence/,
+    // M1.
+    /warns while the list is still exactly one a pack shipped and any audience is at `save`/,
+    // m6: what the closest setting does not bring back.
+    /does not bring all of it back: the old calendar line and the old briefing calendar block kept everyone's private events out, the owner's own included, and no setting does that now/,
   ]) assert.match(body, pattern);
+  assert.doesNotMatch(body, /one that does not count is never written/);
+  // m6: the eight phrases each pack shipped, where a person can read them.
+  for (const [lang, phrases] of Object.entries(LEGACY_PACK_KEYWORDS)) {
+    assert.equal(phrases.length, 8, lang);
+    for (const phrase of phrases) assert.ok(body.includes(`"${phrase}"`), `${lang}: "${phrase}"`);
+  }
+});
+
+// Fix round 1, m8 and m9.
+test('docs/connectors.md says the calendar limit is the prompt\'s instruction, and which settings the briefing reads', () => {
+  const text = norm(read('docs/connectors.md'));
+  assert.match(text, /the prompt tells the model never to write one of theirs that does not count, not even as a mention/);
+  assert.match(text, /the morning briefing's `today_calendar` block reads `exclude_event_types` and `exclude_keywords`/);
+  assert.match(text, /`team_personal_events` is read by nothing/);
+  assert.doesNotMatch(text, /Only the `seed-rituals` skill reads `exclude_keywords`/);
+  assert.doesNotMatch(text, /one of theirs that does not count is never written/);
+});
+
+// Fix round 1, m2 and m3.
+test('docs/scheduling.md gives the fix for a curate prompt of its own as two paragraphs, and says update names it', () => {
+  const text = norm(read('docs/scheduling.md'));
+  assert.match(text, /Replace the old paragraph under the rule's marker with the two paragraphs the language pack's prompt has there/);
+  assert.match(text, /`brain-kit update` prints the same line/);
+  assert.match(text, /carries `\{\{privacy_policy\}\}` and still the old sentence/);
+  assert.doesNotMatch(text, /Copy the rule's paragraph from the language pack's prompt/);
+});
+
+// Fix round 1, m1 and m10.
+test('docs/briefing.md says the briefing asks before leaving out what the owner asked to record, and what is said of an overlay without the policy', () => {
+  const text = norm(read('docs/briefing.md'));
+  assert.match(text, /The sentence after it tells the model to ask the owner before leaving out or shortening what they asked to record/);
+  assert.match(text, /`prompt --check` and `doctor` \(check `privacy-policy`\) warn about an overlay without `\{\{privacy_policy\}\}`/);
+});
+
+// Fix round 1, m5: the removal steps delete the note, so the person is an outsider.
+test('docs/incident-response.md points a removal at outsiders, the audience a person without a note is in', () => {
+  const text = norm(read('docs/incident-response.md'));
+  assert.match(text, /Once the note is deleted \(step 3\) the person counts as `outsiders`: set `privacy\.sensitive\.outsiders` to `skip`, which applies to everyone without a note, or list the subject in `privacy\.never_topics`/);
+  assert.doesNotMatch(text, /`people` when they have a note in the vault, `outsiders` when not/);
 });
 
 test('docs/incidents.md records the decision of 02/10/2026, why the old rule existed, and its count of entries is right', () => {
@@ -185,18 +248,28 @@ test('docs/incidents.md records the decision of 02/10/2026, why the old rule exi
   assert.match(entry, /What the curator records is a setting of the kit, never a patch for one vault/);
   assert.match(entry, /the default is to record everything/);
   assert.match(entry, /test\/incidents\/2026-10-02-owner-health-left-out\.test\.mjs/);
+  // Fix round 1, m6: the closest setting is not the old behaviour.
+  assert.match(entry, /comes closest to the old behaviour, but no setting keeps the owner's own private events out as the old calendar and briefing clauses did/);
+  assert.doesNotMatch(entry, /To get the old behaviour back/);
   const entries = scan(text).filter((l) => !l.fenced && l.line.startsWith('### ')).length;
   assert.equal(entries, 81);
   assert.match(norm(text.slice(0, text.indexOf('\n## '))), /Nine entries were added since/);
   assert.match(norm(text.slice(0, text.indexOf('\n## '))), /Eighty one entries follow/);
 });
 
-test('the CHANGELOG calls it a change of default, says why, and how to get the old behaviour back', () => {
+test('the CHANGELOG calls it a change of default, says why, and how close a setting comes to the old behaviour', () => {
   const text = read('CHANGELOG.md');
   const unreleased = norm(section(text, '## Unreleased'));
   assert.match(unreleased, /Change of default: the curator now records everything, personal and sensitive information included, about the owner and about other people\./);
   assert.match(unreleased, /"Never record anything about the private life of someone other than the owner"/);
-  assert.match(unreleased, /To get the old behaviour back, set `people` and `outsiders` to `skip` in `privacy\.sensitive` and list the phrases you want refused in `privacy\.third_party_keywords`/);
+  // Fix round 1, m6: the closest setting, and what it does not bring back.
+  assert.match(unreleased, /Setting `people` and `outsiders` to `skip` in `privacy\.sensitive` and listing in `privacy\.third_party_keywords` the phrases the packs shipped \(docs\/security\.md lists them\) comes closest to the old behaviour, but does not bring all of it back: the old calendar line and the old briefing calendar block kept everyone's private events out, the owner's own included, and no setting does that now\./);
+  assert.doesNotMatch(unreleased, /To get the old behaviour back/);
+  // m1, m3, m10 and P2.
+  assert.match(unreleased, /the skills and the briefing tell the model to ask the person/);
+  assert.match(unreleased, /`update` prints the doctor's line/);
+  assert.match(unreleased, /a briefing prompt of its own \(`briefing\.prompt`\) without the placeholder/);
+  assert.match(unreleased, /carries the placeholder and still the old fixed sentence/);
   assert.match(unreleased, /a colleague's medical appointment was in the calendar window/);
   // The release gate refuses text in angle brackets outside code in a version's section.
   const prose = unreleased.replace(/`[^`]*`/g, '');

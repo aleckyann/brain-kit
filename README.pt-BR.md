@@ -586,7 +586,11 @@ Por padrão o curador guarda tudo o que as suas sessões, a agenda e as notas de
 ensinam ao vault, inclusive informação pessoal e sensível (saúde, família,
 relacionamentos, finanças, qualquer coisa íntima), a sua e a de outras pessoas: nada fica
 de fora nem é resumido por parecer sensível. Por isso o repositório do vault precisa
-continuar privado, e o `init` recusa um vault cujo repositório não seria.
+continuar privado, e o `init` recusa um vault cujo repositório não fosse privado. Para
+leis de privacidade como a LGPD e o GDPR, o que o vault guarda sobre outras pessoas é dado
+pessoal, e a saúde, a vida sexual, a convicção religiosa ou a opinião política delas são
+dados pessoais sensíveis; como dono do vault, é você quem responde por guardá-los, então
+registre dos outros o que você tem motivo para guardar.
 
 Para guardar menos, ajuste `privacy.sensitive` no `brain-kit.config.json`. Ele dá um nível
 a cada um de três públicos: `owner` (você), `people` (quem já tem nota no vault: equipe,
@@ -594,7 +598,7 @@ família, mentores) e `outsiders` (todas as outras pessoas: clientes, potenciais
 desconhecidos). Os níveis são `save` (registra normalmente), `summary` (registra que o
 assunto apareceu e o que foi decidido ou combinado, sem os detalhes íntimos) e `skip`
 (deixa de fora, sem avisar). `privacy.never_topics` lista assuntos que nunca são
-registrados para ninguém, seja qual for o nível. Por exemplo, ao lado das chaves que a
+registrados sobre ninguém, seja qual for o nível. Por exemplo, ao lado das chaves que a
 seção `privacy` já tem:
 
 ```json
@@ -605,12 +609,12 @@ seção `privacy` já tem:
 ```
 
 Uma configuração sem essas chaves guarda tudo. Toda rodada imprime numa linha a política
-que aplicou, e o `brain-kit curate --dry` e o `brain-kit doctor` (verificação
+que aplicou, e o `brain-kit curate --dry` e o `brain-kit doctor --verbose` (verificação
 `privacy-policy`) também. A rodada agendada, as skills `curate-session` e `capture` e o
 briefing matinal seguem essa configuração.
 
 Dois limites, ditos com clareza. A política é uma instrução para um modelo, não uma
-garantia: nenhum código confere o que a rodada escreveu contra os níveis, e você vê o que
+garantia: nenhum código compara o que a rodada escreveu com os níveis, e você vê o que
 ela escreveu no pull request antes de fazer o merge. Para uma expressão que nunca pode
 entrar, liste-a em `privacy.third_party_keywords`, vazia por padrão: o `lint`, e portanto o
 `propose`, recusa uma linha acrescentada por uma mudança que a contenha. E a política

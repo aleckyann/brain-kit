@@ -226,20 +226,38 @@ What can still widen reads, each said by `doctor` or here:
 What a round writes about personal and sensitive subjects (health, family, relationships,
 finances, anything intimate) is a setting of the vault, `privacy.sensitive` and
 `privacy.never_topics` in `brain-kit.config.json`, and by default it records everything, the
-owner's and other people's alike. Each of three audiences, `owner`, `people` (anyone who
-already has a note in the vault) and `outsiders` (everyone else), takes `save` (record
-normally), `summary` (that the subject came up and what was decided or agreed, without the
-intimate details) or `skip` (leave it out, without saying so); a key left out is `save`, and
-`privacy.never_topics` lists subjects never recorded for anyone. The kit turns the setting
-into sentences in the vault's language, which the curate prompt carries under its rule
-`third-party-privacy` (the placeholder `{{privacy_policy}}`), as do the `curate-session` and
-`capture` skills and the morning briefing's recording section. Every round prints the policy
-in one line beside its limits, and so do `curate --check` and `curate --dry`. `doctor` (check
-`privacy-policy`) names it, fails a level it does not know, and warns about a vault's own
-curate prompt (`curate.prompt`) that carries the rule's marker without the placeholder: such
-a prompt keeps the fixed sentence the template held until 02/10/2026, the setting never
-reaches its rounds, and `update` never rewrites it, since it is yours; copy the rule from the
-language pack's prompt, or delete the file to run the pack's own.
+owner's and other people's alike. Under privacy laws such as the LGPD and the GDPR, what a
+vault holds about other people is personal data, and their health, sex life, religious
+beliefs or political opinions are sensitive personal data; the vault's owner answers for
+keeping them, and the default keeps them all. Each of three audiences, `owner`, `people`
+(anyone who already has a note in the vault) and `outsiders` (everyone else), takes `save`
+(record normally), `summary` (that the subject came up and what was decided or agreed,
+without the intimate details) or `skip` (leave it out, without saying so); a key left out is
+`save`, and `privacy.never_topics` lists subjects never recorded about anyone. The kit turns
+the setting into sentences in the vault's language, which the curate prompt carries under
+its rule `third-party-privacy` (the placeholder `{{privacy_policy}}`), as do the
+`curate-session` and `capture` skills and the morning briefing's recording section. Every
+round prints the policy in one line beside its limits, and so do `curate --check` and
+`curate --dry`.
+
+`doctor` (check `privacy-policy`) names the policy, fails a level it does not know, and warns,
+naming the file and the fix, about each of the vault's own prompts that the setting does not
+reach as it should:
+
+- a curate prompt (`curate.prompt`) that carries the rule's marker without the placeholder:
+  it keeps the fixed sentence the template held until 02/10/2026, and the setting never
+  reaches its rounds. To take the new rule, replace the old paragraph under the rule's marker
+  with the two paragraphs the language pack's prompt has there, or delete the file to run the
+  pack's own;
+- a curate prompt that carries the placeholder and still the old fixed sentence: the two
+  rules contradict, so delete the old sentence;
+- a curate prompt with no privacy rule of the kit at all;
+- a briefing prompt of its own (`briefing.prompt`) without the placeholder, which records by
+  the model's own judgment.
+
+Such a prompt is yours: `update` never rewrites it, but when the curate prompt is fixed or
+carries both rules, `update` prints the same line, in a real run and with `--check`, and
+`prompt --check` warns about all four.
 
 What the setting is not:
 
@@ -249,16 +267,29 @@ What the setting is not:
   document its plan offers, whatever the levels say. The setting controls what is written
   into the vault; what limits reading is the section above.
 - **The calendar's event filter.** From someone else's calendar only the events shared with
-  other people count (at least two attendees), and one that does not count is never written,
-  whatever the setting ([connectors.md](connectors.md), "Privacy").
+  other people count (at least two attendees): the prompt tells the model never to write one
+  that does not count, whatever the setting; only the event type is filtered in code
+  ([connectors.md](connectors.md), "Privacy").
 
 The mechanical backstop is `privacy.third_party_keywords`, a list of phrases `lint`, and so
 `propose`, refuses on a line a change adds. Since 02/10/2026 it is empty by default: each
-language pack shipped eight health words until then, which would fight the default above, and
-a vault made before keeps its list. `doctor` (check `privacy-keywords`) says how many
-phrases it holds, or that the backstop is off. To get back what the kit did before 02/10/2026,
-set `people` and `outsiders` to `skip` and list in `privacy.third_party_keywords` the phrases
-you want refused ([incidents.md](incidents.md), 02/10/2026).
+language pack shipped eight health phrases until then, which would fight the default above,
+and a vault made before keeps its list. In English they were "medical appointment",
+"doctor's appointment", "sick leave", "teleconsultation", "therapy session", "medical exam",
+"hospital stay" and "pregnancy"; in Portuguese "consulta médica", "atestado médico",
+"licença médica", "teleconsulta", "sessão de terapia", "exame médico", "internação" and
+"gravidez". `doctor` (check `privacy-keywords`) says how many phrases the list holds, or that
+the backstop is off, and warns while the list is still exactly one a pack shipped and any
+audience is at `save`: clear it for the default to hold, or edit it to keep a list of your
+own.
+
+To come closest to what the kit did before 02/10/2026, set `people` and `outsiders` to `skip`
+and list those phrases in `privacy.third_party_keywords`. That does not bring all of it back:
+the old calendar line and the old briefing calendar block kept everyone's private events out,
+the owner's own included, and no setting does that now. The owner's events are written by the
+`owner` level like anything else, and the briefing shows the owner the day's events whatever
+the levels, which set what is recorded, not what is shown ([incidents.md](incidents.md),
+02/10/2026).
 
 ## Connector mode
 

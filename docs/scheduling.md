@@ -345,9 +345,11 @@ A curate prompt of its own written before 02/10/2026 carries the privacy rule as
 sentence the template had then: its rule `third-party-privacy` holds no
 `{{privacy_policy}}`, so `privacy.sensitive` and `privacy.never_topics` never reach its rounds,
 whatever they say. `brain-kit doctor` (check `privacy-policy`) and `brain-kit prompt --check`
-warn about it, naming the file; `brain-kit update` never rewrites the overlay, which is yours.
-Copy the rule's paragraph from the language pack's prompt into it, or delete the overlay to
-run the pack's prompt.
+warn about it, naming the file, and `brain-kit update` prints the same line; `update` never
+rewrites the overlay, which is yours. Replace the old paragraph under the rule's marker with
+the two paragraphs the language pack's prompt has there, or delete the overlay to run the
+pack's prompt. An overlay that carries `{{privacy_policy}}` and still the old sentence is
+warned about too, since the two rules contradict: delete the old sentence.
 
 ## The watermark
 

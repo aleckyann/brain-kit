@@ -576,14 +576,18 @@ By default the curator saves everything your sessions, calendar and meeting note
 vault, personal and sensitive information included (health, family, relationships,
 finances, anything intimate), yours and other people's: nothing is left out or shortened
 because it seems sensitive. That is why the vault's repository must stay private, and
-`init` refuses a vault whose repository would not be.
+`init` refuses a vault whose repository would not be. Under privacy laws such as the LGPD
+and the GDPR, what the vault holds about other people is personal data, and their health,
+sex life, religious beliefs or political opinions are sensitive personal data; as the
+vault's owner you answer for keeping them, so record about others what you have a reason
+to keep.
 
 To save less, set `privacy.sensitive` in `brain-kit.config.json`. It gives a level to each of
 three audiences: `owner` (you), `people` (anyone who already has a note in the vault: team,
 family, mentors) and `outsiders` (everyone else: clients, prospects, strangers). The levels
 are `save` (record normally), `summary` (record that the subject came up and what was
 decided or agreed, without the intimate details) and `skip` (leave it out, without saying
-so). `privacy.never_topics` lists subjects never recorded for anyone, whatever the levels
+so). `privacy.never_topics` lists subjects never recorded about anyone, whatever the levels
 say. For example, beside the keys the `privacy` section already holds:
 
 ```json
@@ -594,9 +598,9 @@ say. For example, beside the keys the `privacy` section already holds:
 ```
 
 A configuration without these keys saves everything. Every round prints the policy it
-applied in one line, and so do `brain-kit curate --dry` and `brain-kit doctor` (check
-`privacy-policy`). The scheduled round, the `curate-session` and `capture` skills and the
-morning briefing all follow it.
+applied in one line, and so do `brain-kit curate --dry` and `brain-kit doctor --verbose`
+(check `privacy-policy`). The scheduled round, the `curate-session` and `capture` skills and
+the morning briefing all follow it.
 
 Two limits, said plainly. The policy is an instruction to a model, not a guarantee: no code
 checks what a round wrote against the levels, and you see what it wrote in the pull request

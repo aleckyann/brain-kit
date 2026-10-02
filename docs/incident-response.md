@@ -352,16 +352,18 @@ found and what you did.
      `sources.calendar`, `calendars` and `team_calendars` choose which calendars are read, and
      someone else's calendar is read only while `team_authorization` records who allowed it.
    - `privacy.sensitive` and `privacy.never_topics` decide what the curator records about
-     personal and sensitive subjects, and by default it records everything. Set the
-     person's audience to `skip` (`people` when they have a note in the vault, `outsiders`
-     when not), or list the subject in `privacy.never_topics`. Both are an instruction to the
-     model, not a filter: keep reading what each round proposes.
-   - `privacy.third_party_keywords` is a list of phrases, empty by default. `lint` refuses a line a change adds
-     that holds one, and `propose` runs `lint`, so a round cannot publish such a line. It
-     matches the phrase literally, so it stops a topic you name, not a person. The list lives
-     in `brain-kit.config.json`, inside the repository: do not put the person's name in it if
-     removing that name is the goal. `privacy.keyword_exempt_paths` does the opposite and
-     exempts paths from the check: make sure it does not cover the note you removed.
+     personal and sensitive subjects, and by default it records everything. Once the note is
+     deleted (step 3) the person counts as `outsiders`: set `privacy.sensitive.outsiders` to
+     `skip`, which applies to everyone without a note, or list the subject in
+     `privacy.never_topics`. Both are an instruction to the model, not a filter: keep reading
+     what each round proposes.
+   - `privacy.third_party_keywords` is a list of phrases, empty by default. `lint` refuses a
+     line a change adds that holds one, and `propose` runs `lint`, so a round cannot publish
+     such a line. It matches the phrase literally, so it stops a topic you name, not a person.
+     The list lives in `brain-kit.config.json`, inside the repository: do not put the person's
+     name in it if removing that name is the goal. `privacy.keyword_exempt_paths` does the
+     opposite and exempts paths from the check: make sure it does not cover the note you
+     removed.
    - `privacy.confidential_dirs` is where notes about people must live for the link rule to
      protect them.
    - `briefing.never_read` lists paths the morning briefing never opens.

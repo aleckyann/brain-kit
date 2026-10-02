@@ -1294,9 +1294,11 @@ that cannot be stretched again: a real model, run against a first wording that s
 leave told in a meeting out of the log under `save` in most runs. The rule now says that the
 setting covers everything recorded, whatever the source, including what one person tells
 about another, and that the calendar's limit is about events listed from someone else's
-calendar, never about what someone says in a session, a meeting or a document. To get the old behaviour back,
-set `people` and `outsiders` to `skip` and list the phrases to refuse in
-`privacy.third_party_keywords`.
+calendar, never about what someone says in a session, a meeting or a document. Setting
+`people` and `outsiders` to `skip` and listing the phrases to refuse in
+`privacy.third_party_keywords` comes closest to the old behaviour, but no setting keeps the
+owner's own private events out as the old calendar and briefing clauses did
+([security.md](security.md), "What the curator records", lists the phrases).
 **Where it lives in brain-kit.** `privacy.sensitive` (`owner`, `people`, `outsiders`, each
 `save`, `summary` or `skip`) and `privacy.never_topics` in the configuration, rendered by
 `src/privacy-policy.mjs` into the curate prompt's rule `third-party-privacy`
