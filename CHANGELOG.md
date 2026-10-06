@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- The push gate no longer takes an object id in upper case for one on macOS. Its check spelt
+  the hexadecimal digits as the range `a-f`, which bash 3.2 (macOS's `/bin/sh`) reads by the
+  locale's collation under a UTF-8 locale, so `A` to `E` fell inside it and an upper-case id
+  with no `F` passed. The digits are now listed one by one. The CI found it on 06/10/2026, in
+  the test that refuses such a line, whenever the test's commit id had no `f` (about one run
+  in fourteen).
+
 ## 0.1.0 (tagged `v0.1.0`, published on npm on 02/10/2026)
 
 The first version on npm since the Phase 0 skeleton: `npm i -g second-brain-kit` installs the
