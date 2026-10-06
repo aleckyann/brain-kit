@@ -100,7 +100,8 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { homedir, constants as osConstants } from 'node:os';
-import { delimiter, join, resolve, sep } from 'node:path';
+import { join, resolve, sep } from 'node:path';
+import { isWindows, withPathPrefix } from '../platform.mjs';
 import { EXIT } from '../exit-codes.mjs';
 import { CONFIG_FILENAME, ConfigError, MACHINE_FILENAME, loadConfig, loadMachine } from '../config.mjs';
 import { createTranslator, SUPPORTED_LANGS } from '../lang.mjs';
@@ -634,6 +635,25 @@ function readFilesOf(sources, plans) {
     .flatMap((source) => (plans[source.id]?.files ?? []).map((file) => file.digest?.path).filter((path) => typeof path === 'string'));
 }
 
+// What a round grants the model to read outside the vault: the digests
+// one by one (readFilesOf), except on Windows when one rule per digest
+// would not fit on a command line. Windows caps a process's whole command
+// line at 32 767 characters, and a week of catching up can list a few
+// hundred digests at some 120 characters each: past the bound, the round
+// would not even start. There the round grants each plan's digest folder
+// instead, which holds nothing but the digests of the files that plan
+// lists (written by the round itself, in a folder named for the round), so
+// the grant reaches the same files.
+export const WINDOWS_READ_RULES_BUDGET = 16000;
+
+export function readGrantsOf(sources, plans, platform = process.platform) {
+  const readFiles = readFilesOf(sources, plans);
+  const cost = readFiles.reduce((sum, path) => sum + path.length + 12, 0);
+  if (!isWindows(platform) || cost <= WINDOWS_READ_RULES_BUDGET) return { readFiles, readDirs: [] };
+  const readDirs = [...new Set(sources.filter((source) => source.kind === 'local').map((source) => plans[source.id]?.digestDir).filter((dir) => typeof dir === 'string'))];
+  return { readFiles: [], readDirs };
+}
+
 // The digest folder of a round whose plans grant a digest whose path holds
 // a character no read rule can carry (src/curate/rule-path.mjs), with
 // those characters: { dir, characters }; null when every one can be
@@ -652,9 +672,9 @@ function unsafeDigestDir(sources, plans) {
 // The round's allow and deny lists in isolated mode. The deny list also
 // tells the isolation check which built-in tools the round removed by name
 // (ruling R-B4).
-function roundTools(config, readFiles) {
+function roundTools(config, readFiles, readDirs = []) {
   return {
-    allowed: allowedTools(config.curate?.allowed_tools_extra ?? [], { readFiles }),
+    allowed: allowedTools(config.curate?.allowed_tools_extra ?? [], { readFiles, readDirs }),
     disallowed: disallowedTools(config.curate?.disallowed_tools_extra ?? []),
   };
 }
@@ -698,8 +718,8 @@ function deniesTool(rule, tool) {
 // isolated. `blocked` maps an id to what blocked it. `brain-kit doctor`
 // (check `connectors`, and `--probe`) asks this same function, so doctor
 // and the round cannot disagree on which rule refuses connector mode.
-export function chooseMode({ config, root, env, readFiles, candidates, connectorDenies }) {
-  const base = roundTools(config, readFiles);
+export function chooseMode({ config, root, env, readFiles, readDirs = [], candidates, connectorDenies }) {
+  const base = roundTools(config, readFiles, readDirs);
   if (candidates.length === 0) return { mode: 'isolated', tools: base, available: [], blocked: new Map(), userRules: null };
   const files = userSettingsFiles(env);
   const home = env.HOME || homedir();
@@ -919,8 +939,7 @@ export function knownStates(previous) {
 // in front of PATH.
 function modelEnv(env, machine, token) {
   const extra = (machine.path_extra ?? []).map((dir) => expandHome(String(dir), env));
-  const path = [...extra, env.PATH ?? ''].filter((part) => part !== '').join(delimiter);
-  const out = { ...env, PATH: path };
+  const out = withPathPrefix(env, extra);
   if (token !== null) out.BRAIN_KIT_ROUND_TOKEN = token;
   return out;
 }
@@ -1411,7 +1430,7 @@ export async function runCurate(argv, io, t, deps = {}) {
     // granting more, so the model is not started on it.
     const unsafeDigests = unsafeDigestDir(offered, plans);
     if (unsafeDigests !== null) return fail(EXIT.FAILURE, 'digest_dir_unsafe', t('curate.digest_dir_unsafe', { dir: unsafeDigests.dir, characters: unsafeDigests.characters }));
-    const readFiles = readFilesOf(offered, plans);
+    const { readFiles, readDirs } = readGrantsOf(offered, plans);
     // Sources the round offers but cannot read this time (id -> state), and
     // the connector state each launch saw (id -> { state, observedPrefix }).
     const unavailable = new Map();
@@ -1449,12 +1468,12 @@ export async function runCurate(argv, io, t, deps = {}) {
       return true;
     };
     const connectorsLeft = () => offered.filter((s) => s.kind === 'connector' && !unavailable.has(s.id));
-    let choice = chooseMode({ config, root, env, readFiles, candidates: offered.filter((s) => s.kind === 'connector'), connectorDenies });
+    let choice = chooseMode({ config, root, env, readFiles, readDirs, candidates: offered.filter((s) => s.kind === 'connector'), connectorDenies });
     run.mode = choice.mode;
     run.userRules = choice.userRules;
     block(choice.blocked);
     if (waitForCalendar()) {
-      choice = chooseMode({ config, root, env, readFiles, candidates: connectorsLeft(), connectorDenies });
+      choice = chooseMode({ config, root, env, readFiles, readDirs, candidates: connectorsLeft(), connectorDenies });
       run.mode = choice.mode;
       run.userRules = choice.userRules ?? run.userRules;
       block(choice.blocked);
@@ -1633,7 +1652,7 @@ export async function runCurate(argv, io, t, deps = {}) {
       log('relaunch', { without: gone, states: Object.fromEntries(gone.map((id) => [id, unavailable.get(id)])) });
       readable = offered.filter((source) => !unavailable.has(source.id));
       if (readable.length > 0) {
-        choice = chooseMode({ config, root, env, readFiles, candidates: connectorsLeft(), connectorDenies });
+        choice = chooseMode({ config, root, env, readFiles, readDirs, candidates: connectorsLeft(), connectorDenies });
         run.userRules = choice.userRules ?? run.userRules;
         block(choice.blocked);
         readable = offered.filter((source) => !unavailable.has(source.id));
@@ -2030,8 +2049,9 @@ function dryRun({ root, stateDir, machine, claudeBin, io, env, now, keepStream }
     io.stderr.write(`${t('curate.digest_dir_unsafe', { dir: unsafeDigests.dir, characters: unsafeDigests.characters })}\n`);
     return EXIT.FAILURE;
   }
-  const readFiles = readFilesOf(offered, plans);
-  let choice = chooseMode({ config, root, env, readFiles, candidates: offered.filter((s) => s.kind === 'connector'), connectorDenies });
+  const digests = readFilesOf(offered, plans).length;
+  const { readFiles, readDirs } = readGrantsOf(offered, plans);
+  let choice = chooseMode({ config, root, env, readFiles, readDirs, candidates: offered.filter((s) => s.kind === 'connector'), connectorDenies });
   const blocked = choice.blocked;
   const unavailable = new Map([...blocked.keys()].map((id) => [id, BLOCKED_BY_USER_RULES]));
   // The meeting notes wait for a calendar the round will not read, as the
@@ -2042,13 +2062,12 @@ function dryRun({ root, stateDir, machine, claudeBin, io, env, now, keepStream }
   if (offered.some((s) => s.id === notes) && !unavailable.has(notes) && active.some((s) => s.id === cal) && (!offered.some((s) => s.id === cal) || unavailable.has(cal))) {
     waiting = unavailable.get(cal) ?? 'not_offered';
     unavailable.set(notes, WAITING_FOR_CALENDAR);
-    choice = chooseMode({ config, root, env, readFiles, candidates: offered.filter((s) => s.kind === 'connector' && !unavailable.has(s.id)), connectorDenies });
+    choice = chooseMode({ config, root, env, readFiles, readDirs, candidates: offered.filter((s) => s.kind === 'connector' && !unavailable.has(s.id)), connectorDenies });
   }
   for (const line of modeLines(t, choice)) io.stdout.write(`${line}\n`);
   for (const [id, entry] of blocked) io.stdout.write(`${t('curate.source_blocked', { source: id, reason: blockedMessage(t, SOURCES[id], config, entry) })}\n`);
   if (waiting !== null) io.stdout.write(`${t('curate.source_waiting', { source: notes, calendar: cal, state: waiting })}\n`);
   for (const line of sourceLines(t, { active, plans, days, unavailable, config, blocks: false })) io.stdout.write(`${line}\n`);
-  const digests = readFiles.length;
   if (digests > 0) io.stdout.write(`${t('curate.dry_digests', { count: digests })}\n`);
   const argv = modelArgv(config, machine, choice.tools, choice.mode);
   io.stdout.write(`${t('curate.check_argv', { bin: claudeBin, argv: JSON.stringify(argv) })}\n`);

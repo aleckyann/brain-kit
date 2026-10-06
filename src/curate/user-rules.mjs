@@ -55,7 +55,8 @@
 // path (review N1 of task 2).
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, posix, resolve, sep } from 'node:path';
+import { isWindows, ruleFormOf } from '../platform.mjs';
 import { rulesIn } from '../harness/claude-code.mjs';
 import { unsafeRuleCharacters } from './rule-path.mjs';
 import { KIT_SUBCOMMANDS, kitCommand, PROTECTED_PATHS } from './tools.mjs';
@@ -155,15 +156,44 @@ function literalPrefix(text) {
   return { literal: text.slice(0, end), globbed: end < text.length };
 }
 
+// The space every path of this module is compared in. On POSIX, the file
+// system's own paths. On Windows, the POSIX form Claude Code reads a rule's
+// path in (src/platform.mjs, ruleFormOf: C:\Users\ana is /c/Users/ana), so
+// a person's `Read(//c/Users/ana/x/**)` and the vault at C:\Users\ana\brain
+// are compared as the CLI compares them, a mirrored rule comes out in the
+// form the CLI reads, and `//x` is the root of that space as it is on
+// POSIX. `of` brings a path of the file system into the space; `real` is
+// its real path there, null when it has none.
+const NATIVE_SPACE = Object.freeze({
+  resolve, join, dirname, isAbsolute, sep,
+  of: (path) => path,
+  real: (path) => realpathSync(path),
+});
+
+function nativeOfRuleForm(path) {
+  const match = /^\/([a-z])(\/.*)?$/i.exec(path);
+  return match === null ? path : `${match[1].toUpperCase()}:${(match[2] ?? '/').replace(/\//g, '\\')}`;
+}
+
+const RULE_SPACE = Object.freeze({
+  resolve: posix.resolve, join: posix.join, dirname: posix.dirname, isAbsolute: posix.isAbsolute, sep: '/',
+  of: (path) => ruleFormOf(path, 'win32'),
+  real: (path) => ruleFormOf(realpathSync(nativeOfRuleForm(path)), 'win32'),
+});
+
+export function pathSpace(platform = process.platform) {
+  return isWindows(platform) ? RULE_SPACE : NATIVE_SPACE;
+}
+
 // A path as written and, when it exists, as the file system resolves it
 // with every link followed: the CLI works in the physical folder, and the
 // kit may have been handed a link to it (review M1, 25/09/2026). Both
 // spellings name the same place, so a scope inside either spelling of the
 // vault is inside the vault, and one covering either covers it.
-function spellings(path) {
-  const written = resolve(path);
+function spellings(path, P = NATIVE_SPACE) {
+  const written = P.resolve(path);
   try {
-    const real = realpathSync(written);
+    const real = P.real(written);
     return real === written ? [written] : [written, real];
   } catch {
     return [written];
@@ -173,8 +203,8 @@ function spellings(path) {
 // A folder and a relative path under it, as one absolute path: a leading
 // slash of the relative part never replaces the folder (`~//x` is under
 // home), and a trailing slash is dropped (the path, not the text).
-function under(base, literal) {
-  return resolve(join(base, literal));
+function under(base, literal, P = NATIVE_SPACE) {
+  return P.resolve(P.join(base, literal));
 }
 
 // Where a path rule's scope points: the absolute paths its literal prefix
@@ -186,7 +216,8 @@ function under(base, literal) {
 // from its base as the CLI will use it (`base` as the caller gives it),
 // and `absolute`, the whole scope in that resolved form, the text a
 // mirrored rule carries.
-function scopeOf(spec, { settingsDirs, settingsDir, vaults, vaultCwd, homes, home }) {
+function scopeOf(spec, { settingsDirs, settingsDir, vaults, vaultCwd, homes, home, P = NATIVE_SPACE }) {
+  const sep = P.sep;
   const text = spec.trim();
   let bases = vaults;
   let base = vaultCwd;
@@ -207,11 +238,11 @@ function scopeOf(spec, { settingsDirs, settingsDir, vaults, vaultCwd, homes, hom
   const { literal, globbed } = literalPrefix(rest);
   const partial = globbed && literal !== '' && !literal.endsWith('/');
   const tail = rest.slice(literal.length);
-  const written = bases.map((each) => under(each, literal));
+  const written = bases.map((each) => under(each, literal, P));
   // Where a link leads says nothing about the other names that start like
   // it, so a scope stopping inside a name is judged as written only.
-  const paths = partial ? written : written.flatMap((path) => spellings(path));
-  const cliPath = under(base, literal);
+  const paths = partial ? written : written.flatMap((path) => spellings(path, P));
+  const cliPath = under(base, literal, P);
   // The literal prefix names a folder when it ends with a slash or is
   // empty: what follows it then starts below that folder.
   const folder = literal === '' || literal.endsWith('/');
@@ -236,25 +267,25 @@ function region(path, partial) {
   return { path, partial };
 }
 
-function inRegion(path, r) {
+function inRegion(path, r, sep) {
   if (r.partial) return path.startsWith(r.path);
   return path === r.path || path.startsWith(r.path.endsWith(sep) ? r.path : r.path + sep);
 }
 
-function overlapsRegion(a, b) {
-  return inRegion(a.path, b) || inRegion(b.path, a) || (a.partial && b.partial && (a.path.startsWith(b.path) || b.path.startsWith(a.path)));
+function overlapsRegion(a, b, sep) {
+  return inRegion(a.path, b, sep) || inRegion(b.path, a, sep) || (a.partial && b.partial && (a.path.startsWith(b.path) || b.path.startsWith(a.path)));
 }
 
 // The vault itself or a folder that holds it, or a name one of them starts
 // with when the scope stops inside a name.
-function coversVault(path, partial, vault) {
+function coversVault(path, partial, vault, sep) {
   const ancestorOrSelf = path === vault || vault.startsWith(path.endsWith(sep) ? path : path + sep);
   return ancestorOrSelf || (partial && vault.startsWith(path));
 }
 
 // Everything the scope reaches is inside the vault (the vault itself
 // included, when the scope names exactly it).
-function insideVault(path, partial, vault) {
+function insideVault(path, partial, vault, sep) {
   return (path === vault && !partial) || path.startsWith(vault + sep);
 }
 
@@ -284,21 +315,23 @@ function ownReadRegions(own, where) {
     const parsed = parseRule(rule);
     if (parsed === null || !READ_TOOLS.includes(parsed.tool)) continue;
     if (parsed.spec === null) return 'all';
-    const scope = scopeOf(parsed.spec, { ...where, settingsDirs: [...where.vaults, sep], settingsDir: where.vaultCwd });
+    const scope = scopeOf(parsed.spec, { ...where, settingsDirs: [...where.vaults, where.P.sep], settingsDir: where.vaultCwd });
     for (const path of scope.paths) regions.push(region(path, scope.partial));
   }
   return regions;
 }
 
-export function mirrorUserRules({ files = [], ownAllowed = [], vaultRoot, home = homedir(), kit = kitCommand() } = {}) {
-  if (typeof vaultRoot !== 'string' || !isAbsolute(vaultRoot)) throw new TypeError(`mirrorUserRules: vaultRoot must be an absolute path, got ${JSON.stringify(vaultRoot)}`);
-  const vaults = spellings(vaultRoot);
+export function mirrorUserRules({ files = [], ownAllowed = [], vaultRoot, home = homedir(), kit = kitCommand(), platform = process.platform } = {}) {
+  const P = pathSpace(platform);
+  if (typeof vaultRoot !== 'string' || !P.isAbsolute(P.of(vaultRoot))) throw new TypeError(`mirrorUserRules: vaultRoot must be an absolute path, got ${JSON.stringify(vaultRoot)}`);
+  const sep = P.sep;
+  const vaults = spellings(P.of(vaultRoot), P);
   const vaultCwd = vaults.at(-1);
-  const homes = spellings(home);
-  const covers = (scope) => scope.paths.some((path) => vaults.some((vault) => coversVault(path, scope.partial, vault)));
+  const homes = spellings(P.of(home), P);
+  const covers = (scope) => scope.paths.some((path) => vaults.some((vault) => coversVault(path, scope.partial, vault, sep)));
   // Inside only as the CLI resolves it, against the child's working
   // directory, the vault's real path (review N1 of task 2).
-  const inside = (scope) => !scope.climbs && insideVault(scope.cliPath, scope.partial, vaultCwd);
+  const inside = (scope) => !scope.climbs && insideVault(scope.cliPath, scope.partial, vaultCwd, sep);
   // A scope that names a folder of the vault only through a link (a linked
   // home or settings folder): the round's own Edit(./**) governs it like any
   // vault path, so it is mirrored only when it reaches one of the kit's
@@ -306,14 +339,14 @@ export function mirrorUserRules({ files = [], ownAllowed = [], vaultRoot, home =
   // spelling only (scoped re-review, residual of N1). Its ordinary vault
   // folders (memory/, notes/) are never denied to the round that way.
   // (A climbing scope never gets here: it is unreadable above.)
-  const throughLink = (scope) => scope.paths.some((path) => vaults.some((vault) => insideVault(path, scope.partial, vault)));
-  const protectedRegions = vaults.flatMap((vault) => PROTECTED_PATHS.map((name) => region(join(vault, name), false)));
-  const reachesProtected = (scope) => scope.paths.some((path) => protectedRegions.some((r) => overlapsRegion(region(path, scope.partial), r)));
+  const throughLink = (scope) => scope.paths.some((path) => vaults.some((vault) => insideVault(path, scope.partial, vault, sep)));
+  const protectedRegions = vaults.flatMap((vault) => PROTECTED_PATHS.map((name) => region(P.join(vault, name), false)));
+  const reachesProtected = (scope) => scope.paths.some((path) => protectedRegions.some((r) => overlapsRegion(region(path, scope.partial), r, sep)));
   const own = new Set(ownAllowed.filter((rule) => typeof rule === 'string').flatMap((rule) => rulesIn(rule)));
-  const readRegions = ownReadRegions(own, { vaults, vaultCwd, homes, home: resolve(home) });
+  const readRegions = ownReadRegions(own, { vaults, vaultCwd, homes, home: P.resolve(P.of(home)), P });
   const vaultRegions = vaults.map((vault) => region(vault, false));
   const overlapsReads = (scope) => readRegions === 'all'
-    || scope.paths.some((path) => [...vaultRegions, ...readRegions].some((r) => overlapsRegion(region(path, scope.partial), r)));
+    || scope.paths.some((path) => [...vaultRegions, ...readRegions].some((r) => overlapsRegion(region(path, scope.partial), r, sep)));
   const kitForms = KIT_SUBCOMMANDS.map((sub) => `${kit} ${sub}`);
   const nodeForms = kitForms.map((form) => `node ${form}`);
   const deny = [];
@@ -325,12 +358,13 @@ export function mirrorUserRules({ files = [], ownAllowed = [], vaultRoot, home =
   };
 
   for (const file of files) {
-    const allow = isAbsolute(file) ? allowRules(file) : null;
+    const allow = P.isAbsolute(P.of(file)) ? allowRules(file) : null;
     if (allow === null) {
       blocking.push({ rule: null, file, reason: 'unreadable' });
       continue;
     }
-    const where = { settingsDirs: spellings(dirname(file)), settingsDir: dirname(file), vaults, vaultCwd, homes, home: resolve(home) };
+    const settingsDir = P.of(dirname(file));
+    const where = { settingsDirs: spellings(settingsDir, P), settingsDir, vaults, vaultCwd, homes, home: P.resolve(P.of(home)), P };
     const mirror = (rule, tool, scope) => {
       const form = absoluteRule(tool, scope);
       if (form === null) blocking.push({ rule, file, reason: 'unreadable' });

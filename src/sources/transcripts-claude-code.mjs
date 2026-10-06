@@ -145,6 +145,7 @@ import { createTranslator } from '../lang.mjs';
 import { BRIEFING_TASK_PREFIX } from '../briefing/task-id.mjs';
 import { addDays, localDay, startOfDay, wallClock } from '../guards/watermark.mjs';
 import { unsafeRuleCharacters } from '../curate/rule-path.mjs';
+import { isDrivePath, isWindows } from '../platform.mjs';
 
 export const SAMPLE_BYTES = 64 * 1024;
 export const MTIME_SLACK_MS = 15 * 60 * 1000;
@@ -251,19 +252,23 @@ export const MAX_PROJECT_NAME_CHARS = 200;
 // holds the sessions run in `absolutePath`: the path with every character
 // that is not an ASCII letter or digit turned into a dash, one dash for each
 // character (a slash, a dot, a space and an accented letter alike). So
-// /home/ana/brain is -home-ana-brain. This is what a vault's own project is
-// called, which is what `init` lists in include_projects and what `doctor`
-// knows has no folder until a session has run in the vault. Null for a path
-// the rule does not cover: one that does not start with a slash (a relative
-// path, a Windows one), and one whose name is longer than
+// /home/ana/brain is -home-ana-brain. On Windows a path from a drive letter
+// follows the same rule, its colon and backslashes included: C:\Users\ana\brain
+// is C--Users-ana-brain (seen on a Windows 10 machine in the report of
+// 05/10/2026, and what Claude Code's "Sessions" page says of the name).
+// This is what a vault's own project is called, which is what `init` lists
+// in include_projects and what `doctor` knows has no folder until a session
+// has run in the vault. Null for a path the rule does not cover: one that
+// starts neither with a slash nor, on Windows, with a drive letter (a
+// relative path, a UNC one), and one whose name is longer than
 // MAX_PROJECT_NAME_CHARS. A caller leaves the name out then, and says so.
 // Observed behaviour of Claude Code, not a specification: a name that
 // disagrees with the folder Claude Code really made shows as a project with
 // no sessions. A value that is not a string is a defect of the caller and
 // throws.
-export function claudeProjectName(absolutePath) {
+export function claudeProjectName(absolutePath, platform = process.platform) {
   if (typeof absolutePath !== 'string') throw new TypeError(`claudeProjectName needs a path (got ${JSON.stringify(absolutePath)})`);
-  if (!absolutePath.startsWith('/')) return null;
+  if (!absolutePath.startsWith('/') && !(isWindows(platform) && isDrivePath(absolutePath))) return null;
   const name = absolutePath.replace(/[^A-Za-z0-9]/g, '-');
   return name.length <= MAX_PROJECT_NAME_CHARS ? name : null;
 }
@@ -278,10 +283,10 @@ export function claudeProjectName(absolutePath) {
 // the vault's own project asks here: the entry VAULT_PROJECT
 // (resolveIncludeProjects) and the project that may wait for its first
 // session (waitingProjectName).
-export function vaultProjectName(vaultRoot) {
+export function vaultProjectName(vaultRoot, platform = process.platform) {
   if (typeof vaultRoot !== 'string' || vaultRoot === '') return null;
   try {
-    return claudeProjectName(fs.realpathSync(vaultRoot));
+    return claudeProjectName(fs.realpathSync(vaultRoot), platform);
   } catch {
     return null;
   }

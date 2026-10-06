@@ -345,15 +345,6 @@ test('the platform is detected: systemd when systemctl --user answers, launchd o
   assert.ok(d.stdout.includes(`# BEGIN ${bare.name}: `), d.stdout);
 });
 
-test('on Windows it is exit 2 with the manual instruction, and nothing is written', async () => {
-  const world = makeScheduleWorld();
-  const r = await world.run(['install'], { platform: 'win32' });
-  assert.equal(r.status, 2);
-  const command = [process.execPath, KIT_BIN, 'curate', world.vault].map((arg) => `"${arg}"`).join(' ');
-  assert.equal(r.stderr, `${world.t('schedule.windows_manual', { windows: NEW_DEFAULT.join(', '), command })}\n`);
-  assert.deepEqual(world.commands(), []);
-});
-
 test('refusals: disabled curate, no window, an unknown timezone, a claude that cannot be found, a moved vault', async () => {
   const disabled = makeScheduleWorld({ enabled: false });
   let r = await disabled.run(['install', '--platform', 'systemd']);

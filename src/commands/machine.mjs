@@ -567,7 +567,7 @@ function alreadyRegistered(io, t, dir, file, value, realRoot, validate) {
     io.stderr.write(`${t('machine.invalid', { file, errors })}\n`);
     return EXIT.FAILURE;
   }
-  ensureStateDir(dir);
+  ensureStateDir(dir, { tighten: true });
   chmodSync(file, MACHINE_FILE_MODE);
   io.stdout.write(`${t('machine.register_already', { dir: realRoot, file })}\n`);
   return EXIT.OK;
@@ -707,7 +707,7 @@ function registerLocked(io, t, { realRoot, target, env, from, deps }) {
     fsyncDir(dirname(source));
   }
   try {
-    ensureStateDir(target);
+    ensureStateDir(target, { tighten: true });
     writeMachineAtomic(targetFile, next, { rename });
   } catch (error) {
     // Put the state back where the old path's commands will find it, so a

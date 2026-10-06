@@ -31,6 +31,26 @@ jobs:
       - name: Package contents
         run: npm pack --dry-run
 
+  # Windows (docs/incidents.md, 05/10/2026): the tests of the first run on
+  # Windows, those that need Windows itself included: the real lookup of node
+  # and git with PATHEXT, a real ACL set and read by SID, and a real Task
+  # Scheduler task registered, read back and removed. Elsewhere they reach
+  # the Windows branch through each function's platform seam.
+  windows:
+    name: Windows tests (Node ${{ matrix.node }})
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Tests of the first run on Windows
+        run: node --test test/incidents/2026-10-05-windows-first-run.test.mjs
+
   plugin-validate:
     name: claude plugin validate --strict
     runs-on: ubuntu-latest

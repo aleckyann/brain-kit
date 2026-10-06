@@ -302,9 +302,9 @@ test('docs/incidents.md records the decision of 02/10/2026, why the old rule exi
   assert.match(entry, /comes closest to the old behaviour \(`doctor` warns about that exact list while `owner` is at `save`; add or remove a phrase and it is yours\), but no setting keeps the owner's own private events out as the old calendar and briefing clauses did/);
   assert.doesNotMatch(entry, /To get the old behaviour back/);
   const entries = scan(text).filter((l) => !l.fenced && l.line.startsWith('### ')).length;
-  assert.equal(entries, 81);
-  assert.match(norm(text.slice(0, text.indexOf('\n## '))), /Nine entries were added since/);
-  assert.match(norm(text.slice(0, text.indexOf('\n## '))), /Eighty one entries follow/);
+  assert.equal(entries, 82);
+  assert.match(norm(text.slice(0, text.indexOf('\n## '))), /Ten entries were added since/);
+  assert.match(norm(text.slice(0, text.indexOf('\n## '))), /Eighty two entries follow/);
 });
 
 test('the CHANGELOG calls it a change of default, says why, and how close a setting comes to the old behaviour', () => {

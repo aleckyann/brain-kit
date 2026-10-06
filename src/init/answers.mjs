@@ -1,5 +1,6 @@
 import { accessSync, constants, readFileSync, statSync } from 'node:fs';
-import { basename, delimiter, isAbsolute, join } from 'node:path';
+import { basename } from 'node:path';
+import { findProgram, pathEntries } from '../platform.mjs';
 import { userInfo } from 'node:os';
 import { createInterface } from 'node:readline';
 import { SUPPORTED_LANGS, resolveLang } from '../lang.mjs';
@@ -164,19 +165,19 @@ export function readAnswersFile(file) {
 // on PATH, as an absolute path, or the literal `claude` when there is
 // none, so a later command still has a name to try and `doctor` a name
 // to report.
-export function resolveClaudeBin(env) {
-  for (const dir of String(env.PATH ?? '').split(delimiter)) {
-    if (dir === '' || !isAbsolute(dir)) continue;
-    const candidate = join(dir, 'claude');
+// On Windows the name is looked up with PATHEXT, as a shell does
+// (src/platform.mjs): the native install is claude.exe.
+export function resolveClaudeBin(env, platform = process.platform) {
+  const executable = (candidate) => {
     try {
-      if (!statSync(candidate).isFile()) continue;
+      if (!statSync(candidate).isFile()) return false;
       accessSync(candidate, constants.X_OK);
-      return candidate;
+      return true;
     } catch {
-      // Not here.
+      return false;
     }
-  }
-  return 'claude';
+  };
+  return findProgram('claude', pathEntries(env, platform), { platform, env, executable }) ?? 'claude';
 }
 
 // The name init suggests to `gh repo create`: the repository the person

@@ -2,6 +2,7 @@ import { chmodSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { MACHINE_FILENAME } from '../config.mjs';
 import { STATE_FILES, ensureStateDir, vaultIdFor } from '../state.mjs';
+import { isWindows } from '../platform.mjs';
 import { resolveClaudeBin } from './answers.mjs';
 import { makeDirs, recordMode, writeNew } from './skeleton.mjs';
 
@@ -53,13 +54,15 @@ export function writeMachineFile(ledger, { stateDir, machine }) {
   let priorMode = null;
   try {
     const st = statSync(stateDir);
-    if (st.isDirectory()) priorMode = st.mode & 0o7777;
+    // On Windows the mode is no measure of who may open it (src/platform.mjs):
+    // there is no old mode to tell, and the ACL is set below either way.
+    if (st.isDirectory() && !isWindows()) priorMode = st.mode & 0o7777;
   } catch {
     // Absent: it is created below.
   }
   makeDirs(ledger, stateDir);
   if (priorMode !== null && priorMode !== 0o700) recordMode(ledger, stateDir, priorMode);
-  ensureStateDir(stateDir);
+  ensureStateDir(stateDir, { tighten: true });
   writeNew(ledger, machinePath, machineText(machine), MACHINE_FILE_MODE);
   chmodSync(machinePath, MACHINE_FILE_MODE);
   return priorMode;
