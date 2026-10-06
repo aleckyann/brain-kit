@@ -54,6 +54,12 @@ did not work, with the errors and where they came from in the code (docs/inciden
 - CI runs the tests of this incident on Windows too, those that need Windows itself
   included: the real lookup of node and git, a real ACL, and a real task registered, read
   back and removed.
+- Beside Windows: the push gate no longer takes an object id in upper case for one on
+  macOS. Its check spelt the hexadecimal digits as the range `a-f`, which bash 3.2 (macOS's
+  `/bin/sh`) reads by the locale's collation under a UTF-8 locale, so `A` to `E` fell inside
+  it and an upper-case id with no `F` passed. The digits are now listed one by one. The CI found it on 06/10/2026, in
+  the test that refuses such a line, whenever the test's commit id had no `f` (about one run
+  in fourteen).
 
 ## 0.1.0 (tagged `v0.1.0`, published on npm on 02/10/2026)
 

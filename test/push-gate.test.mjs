@@ -991,6 +991,10 @@ test('a reference line whose object ids are not object ids is refused without be
     `refs/heads/x hunter2corp refs/heads/y ${ZERO}\n`,
     `refs/heads/x ${sha} refs/heads/y ${'0'.repeat(39)}\n`,
     `refs/heads/x ${sha.toUpperCase()} refs/heads/y ${ZERO}\n`,
+    // Upper case with no F in it: a collation-ordered a-f (bash 3.2 under a
+    // UTF-8 locale) holds A to E, so this one passed there; the sha above
+    // only caught it when it happened to hold an f.
+    `refs/heads/x DA2E1215ED1A6C18D493A368BB16D7E26D196072 refs/heads/y ${ZERO}\n`,
     `refs/heads/x ${sha} refs/heads/y\n`,
     'refs/heads/x hunter2corp\n',
   ]) {

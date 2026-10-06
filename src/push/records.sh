@@ -362,9 +362,14 @@ has_field() {
   esac
   return 1
 }
+# The class is spelt out, never a range: a shell that reads a bracket range
+# by the locale's collation (bash 3.2, macOS's /bin/sh, under a UTF-8
+# locale) puts A to E inside a-f, and an id in upper case with no F in it
+# passed as one (found by the CI on 06/10/2026, in about one run in
+# fourteen, whenever the test's commit id had no f).
 is_object_id() {
   case "$1" in
-    "" | *[!0-9a-f]*) return 1 ;;
+    "" | *[!0123456789abcdef]*) return 1 ;;
   esac
   [ "${#1}" -eq 40 ] || [ "${#1}" -eq 64 ]
 }
