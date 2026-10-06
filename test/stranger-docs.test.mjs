@@ -765,12 +765,15 @@ test('README.md: "Em que pé está" says the stage in a few lines, honest about 
   const body = section(readme, '## Em que pé está');
   const flat = norm(body);
   assert.ok(body.split('\n').filter((line) => line.trim() !== '').length <= 8, 'a few lines');
-  for (const word of [/em construção/, /testados pelo projeto, mas ninguém de fora fez o caminho todo ainda: você estaria entre os primeiros/]) assert.match(flat, word);
-  // The npm package, said so that step 1's `npm i -g` does not read as a contradiction (fix round 2).
-  assert.match(flat, /É a primeira no npm \(`second-brain-kit`\), e o passo 1 segue como o caminho indicado, porque instala o kit e o plugin juntos, na mesma versão\./);
+  // Who has taken the path, said as it is: one person from outside, on 05/10/2026, untimed
+  // (docs/incidents.md, the first run on Windows); before 0.1.1 it said nobody had.
+  for (const word of [/em construção/, /Uma pessoa de fora fez o caminho pela primeira vez em 05\/10\/2026, no Windows, e o que ela achou a 0\.1\.1 corrigiu: você estaria entre os primeiros/]) assert.match(flat, word);
+  // The npm package, said so that step 1 and `npm i -g` do not read as a contradiction (fix
+  // round 2), and so that a reader knows npm may lag the latest tag.
+  assert.match(flat, /O passo 1 é o caminho indicado, porque instala o kit e o plugin juntos, na mesma versão, a partir da tag mais recente \(no npm, `second-brain-kit`, a mais nova ainda é a 0\.1\.0\)\./);
   assert.doesNotMatch(readme, /Não instale pelo npm/);
   assert.equal(pkg.name, 'second-brain-kit');
-  // Where to ask, right next to "nobody outside has done it yet": the repository's issues, which are
+  // Where to ask, right next to who has taken the path: the repository's issues, which are
   // the package's bug tracker, and the friend who sent the link.
   assert.ok(body.includes(`[abra uma issue](${pkg.bugs})`), 'the issues link is the package.json bugs address');
   assert.equal(pkg.bugs, `${pkg.repository.url.replace(/^git\+/, '').replace(/\.git$/, '')}/issues`);
