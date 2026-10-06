@@ -15,6 +15,7 @@ import { spawnSync } from 'node:child_process';
 import { acquireLock, currentIdentity } from '../src/guards/lock.mjs';
 import { GUARD_FILES } from '../src/guards/location.mjs';
 import { proposedMatch, proposedRef } from '../src/guards/proposed.mjs';
+import { REMINDED_NAME, readReminded } from '../src/hooks/reminded.mjs';
 import { git, makeRepo, pathUnder } from './helpers/git-repo.mjs';
 import { hookEnv, makeHookVault, runHookProcess } from './helpers/hook-world.mjs';
 import { nonUtf8NameRefusal } from './helpers/tmp.mjs';
@@ -30,7 +31,19 @@ function begin(fx, { session = 's1' } = {}) {
   assert.notEqual(r.stdout, '');
 }
 
-function stop(fx, payload = {}, { root = fx.root } = {}) {
+// Each call is judged as the first of its session unless `remember` keeps
+// what earlier calls asked about (src/hooks/reminded.mjs): the rungs below
+// are about one reply's verdict, the record's own tests are at the end.
+function stop(fx, payload = {}, { root = fx.root, remember = false } = {}) {
+  if (!remember) {
+    try {
+      rmSync(join(root, '.git', REMINDED_NAME), { force: true });
+    } catch (error) {
+      // A linked worktree's .git is a file: its record is elsewhere, and
+      // the rungs that test one release before any record is written.
+      if (error.code !== 'ENOTDIR') throw error;
+    }
+  }
   const r = runHookProcess('stop', { session_id: 's1', hook_event_name: 'Stop', stop_hook_active: false, cwd: root, ...payload }, { env: fx.env, cwd: join(fx.base, 'elsewhere') });
   assert.equal(r.status, 0, r.stderr);
   return r;
@@ -544,4 +557,55 @@ test('proposedMatch: an entry whose commit this repository no longer holds prove
   const fx = sessionWithWork();
   const match = proposedMatch(fx.root, [{ opened: true, remote: 'origin', branch: 'bot/gone', commit: 'a'.repeat(40), paths: ['mine.md'] }], hookEnv(fx.base));
   assert.deepEqual([match.matching, match.changed], [[], ['mine.md']]);
+});
+
+// --- once per path, per session (the report of 05/10/2026) ---------------------
+//
+// Stop fires at the end of every reply: an interview with many captures was
+// stopped at every one, each asking for a propose of the same log.
+
+test('a session is asked once per path: the next reply that changed only those paths is released with a line, a new path asks again', () => {
+  const fx = sessionWithWork();
+  const first = reasonOf(stop(fx, {}, { remember: true }));
+  assert.match(first, /^ {2}mine\.md$/m);
+  assert.match(first, /This notice comes once per file/);
+  writeFileSync(join(fx.root, 'mine.md'), 'this session, a second capture\n');
+  assertReleased(stop(fx, {}, { remember: true }), /^brain-kit hook: released; the 1 path\(s\) changed in this session were already named by an earlier notice/);
+  writeFileSync(join(fx.root, 'other.md'), 'a new file\n');
+  const again = reasonOf(stop(fx, {}, { remember: true }));
+  assert.match(again, /^ {2}mine\.md$/m);
+  assert.match(again, /^ {2}other\.md$/m);
+  assert.deepEqual(readReminded(fx.root, hookEnv(fx.base)), { session: 's1', paths: ['mine.md', 'other.md'] });
+});
+
+test('another session is asked afresh, and a payload with no session id is asked at every reply', () => {
+  const fx = sessionWithWork();
+  reasonOf(stop(fx, {}, { remember: true }));
+  begin(fx, { session: 's2' });
+  writeFileSync(join(fx.root, 'second.md'), 'the second session\n');
+  assert.match(reasonOf(stop(fx, { session_id: 's2' }, { remember: true })), /^ {2}second\.md$/m);
+  const none = makeHookVault();
+  writeFileSync(join(none.root, 'x.md'), 'x\n');
+  for (let i = 0; i < 2; i++) reasonOf(stop(none, { session_id: '' }, { remember: true }));
+});
+
+test('a record that cannot be read is no record: the reply is asked, as before', () => {
+  const fx = sessionWithWork();
+  writeFileSync(join(fx.root, '.git', REMINDED_NAME), 'not json');
+  assert.match(reasonOf(stop(fx, {}, { remember: true })), /^ {2}mine\.md$/m);
+});
+
+test('the next session to start names the paths the previous one was asked about and left unproposed, and only those', () => {
+  const fx = sessionWithWork();
+  writeFileSync(join(fx.root, 'proposed.md'), 'pushed as it is\n');
+  reasonOf(stop(fx, {}, { remember: true }));
+  writeLedger(fx, [proposalOf(fx, ['proposed.md'])]);
+  const r = runHookProcess('session-start', { session_id: 's2', source: 'startup', cwd: fx.root }, { env: fx.env, cwd: join(fx.base, 'elsewhere') });
+  assert.equal(r.status, 0, r.stderr);
+  const line = JSON.parse(r.stdout).hookSpecificOutput.additionalContext;
+  assert.match(line, /The previous session ended without proposing 1 path\(s\) the Stop hook had named: mine\.md\./);
+  assert.doesNotMatch(line, /proposed\.md\./, 'a path a proposal holds byte for byte is not pending');
+  // A resume of the same session is no new start: nothing is said again.
+  const resumed = runHookProcess('session-start', { session_id: 's1', source: 'resume', cwd: fx.root }, { env: fx.env, cwd: join(fx.base, 'elsewhere') });
+  assert.doesNotMatch(JSON.parse(resumed.stdout).hookSpecificOutput.additionalContext, /previous session ended/);
 });

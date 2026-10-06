@@ -1767,16 +1767,109 @@ test('not joined: the same paths proposed again, unchanged, are exit 0 naming th
   assert.equal(world.remoteRefs(), refs);
 });
 
-test('not joined: one byte changed after the push is proposed again, and the ledger then holds both entries', async () => {
+// The report of 05/10/2026: in an interview with many captures, each
+// `propose` of the same log opened a pull request of its own, each holding
+// the one before it. A path already in an open pull request is added to it.
+test('not joined: one byte changed after the push goes to the open pull request as a new commit on its branch, and no second pull request is opened', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  assert.equal((await propose(world, ['A', '--only', 'notes/a.md'])).code, EXIT.OK);
+  const first = world.remoteSha(`refs/heads/${BRANCH}`);
+  world.write('notes/a.md', `${note('A')}x`);
+  const before = fingerprint(world.vault);
+  const again = await propose(world, ['A again', '--only', 'notes/a.md']);
+  assert.equal(again.code, EXIT.OK, again.stderr);
+  assert.equal(again.stdout, line('propose.updated', { url: PR_URL, branch: BRANCH, count: 1, origin: 'main' }));
+  assert.equal(creates(world).length, 1, 'no second pull request');
+  assert.equal(world.remoteSha(`refs/heads/${BRANCH_2}`), null, 'no second branch');
+  const second = world.remoteSha(`refs/heads/${BRANCH}`);
+  assert.notEqual(second, first);
+  assert.equal(git(world.remote, ['rev-parse', `${second}^`]).trim(), first, 'the new commit\'s only parent is the branch\'s tip');
+  assert.equal(git(world.remote, ['show', `${BRANCH}:notes/a.md`]), `${note('A')}x`);
+  assert.equal(commitMessage(world, second), 'curate: A again\n');
+  assert.deepEqual(fingerprint(world.vault), before, 'HEAD, the index and the working tree never move');
+  const ledger = readLedgerOf(world).proposals;
+  assert.deepEqual(ledger.map((p) => [p.branch, p.commit, p.paths]), [[BRANCH, second, ['notes/a.md']]], 'one entry per branch, at its new commit');
+  assert.equal(git(world.vault, ['rev-parse', `refs/brain-kit/proposed/${BRANCH.replace(/[^A-Za-z0-9._-]/g, '-')}`]).trim(), second, 'the local ref moved with it');
+  const third = await propose(world, ['A again', '--only', 'notes/a.md']);
+  assert.equal(third.stdout, line('propose.already_proposed_all', { count: 1, paths: ['notes/a.md'], branches: [BRANCH] }));
+});
+
+test('not joined: a new path proposed beside one already in the open pull request joins it, and the ledger names both', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/captures.md', note('Captures'));
+  assert.equal((await propose(world, ['Captures', '--only', 'notes/captures.md'])).code, EXIT.OK);
+  world.write('notes/captures.md', `${note('Captures')}second capture\n`);
+  world.write('notes/b.md', note('B'));
+  const run = await propose(world, ['Captures and B', '--only', 'notes/captures.md', 'notes/b.md']);
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.equal(run.stdout, line('propose.updated', { url: PR_URL, branch: BRANCH, count: 2, origin: 'main' }));
+  assert.equal(creates(world).length, 1);
+  assert.deepEqual(world.changedIn(world.remoteSha(`refs/heads/${BRANCH}`)), ['A\tnotes/b.md', 'M\tnotes/captures.md']);
+  assert.deepEqual(readLedgerOf(world).proposals.map((p) => p.paths), [['notes/b.md', 'notes/captures.md']]);
+});
+
+test('not joined: a pull request that is merged or closed is not added to: the change goes out as a new pull request, as before', async () => {
+  for (const state of ['MERGED', 'CLOSED']) {
+    const world = makeProposeWorld();
+    world.write('notes/a.md', note('A'));
+    assert.equal((await propose(world, ['A', '--only', 'notes/a.md'])).code, EXIT.OK);
+    world.write('notes/a.md', `${note('A')}x`);
+    const again = await propose(world, ['A again', '--only', 'notes/a.md'], { env: { ...world.env, FAKE_GH_PR_STATE: state } });
+    assert.equal(again.code, EXIT.OK, again.stderr);
+    assert.equal(creates(world).length, 2, state);
+    assert.equal(git(world.remote, ['show', `${BRANCH_2}:notes/a.md`]), `${note('A')}x`);
+    assert.deepEqual(readLedgerOf(world).proposals.map((p) => p.branch), [BRANCH, BRANCH_2]);
+  }
+});
+
+test('not joined: an open pull request whose branch someone else moved is not pushed over: exit 1, the branch kept, nothing recorded', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  assert.equal((await propose(world, ['A', '--only', 'notes/a.md'])).code, EXIT.OK);
+  const first = world.remoteSha(`refs/heads/${BRANCH}`);
+  // Someone adds a commit to the branch on the forge.
+  const tree = git(world.remote, ['rev-parse', `${first}^{tree}`]).trim();
+  const theirs = git(world.remote, ['commit-tree', tree, '-p', first, '-m', 'edited on the forge'], { GIT_AUTHOR_NAME: 'Ana', GIT_AUTHOR_EMAIL: 'ana@example.com', GIT_COMMITTER_NAME: 'Ana', GIT_COMMITTER_EMAIL: 'ana@example.com' }).trim();
+  git(world.remote, ['update-ref', `refs/heads/${BRANCH}`, theirs]);
+  const ledger = readFileSync(ledgerFile(world));
+  world.write('notes/a.md', `${note('A')}x`);
+  const run = await propose(world, ['A again', '--only', 'notes/a.md']);
+  assert.equal(run.code, EXIT.FAILURE);
+  assert.equal(run.stderr, line('propose.update_branch_moved', { branch: BRANCH, url: world.remote, commit: first.slice(0, 12), found: theirs.slice(0, 12) }));
+  assert.equal(world.remoteSha(`refs/heads/${BRANCH}`), theirs, 'their commit is kept');
+  assert.deepEqual(readFileSync(ledgerFile(world)), ledger);
+  assert.equal(creates(world).length, 1);
+});
+
+test('not joined: --dry says the commit would go to the open pull request, and pushes and records nothing', async () => {
   const world = makeProposeWorld();
   world.write('notes/a.md', note('A'));
   assert.equal((await propose(world, ['A', '--only', 'notes/a.md'])).code, EXIT.OK);
   world.write('notes/a.md', `${note('A')}x`);
-  const again = await propose(world, ['A again', '--only', 'notes/a.md']);
-  assert.equal(again.code, EXIT.OK, again.stderr);
-  assert.equal(creates(world).length, 2);
-  assert.equal(git(world.remote, ['show', `${BRANCH_2}:notes/a.md`]), `${note('A')}x`);
-  assert.deepEqual(readLedgerOf(world).proposals.map((p) => p.branch), [BRANCH, BRANCH_2]);
+  const refs = world.remoteRefs();
+  const ledger = readFileSync(ledgerFile(world));
+  const run = await propose(world, ['A again', '--only', 'notes/a.md', '--dry']);
+  assert.equal(run.code, EXIT.OK, run.stderr);
+  assert.equal(run.stdout, line('propose.dry_update', { files: ['notes/a.md'], branch: BRANCH, url: PR_URL, urls: [world.remote], title: 'curate: A again', origin: 'main' }));
+  assert.equal(world.remoteRefs(), refs);
+  assert.deepEqual(readFileSync(ledgerFile(world)), ledger);
+});
+
+test('not joined: paths in two open pull requests at once are refused, exit 2, nothing pushed', async () => {
+  const world = makeProposeWorld();
+  world.write('notes/a.md', note('A'));
+  assert.equal((await propose(world, ['A', '--only', 'notes/a.md'], { now: NOW })).code, EXIT.OK);
+  world.write('notes/b.md', note('B'));
+  // A second pull request, opened while the first is (as the fake sees it) not open.
+  assert.equal((await propose(world, ['B', '--only', 'notes/b.md'], { env: { ...world.env, FAKE_GH_PR_STATE: 'CLOSED' } })).code, EXIT.OK);
+  world.write('notes/a.md', `${note('A')}x`);
+  world.write('notes/b.md', `${note('B')}x`);
+  const refs = world.remoteRefs();
+  const run = await propose(world, ['Both', '--only', 'notes/a.md', 'notes/b.md']);
+  assert.equal(run.code, EXIT.USAGE);
+  assert.equal(run.stderr, line('propose.update_two_open', { branches: [BRANCH, BRANCH_2], paths: ['notes/a.md', 'notes/b.md'] }));
+  assert.equal(world.remoteRefs(), refs);
 });
 
 test('not joined: --only naming a proposed path among new ones is exit 2 naming the ones to drop, nothing pushed', async () => {

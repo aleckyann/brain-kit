@@ -39,6 +39,16 @@
 // file loaded, or in connector mode with every hook disabled
 // (src/harness/claude-code.mjs), so no hook of this plugin runs inside it.
 //
+// WHAT THE LAST SESSION LEFT. When a session really starts, the record of
+// what the Stop hook asked the previous session to propose
+// (src/hooks/reminded.mjs) is read: each of those paths still dirty and not
+// held by a proposal (the proposed-paths ledger, src/guards/proposed.mjs) is
+// named in the line, so the model can ask the person whether to propose it
+// (the report of 05/10/2026: with Stop asking once per path, a session that
+// ends after that notice leaves its work for the next one to find). Those
+// paths are in this session's snapshot, so its own Stop hook leaves them
+// out; the line is the one place they are said.
+//
 // THE LAST ROUND'S CONNECTORS. The line also names each configured
 // connector source (calendar, meeting notes) whose state in the last
 // scheduled round was not `connected`, with that state and the date of
@@ -52,6 +62,9 @@ import { join } from 'node:path';
 import { describeLock, isLockHolderStale } from '../guards/lock.mjs';
 import { locateRepository } from '../guards/location.mjs';
 import { readSnapshot, takeSnapshot } from '../guards/snapshot.mjs';
+import { pinnedEntries, proposedMatch, readLedger } from '../guards/proposed.mjs';
+import { decodeBytes } from '../io.mjs';
+import { readReminded } from './reminded.mjs';
 import { localDay } from '../guards/watermark.mjs';
 import { SOURCES } from '../sources/index.mjs';
 import { stateDirFor, STATE_FILES } from '../state.mjs';
@@ -174,8 +187,16 @@ export function runSessionStart(stdinText, env = process.env, now = new Date()) 
         : t('hook.session_start.not_kept', { title });
     } else {
       const session = sessionIdOf(payload);
-      const count = takeSnapshot(root, { env, now, ...(session === null ? {} : { session }) }).paths.length;
+      const taken = takeSnapshot(root, { env, now, ...(session === null ? {} : { session }) });
+      const count = taken.paths.length;
       status = replaced ? t('hook.session_start.replaced', { title, count }) : t('hook.session_start.taken', { title, count });
+      // What the last session left is a courtesy: a failure to tell it says
+      // nothing, and never costs the snapshot's own line.
+      try {
+        status += pendingSentence(root, env, t, session, taken.paths);
+      } catch {
+        // Nothing said.
+      }
     }
     const line = `${status}${lockSentence(root, env, t)}${connectorSentence(root, config, env, t)}`;
     return { stdout: output(line), stderr: '' };
@@ -183,6 +204,30 @@ export function runSessionStart(stdinText, env = process.env, now = new Date()) 
     const detail = error.messageKey === undefined ? String(error.message) : t(error.messageKey, error.params);
     return { stdout: '', stderr: `${t('hook.session_start.failed', { detail })}\n` };
   }
+}
+
+// The previous session's paths the Stop hook asked about and nobody
+// proposed: still dirty now (`dirty`, this snapshot's paths), and not held
+// byte for byte by a pinned ledger entry. '' when there are none, or when
+// the record is this very session's.
+const PENDING_CEILING = 20;
+
+function pendingSentence(root, env, t, session, dirty) {
+  const reminded = readReminded(root, env);
+  if (reminded === null || reminded.session === session) return '';
+  const now = new Set(dirty.map((path) => decodeBytes(path)));
+  let left = reminded.paths.filter((path) => now.has(path));
+  if (left.length === 0) return '';
+  const ledger = readLedger(root, env);
+  if (ledger.state === 'ok' && ledger.entries.length > 0) {
+    const { pinned } = pinnedEntries(root, ledger.entries, env);
+    const proposed = new Set(proposedMatch(root, pinned, env, { paths: left }).matching);
+    left = left.filter((path) => !proposed.has(path));
+  }
+  if (left.length === 0) return '';
+  const shown = left.slice(0, PENDING_CEILING);
+  const more = left.length - shown.length;
+  return ` ${t('hook.session_start.pending', { count: left.length, paths: more > 0 ? [...shown, t('hook.stop.block_more', { count: more }).trim()] : shown })}`;
 }
 
 function noSnapshot(t, title, why) {

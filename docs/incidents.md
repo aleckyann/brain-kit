@@ -805,7 +805,12 @@ directory always failed the 0700 check, and with it every check that would run
 a `brain-kit` that "did not answer", while every push went through. It looked a program up
 by its bare name, without the extensions Windows adds from PATHEXT, and ran npm's sh
 launcher with no shell. The README had said Windows was not supported; the reader tried
-anyway and wrote down every error, with where it came from in the code.
+anyway and wrote down every error, with where it came from in the code. Two remarks held
+on every system: in an interview with several captures in a row, the Stop hook stopped
+the end of every reply, since Claude Code fires Stop after each one and not only when a
+session ends; and `propose` never added to an open pull request, so proposing at every
+reply would have opened pull requests overlapping on the same log, and fixing an open one
+took a merge and a second pull request.
 **Rule.** Support a platform by the way it really works, not by a shim over the POSIX
 assumptions. Look a program up the way that platform's shell does (PATHEXT); write a path
 in a permission rule in the form Claude Code matches it in (POSIX form on Windows,
@@ -814,7 +819,10 @@ open a private folder through what decides it there (the ACL, read and set by SI
 by an account name Windows translates); name a launcher the kit cannot start without a
 shell instead of failing on it; and give the platform its own scheduler. A mode or a
 message that means something on one system and nothing on another is a false alarm on
-the second, and a false alarm teaches a person to ignore the true ones.
+the second, and a false alarm teaches a person to ignore the true ones. A guard that fires
+on an event is held to what the event means: Stop is the end of a reply, so it asks once
+per path, and a change to a path already in an open pull request belongs in that pull
+request.
 **Where it lives in brain-kit.** `src/platform.mjs` (lookup, rule form, slashes, npm's
 launchers, the ACL), `src/curate/tools.mjs` and `src/curate/rule-path.mjs` (rules),
 `src/curate/user-rules.mjs` (the person's own rules judged in the same form),
@@ -822,7 +830,10 @@ launchers, the ACL), `src/curate/tools.mjs` and `src/curate/rule-path.mjs` (rule
 (`ensureStateDir`), `brain-kit doctor` checks `node-version`, `brain-kit-on-path`,
 `gh-present`, `claude-present`, `claude-real` and `state-dir-mode`, `brain-kit schedule`
 platform `taskscheduler` ([scheduling.md](scheduling.md#on-windows)),
-`test/incidents/2026-10-05-windows-first-run.test.mjs`, which the CI also runs on Windows.
+`test/incidents/2026-10-05-windows-first-run.test.mjs`, which the CI also runs on Windows;
+for the two remarks, `src/hooks/reminded.mjs` (what a session was asked), the Stop and
+SessionStart hooks, `propose`'s addition to an open pull request, and their tests in
+`test/hook-stop.test.mjs` and `test/propose.test.mjs`.
 
 ## Connectors
 

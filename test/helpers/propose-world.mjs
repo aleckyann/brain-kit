@@ -79,7 +79,8 @@ if (isView) {
   const requested = created.args[created.args.indexOf('--base') + 1];
   const base = mode === 'otherbase' ? 'bot/2026-09-22-10-00-00' : requested;
   const head = mode === 'otherhead' ? 'someone-else/branch' : args[2];
-  process.stdout.write(JSON.stringify({ baseRefName: base, headRefName: head, url: '${PR_URL}' }) + '\\n');
+  // FAKE_GH_PR_STATE: what the pull request's state reads (OPEN unless set).
+  process.stdout.write(JSON.stringify({ baseRefName: base, headRefName: head, url: '${PR_URL}', state: process.env.FAKE_GH_PR_STATE || 'OPEN' }) + '\\n');
   process.exit(0);
 }
 process.stderr.write('fake gh: unexpected call\\n');

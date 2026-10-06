@@ -483,7 +483,11 @@ pelo marketplace. Dentro de um vault:
   são exatamente o que um `propose` anterior enviou (uma proposta nunca mexe na árvore de
   trabalho, então os arquivos dela continuam mudados até o próximo `sync` devolvê-los ao
   conteúdo do branch padrão; um byte editado depois do envio torna o arquivo trabalho da
-  sessão de novo);
+  sessão de novo). O Claude Code roda esse hook no fim de cada resposta, então ele pede uma
+  vez por arquivo em cada sessão: numa conversa com várias capturas seguidas, a próxima
+  resposta só é parada se outro arquivo mudar, e a sessão seguinte diz o que ficou sem
+  propor. Um `propose` de um arquivo que já está num pull request aberto acrescenta um commit
+  nesse pull request em vez de abrir outro;
 - nove skills conduzem o motor no idioma do próprio vault: `setup`, `curate-session`,
   `capture`, `ask`, `lint`, `review-stale`, `approve`, `seed-rituals` e `briefing`;
 - o subagente `vault-reader` lê notas só com Read, Grep e Glob.

@@ -35,11 +35,17 @@
 //       src/guards/proposed.mjs; the release line says how many and on
 //       which branch; a ledger that cannot be read is one stderr line and
 //       leaves every path in)
-//   11. otherwise                                 BLOCK, naming the session's paths
+//   11. every such path asked about already       release (stderr line):
+//       in this session                           Stop fires at the end of
+//       every reply, and a session is asked once per path it changed
+//       (src/hooks/reminded.mjs, the report of 05/10/2026)
+//   12. otherwise                                 BLOCK, naming the session's
+//       paths, and recording them as asked about for this session
 //
 // Each release after rung 3 writes one line on stderr saying which rung
 // released: Claude Code keeps it in the transcript, the model does not act
-// on it. The hook reads the vault and never writes to its working tree.
+// on it. The hook reads the vault and never writes to its working tree; the
+// one file it writes is the record of rung 12, in the git directory.
 import { lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { canonicalPathMatches, loadMachine, MACHINE_FILENAME } from '../config.mjs';
@@ -52,6 +58,7 @@ import { decodeBytes } from '../io.mjs';
 import { createTranslator, resolveLang } from '../lang.mjs';
 import { stateDirFor } from '../state.mjs';
 import { parseHookPayload, resolveHookVault } from './payload.mjs';
+import { readReminded, writeReminded } from './reminded.mjs';
 
 export const LISTING_CEILING = 20;
 
@@ -164,7 +171,19 @@ export function runStop(stdinText, env = process.env) {
       if (proposed.names.size === 0) return release(withProblem(t('hook.stop.release_clean', { count: before.length })), note);
       return release(withProblem(t('hook.stop.release_proposed', { count: proposed.names.size, branches: proposed.branches, inherited: before.length })), note);
     }
+    // Asked once per path a session changed: a reply that changed only
+    // paths this session was already asked about goes through. With no
+    // session id there is no session to remember, and every reply asks.
+    const session = typeof payload.session_id === 'string' && payload.session_id !== '' ? payload.session_id : null;
+    const names = since.map((path) => decodeBytes(path));
+    if (session !== null) {
+      const reminded = readReminded(root, env);
+      const asked = reminded !== null && reminded.session === session ? reminded.paths : [];
+      if (names.every((name) => asked.includes(name))) return release(withProblem(t('hook.stop.release_reminded', { count: names.length })), note);
+      writeReminded(root, env, { session, paths: [...new Set([...asked, ...names])] });
+    }
     const lines = [blockReason(t, since, before.length, trust, proposed)];
+    if (session !== null) lines.push(t('hook.stop.block_once'));
     if (staleLock) lines.push(t('hook.stop.block_stale_lock', { command: String(holder.command), pid: holder.pid }));
     if (legacyProblem !== null) lines.push(legacyProblem);
     return block(lines.join('\n'), note);
