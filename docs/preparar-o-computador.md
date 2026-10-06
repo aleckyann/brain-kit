@@ -1,12 +1,12 @@
 # Preparar o computador
 
-O passo zero do [README](../README.md): o que ter antes do passo a passo, no Mac e no Linux
-(Ubuntu), pelo caminho oficial mais simples de cada programa. Primeiro as duas contas, depois o
+O passo zero do [README](../README.md): o que ter antes do passo a passo, no Mac, no Linux
+(Ubuntu) e no Windows, pelo caminho oficial mais simples de cada programa. Primeiro as duas contas, depois o
 terminal e os programas. Para cada programa: o que ele é, como instalar, o que aparece na tela e
 como conferir. Se a conferência já mostrar um número, o programa já está aí: pule para o próximo.
 
-Tudo aqui foi conferido nas páginas oficiais em 02/10/2026. Elas são em inglês e mudam com o
-tempo; quando a tela for diferente do que está aqui, vale a página oficial. Não damos estimativa
+Tudo aqui foi conferido nas páginas oficiais em 02/10/2026, e a parte do Windows em 06/10/2026.
+Elas são em inglês e mudam com o tempo; quando a tela for diferente do que está aqui, vale a página oficial. Não damos estimativa
 de tempo para esta parte: depende da sua internet e do que o computador já tem.
 
 ## Antes de tudo, as duas contas
@@ -33,12 +33,18 @@ usou um](https://code.claude.com/docs/en/terminal-guide) mostra o mesmo, em ingl
 
 - **No Mac:** aperte Command + espaço, digite `Terminal` e aperte Enter.
 - **No Ubuntu:** aperte Ctrl + Alt + T, ou procure "Terminal" nos aplicativos.
+- **No Windows:** o terminal do kit é o Git Bash, que vem com o Git (o item 1 da
+  [seção do Windows](#no-windows) instala os dois). Depois de instalado, aperte a tecla do Windows,
+  digite `Git Bash` e aperte Enter. Os comandos do README são os mesmos do Mac e do Linux, colados
+  no Git Bash. Dois itens da seção se instalam pelo PowerShell, que se abre do mesmo jeito,
+  digitando `PowerShell`.
 
 Para copiar um comando desta página, use o botão de copiar que aparece no canto de cada bloco. Para
-colar: Command + V no Mac, Ctrl + Shift + V no Ubuntu. Depois, aperte Enter. Quando um comando
+colar: Command + V no Mac, Ctrl + Shift + V no Ubuntu, Shift + Insert no Git Bash (ou o botão
+direito do mouse, Paste). Depois, aperte Enter. Quando um comando
 pedir a senha do computador, digite e aperte Enter: nada aparece enquanto você digita, e é assim
 mesmo. Quando esta página disser "abra um terminal novo", é uma janela nova: Command + N no Mac,
-Ctrl + Alt + T no Ubuntu.
+Ctrl + Alt + T no Ubuntu; no Windows, feche o Git Bash e abra de novo pelo menu Iniciar.
 
 ## No Mac
 
@@ -198,6 +204,96 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 
 Para entrar na sua conta do Claude, rode `claude`: na primeira vez ele pede o login e abre o
 navegador. Para sair, digite `exit`.
+
+## No Windows
+
+O Claude Code precisa do Windows 10 versão 1809 ou mais novo (ou Windows Server 2019), de 64 bits.
+O Windows é o sistema mais novo do kit: o caminho abaixo foi feito por uma pessoa de fora em
+05/10/2026, e o que ela encontrou foi corrigido. Se algo travar, [abra uma
+issue](https://github.com/aleckyann/brain-kit/issues) com o que apareceu na tela.
+
+### 1. Git e Git Bash
+
+O git guarda o histórico das suas notas, e o Git for Windows traz junto o Git Bash, o terminal
+em que você vai colar os comandos do README. Na [página oficial](https://git-scm.com/install/windows),
+clique no link de download da versão x64 (em 06/10/2026, o arquivo `Git-2.56.0.2-64-bit.exe`; o
+número muda a cada versão). Abra o arquivo e avance pelas telas sem mudar nada. Quem já usa o
+winget pode, no PowerShell, rodar o comando que a mesma página mostra:
+
+```powershell
+winget install --id Git.Git -e --source winget
+```
+
+Depois, abra o Git Bash pelo menu Iniciar e confira:
+
+```bash
+git --version
+```
+
+Deu certo se aparecer `git version` e um número.
+
+### 2. Node.js
+
+Em [nodejs.org](https://nodejs.org/en/download), escolha Windows, a versão marcada LTS (em
+06/10/2026, a 24.21.0) e o botão "Windows Installer (.msi)". Abra o arquivo e avance pelas telas
+sem mudar nada: o instalador põe o Node, o npm e a pasta dos programas que o npm instala
+(`%AppData%\npm`) no PATH, a lista de pastas onde o terminal procura os comandos. Por isso o erro
+`EACCES` do passo 1 do README não acontece no Windows. Feche o Git Bash, abra de novo e confira:
+
+```bash
+node --version
+```
+
+Deu certo se aparecer um número que começa com `v`, como `v24.21.0`.
+
+### 3. gh
+
+O `gh` é o GitHub no terminal: o kit abre os pull requests com ele. O caminho oficial no Windows
+é o winget, no PowerShell:
+
+```powershell
+winget install --id GitHub.cli
+```
+
+Ou baixe o instalador em [cli.github.com](https://cli.github.com) ("Download MSI"; em 06/10/2026,
+o `gh_2.102.0_windows_amd64.msi`) e siga as telas. O instalador muda o PATH, e a página do gh avisa
+que só uma janela nova enxerga a mudança: feche o Git Bash, abra de novo e confira:
+
+```bash
+gh --version
+```
+
+Deu certo se aparecer `gh version` e um número.
+
+### 4. Claude Code
+
+O kit precisa do Claude Code pelo [instalador oficial](https://code.claude.com/docs/en/setup), que
+põe o `claude.exe` em `%USERPROFILE%\.local\bin`. Não use a instalação pelo npm: ela deixa um
+`claude.cmd`, que o curador agendado não consegue iniciar. Abra o PowerShell (o comum, não o que
+diz "x86") e rode:
+
+```powershell
+irm https://claude.ai/install.ps1 | iex
+```
+
+Não precisa abrir como administrador. No fim aparece `Installation complete!`. Feche o Git Bash,
+abra de novo e confira:
+
+```bash
+claude --version
+```
+
+Deu certo se aparecer um número seguido de `(Claude Code)`. Se aparecer que `claude` não foi
+encontrado, a pasta dele ainda não está no PATH. A página oficial manda rodar isto no PowerShell
+e abrir um terminal novo:
+
+```powershell
+$currentPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
+[Environment]::SetEnvironmentVariable('PATH', "$currentPath;$env:USERPROFILE\.local\bin", 'User')
+```
+
+Para entrar na sua conta do Claude, rode `claude` no Git Bash: na primeira vez ele pede o login e
+abre o navegador. Para sair, digite `exit`.
 
 ## Tudo pronto?
 

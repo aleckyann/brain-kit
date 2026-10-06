@@ -273,11 +273,13 @@ The windows fire on the machine's clock. The round itself counts days in
 The entry runs the round with a `PATH` of its own, not your shell's: `machine.path_extra`,
 the directory of `claude_bin`, node's directory and the system directories. The model's
 `propose` needs two commands on it: `brain-kit`, because the vault's pre-push gate runs the
-`brain-kit` on `PATH`, and `gh`, which opens the pull request. `schedule install` looks for
-both there, adds the directory where your shell finds one that is missing, and refuses
-(exit 2) when your shell does not find it either, saying how to install it. Run it again
-after moving either one. `doctor` (check `brain-kit-on-path`) reads the installed entry's
-`PATH` back and says when it does not reach them.
+`brain-kit` on `PATH`, and `gh`, which opens the pull request. On Windows it needs a third,
+`git`, which Git for Windows keeps in a folder of its own (Claude Code also finds Git Bash
+through it), and the `PATH` is joined at `;`. `schedule install` looks for each there, adds
+the directory where your shell finds one that is missing, and refuses (exit 2) when your
+shell does not find it either, saying how to install it. Run it again after moving one.
+`doctor` (check `brain-kit-on-path`) reads the installed entry's `PATH` back and says when
+it does not reach them.
 
 What each platform does with a window missed while the machine was off or asleep:
 
@@ -287,11 +289,78 @@ What each platform does with a window missed while the machine was off or asleep
 - **launchd** (macOS): launchd has no switch to skip a missed window. It fires once at wake
   for a window missed during sleep. The round's own network wait is what covers that.
 - **cron**: a missed window is not caught up.
+- **Task Scheduler** (Windows, the only platform there): one daily trigger per window with
+  "run as soon as possible after a missed start" off, so a missed window is not caught up.
+  The task runs as you and only while you are logged on to Windows: Windows keeps git's
+  credential manager and gh's login for a logged-on session, and a round run outside one
+  could not push. At each window a terminal window opens for as long as the round lasts;
+  closing it stops the round. See [On Windows](#on-windows) below.
 
 `brain-kit schedule status` compares what is installed with what `install` would write
 now (the directories `install` added for `brain-kit` and `gh` are taken from the installed
 entry, not from the shell `status` runs in), asks the scheduler whether the entry is enabled, and prints the next three fire times
 and the last round's summary, both as DD/MM/YYYY HH:MM on the machine's clock.
+
+## On Windows
+
+Added on 06/10/2026, after the report of the first run of the kit on Windows 10 (the
+incident of 05/10/2026 in [incidents.md](incidents.md)). Everything below is what the kit
+does there; what was tested where is at the end.
+
+`brain-kit schedule install` registers a task named `brain-kit-curate-<vault_id>` in the
+Task Scheduler, from two files it writes under `%LOCALAPPDATA%\brain-kit\schedule`:
+
+- `brain-kit-curate-<vault_id>.xml`, the task: one daily trigger per window, the account
+  that installed it (by its SID) as the user it runs as, only while logged on, a new start
+  ignored while one runs, no time limit of its own (`curate.timeout_minutes` is the round's).
+  It is registered with `schtasks /Create /TN <name> /XML <file> /F`.
+- `brain-kit-curate-<vault_id>.cmd`, what the task runs: it sets `PATH` and
+  `LC_ALL=C.UTF-8` and runs `node <kit> curate <vault>`. A task of the Task Scheduler cannot
+  set an environment of its own, so this file carries it, as the unit does on Linux. It
+  switches its console to UTF-8 first, so a vault in a folder with an accent is read right.
+  `TZ` is not set, unlike on the other platforms: the programs a round starts on Windows (git
+  above all) do not read a zone name the way Node does, and the windows fire on the
+  machine's clock anyway. `install` says when that clock and `vault.timezone` differ.
+
+A percent sign anywhere in those paths (the vault, node, the kit, a `PATH` directory, your
+user folder) is refused, since cmd.exe expands it even inside quotes.
+
+`schedule status` reads the two files and asks the Task Scheduler for the task through
+PowerShell's `Get-ScheduledTask`, whose state (Ready, Disabled, Running) Windows does not
+translate. `schedule uninstall` runs `schtasks /Delete` and removes the files.
+
+The rest of a round is the same as on Linux and macOS, with five differences the kit takes
+care of:
+
+- **Read rules.** Claude Code reads a path in a permission rule in POSIX form on Windows
+  (`C:\Users\ana` is `/c/Users/ana`), so the round grants each digest as
+  `Read(//c/Users/ana/...)`, and a backslash between folders is no longer a character a rule
+  cannot carry. Before, every round with a transcript stopped before the model
+  (`digest_dir_unsafe`).
+- **The vault's project.** Claude Code names a project from a Windows path the same way,
+  colon and backslashes included: the vault at `C:\Users\ana\my-brain` is
+  `C--Users-ana-my-brain`, which is what `"{vault}"` resolves to.
+- **The state directory.** Node reports the mode 0666 for every folder on Windows, so the
+  0700 check meant nothing there. Who may open the state directory is its ACL: the kit makes
+  it open to you, the system and the machine's administrators when it creates it (and when
+  `init` or `brain-kit machine register` run), with `icacls`, by SID. `doctor` reads it back
+  with PowerShell's `Get-Acl` and fails `state-dir-mode` when another account can open it;
+  `brain-kit machine register`, run in the vault, closes it again.
+- **The command line.** Windows caps a process's command line at 32 767 characters, and a
+  round grants each digest by its own rule, some 120 characters each. When those rules would
+  pass 16 000 characters (a week of catching up can list a few hundred digests), the round
+  grants its digest folder instead, with one rule: the folder is the round's own and holds
+  only the digests of the files its plan lists, so the grant reaches the same files.
+- **claude.exe.** The round starts Claude Code with no shell, so it needs the native
+  `claude.exe` (the official installer puts it in `%USERPROFILE%\.local\bin`). npm's
+  `claude.cmd` is a batch file only cmd.exe starts: `doctor` and the round name it as such
+  instead of failing on it.
+
+What was tested where: the suite runs these paths on every machine through each function's
+platform seam and stand-ins for whoami, icacls, PowerShell and schtasks, and the CI's
+Windows job runs the same suite plus the tests that need Windows itself (a real lookup of
+node and git, a real ACL, a real task registered, read back and removed). A full scheduled
+round on a Windows machine in daily use has not been observed yet.
 
 ## What the model reads of a transcript
 
@@ -694,6 +763,8 @@ when one is set), until you stop it. What the next windows do depends on the sch
   systemd.timer(5) and launchd document; it has not been measured with the kit's own units.
 - **cron:** every window starts a new round, which finds the vault lock held, exits 75
   naming the hung round, and notifies you.
+- **Task Scheduler:** the task is set to ignore a new start while it is running, so the
+  later windows do not run, as with systemd.
 
 A hung round shows as `Vault lock: held by "curate".` in `brain-kit preflight` (and in the
 morning briefing), and `brain-kit doctor --only time-cap` says that no time limit is set.
@@ -705,6 +776,11 @@ systemctl --user status brain-kit-curate-<vault_id>.service
 systemctl --user stop brain-kit-curate-<vault_id>.service
 launchctl kill SIGTERM gui/$(id -u)/brain-kit-curate-<vault_id>   # on macOS
 ```
+
+On Windows, close the terminal window the task opened (the round gets Windows's close
+event, which Node reports as SIGHUP, and stops as it does for SIGTERM), or end the task with
+`schtasks /End /TN brain-kit-curate-<vault_id>`, which ends it without letting the round
+clean up: its lock is then reclaimed by the next round, once Windows says its process is gone.
 
 Stopping it sends the round SIGTERM: it ends its model's whole process group, lets go of
 its locks, exits 1 (`interrupted`) and notifies. To keep a cap instead, set
