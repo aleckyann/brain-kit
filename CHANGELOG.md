@@ -32,7 +32,8 @@ did not work, with the errors and where they came from in the code (docs/inciden
   keep there: open to you, the system and the administrators only, set with `icacls` by SID
   when the kit creates it and when `init` and `brain-kit machine register` run. `doctor`'s
   `state-dir-mode` reads the ACL back with PowerShell's `Get-Acl` (a warning when it cannot
-  be read), and `claude-present` and `claude-real` no longer refuse to run `claude_bin`
+  be read; Windows PowerShell is started without the PSModulePath a PowerShell 7 terminal
+  hands down, whose modules it cannot load, as the CI's Windows runner showed), and `claude-present` and `claude-real` no longer refuse to run `claude_bin`
   because of a mode of 0666.
 - `doctor` finds programs the way a shell does on Windows, with PATHEXT and a PATH spelt
   `Path`: `node-version` and `gh-present` no longer call `node.exe` and `gh.exe` missing,

@@ -233,7 +233,7 @@ const ACL_SCRIPT = [
 
 export function readAcl(path, { env = process.env, run: runner = run } = {}) {
   const r = runner('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', ACL_SCRIPT], {
-    env: { ...env, BRAIN_KIT_ACL_PATH: path },
+    env: windowsPowerShellEnv(env, { BRAIN_KIT_ACL_PATH: path }),
     timeout: ACL_TIMEOUT_MS,
   });
   if (r.status !== 0) return { ok: false, error: firstLine(r.stderr) || firstLine(r.stdout) || `status ${r.status}` };
@@ -247,6 +247,18 @@ export function readAcl(path, { env = process.env, run: runner = run } = {}) {
     entries.push({ sid, type, rights: Number(rights) });
   }
   return { ok: true, entries };
+}
+
+// The environment Windows PowerShell (powershell.exe, 5.1) is started
+// with: the caller's, `extra` added, and PSModulePath dropped. Started from
+// PowerShell 7, a process inherits a PSModulePath naming 7's own modules,
+// which 5.1 cannot load ("Get-Acl ... the module could not be loaded",
+// seen on the CI's Windows runner, whose shell is PowerShell 7): without
+// it, 5.1 builds its own default.
+export function windowsPowerShellEnv(env, extra = {}) {
+  const out = {};
+  for (const [key, value] of Object.entries(env ?? {})) if (key.toUpperCase() !== 'PSMODULEPATH') out[key] = value;
+  return { ...out, ...extra };
 }
 
 function firstLine(text) {

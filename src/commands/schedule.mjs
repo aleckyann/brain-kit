@@ -92,7 +92,7 @@ import { briefingSetting } from '../briefing/blocks.mjs';
 import { BRIEFING_TASK_PREFIX } from '../briefing/task-id.mjs';
 import { createTranslator, resolveLang, SUPPORTED_LANGS } from '../lang.mjs';
 import { signatureProblem, signatureProblems, startsWithSignature } from '../sources/transcripts-claude-code.mjs';
-import { currentUserSid, envValue, pathEntries, slashed } from '../platform.mjs';
+import { currentUserSid, envValue, pathEntries, slashed, windowsPowerShellEnv } from '../platform.mjs';
 
 const ROOT_INDEX = 'index.md';
 const ACTIONS = Object.freeze(['install', 'uninstall', 'status']);
@@ -1003,7 +1003,7 @@ const QUERY_SCRIPT = [
 function queryTask(context) {
   const runner = context.run ?? run;
   const result = runner('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', QUERY_SCRIPT], {
-    env: { ...context.env, BRAIN_KIT_TASK: context.name },
+    env: windowsPowerShellEnv(context.env, { BRAIN_KIT_TASK: context.name }),
   });
   const detail = (result.stderr || result.stdout).trim().split(/\r?\n/)[0] || context.t('schedule.no_output');
   if (result.status !== 0) return { state: 'unreadable', detail };

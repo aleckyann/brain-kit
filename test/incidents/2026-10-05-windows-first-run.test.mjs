@@ -24,7 +24,7 @@
 // read back and removed.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
   ADMINISTRATORS_SID, SYSTEM_SID, aclVerdict, currentUserSid, envValue, findProgram, isDiskRoot, npmShimTarget, pathEntries,
@@ -40,6 +40,7 @@ import { checkCli } from '../../src/guards/cli.mjs';
 import { WINDOWS_READ_RULES_BUDGET, readGrantsOf } from '../../src/commands/curate.mjs';
 import { ensureStateDir } from '../../src/state.mjs';
 import { createTranslator } from '../../src/lang.mjs';
+import { KIT_ROOT } from '../../src/version.mjs';
 import { makeTempDir } from '../helpers/tmp.mjs';
 import { makeScheduleWorld, VAULT_ID } from '../helpers/schedule-world.mjs';
 
@@ -217,6 +218,13 @@ test('the ACL is read and set by SID: private, open to another account, or not v
   assert.equal(ps.env.BRAIN_KIT_ACL_PATH, 'C:\\state', 'the path travels in the environment');
   assert.ok(!ps.args.join(' ').includes('C:\\state'), 'and never inside the script');
 
+  // Started from PowerShell 7, the PSModulePath it hands down names modules
+  // Windows PowerShell 5.1 cannot load: never passed on.
+  runner = fakeRun({ whoami: WHOAMI, 'powershell.exe': aclLines(own) });
+  aclVerdict('C:\\state', { run: runner, env: { PSModulePath: 'C:\\Program Files\\PowerShell\\7\\Modules', Path: 'C:\\Windows' } });
+  const psEnv = runner.calls.find((call) => call.program === 'powershell.exe').env;
+  assert.deepEqual(Object.keys(psEnv).sort(), ['BRAIN_KIT_ACL_PATH', 'Path']);
+
   runner = fakeRun({ whoami: WHOAMI, 'powershell.exe': aclLines([...own, [OTHER_SID]]) });
   assert.deepEqual(aclVerdict('C:\\state', { run: runner }), { state: 'open', sids: [OTHER_SID] });
   runner = fakeRun({ whoami: WHOAMI, 'powershell.exe': { status: 1, stderr: 'Get-Acl : access denied' } });
@@ -262,7 +270,10 @@ test('the state directory is made private when it is created and when init or re
 
 // A machine of Windows on this one: programs with their extensions on a
 // PATH spelt Path, npm's two launchers, and node.exe a stand-in that
-// answers its version and otherwise runs the real node.
+// answers its version and otherwise runs the real node. On Windows itself,
+// where a sh script is no program, node.exe and gh.exe are copies of the
+// node running the suite: node.exe is then a real node, and gh.exe answers
+// `--version` with node's version, which is still gh-present finding it.
 function windowsMachine() {
   const base = realpathSync(makeTempDir('brain-kit-win-doctor-'));
   const nodejs = join(base, 'Program Files', 'nodejs');
@@ -270,8 +281,13 @@ function windowsMachine() {
   const ghDir = join(base, 'Program Files', 'GitHub CLI');
   const script = join(npm, 'node_modules', 'second-brain-kit', 'bin', 'brain-kit.mjs');
   for (const d of [nodejs, ghDir, dirname(script)]) mkdirSync(d, { recursive: true });
-  writeFileSync(join(nodejs, 'node.exe'), `#!/bin/sh\nif [ "$1" = "--version" ]; then echo v${process.versions.node}; exit 0; fi\nexec '${process.execPath}' "$@"\n`, { mode: 0o755 });
-  writeFileSync(join(ghDir, 'gh.exe'), '#!/bin/sh\necho "gh version 2.60.0 (2026-01-01)"\n', { mode: 0o755 });
+  if (ON_WINDOWS) {
+    copyFileSync(process.execPath, join(nodejs, 'node.exe'));
+    copyFileSync(process.execPath, join(ghDir, 'gh.exe'));
+  } else {
+    writeFileSync(join(nodejs, 'node.exe'), `#!/bin/sh\nif [ "$1" = "--version" ]; then echo v${process.versions.node}; exit 0; fi\nexec '${process.execPath}' "$@"\n`, { mode: 0o755 });
+    writeFileSync(join(ghDir, 'gh.exe'), '#!/bin/sh\necho "gh version 2.60.0 (2026-01-01)"\n', { mode: 0o755 });
+  }
   writeFileSync(script, 'console.log("0.1.0");\n');
   writeFileSync(join(npm, 'brain-kit'), '#!/bin/sh\nexec node  "$basedir/node_modules/second-brain-kit/bin/brain-kit.mjs" "$@"\n');
   writeFileSync(join(npm, 'brain-kit.cmd'), '@ECHO off\r\n"%_prog%"  "%dp0%\\node_modules\\second-brain-kit\\bin\\brain-kit.mjs" %*\r\n');
@@ -289,7 +305,9 @@ test('doctor on Windows finds node.exe and gh.exe, and asks npm\'s launcher\'s s
   const ctx = buildContext({ root: machine.base, hasVault: false, env: machine.env, platform: 'win32', engineVersion: '0.1.0', nodeVersion: process.versions.node, execPath: join(machine.nodejs, 'node.exe') });
   const results = runChecks(ctx, ['node-version', 'brain-kit-on-path', 'gh-present'], MACHINE_CHECKS);
   assert.equal(check(results, 'node-version').status, 'ok', JSON.stringify(results));
-  assert.equal(check(results, 'gh-present').status, 'ok', JSON.stringify(results));
+  const gh = check(results, 'gh-present');
+  assert.notEqual(gh.messageKey, 'doctor.gh_present.not_installed', JSON.stringify(gh));
+  if (!ON_WINDOWS) assert.equal(gh.status, 'ok', JSON.stringify(gh));
   const kit = check(results, 'brain-kit-on-path');
   assert.deepEqual([kit.status, kit.messageKey, kit.params.version], ['ok', 'doctor.brain_kit_on_path.ok', '0.1.0'], JSON.stringify(kit));
 
@@ -379,7 +397,7 @@ test('schedule on Windows: --dry shows the batch file and the task, writes nothi
   assert.match(r.stdout, /^set "PATH=[^\n]*;C:\\Windows\\System32;C:\\Windows;/m, 'the PATH is joined at ; with the system directories of Windows');
   assert.match(r.stdout, /^set "LC_ALL=C\.UTF-8"/m);
   assert.doesNotMatch(r.stdout, /^set "TZ=/m, 'no zone name is handed to the programs of Windows');
-  assert.ok(r.stdout.includes(`"${process.execPath}" "${join(dirname(dirname(new URL('../../src/version.mjs', import.meta.url).pathname)), 'bin', 'brain-kit.mjs')}" "curate" "${w.vault}"`), r.stdout);
+  assert.ok(r.stdout.includes(`"${process.execPath}" "${join(KIT_ROOT, 'bin', 'brain-kit.mjs')}" "curate" "${w.vault}"`), r.stdout);
   assert.equal((r.stdout.match(/<CalendarTrigger>/g) ?? []).length, 3);
   assert.match(r.stdout, /<StartWhenAvailable>false<\/StartWhenAvailable>/);
   assert.match(r.stdout, /<LogonType>InteractiveToken<\/LogonType>/);
