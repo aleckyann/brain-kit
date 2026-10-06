@@ -9,7 +9,7 @@
       "name": "brain-kit",
       "source": "./",
       "description": "Second brain in OKF markdown, curated by Claude through pull requests.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "license": "MIT",
       "keywords": ["second-brain", "okf", "knowledge-base"]
     }

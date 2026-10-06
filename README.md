@@ -158,14 +158,14 @@ nas [configurações de privacidade](https://claude.ai/settings/data-privacy-con
 
 ## Em que pé está
 
-<!-- status-reviewed: 0.1.0 -->
+<!-- status-reviewed: 0.1.1 -->
 
 O kit está em construção, mas o vault de referência, usado todo dia, já roda pelo kit, e desde
 01/10/2026 também o curador agendado e o briefing. Cada versão é uma tag do git (um marcador de
-versão). A tag mais recente é a `v0.1.0`. É a primeira no npm (`second-brain-kit`), e o passo 1
-segue como o caminho indicado, porque instala o kit e o plugin juntos, na mesma versão. Os comandos do passo a
-passo foram testados pelo projeto, mas ninguém de fora fez o caminho todo ainda: você estaria entre os
-primeiros. Se travar, [abra uma issue](https://github.com/aleckyann/brain-kit/issues) com a mensagem
+versão). A tag mais recente é a `v0.1.1`. O passo 1 é o caminho indicado, porque instala o kit e o
+plugin juntos, na mesma versão, a partir da tag mais recente (no npm, `second-brain-kit`, a mais nova
+ainda é a 0.1.0). Uma pessoa de fora fez o caminho pela primeira vez em 05/10/2026, no Windows, e o
+que ela achou a 0.1.1 corrigiu: você estaria entre os primeiros. Se travar, [abra uma issue](https://github.com/aleckyann/brain-kit/issues) com a mensagem
 que apareceu na tela, ou peça ajuda a quem mandou o link. Cada fase está no [guia](docs/guia.md#status).
 
 ## O que você precisa
