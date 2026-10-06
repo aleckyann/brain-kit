@@ -5,37 +5,38 @@
 // and `--version` printed error text instead of a number. PATH finding the
 // file proves nothing.
 //
-// Problems: `missing` (no such file on the path given or on PATH), `stub`
+// Problems: `missing` (no such file on the path given or on PATH), `batch`
+// (a Windows batch launcher, which only cmd.exe starts), `stub`
 // (a file under 2 KB), `version` (`--version` fails, times out, or prints
 // something that does not start with a dotted version number).
 import { accessSync, constants, statSync } from 'node:fs';
-import { delimiter, isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
+import { findProgram, isBatchFile, pathEntries } from '../platform.mjs';
 import { spawnSync } from 'node:child_process';
 
 export const STUB_MAX_BYTES = 2048;
 const VERSION_RE = /^\d+\.\d+\.\d+/;
 const VERSION_TIMEOUT_MS = 30000;
 
-// A bare name is looked up on PATH, the way spawn would find it.
-export function resolveCliPath(claudeBin, env = process.env) {
+// A bare name is looked up on PATH, the way a shell would find it (on
+// Windows with PATHEXT's extensions: the native install is claude.exe).
+export function resolveCliPath(claudeBin, env = process.env, platform = process.platform) {
   if (typeof claudeBin !== 'string' || claudeBin === '') return null;
   if (isAbsolute(claudeBin) || claudeBin.includes('/') || claudeBin.includes('\\')) return resolve(claudeBin);
-  for (const dir of (env.PATH ?? '').split(delimiter)) {
-    if (dir === '') continue;
-    const candidate = join(dir, claudeBin);
+  const executable = (candidate) => {
     try {
       accessSync(candidate, constants.X_OK);
-      if (statSync(candidate).isFile()) return candidate;
+      return statSync(candidate).isFile();
     } catch {
-      // not here
+      return false;
     }
-  }
-  return null;
+  };
+  return findProgram(claudeBin, pathEntries(env, platform), { platform, env, executable });
 }
 
-export function checkCli(claudeBin, { env = process.env, timeoutMs = VERSION_TIMEOUT_MS } = {}) {
+export function checkCli(claudeBin, { env = process.env, timeoutMs = VERSION_TIMEOUT_MS, platform = process.platform } = {}) {
   const bin = String(claudeBin);
-  const path = resolveCliPath(claudeBin, env);
+  const path = resolveCliPath(claudeBin, env, platform);
   let size = null;
   if (path !== null) {
     try {
@@ -47,6 +48,12 @@ export function checkCli(claudeBin, { env = process.env, timeoutMs = VERSION_TIM
   }
   if (size === null) {
     return { ok: false, problem: 'missing', version: null, messageKey: 'harness.cli.missing', params: { bin } };
+  }
+  // A batch launcher (npm's claude.cmd on Windows) is started by cmd.exe
+  // only, and the kit never runs a shell (src/exec.mjs): the round could not
+  // start it, whatever its size.
+  if (isBatchFile(path, platform)) {
+    return { ok: false, problem: 'batch', version: null, messageKey: 'harness.cli.batch', params: { bin: path } };
   }
   if (size < STUB_MAX_BYTES) {
     const bytes = size;

@@ -296,8 +296,10 @@ O `machine` mostra e edita o `machine.json` local da máquina.
 As rodadas agendadas são opcionais: o primeiro pull request não precisa delas. Linux é a
 plataforma de referência para agendamento (timers de usuário do systemd, que precisam de
 `loginctl enable-linger` para rodar com você deslogado); as entradas de macOS (launchd) e cron
-são geradas e testadas sem que a suíte de testes as instale; Windows fica fora do escopo de
-agendamento.
+são geradas e testadas sem que a suíte de testes as instale. No Windows, desde 06/10/2026, o
+`schedule install` registra uma tarefa no Agendador de Tarefas, que roda só com você conectado e
+abre uma janela do terminal pelo tempo da rodada (não a feche); o que muda no Windows está em
+[docs/scheduling.md](scheduling.md#on-windows), em inglês.
 
 O `curate` roda uma rodada: lê as sessões do Claude Code dos projetos que a sua
 configuração lista, escolhidas pelo horário das mensagens, e as entrega a um modelo que só

@@ -34,7 +34,7 @@
 // repository, and a vault whose push runs no hook would read as gated.
 import { accessSync, constants as fsConstants, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, delimiter, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { run } from '../exec.mjs';
 import { DEFAULT_HOST, authArgs, authVerdict, hostOfRemote, loginCommand } from '../gh.mjs';
 import { EXIT } from '../exit-codes.mjs';
@@ -47,6 +47,7 @@ import { KIT_ROOT, kitVersion } from '../version.mjs';
 // running it, and the node on PATH, by that same number.
 import { MINIMUM_NODE_MAJOR } from '../node-guard.mjs';
 import { localGitVarNames, withoutLocalGitVars } from '../git-env.mjs';
+import { aclVerdict, findProgram, isBatchFile, isDrivePath, isWindows, npmShimTarget, pathEntries, startsWithoutShell, withPathPrefix } from '../platform.mjs';
 import { loadPatterns } from '../leak.mjs';
 import { SUPPORTED_LANGS } from '../lang.mjs';
 import { TEMPLATE_HOOK } from '../init/skeleton.mjs';
@@ -59,7 +60,7 @@ import { legacyLockSetting, probeLegacyLock } from '../guards/legacy-lock.mjs';
 import { buildArgv, rulesIn, runModel, unscopedRules } from '../harness/claude-code.mjs';
 import { checkIsolation } from '../guards/isolation.mjs';
 import { CONNECTOR_STATES, connectorStateMessage, connectorStates } from '../guards/connectors.mjs';
-import { blockingMessage, userSettingsFiles } from '../curate/user-rules.mjs';
+import { blockingMessage, pathSpace, userSettingsFiles } from '../curate/user-rules.mjs';
 import { unsafeRuleCharacters } from '../curate/rule-path.mjs';
 import { LEGACY_PACK_KEYWORDS, keywordMatchers, legacyPackList } from '../rules/privacy-keywords.mjs';
 import { SOURCES } from '../sources/index.mjs';
@@ -69,7 +70,7 @@ import { addDays, daysBetween, localDay, readWatermark, WatermarkError } from '.
 // module uses the other's exports while it loads, only inside functions,
 // so either may be imported first (test/doctor.test.mjs loads each
 // on its own in a fresh process to hold that).
-import { installedRoundPath, readBriefingTask, ROUND_COMMANDS, roundPath, runScheduleSync } from '../commands/schedule.mjs';
+import { installedRoundPath, pathSeparator, readBriefingTask, roundCommands, roundPath, runScheduleSync } from '../commands/schedule.mjs';
 // The briefing's own modules, asked the same questions `prompt briefing`
 // asks: its reading of briefing.blocks and of the question queue.
 import { blockProblemLine, briefingSetting, validateBriefingBlocks } from '../briefing/blocks.mjs';
@@ -140,9 +141,11 @@ function isExecutableFile(path) {
   }
 }
 
-export function expandHome(path, env) {
+// `~\` is the home directory too on Windows, where a path may be spelt
+// with either separator.
+export function expandHome(path, env, platform = process.platform) {
   if (path === '~') return env.HOME || homedir();
-  if (path.startsWith('~/')) return join(env.HOME || homedir(), path.slice(2));
+  if (path.startsWith('~/') || (isWindows(platform) && path.startsWith('~\\'))) return join(env.HOME || homedir(), path.slice(2));
   return path;
 }
 
@@ -151,17 +154,21 @@ export function expandHome(path, env) {
 // means "from wherever you are"; both are skipped, since a program that
 // resolves only from wherever doctor happened to be started is not one a
 // hook or a scheduled run can be relied on to find.
-export function findExecutable(name, dirs) {
-  for (const dir of dirs) {
-    if (!isAbsolute(dir)) continue;
-    const candidate = join(dir, name);
-    if (isExecutableFile(candidate)) return candidate;
-  }
-  return null;
+// On Windows the name is looked up with PATHEXT's extensions, as a shell
+// does (src/platform.mjs): `node` is node.exe there, and the name alone was
+// never found (the report of 05/10/2026).
+export function findExecutable(name, dirs, { platform = process.platform, env = process.env } = {}) {
+  return findProgram(name, dirs, { platform, env, executable: isExecutableFile });
 }
 
-function pathDirs(env) {
-  return String(env.PATH ?? '').split(delimiter);
+function pathDirs(env, platform = process.platform) {
+  return pathEntries(env, platform);
+}
+
+// What a check passes to findExecutable: the machine's own platform and
+// environment (PATHEXT on Windows).
+function lookup(ctx) {
+  return { platform: ctx.platform, env: ctx.env };
 }
 
 function realOrSelf(path) {
@@ -225,14 +232,20 @@ function readJsonFile(file) {
 // and be reported as crashed, never read a path that cannot exist.
 export function buildContext({
   root, hasVault = true, env = process.env, nodeVersion = process.versions.node, execPath = process.execPath, engineVersion = kitVersion(), now = new Date(),
-  probeTimeoutMs = PROBE_INIT_TIMEOUT_MS, ghTimeoutMs = PROBE_TIMEOUT_MS,
+  probeTimeoutMs = PROBE_INIT_TIMEOUT_MS, ghTimeoutMs = PROBE_TIMEOUT_MS, platform = process.platform, acl = aclVerdict,
 }) {
   const memo = new Map();
   const once = (key, compute) => () => {
     if (!memo.has(key)) memo.set(key, compute());
     return memo.get(key);
   };
-  const ctx = { root, hasVault, env, nodeVersion, execPath, engineVersion, now, probeTimeoutMs, ghTimeoutMs, probe: null };
+  // Each path's ACL is read once (a PowerShell start per read, on Windows).
+  const acls = new Map();
+  const aclOnce = (path, deps) => {
+    if (!acls.has(path)) acls.set(path, acl(path, deps));
+    return acls.get(path);
+  };
+  const ctx = { root, hasVault, env, nodeVersion, execPath, engineVersion, now, probeTimeoutMs, ghTimeoutMs, platform, acl: aclOnce, probe: null };
   ctx.localGitVars = once('localGitVars', () => localGitVarNames(env));
   if (!hasVault) return ctx;
   ctx.realRoot = once('realRoot', () => realpathSync(root));
@@ -263,7 +276,7 @@ function nodeVersion(ctx) {
   // own launcher finds its node through PATH too. Run as
   // `node /path/to/brain-kit.mjs doctor`, the answer above is about a Node
   // no push ever uses, so the one on PATH is asked as well.
-  const bin = findExecutable('node', pathDirs(ctx.env));
+  const bin = findExecutable('node', pathDirs(ctx.env, ctx.platform), lookup(ctx));
   if (!bin) {
     return { id, status: 'fail', messageKey: 'doctor.node_version.path_missing', params: { version } };
   }
@@ -447,14 +460,25 @@ function hooksPath(ctx) {
 // why. The brain-kit found is also asked for its version, because a
 // launcher that cannot start (no node on PATH, a half-installed package)
 // is found by `command -v` and still refuses every push.
+//
+// On Windows the launchers are npm's (src/platform.mjs, npmShimTarget):
+// `brain-kit`, a sh script for Git Bash, which is what runs the hook, and
+// `brain-kit.cmd`; neither starts without a shell. Each runs `node <the
+// package's brain-kit.mjs>`, so that is what is asked, with the node on
+// PATH, the one the launcher would start (the report of 05/10/2026: run
+// as it was, the sh launcher answered status 1 and the check said every
+// push was refused, while every push went through).
 function brainKitOnPath(ctx) {
   const id = 'brain-kit-on-path';
   const running = ctx.engineVersion;
-  const bin = findExecutable('brain-kit', pathDirs(ctx.env));
+  const bin = findExecutable('brain-kit', pathDirs(ctx.env, ctx.platform), lookup(ctx));
   if (!bin) {
     return { id, status: 'fail', messageKey: 'doctor.brain_kit_on_path.missing', params: {} };
   }
-  const r = probe(ctx, bin, ['--version']);
+  const r = askKitVersion(ctx, bin);
+  if (r === null) {
+    return { id, status: 'warn', messageKey: 'doctor.brain_kit_on_path.launcher_unread', params: { bin } };
+  }
   if (r.status !== 0) {
     return { id, status: 'fail', messageKey: 'doctor.brain_kit_on_path.failed', params: { bin, status: r.status } };
   }
@@ -472,6 +496,17 @@ function brainKitOnPath(ctx) {
   return { id, status: 'ok', messageKey: 'doctor.brain_kit_on_path.ok', params: { bin, version: match[1] } };
 }
 
+// `<bin> --version`, or on Windows `node <script> --version` for the script
+// npm's launcher at `bin` starts; null when that launcher cannot be read
+// (not one npm wrote) or there is no node on PATH to start its script with.
+function askKitVersion(ctx, bin) {
+  if (startsWithoutShell(bin, ctx.platform)) return probe(ctx, bin, ['--version']);
+  const script = npmShimTarget(bin) ?? npmShimTarget(bin.replace(/\.(cmd|bat|ps1)$/i, ''));
+  const node = findExecutable('node', pathDirs(ctx.env, ctx.platform), lookup(ctx));
+  if (script === null || node === null || !isRegularFile(script)) return null;
+  return probe(ctx, node, [script, '--version']);
+}
+
 // The scheduled round runs with its own PATH, not the shell's, and its
 // `propose` needs brain-kit (the gate) and gh (the pull request) on it
 // (final review I1, 24/09/2026). The installed entry's PATH is read back
@@ -484,17 +519,19 @@ function roundPathProblem(ctx) {
   if (!read.ok || !isObject(read.value) || read.value.curate?.enabled === false) return null;
   const machine = machineObject(ctx);
   if (machine === null || validateMachine(machine).length > 0) return null;
-  const installed = installedRoundPath({ machine, env: ctx.env });
+  const installed = installedRoundPath({ machine, env: ctx.env, os: ctx.platform });
+  const commands = roundCommands(isWindows(ctx.platform) ? 'taskscheduler' : null);
   if (installed !== null) {
-    const missing = ROUND_COMMANDS.filter((command) => findExecutable(command, installed.path.split(':')) === null);
+    const missing = commands.filter((command) => findExecutable(command, installed.path.split(installed.separator), lookup(ctx)) === null);
     if (missing.length === 0) return null;
     return { kind: 'unit_missing_installed', params: { file: installed.file, path: installed.path, commands: missing.join(', ') } };
   }
   const extra = Array.isArray(machine.path_extra) ? machine.path_extra : [];
-  const claude = typeof machine.claude_bin === 'string' ? resolveClaude(machine.claude_bin, extra, ctx.env, ctx.root) : null;
-  const computed = roundPath({ extra, claude, node: process.execPath, env: ctx.env });
+  const claude = typeof machine.claude_bin === 'string' ? resolveClaude(machine.claude_bin, extra, ctx.env, ctx.root, ctx.platform) : null;
+  const platform = isWindows(ctx.platform) ? 'taskscheduler' : null;
+  const computed = roundPath({ extra, claude, node: process.execPath, env: ctx.env, platform, os: ctx.platform });
   if (computed.missing.length === 0) return null;
-  return { kind: 'unit_missing_computed', params: { path: computed.dirs.join(':'), commands: computed.missing.join(', ') } };
+  return { kind: 'unit_missing_computed', params: { path: computed.dirs.join(pathSeparator(platform)), commands: computed.missing.join(', ') } };
 }
 
 function configValid(ctx) {
@@ -622,6 +659,7 @@ function stateDirMode(ctx) {
   if (!dirStats || !dirStats.isDirectory()) {
     return { id, status: 'fail', messageKey: 'doctor.state_dir_mode.dir_missing', params: { dir } };
   }
+  if (isWindows(ctx.platform)) return stateDirAcl(ctx, id, dir, file);
   if ((dirStats.mode & 0o777) !== STATE_DIR_MODE) {
     return { id, status: 'fail', messageKey: 'doctor.state_dir_mode.dir_mode', params: { dir, mode: octal(dirStats.mode), expected: octal(STATE_DIR_MODE) } };
   }
@@ -638,6 +676,30 @@ function stateDirMode(ctx) {
     return { id, status: 'fail', messageKey: 'doctor.state_dir_mode.file_mode', params: { file, mode: octal(fileStats.mode), expected: octal(MACHINE_FILE_MODE) } };
   }
   return { id, status: 'ok', messageKey: 'doctor.state_dir_mode.ok', params: { dir } };
+}
+
+// The same question on Windows, where Node reports 0666 for every directory
+// and file and the answer is the ACL (src/platform.mjs, the report of
+// 05/10/2026): the directory and machine.json must be open to the person,
+// the system and the administrators only. An ACL that cannot be read (no
+// PowerShell, a policy that stops it) is a warning: not found wanting,
+// only not verified.
+const TIGHTEN_COMMAND = 'brain-kit machine register';
+
+function stateDirAcl(ctx, id, dir, file) {
+  if (!isRegularFile(file)) {
+    return { id, status: 'fail', messageKey: 'doctor.state_dir_mode.file_missing', params: { file } };
+  }
+  for (const path of [dir, file]) {
+    const verdict = ctx.acl(path, { env: ctx.env });
+    if (verdict.state === 'unverified') {
+      return { id, status: 'warn', messageKey: 'doctor.state_dir_mode.acl_unverified', params: { path, error: verdict.error } };
+    }
+    if (verdict.state === 'open') {
+      return { id, status: 'fail', messageKey: 'doctor.state_dir_mode.acl_open', params: { path, sids: verdict.sids, command: TIGHTEN_COMMAND } };
+    }
+  }
+  return { id, status: 'ok', messageKey: 'doctor.state_dir_mode.ok_acl', params: { dir } };
 }
 
 // Fix round 1 of 01/10/2026 (Important 5): a round grants the model each
@@ -704,7 +766,7 @@ function ghPresent(ctx) {
   const id = 'gh-present';
   // Absent from PATH is said as absent: "did not answer" reads like a
   // broken gh. The one found is the one asked.
-  const bin = findExecutable('gh', pathDirs(ctx.env));
+  const bin = findExecutable('gh', pathDirs(ctx.env, ctx.platform), lookup(ctx));
   if (!bin) {
     return { id, status: 'warn', messageKey: 'doctor.gh_present.not_installed', params: {} };
   }
@@ -735,7 +797,7 @@ function ghPresent(ctx) {
 function ghAuth(ctx) {
   const id = 'gh-auth';
   const skipped = { id, status: 'ok', messageKey: 'doctor.gh_auth.skipped', params: {} };
-  const bin = findExecutable('gh', pathDirs(ctx.env));
+  const bin = findExecutable('gh', pathDirs(ctx.env, ctx.platform), lookup(ctx));
   if (!bin) return skipped;
   // With no vault there is no origin to read: the question is about the host a
   // first `gh repo create` would use.
@@ -754,19 +816,21 @@ function ghAuth(ctx) {
 // the directories a scheduled run adds to PATH so it finds what a login
 // shell would. A value with a slash in it is a path, resolved from the
 // vault, never from wherever doctor was started.
-export function resolveClaude(bin, extra, env, root) {
+export function resolveClaude(bin, extra, env, root, platform = process.platform) {
   const expanded = expandHome(bin, env);
-  if (expanded.includes('/')) {
+  if (expanded.includes('/') || (isWindows(platform) && (expanded.includes('\\') || isDrivePath(expanded)))) {
     const candidate = resolve(root, expanded);
     return isExecutableFile(candidate) ? candidate : null;
   }
-  return findExecutable(expanded, [...extra.map((dir) => expandHome(String(dir), env)), ...pathDirs(env)]);
+  return findExecutable(expanded, [...extra.map((dir) => expandHome(String(dir), env)), ...pathDirs(env, platform)], { platform, env });
 }
 
 // True when the file, or the directory holding it, can be written by
 // anyone but its owner: then what it names is not the person's choice
-// alone.
-function writableByOthers(path) {
+// alone. On Windows, when its ACL opens it to anyone else, or cannot be
+// read (src/platform.mjs): what cannot be shown private is not trusted.
+function writableByOthers(path, ctx) {
+  if (isWindows(ctx.platform)) return ctx.acl(path, { env: ctx.env }).state !== 'private';
   try {
     return (statSync(path).mode & 0o022) !== 0;
   } catch {
@@ -789,11 +853,11 @@ function claudePresent(ctx) {
   if (validateMachine(machine).length > 0) {
     return { id, status: 'warn', messageKey: 'doctor.claude_present.machine_invalid', params: { file } };
   }
-  if (writableByOthers(file) || writableByOthers(ctx.stateDir)) {
+  if (writableByOthers(file, ctx) || writableByOthers(ctx.stateDir, ctx)) {
     return { id, status: 'warn', messageKey: 'doctor.claude_present.machine_writable', params: { file } };
   }
   const extra = Array.isArray(machine.path_extra) ? machine.path_extra : [];
-  const resolved = resolveClaude(bin, extra, ctx.env, ctx.root);
+  const resolved = resolveClaude(bin, extra, ctx.env, ctx.root, ctx.platform);
   if (!resolved) {
     return { id, status: 'warn', messageKey: 'doctor.claude_present.not_found', params: { bin } };
   }
@@ -807,6 +871,11 @@ function claudePresent(ctx) {
 // prints a version, and `git` or `node` named as claude_bin is not claude.
 // The same reading whether the file was named by machine.json or found on PATH.
 function claudeAnswersVersion(ctx, id, resolved) {
+  // A batch launcher cannot be started without a shell (src/platform.mjs):
+  // asked, it would fail, and read as a broken install it is not.
+  if (!startsWithoutShell(resolved, ctx.platform)) {
+    return { id, status: 'warn', messageKey: 'doctor.claude_present.batch', params: { bin: resolved } };
+  }
   const r = probe(ctx, resolved, ['--version']);
   if (r.status !== 0) {
     return { id, status: 'warn', messageKey: 'doctor.claude_present.failed', params: { bin: resolved, status: r.status } };
@@ -826,7 +895,7 @@ const DEFAULT_CLAUDE_BIN = 'claude';
 
 function claudePresentOnMachine(ctx) {
   const id = 'claude-present';
-  const resolved = resolveClaude(DEFAULT_CLAUDE_BIN, [], ctx.env, ctx.root);
+  const resolved = resolveClaude(DEFAULT_CLAUDE_BIN, [], ctx.env, ctx.root, ctx.platform);
   if (!resolved) {
     return { id, status: 'warn', messageKey: 'doctor.claude_present.not_on_path', params: {} };
   }
@@ -974,11 +1043,11 @@ function claudeToRun(ctx, id) {
   if (validateMachine(machine).length > 0) {
     return { result: { id, status: 'warn', messageKey: 'doctor.claude_present.machine_invalid', params: { file } } };
   }
-  if (writableByOthers(file) || writableByOthers(ctx.stateDir)) {
+  if (writableByOthers(file, ctx) || writableByOthers(ctx.stateDir, ctx)) {
     return { result: { id, status: 'warn', messageKey: 'doctor.claude_present.machine_writable', params: { file } } };
   }
   const extra = Array.isArray(machine.path_extra) ? machine.path_extra : [];
-  const resolved = resolveClaude(bin, extra, ctx.env, ctx.root);
+  const resolved = resolveClaude(bin, extra, ctx.env, ctx.root, ctx.platform);
   if (!resolved) {
     return { result: { id, status: 'fail', messageKey: 'doctor.claude_real.not_found', params: { bin, command: SET_CLAUDE_COMMAND } } };
   }
@@ -1002,9 +1071,12 @@ function claudeReal(ctx) {
 // The round's own guard (src/guards/cli.mjs) asked about the file at `bin`,
 // whichever way it was named.
 function claudeIsRealCli(ctx, id, bin) {
-  const cli = checkCli(bin, { env: { ...withoutLocalGitVars(ctx.env, ctx.localGitVars()), LC_ALL: 'C' }, timeoutMs: PROBE_TIMEOUT_MS });
+  const cli = checkCli(bin, { env: { ...withoutLocalGitVars(ctx.env, ctx.localGitVars()), LC_ALL: 'C' }, timeoutMs: PROBE_TIMEOUT_MS, platform: ctx.platform });
   if (cli.problem === 'missing') {
     return { id, status: 'fail', messageKey: 'doctor.claude_real.not_found', params: { bin, command: SET_CLAUDE_COMMAND } };
+  }
+  if (cli.problem === 'batch') {
+    return { id, status: 'fail', messageKey: 'doctor.claude_real.batch', params: { bin, command: SET_CLAUDE_COMMAND } };
   }
   if (cli.problem === 'stub') {
     return { id, status: 'fail', messageKey: 'doctor.claude_real.stub', params: { bin, bytes: cli.params.bytes } };
@@ -1020,7 +1092,7 @@ function claudeIsRealCli(ctx, id, bin) {
 // leaves the absence of gh to gh-present).
 function claudeRealOnMachine(ctx) {
   const id = 'claude-real';
-  const bin = resolveClaude(DEFAULT_CLAUDE_BIN, [], ctx.env, ctx.root);
+  const bin = resolveClaude(DEFAULT_CLAUDE_BIN, [], ctx.env, ctx.root, ctx.platform);
   if (!bin) return { id, status: 'ok', messageKey: 'doctor.claude_real.skipped', params: {} };
   return claudeIsRealCli(ctx, id, bin);
 }
@@ -1353,7 +1425,7 @@ function scheduleCheck(ctx) {
   const quiet = { write: () => {} };
   let code;
   try {
-    code = runScheduleSync(['status', ctx.root], { stdout: quiet, stderr: quiet }, record, { env: ctx.env, cwd: ctx.root, now: ctx.now });
+    code = runScheduleSync(['status', ctx.root], { stdout: quiet, stderr: quiet }, record, { env: ctx.env, cwd: ctx.root, now: ctx.now, platform: ctx.platform });
   } catch (error) {
     return { id, status: 'warn', messageKey: 'doctor.schedule.unknown', params: { error: error.message } };
   }
@@ -1415,7 +1487,7 @@ function notifyCheck(ctx) {
   }
   const program = argv[0];
   const extra = Array.isArray(machine.path_extra) ? machine.path_extra : [];
-  const resolved = resolveClaude(program, extra, ctx.env, ctx.root);
+  const resolved = resolveClaude(program, extra, ctx.env, ctx.root, ctx.platform);
   if (!resolved) {
     return { id, status: 'warn', messageKey: 'doctor.notify.not_found', params: { program, logs, command: SET_NOTIFY_COMMAND } };
   }
@@ -1520,10 +1592,12 @@ const GLOB_CHARACTERS = Object.freeze(['*', '?', '[', '{']);
 
 // A path as written and, when it exists, with every link followed: a scope
 // inside either spelling of the vault is inside it.
-function spellingsOf(path) {
-  const written = resolve(path);
+// On Windows both in the POSIX form a rule's path is read in
+// (src/curate/user-rules.mjs, pathSpace).
+function spellingsOf(path, P = pathSpace()) {
+  const written = P.resolve(P.of(path));
   try {
-    const real = realpathSync(written);
+    const real = P.real(written);
     return real === written ? [written] : [written, real];
   } catch {
     return [written];
@@ -1538,7 +1612,8 @@ function spellingsOf(path) {
 // alternatives could climb out of the literal prefix (the text before the
 // first glob character), so none of those is shown to stay inside. A prefix
 // that stops inside a name (`brain*`) reaches every name starting with it.
-function staysInVault(scope, vaults, homes) {
+function staysInVault(scope, vaults, homes, P = pathSpace()) {
+  const sep = P.sep;
   let bases = vaults;
   let rest = scope;
   if (scope.startsWith('//')) {
@@ -1559,18 +1634,18 @@ function staysInVault(scope, vaults, homes) {
   const literal = rest.slice(0, end);
   const partial = end < rest.length && literal !== '' && !literal.endsWith('/');
   return bases.some((base) => {
-    const path = resolve(base, literal);
+    const path = P.resolve(base, literal);
     return vaults.some((vault) => (path === vault && !partial) || path.startsWith(vault + sep));
   });
 }
 
-function reachesBeyondVault(rule, vaults, homes) {
+function reachesBeyondVault(rule, vaults, homes, P) {
   const m = /^([A-Za-z]+)(?:\((.*)\))?$/s.exec(rule);
   if (m === null) return false;
   if (m[1] === 'Bash') return true;
   // A path tool with no scope at all is config-valid's failure, not this.
   if (!PATH_RULE_TOOLS.includes(m[1]) || m[2] === undefined) return false;
-  return !staysInVault(m[2].trim(), vaults, homes);
+  return !staysInVault(m[2].trim(), vaults, homes, P);
 }
 
 function roundScope(ctx) {
@@ -1578,11 +1653,12 @@ function roundScope(ctx) {
   const plan = ctx.connectors();
   if (plan.unknown) return { id, status: 'warn', messageKey: 'doctor.curate.config_unknown', params: { file: ctx.configFile } };
   if (plan.disabled) return curateDisabled(ctx, id);
-  const vaults = spellingsOf(ctx.root);
-  const homes = spellingsOf(ctx.env.HOME || homedir());
+  const P = pathSpace(ctx.platform);
+  const vaults = spellingsOf(ctx.root, P);
+  const homes = spellingsOf(ctx.env.HOME || homedir(), P);
   const extra = plan.config.curate?.allowed_tools_extra;
   const rules = (Array.isArray(extra) ? extra : []).filter((arg) => typeof arg === 'string').flatMap((arg) => rulesIn(arg));
-  const beyond = rules.filter((rule) => reachesBeyondVault(rule, vaults, homes));
+  const beyond = rules.filter((rule) => reachesBeyondVault(rule, vaults, homes, P));
   const results = [];
   if (beyond.length > 0) {
     results.push({ id, status: 'warn', messageKey: 'doctor.round_scope.extra', params: { setting: 'curate.allowed_tools_extra', file: CONFIG_FILENAME, rules: beyond } });
@@ -1904,7 +1980,7 @@ function connectorsCheck(ctx) {
 function probeEnv(ctx, machine) {
   const base = withoutLocalGitVars(ctx.env, ctx.localGitVars());
   const extra = (Array.isArray(machine.path_extra) ? machine.path_extra : []).map((dir) => expandHome(String(dir), ctx.env));
-  return { ...base, PATH: [...extra, base.PATH ?? ''].filter((part) => part !== '').join(delimiter) };
+  return withPathPrefix(base, extra, ctx.platform);
 }
 
 // `brain-kit doctor --probe`: the round's own connector-mode launch (its

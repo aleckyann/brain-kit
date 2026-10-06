@@ -61,6 +61,7 @@
 import { isUtf8 } from 'node:buffer';
 import { readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
+import { envValue } from './platform.mjs';
 import { run, runOrThrow } from './exec.mjs';
 import { decodeBytes } from './io.mjs';
 import { CONFIG_FILENAME } from './config.mjs';
@@ -119,7 +120,7 @@ function gitArgs(...args) {
 const localNamesByPath = new Map();
 
 export function gitEnv(env = process.env) {
-  const key = String(env.PATH ?? '');
+  const key = String(envValue(env, 'PATH') ?? '');
   if (!localNamesByPath.has(key)) localNamesByPath.set(key, localGitVarNames(env));
   return { ...withoutLocalGitVars(env, localNamesByPath.get(key)), GIT_OPTIONAL_LOCKS: '0', LC_ALL: 'C' };
 }

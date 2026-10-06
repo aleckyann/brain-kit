@@ -55,10 +55,11 @@ requests no GitHub, até pelo celular. Contar uma novidade ao vault, por enquant
 Ainda não é para você se:
 
 - não quer criar uma conta no GitHub;
-- não quer assinar um plano pago do Claude e passar a conversar com ele pelo Claude Code;
-- usa Windows: este passo a passo é para o terminal do Linux e do macOS, os únicos testados, e o curador agendado não roda no Windows.
+- não quer assinar um plano pago do Claude e passar a conversar com ele pelo Claude Code.
 
 Nunca usou o terminal? Tudo bem: o [passo zero](docs/preparar-o-computador.md) ensina, e é copiar e colar.
+
+Usa Windows? Também serve, com os mesmos comandos colados no Git Bash, o terminal que vem com o Git: o [passo zero](docs/preparar-o-computador.md#no-windows) mostra como. É o sistema mais novo do kit, suportado desde 06/10/2026.
 
 ## Como funciona
 
@@ -170,7 +171,7 @@ que apareceu na tela, ou peça ajuda a quem mandou o link. Cada fase está no [g
 ## O que você precisa
 
 Nunca instalou nada disso? [Comece por aqui](docs/preparar-o-computador.md): o passo zero, para
-Mac e Linux, começa pelas duas contas e mostra como abrir o terminal e instalar cada item.
+Mac, Linux e Windows, começa pelas duas contas e mostra como abrir o terminal e instalar cada item.
 
 - **Node.js 22 ou mais novo (o 24 LTS é o recomendado)**, o motor que roda o kit; LTS é a versão de suporte longo: [nodejs.org](https://nodejs.org).
 - **git**, que guarda o histórico das notas: [git-scm.com](https://git-scm.com/downloads).
@@ -340,7 +341,7 @@ usadas e podem ser apagadas; a mais nova não.
 ## Quer mais?
 
 - [Guia completo](docs/guia.md): tudo em detalhe e em português, dos comandos à segunda máquina, do curador agendado à tabela de fases.
-- [Preparar o computador](docs/preparar-o-computador.md): o passo zero, no Mac e no Linux.
+- [Preparar o computador](docs/preparar-o-computador.md): o passo zero, no Mac, no Linux e no Windows.
 - [docs/scheduling.md](docs/scheduling.md) e [docs/connectors.md](docs/connectors.md): as rodadas agendadas, e a agenda e as notas de reunião pelos conectores do claude.ai (em inglês).
 - [docs/security.md](docs/security.md) e [SECURITY.md](SECURITY.md): o que isola a IA e o que as travas não cobrem (em inglês).
 - [docs/incident-response.md](docs/incident-response.md): o que fazer se uma senha ou um dado pessoal vazar (em inglês).

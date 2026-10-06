@@ -7,7 +7,7 @@ Names of people, companies and tools were removed on purpose.
 
 Seventy three lessons were extracted from the original vault, written up as seventy
 two entries: the four day curation outage of September 2026 produced two lessons about
-the same incident and is written up once, under 13/09/2026. Nine entries were added
+the same incident and is written up once, under 13/09/2026. Ten entries were added
 since, each dated: the leak gate that blocked its own release tag (18/09/2026), the
 selection of transcripts by modification time (24/09/2026), the settings a headless
 run inherits (24/09/2026), which the kit's own build produced, the round that took its
@@ -16,7 +16,8 @@ kit, and, all five found in real runs on the kit, the attachments the connector
 answered "not found" (30/09/2026), the expired login a round reported with no reason
 (30/09/2026), the transcripts too big for the Read tool (01/10/2026), the envelope
 the desktop application wraps a scheduled task's prompt in (01/10/2026) and the
-owner's own health left out of the log on purpose (02/10/2026). Eighty one
+owner's own health left out of the log on purpose (02/10/2026), and the first run of the
+kit on Windows, reported by a reader (05/10/2026). Eighty two
 entries follow. Where a lesson carries no date of its own,
 the entry says "Undated" and explains why.
 
@@ -787,6 +788,41 @@ tools, no skills and reads scoped to the vault and the listed transcripts,
 person's user settings on purpose and mirrors every allow rule in them as a deny
 (`src/curate/user-rules.mjs`), `test/incidents/2026-09-24-user-rules-in-connector-mode.test.mjs`
 (Phase 3).
+
+### 05/10/2026: the first run on Windows: the manual flow worked, the rest did not
+**What happened.** A reader set the kit up on Windows 10 (Node 24, Git for Windows, `gh`
+logged in, Claude Code in the desktop application) and sent a dated report. `init`,
+`validate`, `lint`, `propose` (four pull requests opened and merged), `sync`, the pre-push
+gate and the plugin's hooks all worked. Three parts did not. The briefing's task was
+refused: the kit's own path, spelt with backslashes, failed the check for characters a bash
+word cannot carry. The scheduled curator could not run at all: the kit installed no
+scheduler on Windows; the state directory, its folders separated by backslashes, was one
+no read rule could name, so every round with a transcript would have stopped before the
+model; the vault's Claude Code project was never derived from a path that did not start
+with a slash; and Node reports the mode 0666 for every folder there, so the state
+directory always failed the 0700 check, and with it every check that would run
+`claude_bin`. And `doctor` reported 6 failures, three of them false: no node, no `gh`, and
+a `brain-kit` that "did not answer", while every push went through. It looked a program up
+by its bare name, without the extensions Windows adds from PATHEXT, and ran npm's sh
+launcher with no shell. The README had said Windows was not supported; the reader tried
+anyway and wrote down every error, with where it came from in the code.
+**Rule.** Support a platform by the way it really works, not by a shim over the POSIX
+assumptions. Look a program up the way that platform's shell does (PATHEXT); write a path
+in a permission rule in the form Claude Code matches it in (POSIX form on Windows,
+`//c/Users/...`); spell the kit's own path with slashes in a Bash command; ask who may
+open a private folder through what decides it there (the ACL, read and set by SID, never
+by an account name Windows translates); name a launcher the kit cannot start without a
+shell instead of failing on it; and give the platform its own scheduler. A mode or a
+message that means something on one system and nothing on another is a false alarm on
+the second, and a false alarm teaches a person to ignore the true ones.
+**Where it lives in brain-kit.** `src/platform.mjs` (lookup, rule form, slashes, npm's
+launchers, the ACL), `src/curate/tools.mjs` and `src/curate/rule-path.mjs` (rules),
+`src/curate/user-rules.mjs` (the person's own rules judged in the same form),
+`src/sources/transcripts-claude-code.mjs` (`claudeProjectName`), `src/state.mjs`
+(`ensureStateDir`), `brain-kit doctor` checks `node-version`, `brain-kit-on-path`,
+`gh-present`, `claude-present`, `claude-real` and `state-dir-mode`, `brain-kit schedule`
+platform `taskscheduler` ([scheduling.md](scheduling.md#on-windows)),
+`test/incidents/2026-10-05-windows-first-run.test.mjs`, which the CI also runs on Windows.
 
 ## Connectors
 

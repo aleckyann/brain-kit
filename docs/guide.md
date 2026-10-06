@@ -464,7 +464,10 @@ owner's own identity. `machine` shows and edits the machine-local `machine.json`
 Scheduled rounds are optional: your first pull request does not need them. Linux is the
 reference platform for scheduling (systemd user timers, which need `loginctl enable-linger` to
 run while you are logged out); macOS (launchd) and cron entries are rendered and tested without
-being installed by the test suite; Windows is out of scope for scheduling.
+being installed by the test suite. On Windows, since 06/10/2026, `schedule install` registers a
+Task Scheduler task, which runs only while you are logged on and opens a terminal window for as
+long as the round lasts (do not close it); what differs on Windows is in
+[docs/scheduling.md](scheduling.md#on-windows).
 
 `curate` runs one round: it reads the Claude Code sessions of the projects your
 configuration lists, selected by the time of their messages, and gives them to a model
