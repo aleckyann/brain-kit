@@ -627,7 +627,11 @@ marketplace. Inside a vault:
   still exactly what an earlier `propose` pushed (a proposal never moves the working
   tree, so its files stay changed until the next `sync` brings them back to the default
   branch's content; one byte edited after the push makes the file the session's work
-  again);
+  again). Claude Code runs that hook at the end of every reply, so it asks once per file
+  in a session: in a conversation with several captures in a row, the next reply is
+  stopped only when another file changes, and the next session says what was left
+  unproposed. A `propose` of a file already in an open pull request adds a commit to that
+  pull request instead of opening another;
 - nine skills drive the engine in the vault's own language: `setup`, `curate-session`,
   `capture`, `ask`, `lint`, `review-stale`, `approve`, `seed-rituals` and `briefing`;
 - the `vault-reader` subagent reads notes with Read, Grep and Glob only.

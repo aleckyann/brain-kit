@@ -15,7 +15,9 @@
 // and the proposed-paths ledger (`<git dir>/brain-kit-proposed.json`,
 // LEDGER_NAME) are the same format: `{ "format": 1, "proposals": [ { opened,
 // remote, branch, commit, paths }, ... ] }`, `paths` being exactly the
-// vault-relative paths that commit changed. Both are appended to under a
+// vault-relative paths that commit changed (for a ledger entry that added
+// to an open pull request, every path its branch changes against the base).
+// Both are appended to under a
 // guard file created exclusively beside them, read and validated, and
 // written whole to a private temporary file renamed into place
 // (appendRecord). A non-joined `propose` appends to the ledger once a
@@ -232,6 +234,16 @@ export function pinEntry(root, entry, env = process.env) {
   const made = runGit(root, ['update-ref', '-m', `brain-kit propose ${entry.branch}`, ref, entry.commit, ''], { env });
   if (made.status === 0) return { ok: true, ref };
   return { ok: false, ref, detail: String(made.stderr || `exit status ${made.status}`).trim().split('\n')[0] };
+}
+
+// The ref of `branch` moved from `from` to `to`, only while it still holds
+// `from` (an addition to an open pull request, src/commands/propose.mjs).
+// { ok: true, ref } or { ok: false, ref, detail }.
+export function moveEntryPin(root, branch, from, to, env = process.env) {
+  const ref = proposedRef(branch);
+  const moved = runGit(root, ['update-ref', '-m', `brain-kit propose ${branch}`, ref, to, from], { env });
+  if (moved.status === 0) return { ok: true, ref };
+  return { ok: false, ref, detail: String(moved.stderr || `exit status ${moved.status}`).trim().split('\n')[0] };
 }
 
 function refCommit(root, ref, env) {

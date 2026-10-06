@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+A long session no longer makes a pull request per reply. The two remarks of the Windows
+report of 05/10/2026 that hold on every system (docs/incidents.md, "the first run on
+Windows"): in an interview with several captures in a row, the Stop hook stopped the end of
+every reply until the log was proposed, and proposing at every reply would have opened
+pull requests that overlapped on the same `memoria/log.md`, since `propose` never added to
+an open one.
+
+- `propose` adds to an open pull request: when the chosen paths include one an earlier
+  proposal of this working tree pushed and its pull request is still open against the base
+  (asked with `gh pr view`), the run adds a commit to that branch, its tip the only parent,
+  pushed with a lease that holds only while the branch is where the ledger left it, and
+  says so (`propose.updated`); the dry run says it would. A branch someone else moved is
+  never pushed over (exit 1, nothing recorded), and paths in two open pull requests at
+  once are refused (exit 2). The ledger keeps one entry per branch, naming every path the
+  branch carries, and the branch's local ref moves with it. A merged or closed pull request
+  is not added to: the change goes out as a new one, as before. A round always opens its
+  own.
+- The Stop hook asks once per path in a session. It records which paths it named, in the
+  git directory, and a later reply that changed only those is released with a line on
+  stderr; a new path asks again. A payload with no session id is asked at every reply, as
+  before.
+- The next session to start names the paths the previous one was asked about and left
+  unproposed (still dirty, and held by no proposal), in the line the model reads, so it can
+  ask the person what to do with them.
+
 Windows is supported. A reader ran the kit on Windows 10 on 05/10/2026 and reported what
 did not work, with the errors and where they came from in the code (docs/incidents.md,
 "the first run on Windows"); every point of that report is fixed here, and

@@ -158,6 +158,27 @@
 // HEAD stay reachable here whatever happens to the pushed branch; no ref,
 // no entry. That ref is the one reference this command writes.
 //
+// AN OPEN PULL REQUEST IS ADDED TO, NOT DUPLICATED (the report of
+// 05/10/2026: in an interview with many captures, every `propose` of
+// `memoria/log.md` opened a pull request of its own, each holding the one
+// before it). Not joined to a round, when the chosen paths include one an
+// earlier proposal of this working tree pushed (its ledger entry, pinned)
+// and that proposal's pull request is still open against the base (`gh pr
+// view <branch> --json state,baseRefName,headRefName,url`), the run adds a
+// commit to that branch instead of making one: the tree is that branch's
+// tip plus the chosen paths, its only parent is that tip, and it is pushed
+// with a lease that holds only while every push url still has the branch
+// at the commit the ledger recorded, so a commit someone else put there is
+// never replaced. The checks of steps 7 and 8 are the same (the edit made
+// on what the base holds; the tree changes exactly the chosen paths, here
+// against the branch's tip), and validate and lint judge the whole pull
+// request against the base. The ledger's entry for the branch is replaced
+// by one naming the new commit and every path the branch now carries, and
+// the branch's local ref moves to it. Paths in two open pull requests at
+// once are refused, exit 2. A gh that cannot say whether the pull request
+// is open falls back to a new branch, where it would be asked again. A
+// round never adds to a pull request: it always opens its own.
+//
 // `gh` runs with the caller's git environment removed, GIT_TERMINAL_PROMPT=0
 // and GH_PROMPT_DISABLED=1.
 //
@@ -194,7 +215,7 @@ import { runValidate } from './validate.mjs';
 import { runLint } from './lint.mjs';
 import { PROTECTED_PATHS } from '../curate/tools.mjs';
 import {
-  appendRecord, branchesOf, ledgerPath, parseRoundRecord, pinEntry, pinnedEntries, proposedMatch, readLedger, RECORD_GUARD_WAIT_MS,
+  appendRecord, branchesOf, ledgerPath, moveEntryPin, parseRoundRecord, pinEntry, pinnedEntries, proposedMatch, pruneLedger, readLedger, RECORD_GUARD_WAIT_MS,
 } from '../guards/proposed.mjs';
 
 // The round record's reader, where it has always been imported from.
@@ -503,6 +524,13 @@ async function proposeUnderLock({ root, cwd, config, parsed, io, t, env, now, wa
   const stamped = `${gitConfig.branch_prefix}${branchStamp(now())}`;
   if (!isBranchName(root, stamped, { env }) || stamped === base) throw new Refusal(EXIT.FAILURE, t('propose.branch_invalid', { branch: stamped }));
 
+  // An open pull request these paths are already in is added to (the
+  // header, "An open pull request is added to").
+  const open = round === null ? openProposalOf(root, t, env, names, gitConfig.pr_command, base) : null;
+  if (open !== null) {
+    return addToOpenProposal({ root, io, t, env, parsed, scratch, guardWaitMs, walkVault, commonDir, open, chosen, names, head, remote, base, urls, pinned, title, origin, identity: gitConfig.agent_identity });
+  }
+
   if (parsed.dry) {
     // What the real run would stop on before it writes anything, said as it
     // says it; then the one thing it would find out only after publishing.
@@ -567,6 +595,94 @@ async function proposeUnderLock({ root, cwd, config, parsed, io, t, env, now, wa
   const recorded = round !== null ? recordRound(root, io, t, env, round, entry) : recordLedger(root, io, t, env, guardWaitMs, entry);
   if (!recorded) return EXIT.DEGRADED;
   return code;
+}
+
+// The open pull request the chosen paths are already in: { branch, entry,
+// url }, the entry being the ledger's latest for that branch, or null when
+// none of them is in one. For each chosen path, the latest pinned ledger
+// entry naming it; each distinct branch among those is asked whether its
+// pull request is open against the base. Two open at once is a refusal:
+// which one to add to is the person's to say.
+function openProposalOf(root, t, env, names, program, base) {
+  const ledger = readLedger(root, env);
+  if (ledger.state !== 'ok') return null;
+  const { pinned } = pinnedEntries(root, ledger.entries, env);
+  const latest = new Map();
+  for (const entry of pinned) for (const path of entry.paths) if (names.includes(path)) latest.set(path, entry);
+  const byBranch = new Map();
+  for (const entry of latest.values()) byBranch.set(entry.branch, entry);
+  // The latest entry of each branch, whichever path led to it.
+  for (const entry of pinned) if (byBranch.has(entry.branch)) byBranch.set(entry.branch, entry);
+  const open = [];
+  for (const [branch, entry] of byBranch) {
+    const pr = viewPullRequest(root, env, program, branch, ['state']);
+    if (pr !== null && pr.state === 'OPEN' && pr.baseRefName === base && pr.headRefName === branch) open.push({ branch, entry, url: typeof pr.url === 'string' ? pr.url : '' });
+  }
+  if (open.length > 1) {
+    const paths = names.filter((name) => open.some((o) => o.entry.paths.includes(name)));
+    throw new Refusal(EXIT.USAGE, t('propose.update_two_open', { branches: open.map((o) => o.branch), paths }));
+  }
+  return open[0] ?? null;
+}
+
+// The commit added to an open pull request's branch (the header).
+async function addToOpenProposal({ root, io, t, env, parsed, scratch, guardWaitMs, walkVault, commonDir, open, chosen, names, head, remote, base, urls, pinned, title, origin, identity }) {
+  const { branch, entry, url } = open;
+  const ref = `refs/heads/${branch}`;
+  if (parsed.dry) {
+    io.stdout.write(`${t('propose.dry_update', { files: names, branch, url, urls, title, origin })}\n`);
+    return EXIT.OK;
+  }
+  const tip = fetchBase(root, t, env, remote, base);
+  sameAtHeadAndTip(t, chosen, head, treeEntries(root, env, tip), base, tip);
+  // The branch must be where this working tree left it, on every url.
+  for (const each of urls) {
+    const held = heldAt(root, env, pinned, each, ref);
+    if (held === undefined) throw new Refusal(EXIT.FAILURE, t('propose.destination_unreadable', { url: each }));
+    if (held !== entry.commit) throw new Refusal(EXIT.FAILURE, t('propose.update_branch_moved', { branch, url: each, commit: entry.commit.slice(0, 12), found: held === null ? '-' : held.slice(0, 12) }));
+  }
+  const tree = buildTree(root, t, env, { chosen, tip: entry.commit, index: join(scratch.work, 'index') });
+  await gate(root, t, env, walkVault, { tree, tip, commonDir, dir: join(scratch.work, 'proposed') });
+  const commit = commitTree(root, env, { tree, tip: entry.commit, title, identity });
+  const published = publish(root, env, { urls, pinned, branch, commit, expect: entry.commit });
+  if (published.held.length === 0 && published.unknown.length === 0) {
+    if (published.failed !== null) throw new Refusal(EXIT.FAILURE, t('propose.push_failed', { branch, urls, detail: published.failed }));
+    throw new Refusal(EXIT.FAILURE, t('propose.push_unproved', { branch, urls, commit: commit.slice(0, 12) }));
+  }
+  const next = { opened: true, remote, branch, commit, paths: [...new Set([...entry.paths, ...names])].sort() };
+  const recorded = recordUpdate(root, io, t, env, guardWaitMs, entry, next);
+  if (published.held.length !== urls.length) {
+    const missing = urls.filter((each) => !published.held.includes(each));
+    const command = missing.map((each) => commandLine('git', ['push', each, `${commit}:${ref}`])).join(' && ');
+    io.stderr.write(`${t('propose.partial_publish', { branch, held: published.held.length > 0 ? published.held : '-', missing, command })}\n`);
+    return EXIT.DEGRADED;
+  }
+  io.stdout.write(`${t('propose.updated', { url: url === '' ? branch : url, branch, count: names.length, origin })}\n`);
+  return recorded ? EXIT.OK : EXIT.DEGRADED;
+}
+
+// The ledger after an addition: the branch's local ref moved from the
+// commit it held to the new one, then the new entry appended and the old
+// one pruned. A ref that cannot be moved means no new entry, the safe
+// direction: the paths stay unproposed work, as for a new proposal.
+function recordUpdate(root, io, t, env, guardWaitMs, previous, entry) {
+  const moved = moveEntryPin(root, entry.branch, previous.commit, entry.commit, env);
+  if (!moved.ok) {
+    io.stderr.write(`${t('propose.ledger_pin_failed', { branch: entry.branch, ref: moved.ref, detail: moved.detail })}\n`);
+    return false;
+  }
+  const file = ledgerPath(root, env);
+  const done = appendRecord(file, entry, guardWaitMs);
+  if (!done.ok) {
+    if (done.invalid) io.stderr.write(`${t('propose.ledger_invalid', { branch: entry.branch, file })}\n`);
+    else io.stderr.write(`${t('propose.ledger_failed', { branch: entry.branch, file, code: done.code })}\n`);
+    return false;
+  }
+  // The entry it replaces is pinned no longer (its ref moved): pruned, so
+  // the ledger keeps one entry per branch. A prune that fails leaves an
+  // entry nothing reads.
+  pruneLedger(file, [previous], guardWaitMs);
+  return true;
 }
 
 // The dirty paths an earlier proposal already holds, byte for byte:
@@ -986,11 +1102,14 @@ function commitTree(root, env, { tree, tip, title, identity }) {
 // The commit to every push url, each with a lease refusing to replace a
 // branch there, then each url asked what it holds: `held` (the commit),
 // `unknown` (no answer), and the first push failure's detail, if any.
-function publish(root, env, { urls, pinned, branch, commit }) {
+//
+// `expect` is the commit the branch must hold for the push to go through
+// (an addition to an open pull request), the empty string for "absent".
+function publish(root, env, { urls, pinned, branch, commit, expect = '' }) {
   const ref = `refs/heads/${branch}`;
   let failed = null;
   for (const url of urls) {
-    const pushed = git(root, ['push', '--quiet', `--force-with-lease=${ref}:`, url, `${commit}:${ref}`], env, { extraEnv: pinned, timeout: NETWORK_TIMEOUT_MS });
+    const pushed = git(root, ['push', '--quiet', `--force-with-lease=${ref}:${expect}`, url, `${commit}:${ref}`], env, { extraEnv: pinned, timeout: NETWORK_TIMEOUT_MS });
     if (pushed.status !== 0 && failed === null) failed = `${url}: ${detailOf(pushed)}`;
   }
   const held = [];
@@ -1003,9 +1122,10 @@ function publish(root, env, { urls, pinned, branch, commit }) {
   return { held, unknown, failed };
 }
 
-// What gh says of the pull request whose head is `branch`, or null.
-function viewPullRequest(root, env, program, branch) {
-  const viewed = run(program, ['pr', 'view', branch, '--json', 'baseRefName,headRefName,url'], { cwd: root, env: ghEnvOf(env), timeout: NETWORK_TIMEOUT_MS });
+// What gh says of the pull request whose head is `branch`, or null; `extra`
+// names more of its fields to read.
+function viewPullRequest(root, env, program, branch, extra = []) {
+  const viewed = run(program, ['pr', 'view', branch, '--json', ['baseRefName', 'headRefName', 'url', ...extra].join(',')], { cwd: root, env: ghEnvOf(env), timeout: NETWORK_TIMEOUT_MS });
   if (viewed.status !== 0) return null;
   try {
     const pr = JSON.parse(viewed.stdout);
