@@ -26,7 +26,8 @@
 // `deps` hands in, for the tests: `run` (the exec helper), `walkVault`,
 // `listPublishable` and `findExecutable`. Production passes nothing.
 import { readFileSync } from 'node:fs';
-import { delimiter, join } from 'node:path';
+import { join } from 'node:path';
+import { pathEntries } from '../platform.mjs';
 import { run as runCommand } from '../exec.mjs';
 import { STATE_FILES } from '../state.mjs';
 import { walkVault as realWalkVault } from '../vault.mjs';
@@ -135,7 +136,7 @@ function unreadableRun(detail) {
 function pullRequestFacts(root, config, env, tz, { run, findExecutable }) {
   const unknown = (reason, detail = null) => ({ ok: false, reason, detail, items: null });
   const name = typeof config.git?.pr_command === 'string' && config.git.pr_command !== '' ? config.git.pr_command : 'gh';
-  const program = findExecutable(name, String(env.PATH ?? '').split(delimiter));
+  const program = findExecutable(name, pathEntries(env));
   if (program === null) return unknown('absent');
   const result = run(program, [...PR_LIST_ARGS], { cwd: root, env: ghEnvOf(env) });
   if (result.status !== 0) return unknown('failed', firstLine(result.stderr || result.stdout) || `exit ${result.status}`);

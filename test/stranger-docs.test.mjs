@@ -468,14 +468,17 @@ test('README.md: "O que você ganha" lists six benefits, one line each, none pro
 });
 
 test('README.md: "Para quem é" has four to six personas, and who it is not for yet as a short list, Windows said plainly', () => {
+  // Windows left the not-yet list on 06/10/2026, when it became supported (docs/incidents.md,
+  // 05/10/2026): it is said plainly in its own line, with the step zero's part for it.
   const body = section(readme, '## Para quem é');
   const list = bullets(body);
   const personas = list.filter((line) => /^- \*\*/.test(line));
   assert.ok(personas.length >= 4 && personas.length <= 6, `${personas.length} personas`);
   assert.ok(prose(body).includes('\nAinda não é para você se:\n'), 'the not-yet list has its own lead line');
   const notYet = list.filter((line) => !/^- \*\*/.test(line));
-  assert.equal(notYet.length, 3);
-  for (const [index, word] of [[0, /conta no GitHub/], [1, /plano pago do Claude e passar a conversar com ele pelo Claude Code/], [2, /Windows: este passo a passo é para o terminal do Linux e do macOS, os únicos testados/]]) assert.match(notYet[index], word);
+  assert.equal(notYet.length, 2);
+  for (const [index, word] of [[0, /conta no GitHub/], [1, /plano pago do Claude e passar a conversar com ele pelo Claude Code/]]) assert.match(notYet[index], word);
+  assert.match(norm(prose(body)), /Usa Windows\? Também serve, com os mesmos comandos colados no Git Bash, o terminal que vem com o Git: o \[passo zero\]\(docs\/preparar-o-computador\.md#no-windows\) mostra como\. É o sistema mais novo do kit, suportado desde 06\/10\/2026\./);
   // Never having used a terminal is not a reason to leave (fix round 2): the step zero teaches it.
   assert.ok(!notYet.some((line) => /não quer usar o terminal/.test(line)));
   assert.match(norm(prose(body)), /Nunca usou o terminal\? Tudo bem: o \[passo zero\]\(docs\/preparar-o-computador\.md\) ensina, e é copiar e colar\./);
@@ -562,7 +565,7 @@ test('README.md: "Como fica na prática" shows a log line, a note with nothing t
 // here by hand, on purpose.
 const CAST = ['Ana', 'Carlos'];
 const SURNAMES = ['Mendes'];
-const THINGS = ['Anthropic', 'ChatGPT', 'Claude', 'Finder', 'GitHub', 'Google', 'IA', 'Linux', 'Mac', 'Max', 'Node', 'PATH', 'Pro', 'Releases', 'Windows'];
+const THINGS = ['Anthropic', 'ChatGPT', 'Claude', 'Finder', 'Git', 'GitHub', 'Google', 'IA', 'Linux', 'Mac', 'Max', 'Node', 'PATH', 'Pro', 'Releases', 'Windows'];
 const ARTICLE_THEN_NAME = /(?<![\p{L}\p{N}])(?:o|a|os|as|do|da|dos|das|no|na|nos|nas|pelo|pela|ao|à)\s+(\p{Lu}[\p{L}\p{N}]*)/gu;
 
 function namedAfterArticles(text) {
@@ -804,9 +807,9 @@ test('README.md: in Portuguese a non-developer reads: one name for the push chec
 
 const stepZero = read(STEP_ZERO);
 
-test('docs/preparar-o-computador.md: the step zero ships, opens with the two accounts and the terminal, and has a part for the Mac and one for Ubuntu', () => {
+test('docs/preparar-o-computador.md: the step zero ships, opens with the two accounts and the terminal, and has a part for the Mac, one for Ubuntu and one for Windows', () => {
   assert.ok(pkg.files.includes(STEP_ZERO), 'package.json files does not list the step zero');
-  assert.deepEqual(headings(stepZero, 2), ['## Antes de tudo, as duas contas', '## O terminal', '## No Mac', '## No Ubuntu', '## Tudo pronto?']);
+  assert.deepEqual(headings(stepZero, 2), ['## Antes de tudo, as duas contas', '## O terminal', '## No Mac', '## No Ubuntu', '## No Windows', '## Tudo pronto?']);
   const terminal = norm(section(stepZero, '## O terminal'));
   for (const words of ['Command + espaço', '`Terminal`', 'Ctrl + Alt + T', 'use o botão de copiar que aparece no canto de cada bloco', 'Command + V', 'Ctrl + Shift + V', 'nada aparece enquanto você digita', '"abra um terminal novo", é uma janela nova: Command + N no Mac']) assert.ok(terminal.includes(words), `how to use the terminal lacks: ${words}`);
   assert.doesNotMatch(norm(stepZero), /feche o Terminal, abra outro|Feche o terminal, abra outro/, 'one way to say it: a new terminal');
@@ -834,6 +837,15 @@ test('docs/preparar-o-computador.md: each item says how to install it and how to
   assert.ok(mac.includes('arquivo que termina em `_macOS_universal.pkg` (em 02/10/2026, o `gh_2.102.0_macOS_universal.pkg`'));
   assert.match(norm(mac), /Ele abre o instalador do macOS: siga as telas até o fim/);
   assert.match(norm(mac), /algo como `\/Users\/seunome\/\.local`/);
+  // Windows (06/10/2026, read on the official pages that day): Git for Windows brings Git Bash,
+  // where the README's commands are pasted; gh through winget; and Claude Code through the
+  // native installer, never npm, whose claude.cmd a scheduled round cannot start.
+  const windows = section(stepZero, '## No Windows');
+  const windowsBlocks = fencedBlocks(windows).join('\n');
+  for (const check of ['git --version', 'node --version', 'gh --version', 'claude --version']) assert.ok(windowsBlocks.includes(check), `Windows: no block runs ${check}`);
+  for (const install of ['winget install --id Git.Git -e --source winget', 'winget install --id GitHub.cli', 'irm https://claude.ai/install.ps1 | iex']) assert.ok(windowsBlocks.includes(install), `Windows: ${install}`);
+  assert.match(norm(windows), /Não use a instalação pelo npm: ela deixa um `claude\.cmd`, que o curador agendado não consegue iniciar/);
+  assert.match(norm(section(stepZero, '## O terminal')), /No Windows:\*\* o terminal do kit é o Git Bash/);
   assert.deepEqual(fencedBlocks(section(stepZero, '## Tudo pronto?')), ['node --version\ngit --version\ngh --version\nclaude --version']);
   assert.ok(section(stepZero, '## Tudo pronto?').includes('(../README.md#passo-a-passo)'));
 });

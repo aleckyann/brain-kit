@@ -15,6 +15,7 @@ import {
 } from '../init/skeleton.mjs';
 import { installGate } from '../init/gate.mjs';
 import { overlayPrivacyFindings, overlayPrivacyMessage } from './prompt.mjs';
+import { isWindows } from '../platform.mjs';
 
 // brain-kit update [dir] [--check]
 // brain-kit update [dir] --accept <path>
@@ -594,7 +595,9 @@ function accept(io, t, { root, realRoot, manifest, manifestFile, manifestSha, sk
     io.stderr.write(`${reportLine(t, rel, read, false)}\n`);
     return EXIT.FAILURE;
   } else {
-    if (rel === HOOK_PATH && (read.st.mode & 0o100) === 0) {
+    // Windows keeps no execute bit (Node reports 0666 for every file), and
+    // Git for Windows runs a hook whatever its mode: nothing to ask there.
+    if (rel === HOOK_PATH && !isWindows() && (read.st.mode & 0o100) === 0) {
       const command = `chmod +x ${rel}`;
       io.stderr.write(`${t('update.accept_not_executable', { file: rel, command })}\n`);
       return EXIT.FAILURE;

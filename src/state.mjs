@@ -1,4 +1,5 @@
-import { chmodSync, mkdirSync, realpathSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, realpathSync } from 'node:fs';
+import { isWindows, restrictToOwner } from './platform.mjs';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
@@ -137,8 +138,20 @@ export function vaultIdFor(vaultRoot) {
 // applies to the last directory it creates and is still subject to the
 // process umask, so the mode is set again explicitly to make the result
 // deterministic. Calling this twice on the same directory is harmless.
-export function ensureStateDir(dir) {
+//
+// On Windows a mode is not who may open a directory (src/platform.mjs): its
+// ACL is. The directory is made open to the person, the system and the
+// administrators only when this call creates it, and when `tighten` asks
+// for it (init and `machine register`, which tighten an existing directory
+// on POSIX too); everything created in it inherits that. A failure to set
+// it is raised, as a failing chmod is.
+export function ensureStateDir(dir, { tighten = false, platform = process.platform, restrict = restrictToOwner } = {}) {
+  const existed = existsSync(dir);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
+  if (isWindows(platform) && (!existed || tighten)) {
+    const result = restrict(dir, { directory: true });
+    if (!result.ok) throw new Error(`could not make ${dir} private to its owner (icacls): ${result.error}`);
+  }
   return dir;
 }

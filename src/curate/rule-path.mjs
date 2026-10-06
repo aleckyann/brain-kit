@@ -17,14 +17,20 @@
 // A path holding one is never turned into a rule: the transcripts source
 // lists its file as unreadable, machine.json refuses such a
 // transcripts_dir, and src/curate/tools.mjs throws as the last line.
+import { ruleFormOf } from '../platform.mjs';
+
 export const RULE_UNSAFE_CHARACTERS = Object.freeze(['*', '?', '[', ']', '{', '}', '(', ')', '\\', ',']);
 
 // The distinct characters of `path` a rule cannot carry, in the order they
 // first appear: each as itself, a control character as U+XXXX. Empty when
-// the path can be named.
-export function unsafeRuleCharacters(path) {
+// the path can be named. On Windows the path is judged in the form a rule
+// carries it (src/platform.mjs, ruleFormOf), where the backslashes that
+// separate its folders are slashes: a backslash is then one inside a name
+// only (the report of 05/10/2026: judged as spelt, every state directory of
+// Windows was one no rule could name, and every round stopped).
+export function unsafeRuleCharacters(path, platform = process.platform) {
   const found = [];
-  for (const ch of String(path)) {
+  for (const ch of String(ruleFormOf(path, platform))) {
     const code = ch.charCodeAt(0);
     let shown = null;
     if (code < 32 || code === 127) shown = `U+${code.toString(16).toUpperCase().padStart(4, '0')}`;

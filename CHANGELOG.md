@@ -1,5 +1,60 @@
 # Changelog
 
+## Unreleased
+
+Windows is supported. A reader ran the kit on Windows 10 on 05/10/2026 and reported what
+did not work, with the errors and where they came from in the code (docs/incidents.md,
+"the first run on Windows"); every point of that report is fixed here, and
+`src/platform.mjs` keeps what differs on Windows in one place.
+
+- The briefing's task registers: the kit's own path, and the vault's, are spelt with
+  slashes in its command line (`C:/Users/...`), which Git Bash and Node both take and a
+  double-quoted bash word carries as it is. It was refused for its backslashes.
+- `brain-kit schedule install` installs the scheduled curator in the Task Scheduler
+  (platform `taskscheduler`, the only one on Windows): a task with one daily trigger per
+  window, run as you and only while you are logged on, registered with `schtasks` from an
+  XML file, and a batch file beside it that sets `PATH` and `LC_ALL` and runs the round,
+  both under `%LOCALAPPDATA%\brain-kit\schedule`. `status` reads the task back through
+  PowerShell's `Get-ScheduledTask`, and `uninstall` removes it. On Windows the round's `PATH`
+  must also reach `git`, and `TZ` is not set. A terminal window opens for as long as a
+  round lasts; `install` says so. Before, the command printed how to create the task by
+  hand and exited 2.
+- A round grants its reads by the POSIX form Claude Code matches a Windows path in
+  (`Read(//c/Users/...)`), so the state directory's backslashes are no longer characters a
+  rule cannot carry: `doctor`'s `digest-dir` is `ok`, and a round with transcripts no
+  longer stops before the model (`digest_dir_unsafe`). A whole drive is refused as a read
+  root, as `/` is. The person's own rules, mirrored in connector mode, are judged in the
+  same form, and so is `doctor`'s `round-scope`.
+- `{vault}` resolves on Windows: the vault at `C:\Users\ana\my-brain` is the Claude Code
+  project `C--Users-ana-my-brain`, so `doctor`'s `include-projects` passes and `init` lists
+  the vault's own project.
+- The state directory is made private on Windows by its ACL, not by a mode Node does not
+  keep there: open to you, the system and the administrators only, set with `icacls` by SID
+  when the kit creates it and when `init` and `brain-kit machine register` run. `doctor`'s
+  `state-dir-mode` reads the ACL back with PowerShell's `Get-Acl` (a warning when it cannot
+  be read; Windows PowerShell is started without the PSModulePath a PowerShell 7 terminal
+  hands down, whose modules it cannot load, as the CI's Windows runner showed), and `claude-present` and `claude-real` no longer refuse to run `claude_bin`
+  because of a mode of 0666.
+- `doctor` finds programs the way a shell does on Windows, with PATHEXT and a PATH spelt
+  `Path`: `node-version` and `gh-present` no longer call `node.exe` and `gh.exe` missing,
+  and `brain-kit-on-path` reads the script npm's launcher starts and asks it for its version
+  with the node on PATH, instead of running the sh launcher with no shell (a launcher npm
+  did not write is a warning: not checked). The round, `init` and the morning briefing look
+  programs up the same way, and a round's `PATH` is put in front of `Path` without leaving
+  two spellings of it.
+- A `claude` that is a batch launcher (npm's `claude.cmd`) is named as one by `doctor` and
+  by the round's own guard, with the native installer to use instead: the kit never runs a
+  shell, and Node refuses to start a batch file without one.
+- On Windows, when one read rule per digest would pass 16 000 characters, a round grants
+  its own digest folder instead, with one rule reaching the same files: Windows caps a
+  command line at 32 767 characters, and a week of catching up could pass it and keep the
+  round from starting.
+- `update --accept` no longer asks for an execute bit on the pre-push hook on Windows, which
+  keeps none.
+- CI runs the tests of this incident on Windows too, those that need Windows itself
+  included: the real lookup of node and git, a real ACL, and a real task registered, read
+  back and removed.
+
 ## 0.1.0 (tagged `v0.1.0`, published on npm on 02/10/2026)
 
 The first version on npm since the Phase 0 skeleton: `npm i -g second-brain-kit` installs the

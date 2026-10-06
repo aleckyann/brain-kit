@@ -1,7 +1,7 @@
 // The `schedule` command: installs, removes or reports the scheduler entry
 // that runs `brain-kit curate` for one vault.
 //
-//   brain-kit schedule install|uninstall|status [dir] [--job curate|briefing] [--platform systemd|launchd|cron] [--dry]
+//   brain-kit schedule install|uninstall|status [dir] [--job curate|briefing] [--platform systemd|launchd|cron|taskscheduler] [--dry]
 //
 // `--job briefing` (phase 4, task 4, ruling R-T11) is the morning
 // briefing's task in the Claude desktop application instead: see the
@@ -35,6 +35,21 @@
 //     units, read with `crontab -l` and written back whole with
 //     `crontab -`, every line outside the block kept byte for byte. cron
 //     does not catch up missed windows.
+//   - taskscheduler (Windows): a task of the Task Scheduler with one daily
+//     CalendarTrigger per window and StartWhenAvailable false, so a missed
+//     window is not caught up, registered with `schtasks /Create /XML` from
+//     a file the kit writes (the report of 05/10/2026: before it, the kit
+//     installed nothing on Windows). The task cannot set an environment,
+//     so it runs a batch file the kit writes beside it, which sets PATH
+//     and LC_ALL and runs the round; both live under
+//     %LOCALAPPDATA%\brain-kit\schedule. It runs as the person, only while
+//     they are logged on (InteractiveToken): git's credential manager and
+//     gh's login are kept by Windows for a logged-on session, and a task
+//     that ran without one would fail every push. TZ is not set there: the
+//     programs a round starts on Windows (git above all) do not read a
+//     zone name the way Node does, and the windows fire on the machine's
+//     clock anyway, so `install` says when that clock and the vault's
+//     differ, as it does everywhere.
 //
 // Each entry runs `<node> <kit>/bin/brain-kit.mjs curate <vault>` with
 // absolute paths, quoted by the platform's own rules (a vault under a
@@ -64,7 +79,7 @@
 // and the kit's entry point, for the tests. Production passes nothing.
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve, win32 } from 'node:path';
 import { EXIT } from '../exit-codes.mjs';
 import { CONFIG_FILENAME, ConfigError, MACHINE_FILENAME, canonicalPathMatches, loadConfig, loadMachine } from '../config.mjs';
 import { findVaultRoot } from '../vault.mjs';
@@ -77,24 +92,63 @@ import { briefingSetting } from '../briefing/blocks.mjs';
 import { BRIEFING_TASK_PREFIX } from '../briefing/task-id.mjs';
 import { createTranslator, resolveLang, SUPPORTED_LANGS } from '../lang.mjs';
 import { signatureProblem, signatureProblems, startsWithSignature } from '../sources/transcripts-claude-code.mjs';
+import { currentUserSid, envValue, pathEntries, slashed, windowsPowerShellEnv } from '../platform.mjs';
 
 const ROOT_INDEX = 'index.md';
 const ACTIONS = Object.freeze(['install', 'uninstall', 'status']);
 // What an entry runs: the scheduled curator (the default), or the morning
 // briefing's task in the desktop application.
 export const JOBS = Object.freeze(['curate', 'briefing']);
-export const PLATFORMS = Object.freeze(['systemd', 'launchd', 'cron']);
+export const PLATFORMS = Object.freeze(['systemd', 'launchd', 'cron', 'taskscheduler']);
+// The one platform of Windows, and the only one there.
+const WINDOWS_PLATFORM = 'taskscheduler';
 export const DAYTIME_FROM = '07:00';
 export const DAYTIME_UNTIL = '23:00';
 const SYSTEM_PATH = Object.freeze(['/usr/local/bin', '/usr/bin', '/bin']);
 // What the round's own `propose` runs from PATH.
 export const ROUND_COMMANDS = Object.freeze(['brain-kit', 'gh']);
+// On Windows git is no system directory's: Git for Windows puts it in its
+// own folder, and the round needs it on its PATH as much as gh (propose
+// runs it, and Claude Code finds Git Bash through it).
+const WINDOWS_ROUND_COMMANDS = Object.freeze([...ROUND_COMMANDS, 'git']);
+
+// The platforms of an operating system: the Task Scheduler on Windows, the
+// three others everywhere else.
+function platformsOf(os) {
+  return os === 'win32' ? [WINDOWS_PLATFORM] : PLATFORMS.filter((p) => p !== WINDOWS_PLATFORM);
+}
+
+export function roundCommands(platform) {
+  return platform === WINDOWS_PLATFORM ? WINDOWS_ROUND_COMMANDS : ROUND_COMMANDS;
+}
+
+// The separator of an entry's PATH.
+export function pathSeparator(platform) {
+  return platform === WINDOWS_PLATFORM ? ';' : ':';
+}
+
+// The system directories of Windows a round's PATH carries, under the
+// machine's own SystemRoot.
+function windowsSystemPath(env) {
+  const root = envValue(env, 'SystemRoot', 'win32') || 'C:\\Windows';
+  return [win32.join(root, 'System32'), root, win32.join(root, 'System32', 'Wbem'), win32.join(root, 'System32', 'WindowsPowerShell', 'v1.0')];
+}
+
+// Where the Task Scheduler's files of an entry live: under the person's
+// local application data, open to them alone by Windows's own default.
+function localAppData(env, home) {
+  const configured = envValue(env, 'LOCALAPPDATA', 'win32');
+  return typeof configured === 'string' && win32.isAbsolute(configured) ? configured : join(home, 'AppData', 'Local');
+}
 const HALF_YEAR_DAYS = 182;
 // Vixie cron (Debian, Ubuntu) and macOS cron cap a command near 1000 bytes
 // and refuse the whole crontab above it; the kit refuses first, in its own
 // words, with room to spare.
 export const CRON_LINE_LIMIT = 900;
 const PINNED_MARKERS = Object.freeze(['/_npx/', '/.nvm/versions/', '/fnm/node-versions/', '/.fnm/', '/.asdf/installs/', '/mise/installs/', '/.volta/tools/image/']);
+// Their Windows counterparts, matched on the path with slashes and in lower
+// case (nvm-windows, fnm's per-shell links, Volta).
+const PINNED_MARKERS_WINDOWS = Object.freeze(['/_npx/', '/appdata/roaming/nvm/', '/appdata/local/nvm/', '/fnm_multishells/', '/appdata/roaming/fnm/node-versions/', '/appdata/local/volta/tools/image/']);
 const CRON_ENV_LINE = /^\s*(CRON_TZ|TZ|SHELL)\s*=/;
 const TEMPLATES = join(KIT_ROOT, 'templates', 'schedule');
 const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
@@ -188,8 +242,14 @@ function isValidTimeZone(zone) {
 // unit with a fatal error that the timer would still start every window).
 // The kit's own path is held to the same rule as node's: it is the other
 // program path the entry names.
+//
+// On Windows (taskscheduler) every value is written inside double quotes
+// in the batch file, where cmd.exe still expands a percent sign, so `%` is
+// refused (a double quote cannot be in a Windows path at all); and a
+// semicolon cannot sit inside a PATH entry there, where it separates them.
 function unsafeFor(value, { pathEntry = false, program = false, platform }) {
   if ([...value].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127)) return true;
+  if (platform === WINDOWS_PLATFORM) return /[%"]/.test(value) || (pathEntry && value.includes(';'));
   if (pathEntry && value.includes(':')) return true;
   if (program && platform === 'systemd' && /['"\\]/.test(value)) return true;
   return platform === 'cron' && value.includes('\\');
@@ -215,7 +275,11 @@ export function sameClock(a, b, now) {
 // npx cache replaces or evicts: the entry records the absolute path, so it
 // stops starting the day that directory goes (docs/incidents.md,
 // 27/08/2026, for node or the kit instead of claude).
-function pinnedByManager(path) {
+function pinnedByManager(path, os = process.platform) {
+  if (os === 'win32') {
+    const spelt = slashed(path, os).toLowerCase();
+    return PINNED_MARKERS_WINDOWS.some((marker) => spelt.includes(marker));
+  }
   return PINNED_MARKERS.some((marker) => path.includes(marker));
 }
 
@@ -230,21 +294,29 @@ function pinnedByManager(path) {
 // added after them are taken from it, not from the current shell, so a
 // status run from a shell that does not find brain-kit or gh does not call
 // a correctly installed entry outdated (re-review Minor, 24/09/2026).
-export function roundPath({ extra = [], claude = null, node, env, systemPath = SYSTEM_PATH, recorded = null }) {
-  const base = dedupe([...extra.map((dir) => expandHome(String(dir), env)), ...(claude ? [dirname(claude)] : []), dirname(node), ...systemPath]);
+//
+// `platform` is the entry's (taskscheduler: a PATH joined at `;`, with the
+// directories of Windows and git among the commands looked for), and `os`
+// the operating system the lookup runs on (PATHEXT on Windows).
+export function roundPath({ extra = [], claude = null, node, env, systemPath = null, recorded = null, platform = null, os = process.platform }) {
+  const system = systemPath ?? (platform === WINDOWS_PLATFORM ? windowsSystemPath(env) : SYSTEM_PATH);
+  const parent = os === 'win32' ? win32.dirname : dirname;
+  const base = dedupe([...extra.map((dir) => expandHome(String(dir), env, os)), ...(claude ? [parent(claude)] : []), parent(node), ...system]);
   const added = [];
   const missing = [];
-  const kept = typeof recorded === 'string' ? recorded.split(':') : null;
+  const commands = roundCommands(platform);
+  const lookup = { platform: os, env };
+  const kept = typeof recorded === 'string' ? recorded.split(pathSeparator(platform)) : null;
   if (kept !== null && base.every((dir, index) => kept[index] === dir)) {
     added.push(...dedupe(kept.slice(base.length).filter((dir) => dir !== '' && !base.includes(dir))));
-    for (const command of ROUND_COMMANDS) if (findExecutable(command, [...base, ...added]) === null) missing.push(command);
+    for (const command of commands) if (findExecutable(command, [...base, ...added], lookup) === null) missing.push(command);
     return { dirs: dedupe([...base, ...added]), missing };
   }
-  for (const command of ROUND_COMMANDS) {
-    if (findExecutable(command, [...base, ...added]) !== null) continue;
-    const found = findExecutable(command, String(env.PATH ?? '').split(delimiter));
+  for (const command of commands) {
+    if (findExecutable(command, [...base, ...added], lookup) !== null) continue;
+    const found = findExecutable(command, pathEntries(env, os), lookup);
     if (found === null) missing.push(command);
-    else added.push(dirname(found));
+    else added.push(parent(found));
   }
   return { dirs: dedupe([...base, ...added]), missing };
 }
@@ -253,9 +325,20 @@ export function roundPath({ extra = [], claude = null, node, env, systemPath = S
 // (systemd, then launchd) or from its crontab block: { file, path }, or
 // null when none is installed or its PATH cannot be read. doctor checks it
 // reaches ROUND_COMMANDS; `status` passes its platform and compares with it.
-export function installedRoundPath({ machine, env, platform = null }) {
+//
+// The answer carries `separator`, the one its PATH is joined at.
+export function installedRoundPath({ machine, env, platform = null, os = process.platform }) {
   const home = env.HOME || homedir();
   const name = `brain-kit-curate-${machine.vault_id}`;
+  if (os === 'win32' || platform === WINDOWS_PLATFORM) {
+    if (platform !== null && platform !== WINDOWS_PLATFORM) return null;
+    const file = join(localAppData(env, home), 'brain-kit', 'schedule', `${name}.cmd`);
+    const text = readText(file);
+    if (text === null) return null;
+    const line = text.split(/\r?\n/).find((l) => l.startsWith('set "PATH='));
+    if (line === undefined || !line.endsWith('"')) return null;
+    return { file, path: line.slice('set "PATH='.length, -1), separator: ';' };
+  }
   const service = join(configHome(env, home), 'systemd', 'user', `${name}.service`);
   const serviceText = platform === null || platform === 'systemd' ? readText(service) : null;
   if (serviceText !== null) {
@@ -263,7 +346,7 @@ export function installedRoundPath({ machine, env, platform = null }) {
     if (line === undefined) return null;
     const quoted = line.slice('Environment='.length);
     const value = quoted.slice(1, -1).replace(/\\(.)/g, '$1').replace(/%%/g, '%');
-    return { file: service, path: value.slice('PATH='.length) };
+    return { file: service, path: value.slice('PATH='.length), separator: ':' };
   }
   const plist = join(home, 'Library', 'LaunchAgents', `${name}.plist`);
   const plistText = platform === null || platform === 'launchd' ? readText(plist) : null;
@@ -271,7 +354,7 @@ export function installedRoundPath({ machine, env, platform = null }) {
     const match = /<key>PATH<\/key>\s*<string>([^<]*)<\/string>/.exec(plistText);
     if (match === null) return null;
     const value = match[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
-    return { file: plist, path: value };
+    return { file: plist, path: value, separator: ':' };
   }
   if (platform !== null && platform !== 'cron') return null;
   const listed = run('crontab', ['-l'], { env });
@@ -282,10 +365,11 @@ export function installedRoundPath({ machine, env, platform = null }) {
   const entry = lines.slice(begin + 1).find((line) => / PATH='/.test(line));
   const match = entry === undefined ? null : / PATH='((?:[^']|'\\'')*)'/.exec(entry);
   if (match === null) return null;
-  return { file: 'crontab', path: match[1].replace(/'\\''/g, "'").replace(/\\%/g, '%') };
+  return { file: 'crontab', path: match[1].replace(/'\\''/g, "'").replace(/\\%/g, '%'), separator: ':' };
 }
 
 function detectPlatform(env, os) {
+  if (os === 'win32') return WINDOWS_PLATFORM;
   const probe = run('systemctl', ['--user', 'show-environment'], { env });
   if (probe.status === 0) return 'systemd';
   if (os === 'darwin') return 'launchd';
@@ -343,7 +427,7 @@ export function runScheduleSync(argv, io, t, deps = {}) {
   if (!ACTIONS.includes(parsed.action)) return usageError(t('schedule.unknown_action', { action: parsed.action }));
   if (!JOBS.includes(parsed.job)) return usageError(t('schedule.bad_job', { job: parsed.job, jobs: JOBS }));
   if (parsed.platform !== null && !PLATFORMS.includes(parsed.platform)) {
-    return usageError(t('schedule.bad_platform', { platform: parsed.platform, platforms: PLATFORMS }));
+    return usageError(t('schedule.bad_platform', { platform: parsed.platform, platforms: platformsOf(os) }));
   }
 
   let startDir = cwd;
@@ -388,21 +472,22 @@ export function runScheduleSync(argv, io, t, deps = {}) {
   const kit = deps.kit ?? join(KIT_ROOT, 'bin', 'brain-kit.mjs');
   const argvOfRound = [node, kit, 'curate', root];
   const windows = dedupe(config.curate.schedule).sort();
-  if (os === 'win32') {
-    const command = argvOfRound.map((arg) => `"${arg}"`).join(' ');
-    complain(t('schedule.windows_manual', { windows, command }));
-    return EXIT.USAGE;
-  }
 
   const home = env.HOME || homedir();
   const name = `brain-kit-curate-${machine.vault_id}`;
   const platform = parsed.platform ?? detectPlatform(env, os);
+  // Windows has one scheduler, and it is nowhere else.
+  if ((os === 'win32') !== (platform === WINDOWS_PLATFORM)) {
+    complain(t('schedule.platform_not_here', { platform, os, platforms: platformsOf(os) }));
+    return EXIT.USAGE;
+  }
   const where = {
     systemd: join(configHome(env, home), 'systemd', 'user'),
     launchd: join(home, 'Library', 'LaunchAgents'),
+    taskscheduler: join(localAppData(env, home), 'brain-kit', 'schedule'),
   };
   const uid = deps.uid ?? process.getuid?.() ?? 0;
-  const context = { env, t, say, complain, name, platform, where, uid, dry: parsed.dry, detected: parsed.platform === null };
+  const context = { env, t, say, complain, name, platform, where, uid, dry: parsed.dry, detected: parsed.platform === null, run: deps.run ?? run };
 
   if (parsed.action === 'uninstall') return uninstall(context);
 
@@ -432,17 +517,18 @@ export function runScheduleSync(argv, io, t, deps = {}) {
     return EXIT.USAGE;
   }
   const extra = Array.isArray(machine.path_extra) ? machine.path_extra : [];
-  const claude = resolveClaude(machine.claude_bin, extra, env, root);
+  const claude = resolveClaude(machine.claude_bin, extra, env, root, os);
   if (claude === null) {
     complain(t('schedule.claude_not_found', { bin: machine.claude_bin }));
     return EXIT.USAGE;
   }
-  const recorded = parsed.action === 'status' ? installedRoundPath({ machine, env, platform })?.path ?? null : null;
-  const { dirs: pathDirs, missing } = roundPath({ extra, claude, node, env, recorded, ...(deps.systemPath ? { systemPath: deps.systemPath } : {}) });
+  const recorded = parsed.action === 'status' ? installedRoundPath({ machine, env, platform, os })?.path ?? null : null;
+  const { dirs: pathDirs, missing } = roundPath({ extra, claude, node, env, recorded, platform, os, ...(deps.systemPath ? { systemPath: deps.systemPath } : {}) });
+  const separator = pathSeparator(platform);
   if (parsed.action === 'install' && missing.length > 0) {
     for (const command of missing) {
-      const hint = t(command === 'gh' ? 'schedule.hint_gh' : 'schedule.hint_brain_kit');
-      complain(t('schedule.command_missing', { command, path: pathDirs.join(':'), hint }));
+      const hint = t({ gh: 'schedule.hint_gh', git: 'schedule.hint_git' }[command] ?? 'schedule.hint_brain_kit');
+      complain(t('schedule.command_missing', { command, path: pathDirs.join(separator), hint }));
     }
     return EXIT.USAGE;
   }
@@ -458,8 +544,22 @@ export function runScheduleSync(argv, io, t, deps = {}) {
       return EXIT.USAGE;
     }
   }
+  // The batch file's own path is the one the task names.
+  if (platform === WINDOWS_PLATFORM && unsafeFor(where.taskscheduler, { platform })) {
+    complain(t('schedule.unsafe_path', { path: where.taskscheduler }));
+    return EXIT.USAGE;
+  }
 
-  const rendered = render({ platform, name, where, vaultId: machine.vault_id, argv: argvOfRound, path: pathDirs.join(':'), timezone, windows });
+  // The task of Windows runs as the account installing it, named by its SID.
+  let sid = null;
+  if (platform === WINDOWS_PLATFORM) {
+    sid = deps.sid ?? currentUserSid({ env });
+    if (sid === null) {
+      complain(t('schedule.no_user_sid'));
+      return EXIT.FAILURE;
+    }
+  }
+  const rendered = render({ platform, name, where, vaultId: machine.vault_id, argv: argvOfRound, path: pathDirs.join(separator), timezone, windows, sid, env });
   if (parsed.action === 'status') {
     // A relative machine.paths entry belongs to the state directory, never
     // to whatever directory status happens to run from.
@@ -481,14 +581,17 @@ export function runScheduleSync(argv, io, t, deps = {}) {
     complain(t('schedule.timezone_differs', { local: localZone, vault: timezone }));
   }
   for (const path of argvOfRound.slice(0, 2)) {
-    if (pinnedByManager(path)) complain(t('schedule.pinned_path', { path }));
+    if (pinnedByManager(path, os)) complain(t('schedule.pinned_path', { path }));
   }
   return install(context, rendered, windows);
 }
 
-// Every file (or, for cron, the block) `install` writes for a platform.
-function render({ platform, name, where, vaultId, argv, path, timezone, windows }) {
+// Every file (or, for cron, the block) `install` writes for a platform. A
+// file may carry its `encoding` (utf8 when it does not) and its line ending
+// is written as it is in `content`.
+function render({ platform, name, where, vaultId, argv, path, timezone, windows, sid, env }) {
   const hm = windows.map((w) => w.split(':').map(Number));
+  if (platform === WINDOWS_PLATFORM) return renderTaskScheduler({ name, where, vaultId, argv, path, windows, sid, env });
   if (platform === 'systemd') {
     const service = fill('systemd/brain-kit-curate.service', {
       VAULT_ID: vaultId,
@@ -529,8 +632,9 @@ function render({ platform, name, where, vaultId, argv, path, timezone, windows 
 
 function runSteps(context, steps) {
   const { env, t, complain } = context;
+  const runner = context.run ?? run;
   for (const [program, args, { tolerate = false, input } = {}] of steps) {
-    const result = run(program, args, input === undefined ? { env } : { env, input });
+    const result = runner(program, args, input === undefined ? { env } : { env, input });
     if (result.status !== 0 && !tolerate) {
       const detail = (result.stderr || result.stdout).trim() || t('schedule.no_output');
       complain(t('schedule.command_failed', { command: showCommand(program, args), status: result.status, detail }));
@@ -546,6 +650,10 @@ function showSteps(context, steps) {
 
 function serviceSteps(context, verb) {
   const { name, uid } = context;
+  if (context.platform === WINDOWS_PLATFORM) {
+    if (verb === 'install') return [['schtasks', ['/Create', '/TN', name, '/XML', join(context.where.taskscheduler, `${name}.xml`), '/F']]];
+    return [['schtasks', ['/Delete', '/TN', name, '/F']]];
+  }
   if (context.platform === 'systemd') {
     if (verb === 'install') {
       return [['systemctl', ['--user', 'daemon-reload']], ['systemctl', ['--user', 'enable', `${name}.timer`]], ['systemctl', ['--user', 'restart', `${name}.timer`]]];
@@ -602,6 +710,7 @@ function opensBlock(line, name) {
 function installedElsewhere(context) {
   const { env, name, platform, where } = context;
   const found = [];
+  if (platform === WINDOWS_PLATFORM) return found;
   if (platform !== 'systemd' && ['service', 'timer'].some((kind) => existsSync(join(where.systemd, `${name}.${kind}`)))) found.push('systemd');
   if (platform !== 'launchd' && existsSync(join(where.launchd, `${name}.plist`))) found.push('launchd');
   if (platform !== 'cron') {
@@ -647,12 +756,32 @@ function install(context, rendered, windows) {
   }
   for (const file of rendered.files) {
     mkdirSync(dirname(file.path), { recursive: true });
-    writeFileSync(file.path, file.content);
+    writeFileSync(file.path, encoded(file));
     say(t('schedule.wrote', { path: file.path }));
   }
   if (!runSteps(context, steps)) return EXIT.FAILURE;
   say(t('schedule.installed', { name, platform, windows }));
+  if (platform === WINDOWS_PLATFORM) say(t('schedule.windows_console'));
   return EXIT.OK;
+}
+
+// A rendered file's bytes: UTF-16 with its byte order mark for the task's
+// XML, which says so in its declaration, the form the Task Scheduler
+// exports and reads; UTF-8 otherwise.
+function encoded(file) {
+  if (file.encoding === 'utf16le') return Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(file.content, 'utf16le')]);
+  return file.content;
+}
+
+function readEncoded(path, encoding) {
+  if (encoding !== 'utf16le') return readText(path);
+  try {
+    const bytes = readFileSync(path);
+    const body = bytes[0] === 0xff && bytes[1] === 0xfe ? bytes.subarray(2) : bytes;
+    return body.toString('utf16le');
+  } catch {
+    return null;
+  }
 }
 
 // A file's text, line by line, without its final newline doubled.
@@ -663,6 +792,7 @@ function printText(say, text) {
 function ownFiles(context) {
   const { name, platform, where } = context;
   if (platform === 'systemd') return [join(where.systemd, `${name}.service`), join(where.systemd, `${name}.timer`)];
+  if (platform === WINDOWS_PLATFORM) return [join(where.taskscheduler, `${name}.cmd`), join(where.taskscheduler, `${name}.xml`)];
   return [join(where.launchd, `${name}.plist`)];
 }
 
@@ -690,18 +820,22 @@ function uninstall(context) {
     showSteps(context, reload);
     return EXIT.OK;
   }
-  if (present.length === 0) return nothingToRemove(context);
+  // A task of Windows lives in the Task Scheduler, not in its files: one
+  // whose files are gone is still there to remove.
+  const registered = platform === WINDOWS_PLATFORM && queryTask(context).state !== 'absent';
+  if (present.length === 0 && !registered) return nothingToRemove(context);
   // A disable that fails (no user bus over SSH, a unit never loaded) still
   // lets the files go: otherwise the kit could never remove its own files.
-  // The failure is said, and the run is exit 1, never a quiet success.
-  const stopped = runSteps(context, stop);
+  // The failure is said, and the run is exit 1, never a quiet success. A
+  // task of Windows that is not registered has nothing to delete.
+  const stopped = runSteps(context, platform === WINDOWS_PLATFORM && !registered ? [] : stop);
   for (const file of present) {
     rmSync(file, { force: true });
     say(t('schedule.removed', { path: file }));
   }
   const reloaded = runSteps(context, reload);
   if (!stopped || !reloaded) {
-    context.complain(t('schedule.uninstall_unconfirmed', { name, platform }));
+    context.complain(t(platform === WINDOWS_PLATFORM ? 'schedule.uninstall_unconfirmed_windows' : 'schedule.uninstall_unconfirmed', { name, platform }));
     return EXIT.FAILURE;
   }
   say(t('schedule.uninstalled', { name, platform }));
@@ -736,6 +870,7 @@ function installedState(context, rendered) {
     if (current.block === null) return { state: 'absent' };
     return { state: current.block === rendered.block ? 'active' : 'outdated' };
   }
+  if (platform === WINDOWS_PLATFORM) return taskSchedulerState(context, rendered);
   const texts = rendered.files.map((file) => readText(file.path));
   if (texts.every((text) => text === null)) return { state: 'absent' };
   if (texts.some((text, i) => text !== rendered.files[i].content)) return { state: 'outdated' };
@@ -789,6 +924,115 @@ function status(context, rendered, windows, lastRun, now) {
   }
   say(lastRunSummary(t, lastRun));
   return found.state === 'active' ? EXIT.OK : EXIT.FAILURE;
+}
+
+// --- the Task Scheduler of Windows -------------------------------------------
+
+// Where the Task Scheduler is found: in the machine's own System32, never
+// through PATH.
+function systemCommand(env, name) {
+  return win32.join(envValue(env, 'SystemRoot', 'win32') || 'C:\\Windows', 'System32', name);
+}
+
+// One argument of the batch file's command line, in double quotes. Nothing
+// unsafeFor refuses can be in it, so nothing inside needs escaping.
+function batchQuote(value) {
+  return `"${value}"`;
+}
+
+function crlf(text) {
+  return text.replace(/\r?\n/g, '\r\n');
+}
+
+// The batch file and the task's XML. The task starts cmd.exe on the batch
+// file (/d: none of the startup commands cmd.exe may be set to run; /v:off: `!` is a character;
+// /s /c with the whole in an outer pair of quotes, which cmd strips, so the
+// quoted path inside stays one word whatever it holds).
+function renderTaskScheduler({ name, where, vaultId, argv, path, windows, sid, env }) {
+  const dir = where.taskscheduler;
+  const batch = join(dir, `${name}.cmd`);
+  const cmd = crlf(fill('taskscheduler/brain-kit-curate.cmd', {
+    VAULT_ID: vaultId,
+    PATH: path,
+    COMMAND: argv.map(batchQuote).join(' '),
+  }));
+  const xml = crlf(fill('taskscheduler/brain-kit-curate.xml', {
+    VAULT_ID: vaultId,
+    NAME: name,
+    TRIGGERS: windows.map((w) => [
+      '    <CalendarTrigger>',
+      `      <StartBoundary>${TASK_START_DAY}T${w}:00</StartBoundary>`,
+      '      <Enabled>true</Enabled>',
+      '      <ScheduleByDay>',
+      '        <DaysInterval>1</DaysInterval>',
+      '      </ScheduleByDay>',
+      '    </CalendarTrigger>',
+    ].join('\n')).join('\n'),
+    USER_SID: xmlEscape(sid),
+    COMMAND: xmlEscape(systemCommand(env, 'cmd.exe')),
+    ARGUMENTS: xmlEscape(taskArguments(batch)),
+  }));
+  return {
+    files: [{ path: batch, content: cmd }, { path: join(dir, `${name}.xml`), content: xml, encoding: 'utf16le' }],
+    task: { execute: systemCommand(env, 'cmd.exe'), arguments: taskArguments(batch), windows },
+  };
+}
+
+// The first day of every trigger: any day in the past does, the trigger
+// repeats daily from it.
+const TASK_START_DAY = '2026-01-01';
+
+function taskArguments(batch) {
+  return `/d /v:off /s /c ""${batch}""`;
+}
+
+// The task as the Task Scheduler holds it, read through PowerShell's
+// Get-ScheduledTask, whose State is an enumeration (Ready, Disabled,
+// Running, Queued) that Windows does not translate, unlike every column of
+// `schtasks /Query`. The name travels in the environment, and the script
+// holds no double quote, which the command line would have to escape. { state:
+// 'absent' } when there is no such task; { state: 'unreadable', detail }
+// when the question could not be asked.
+const QUERY_SCRIPT = [
+  "$ErrorActionPreference = 'Stop'",
+  '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8',
+  '$t = Get-ScheduledTask -TaskName $env:BRAIN_KIT_TASK -ErrorAction SilentlyContinue',
+  "if ($null -eq $t) { @{ state = 'absent' } | ConvertTo-Json -Compress } else { [ordered]@{ state = [string]$t.State; execute = [string]$t.Actions[0].Execute; arguments = [string]$t.Actions[0].Arguments; starts = @($t.Triggers | ForEach-Object { [string]$_.StartBoundary }) } | ConvertTo-Json -Compress }",
+].join('; ');
+
+function queryTask(context) {
+  const runner = context.run ?? run;
+  const result = runner('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', QUERY_SCRIPT], {
+    env: windowsPowerShellEnv(context.env, { BRAIN_KIT_TASK: context.name }),
+  });
+  const detail = (result.stderr || result.stdout).trim().split(/\r?\n/)[0] || context.t('schedule.no_output');
+  if (result.status !== 0) return { state: 'unreadable', detail };
+  try {
+    const value = JSON.parse(result.stdout.trim());
+    if (value?.state === 'absent') return { state: 'absent' };
+    if (typeof value?.state !== 'string') return { state: 'unreadable', detail };
+    const starts = (Array.isArray(value.starts) ? value.starts : [value.starts]).map((at) => /T(\d{2}:\d{2})/.exec(String(at))?.[1] ?? String(at));
+    return { state: 'present', enabled: value.state !== 'Disabled', status: value.state, execute: String(value.execute ?? ''), arguments: String(value.arguments ?? ''), windows: starts.sort() };
+  } catch {
+    return { state: 'unreadable', detail };
+  }
+}
+
+// Installed, current and enabled, or which of the three is not: the files
+// as `install` writes them now, and the task registered from them, which
+// runs what they say at their windows and is enabled.
+function taskSchedulerState(context, rendered) {
+  const texts = rendered.files.map((file) => readEncoded(file.path, file.encoding));
+  const task = queryTask(context);
+  if (task.state === 'unreadable') return { state: 'inactive', detail: task.detail };
+  if (texts.every((text) => text === null) && task.state === 'absent') return { state: 'absent' };
+  if (texts.some((text, i) => text !== rendered.files[i].content)) return { state: 'outdated' };
+  if (task.state === 'absent') return { state: 'inactive', detail: context.t('schedule.windows_task_missing') };
+  const wanted = rendered.task;
+  const sameWindows = task.windows.length === wanted.windows.length && task.windows.every((w, i) => w === wanted.windows[i]);
+  if (task.execute.toLowerCase() !== wanted.execute.toLowerCase() || task.arguments !== wanted.arguments || !sameWindows) return { state: 'outdated' };
+  if (!task.enabled) return { state: 'inactive', detail: task.status };
+  return { state: 'active' };
 }
 
 // --- the morning briefing's desktop task (phase 4, task 4) -------------------
@@ -852,7 +1096,7 @@ function vaultLang(config, env) {
 // naming why it cannot be registered: the task's id, title, cron,
 // description and two-line prompt, the title, description and second line
 // in the vault's own language.
-export function briefingTask({ root, config, vaultId, env = process.env }) {
+export function briefingTask({ root, config, vaultId, env = process.env, platform = process.platform }) {
   const signature = briefingSetting(config, 'signature');
   if (signatureProblem(signature) !== null) {
     return { problem: { key: 'schedule.bad_signature', params: { key: 'briefing.signature', value: JSON.stringify(signature), file: CONFIG_FILENAME } } };
@@ -861,13 +1105,15 @@ export function briefingTask({ root, config, vaultId, env = process.env }) {
   if (typeof cron !== 'string' || !CRON_FIELDS.test(cron.trim())) {
     return { problem: { key: 'schedule.briefing_bad_cron', params: { value: JSON.stringify(cron), file: CONFIG_FILENAME } } };
   }
-  const kit = kitCommand();
+  const kit = kitCommand(platform);
   if (KIT_UNSAFE.test(kit.slice(1, -1)) || hasControl(kit)) {
     return { problem: { key: 'schedule.briefing_unsafe_path', params: { path: kit.slice(1, -1) } } };
   }
   if (hasControl(root)) return { problem: { key: 'schedule.briefing_unsafe_path', params: { path: root } } };
   const vt = createTranslator(vaultLang(config, env));
-  const command = `node ${kit} prompt briefing --vault ${bashQuoted(root)}`;
+  // On Windows both paths are spelt with slashes (src/platform.mjs,
+  // slashed): the line runs in Git Bash, and reads back with realpath.
+  const command = `node ${kit} prompt briefing --vault ${bashQuoted(slashed(root, platform))}`;
   const title = typeof config?.vault?.title === 'string' && config.vault.title.trim() !== '' ? config.vault.title.trim() : basename(root);
   return {
     taskId: briefingTaskId(vaultId),

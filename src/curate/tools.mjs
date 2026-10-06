@@ -19,6 +19,7 @@
 import { join } from 'node:path';
 import { KIT_ROOT } from '../version.mjs';
 import { unsafeRuleCharacters } from './rule-path.mjs';
+import { isDiskRoot, ruleFormOf, slashed } from '../platform.mjs';
 
 export const KIT_SUBCOMMANDS = Object.freeze(['validate', 'lint', 'propose']);
 
@@ -50,22 +51,28 @@ const BASE_ALLOWED = Object.freeze(['Read(./**)', 'Glob(./**)', 'Grep(./**)', 'E
 // the callers never pass one (the transcripts source lists such a file as
 // unreadable, and machine.json refuses such a transcripts_dir), and this
 // is the last line, for any caller that would.
-function rulePath(path, label) {
-  if (typeof path !== 'string' || !path.startsWith('/')) throw new TypeError(`${label}: not an absolute path: ${JSON.stringify(path)}`);
-  const unsafe = unsafeRuleCharacters(path);
+//
+// On Windows the path is first put in the POSIX form Claude Code matches
+// rules against (src/platform.mjs, ruleFormOf): C:\Users\ana is
+// /c/Users/ana, and its rule //c/Users/ana. A path that is still not
+// absolute in that form (a UNC path, say) is refused like any other.
+function rulePath(path, label, platform = process.platform) {
+  const form = ruleFormOf(path, platform);
+  if (typeof form !== 'string' || !form.startsWith('/')) throw new TypeError(`${label}: not an absolute path: ${JSON.stringify(path)}`);
+  const unsafe = unsafeRuleCharacters(path, platform);
   if (unsafe.length > 0) throw new TypeError(`${label}: ${JSON.stringify(path)} holds ${unsafe.join(' ')}, which a read rule cannot carry with a known meaning`);
-  return `//${path.slice(1)}`;
+  return `//${form.slice(1)}`;
 }
 
-function readFileRule(file) {
-  return `Read(${rulePath(file, 'readFiles')})`;
+function readFileRule(file, platform) {
+  return `Read(${rulePath(file, 'readFiles', platform)})`;
 }
 
 // A directory and everything under it. The root itself would be the whole
-// disk, and is refused.
-function readDirRule(dir) {
-  const path = rulePath(dir, 'readDirs').replace(/\/+$/, '');
-  if (path === '') throw new TypeError(`readDirs: the root of the file system is not a read root: ${JSON.stringify(dir)}`);
+// disk, and is refused, a Windows drive (C:\, //c) as well as /.
+function readDirRule(dir, platform) {
+  const path = rulePath(dir, 'readDirs', platform).replace(/\/+$/, '');
+  if (isDiskRoot(path.slice(1), platform)) throw new TypeError(`readDirs: the root of the file system is not a read root: ${JSON.stringify(dir)}`);
   return `Read(${path}/**)`;
 }
 
@@ -104,9 +111,17 @@ const BASE_DISALLOWED = Object.freeze([
 
 // This kit's own entry point as a double-quoted absolute path, with no
 // `node` in front: the exact string `{{kit}}` renders to in the curate
-// prompt, and the prefix of every Bash rule below.
-export function kitCommand() {
-  return `"${join(KIT_ROOT, 'bin', 'brain-kit.mjs')}"`;
+// prompt, and the prefix of every Bash rule below. On Windows it is spelt
+// with slashes (C:/Users/ana/...): Git Bash, where the model's and the
+// briefing's Bash commands run, and Node both take that form, and a
+// backslash inside a double-quoted bash word is an escape (the report of
+// 05/10/2026: spelt with backslashes, the briefing's task was refused).
+export function kitEntryPoint(platform = process.platform) {
+  return slashed(join(KIT_ROOT, 'bin', 'brain-kit.mjs'), platform);
+}
+
+export function kitCommand(platform = process.platform) {
+  return `"${kitEntryPoint(platform)}"`;
 }
 
 // Characters a double-quoted bash word keeps special.
@@ -124,8 +139,8 @@ export function bashQuoted(value) {
 // because the session it runs in may have any working directory (final
 // review of phase 4, finding C2). For a kit path with none of bash's
 // special characters in it, the prefix is exactly kitCommand().
-export function kitCommandIn(dir) {
-  return `${bashQuoted(join(KIT_ROOT, 'bin', 'brain-kit.mjs'))} -C ${bashQuoted(dir)}`;
+export function kitCommandIn(dir, platform = process.platform) {
+  return `${bashQuoted(kitEntryPoint(platform))} -C ${bashQuoted(slashed(dir, platform))}`;
 }
 
 // `extra` is the vault's `curate.allowed_tools_extra`, appended as given.
@@ -133,10 +148,10 @@ export function kitCommandIn(dir) {
 // transcripts its plan lists, ruling R-A2), and `readDirs` absolute
 // directories it may read everything under; nothing else outside the vault
 // is readable.
-export function allowedTools(extra = [], { readFiles = [], readDirs = [] } = {}) {
-  const kit = kitCommand();
+export function allowedTools(extra = [], { readFiles = [], readDirs = [], platform = process.platform } = {}) {
+  const kit = kitCommand(platform);
   const kitRules = KIT_SUBCOMMANDS.flatMap((sub) => [`Bash(${kit} ${sub}:*)`, `Bash(node ${kit} ${sub}:*)`]);
-  const readRules = [...new Set([...readFiles.map(readFileRule), ...readDirs.map(readDirRule)])];
+  const readRules = [...new Set([...readFiles.map((file) => readFileRule(file, platform)), ...readDirs.map((dir) => readDirRule(dir, platform))])];
   return [...BASE_ALLOWED, ...readRules, ...kitRules, ...extra];
 }
 
