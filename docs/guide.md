@@ -478,10 +478,13 @@ no skill and no built-in tool beyond the seven it needs; it reads only the vault
 digest of each transcript the round lists, and everything its own rules do not allow is denied. The
 round checks the isolation from the CLI's first event and stops the model if it does not
 hold. The steps run in one
-fixed, tested order (lock, network, sync, then the configuration as synced), and every way
-a round can fail ends with a non-zero exit, a reason in `last-run.json` and the log, and
-your notify command. `--dry` shows what a round would do and `--check` runs every step up
-to the model.
+fixed, tested order (lock, network, an orphaned index lock moved aside, sync, then the
+configuration as synced), and every way a round can fail ends with a non-zero exit, a reason
+in `last-run.json` and the log, and your notify command. A round repairs on its own only
+what it can prove safe (an index lock left by a dead git command, a launcher stub an install
+of the CLI left behind), names every cause it knows, says so when it does not, and keeps
+each failure and repair in `incidents.jsonl` for the morning briefing. `--dry` shows what a
+round would do and `--check` runs every step up to the model, repairs included.
 
 `watermark` shows and moves the last day each source was swept. Each source reads the
 days after its own mark, oldest first and whole (as many as fit in
@@ -531,9 +534,9 @@ and the privacy policy.
 ## The morning briefing
 
 Each working morning, or whenever you ask, the briefing gives you, in a session of your
-own, where the vault stands: the curator's last round and each source's state, what is
-overdue, due today and coming up, pending items with no date, the pull requests waiting
-for your merge, the notes due for review, blind spots, the vault against its strategy, and
+own, where the vault stands: the curator's last round, the incidents still open and each
+source's state, what is overdue, due today and coming up, pending items with no date, the
+pull requests waiting for your merge, the notes due for review, blind spots, the vault against its strategy, and
 the questions it needs you to answer. Its content is the vault's own `briefing.blocks`,
 chosen from the kit's catalog or written by you (a title, the notes to read, your
 instruction), and a prompt overlay can replace the whole prompt.

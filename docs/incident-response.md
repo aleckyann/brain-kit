@@ -449,6 +449,10 @@ request with content you did not expect, or ran a command you did not allow.
      pull request it opened, with branch and paths), `leftovers`, `warnings`, `mode` and
      `userRules`. [scheduling.md](scheduling.md) ("Reading last-run.json and the logs") says
      what each field holds.
+   - `incidents.jsonl`, one line for every round that failed or repaired something, the
+     newest last: the exit, the reason code, the reason and the repairs of rounds that
+     `last-run.json` has since overwritten. A round drops the lines older than
+     `log_retention_days`.
    - `logs/curate-YYYY-MM-DD.log`, the dated round log, one line per event: `model_result` (the
      denials and the isolation verdict), `cleanup`, `exit`. It never holds what a tool returned.
    - `logs/curate-<stamp>.stream.jsonl`, the model's raw output, exists only if the round ran with

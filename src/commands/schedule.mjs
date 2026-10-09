@@ -20,8 +20,11 @@
 // What each platform gets, and why:
 //   - systemd (user scope): a oneshot service and a timer with one
 //     OnCalendar= per window and Persistent=false, so a window missed while
-//     the machine slept is not caught up at resume. The service has no
-//     After=, Wants= or any other line on a network target: in the user
+//     the timer was inactive (the machine off) is not caught up. That does
+//     NOT stop a fire at resume: a realtime timer whose time passed during
+//     sleep fires when the machine wakes (docs/incidents.md, 09/10/2026),
+//     and the round's own network wait is what absorbs it. The service has
+//     no After=, Wants= or any other line on a network target: in the user
 //     scope that target does not exist and such a line is dead letter
 //     (docs/incidents.md, 28/08/2026); the round waits for the network
 //     itself. Written under $XDG_CONFIG_HOME/systemd/user (or
