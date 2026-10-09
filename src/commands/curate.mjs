@@ -73,10 +73,11 @@
 //   14. read evidence, the sources line and the round record
 //   15. bring what the round proposed back to HEAD's content, byte-proved
 //   16. the exit code, first match wins: isolation 1; an expired login 69
-//       (auth_expired, the reason saying to log in again with /login);
-//       another model failure 69 or 1; a required source unread 4; a round
-//       record that cannot be read 1; anything still dirty 1; a proposal
-//       not opened 3; otherwise 0. A best-effort source never changes it.
+//       (auth_expired, the reason saying to log in again with /login); a
+//       spent usage limit 75 (usage_limited, the reason saying when it
+//       resets); another model failure 69 or 1; a required source unread
+//       4; a round record that cannot be read 1; anything still dirty 1; a
+//       proposal not opened 3; otherwise 0. A best-effort source never changes it.
 //   17. advance each source's watermark through its own last day, only on
 //       0 or 3
 //   18. always: remove the round record and the round's digests (unless
@@ -160,6 +161,10 @@ const TIMEOUT_SETTING = `${CONFIG_FILENAME} curate.timeout_minutes`;
 const NOTIFY_TIMEOUT_MS = 30000;
 // The setting a vault adds allow rules with, as a person finds it.
 const ALLOWED_EXTRA_SETTING = `${CONFIG_FILENAME} curate.allowed_tools_extra`;
+// What the CLI says when the model's usage limit is spent (30/09/2026: "You've
+// hit your weekly limit", then the hour it resets). ASCII only: the measured
+// text, with its middle dot, lives in test/fixtures/stream/usage-limit.jsonl.
+export const USAGE_LIMIT_PATTERNS = Object.freeze([/hit your [a-z ]*limit/i, /usage limit/i]);
 const API_ERROR = /API Error|\b401\b|authentication/i;
 const API_MARKERS = Object.freeze([/API Error/i, /\b401\b/, /authentication/i]);
 
@@ -1898,10 +1903,16 @@ export async function runCurate(argv, io, t, deps = {}) {
       // by the markers found in it on an API error (review finding M5), and
       // by its last line otherwise.
       const said = errorText(result, [lock.token]);
+      const limitText = [said, out.stderrTail].find((text) => USAGE_LIMIT_PATTERNS.some((re) => re.test(text)));
       if (isLoginFailure(result)) {
         // An expired login is not a model failure and no retry fixes it:
         // exit 69 with what the person must do, and no mark moves.
         exit = fail(EXIT.UNAVAILABLE, 'auth_expired', t('curate.auth_expired', { detail: said || '-' }));
+      } else if (limitText !== undefined) {
+        // A spent usage limit lifts on its own: postponed on purpose (75),
+        // with the hour it resets, and no mark moves. A known cause.
+        const resets = /resets[^\n]*/i.exec(limitText)?.[0].slice(0, 300).trim() || '-';
+        exit = fail(EXIT.TEMPFAIL, 'usage_limited', t('curate.usage_limited', { resets }));
       } else if (API_ERROR.test(out.stderrTail) || (result?.isError === true && API_ERROR.test(result.text ?? ''))) {
         const markers = API_MARKERS.map((re) => re.exec(out.stderrTail)?.[0]).filter(Boolean).join(', ');
         const detail = [said, markers].filter(Boolean).join('; ') || '-';

@@ -3237,6 +3237,17 @@ test('last-run: an expired login (69, auth_expired) fails with its reason, never
   assertCheck((await doctor(fx, ['--only', 'last-run'])).report, 'last-run', 'warn', 'doctor.last_run.soft');
 });
 
+// 30/09/2026: a spent usage limit exits 75 and lifts on its own, so it warns.
+test('last-run: a spent usage limit (75, usage_limited) warns with its reason, the next window retries', async () => {
+  const fx = setup();
+  const reason = 'brain-kit curate: the model\'s usage limit is spent (resets 11am). Nothing was curated.';
+  writeLastRun(fx, lastRun({ exit: EXIT.TEMPFAIL, reasonCode: 'usage_limited', reason }));
+  const { report, code } = await doctor(fx, ['--only', 'last-run']);
+  const c = assertCheck(report, 'last-run', 'warn', 'doctor.last_run.soft');
+  assert.equal(c.params.reason, reason);
+  assert.notEqual(code, EXIT.FAILURE);
+});
+
 test('last-run: no record yet warns and names curate; a record that cannot be read, or holds no exit, fails', async () => {
   const fx = setup();
   rmSync(join(fx.stateDir, 'last-run.json'));

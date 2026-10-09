@@ -762,7 +762,7 @@ const CONNECTOR_TOOL_PREFIXES = ['mcp__claude_ai_Google_Calendar__', 'mcp__claud
 test('the stream fixtures carry no path of a real machine: no /home/ but /home/ana/, no /tmp/claude-, no -home-', () => {
   const files = readdirSync(FIXTURES).filter((f) => f.endsWith('.jsonl'));
   assert.deepEqual(files.sort(), [
-    'auth-expired.jsonl', 'connectors-connected.jsonl', 'connectors-states.jsonl', 'default-run.jsonl', 'denied-run.jsonl', 'isolated-run.jsonl', 'max-turns.jsonl',
+    'auth-expired.jsonl', 'connectors-connected.jsonl', 'connectors-states.jsonl', 'default-run.jsonl', 'denied-run.jsonl', 'isolated-run.jsonl', 'max-turns.jsonl', 'usage-limit.jsonl',
   ]);
   for (const file of files) {
     const text = readFileSync(join(FIXTURES, file), 'utf8');
