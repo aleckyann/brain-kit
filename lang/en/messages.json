@@ -1133,6 +1133,7 @@
   "curate.internal_error": "brain-kit curate: the round stopped on an unexpected error: {detail}",
   "curate.network_failed": "brain-kit curate: no network after waiting {waited} s ({attempts} attempts); the round did not start.",
   "curate.network_did_not_wait": "brain-kit curate: the network check answered in {ms} ms on its first try; it may be checking something other than the connection (see brain-kit doctor).",
+  "curate.index_lock_moved": "brain-kit curate: moved an orphaned index.lock ({minutes} minutes old, empty, nothing else going on in the tree) aside to {to}; it can be deleted.",
   "curate.interrupted": "brain-kit curate: the round was stopped by {signal}; the model and everything it started were killed.",
   "curate.sync_postponed": "brain-kit curate: postponed, sync could not bring the default branch level with its remote ({detail}); nothing was curated.",
   "curate.sync_failed": "brain-kit curate: sync failed ({detail}); nothing was curated.",

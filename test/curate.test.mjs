@@ -670,7 +670,7 @@ test('the order: a failing step leaves no trace of any step after it', async () 
   const steps = [];
   r = await curateInProcess(w, [], { onStep: (step) => steps.push(step) });
   assert.equal(r.status, EXIT.OK, r.stderr);
-  assert.deepEqual(steps, ['machine', 'lock', 'network', 'sync', 'config', 'window', 'dirty', 'snapshot', 'cli', 'sources', 'model', 'evidence', 'cleanup', 'watermark']);
+  assert.deepEqual(steps, ['machine', 'lock', 'network', 'index_lock', 'sync', 'config', 'window', 'dirty', 'snapshot', 'cli', 'sources', 'model', 'evidence', 'cleanup', 'watermark']);
 });
 
 test('--dry takes no lock, writes no state, runs no check and prints the window and the command line', () => {

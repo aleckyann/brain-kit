@@ -1133,6 +1133,7 @@
   "curate.internal_error": "brain-kit curate: a rodada parou num erro inesperado: {detail}",
   "curate.network_failed": "brain-kit curate: sem rede depois de esperar {waited} s ({attempts} tentativas); a rodada não começou.",
   "curate.network_did_not_wait": "brain-kit curate: a checagem de rede respondeu em {ms} ms na primeira tentativa; ela pode estar olhando outra coisa que não a conexão (veja brain-kit doctor).",
+  "curate.index_lock_moved": "brain-kit curate: um index.lock órfão ({minutes} minutos, vazio, sem mais nada acontecendo na árvore) foi movido para {to}; pode apagar.",
   "curate.interrupted": "brain-kit curate: a rodada foi interrompida por {signal}; o modelo e tudo o que ele iniciou foram encerrados.",
   "curate.sync_postponed": "brain-kit curate: adiada, o sync não conseguiu nivelar o branch padrão com o remoto ({detail}); nada foi curado.",
   "curate.sync_failed": "brain-kit curate: o sync falhou ({detail}); nada foi curado.",

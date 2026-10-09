@@ -15,6 +15,11 @@
 //       so in words, with the round's own sentence, and exits 1 too
 //    3. take the vault lock; held: exit 75 naming the holder
 //    4. wait for the network; none: exit 69 (did_not_wait is a note, R14)
+//   4b. an index.lock that cannot belong to a live git command (empty, over
+//       10 minutes old, no operation half done, a clean tree) is moved aside,
+//       never deleted, and the move is recorded in the round's `repairs`;
+//       any other lock stays, and this step never ends the round
+//       (incident 06/10/2026)
 //    5. sync in process, under the round's lock; diverged: 75; failed: 1
 //    6. only now load the configuration and check the prompt it names and
 //       the allow rules it adds (one that grants a path or command tool
@@ -112,6 +117,7 @@ import { expandHome } from '../doctor/checks.mjs';
 import { acquireLock } from '../guards/lock.mjs';
 import { GuardError } from '../guards/location.mjs';
 import { waitForNetwork } from '../guards/network.mjs';
+import { moveOrphanIndexLock } from '../guards/index-lock.mjs';
 import { checkDirtyTree } from '../guards/dirty-tree.mjs';
 import { takeSnapshot } from '../guards/snapshot.mjs';
 import { checkCli } from '../guards/cli.mjs';
@@ -1066,6 +1072,7 @@ export async function runCurate(argv, io, t, deps = {}) {
     sources: {}, warnings: [], remainingDays: 0, deferredDays: [], costUsd: null, budgetUsd: undefined, maxTurns: undefined, timeoutMinutes: undefined, numTurns: null, denials: [], isolation: null, proposed: null, leftovers: [],
     mode: null, relaunched: false, notConfigured: [], userRules: null, connectorStates: knownStates(previousRun),
     unknownCause: undefined,
+    repairs: [],
   };
   // The notifications this round owes besides the one for a non-zero exit:
   // one per best-effort connector source whose state changed.
@@ -1179,6 +1186,24 @@ export async function runCurate(argv, io, t, deps = {}) {
       io.stdout.write(`${t('curate.network_did_not_wait', { ms: network.waitedMs })}\n`);
     }
     if (interrupted) return fail(EXIT.FAILURE, 'interrupted', t('curate.interrupted', { signal: interrupted }));
+
+    // 4b. A lock git left behind, moved aside before sync meets it. A step
+    // that cannot tell is not a reason to end the round: sync fails, or not,
+    // with git's own words.
+    onStep('index_lock');
+    let lockMove;
+    try {
+      lockMove = moveOrphanIndexLock(root, { env, now });
+    } catch (error) {
+      lockMove = { moved: false, to: null, ageMinutes: null, skipped: 'git_failed', error: error instanceof Error ? error.message : String(error) };
+    }
+    if (lockMove.moved) {
+      run.repairs.push({ kind: 'index_lock_moved', to: lockMove.to, ageMinutes: lockMove.ageMinutes });
+      log('index_lock_moved', lockMove);
+      io.stdout.write(`${t('curate.index_lock_moved', { to: lockMove.to, minutes: lockMove.ageMinutes })}\n`);
+    } else if (lockMove.skipped !== 'absent') {
+      log('index_lock_kept', lockMove);
+    }
 
     // 5. Sync, under the lock this round holds.
     onStep('sync');
