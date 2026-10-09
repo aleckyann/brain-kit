@@ -19,11 +19,15 @@ each step are in [incidents.md](incidents.md).
 brain-kit machine set transcripts_dir ~/.claude/projects    # the default; set it only if yours differs
 brain-kit machine set notify_command '["notify-send", "brain-kit"]'
 brain-kit curate --dry                                      # what a round would do, nothing written
-brain-kit curate --check                                    # every step up to the model, no model call
+brain-kit curate --check                                    # every step up to the model, repairs included; no model call
 brain-kit curate                                            # one real round
 brain-kit schedule install
 brain-kit doctor
 ```
+
+`--check` is not a pure preview: it moves an orphaned index lock aside as a round would
+(step 4b) and, when the window is not empty, reinstalls a launcher stub an npm install left
+behind (step 10).
 
 `sources.transcripts.include_projects` in `brain-kit.config.json` lists the Claude Code
 project directories (the names under `~/.claude/projects`) whose sessions feed the vault.
@@ -167,15 +171,16 @@ once broke a real routine.
 5. **Sync.** The default branch is brought level with its remote. Behind: fast-forward.
    Diverged: exit 1, because retrying cannot fix it and a person has to reconcile the two
    histories. An operation in progress or a dirty tree in the way: exit 75. The reasons
-   of a sync that is diverged, postponed or failed carry the last line sync wrote, which is
-   git's own, never "see the message above". When that line says the remote's host cannot
+   of a sync that is diverged, postponed or failed carry git's own line where git said one,
+   else the last line sync wrote, never "see the message above". When that line says the remote's host cannot
    be reached (could not resolve a host name, name or service not known, temporary failure
    in name resolution, nodename nor servname provided, network is unreachable), the round
    exits 69 with `reasonCode` `sync_offline`: a machine just back from sleep whose name
    resolution is not up, a known cause that the next window retries, with no mark moved. A
-   failure of git itself (a fetch or a fast-forward git refused, or a git command that could
-   not run) is still exit 1 `sync_failed`, and its reason ends by saying that the cause is
-   not one the kit knows.
+   failure of git itself (a fetch, a checkout or a fast-forward git refused, or a git command
+   that could not run) is exit 1 `sync_failed`, unless git's line is one of the name
+   resolution errors above, which is exit 69 `sync_offline`; a `sync_failed` reason ends by
+   saying that the cause is not one the kit knows.
 6. **The configuration and the prompt, as synced.** Only now, so a change you merged
    upstream is what runs. A `curate.prompt` that points outside the vault, or a rule in
    `curate.allowed_tools_extra` that grants a path or command tool with no scope: exit 2.
@@ -839,8 +844,9 @@ incident, grouped by reason code (how many times, from when to when, a known or 
 cause, and the newest reason cut to one line, with each absolute path shown as its last
 segment); a line when `incidents.jsonl` has lines that could not be read, because they may
 hide an open incident; every repair of the last 24 hours; a network check that answered
-without waiting on its first try (`did_not_wait`, with the milliseconds); and each source
-whose mark is more than one day behind yesterday (one day behind is a normal morning). When
+without waiting on its first try (`did_not_wait`, with the milliseconds); and each source a
+round reads whose mark is more than one day behind yesterday (one day behind is a normal
+morning). When
 none of it applies, there is no line.
 
 ## A round that hangs

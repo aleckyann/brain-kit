@@ -43,7 +43,7 @@ import { describeLock } from '../guards/lock.mjs';
 import { legacyLockSetting, probeLegacyLock } from '../guards/legacy-lock.mjs';
 import { addDays, daysBetween, localDay, readWatermark, WatermarkError } from '../guards/watermark.mjs';
 import { findExecutable as realFindExecutable } from '../doctor/checks.mjs';
-import { knownStates } from '../commands/curate.mjs';
+import { knownStates, sourcesOf } from '../commands/curate.mjs';
 import { ghEnvOf } from '../commands/propose.mjs';
 import { vaultClock } from '../commands/prompt.mjs';
 import { pendingBuckets } from './pending.mjs';
@@ -188,20 +188,27 @@ function incidentFacts(stateDir, now, tz) {
     const at = shortInstant(line.at, tz);
     const before = groups.get(reasonCode);
     groups.set(reasonCode, {
-      reasonCode, count: (before?.count ?? 0) + 1, firstHuman: before?.firstHuman ?? at, lastHuman: at,
+      reasonCode, count: (before?.count ?? 0) + 1, firstHuman: before?.firstHuman ?? at, lastHuman: at ?? before?.lastHuman ?? null,
       known: line.known === true, reason: firstLine(withoutPaths(line.reason ?? '')).slice(0, REASON_MAX_CHARS),
     });
   }
   const since = now.getTime() - DAY_MS;
-  const repairs = lines.filter((line) => Date.parse(line.at) >= since).flatMap((line) => (Array.isArray(line.repairs) ? line.repairs : [])
+  const within = (line) => {
+    const at = Date.parse(line.at);
+    return at >= since && at <= now.getTime();
+  };
+  const repairs = lines.filter(within).flatMap((line) => (Array.isArray(line.repairs) ? line.repairs : [])
     .filter(isPlainObject)
     .map((repair) => ({ atHuman: shortInstant(line.at, tz), kind: String(repair.kind ?? '-'), detail: repairDetail(repair) })));
   return { open: [...groups.values()], repairs, corrupt, problem: problem === null ? null : withoutPaths(problem) };
 }
 
-// Each source's watermark and how many days it is behind yesterday (negative
-// when it is ahead), the way `doctor` counts them.
-function markFacts(stateDir, today) {
+// Each source a round reads (curate's own active list), with its watermark
+// and how many days it is behind yesterday (negative when it is ahead), the
+// way `doctor` counts them. A source a round does not read is never behind,
+// and with curate disabled none is.
+function markFacts(stateDir, today, config) {
+  if (config.curate?.enabled === false) return { sources: {}, problem: null };
   let mark;
   try {
     mark = readWatermark(stateDir);
@@ -211,7 +218,10 @@ function markFacts(stateDir, today) {
   }
   const yesterday = addDays(today, -1);
   const sources = {};
-  for (const [id, day] of Object.entries(mark.sources)) sources[id] = { day, behind: daysBetween(day, yesterday) };
+  for (const { id } of sourcesOf(config).active) {
+    const day = mark.sources[id];
+    if (day !== undefined) sources[id] = { day, behind: daysBetween(day, yesterday) };
+  }
   return { sources, problem: null };
 }
 
@@ -390,6 +400,6 @@ export function briefingFacts({ root, config, machine = null, stateDir, now = ne
     lock: lockFacts(root, env, stateDir),
     questions: questionFacts(stateDir, config, today, env),
     incidents: incidentFacts(stateDir, now, tz),
-    marks: markFacts(stateDir, today),
+    marks: markFacts(stateDir, today, config),
   };
 }

@@ -10,7 +10,8 @@
 // `checkCli`, which doctor uses too, stays free of side effects.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { lstatSync, mkdirSync, readFileSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import fs, { lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { EXIT } from '../../src/exit-codes.mjs';
 import { checkCli, STUB_MAX_BYTES } from '../../src/guards/cli.mjs';
@@ -27,7 +28,7 @@ const NATIVE = `#!/bin/sh\nexec "${process.execPath}" "${FAKE}" "$@"\n${'#'.repe
 const FIXING_INSTALLER = (marker) => `
 const fs = require('node:fs');
 const path = require('node:path');
-fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ token: process.env.BRAIN_KIT_ROUND_TOKEN ?? 'absent', mark: process.env.ANA_MARK ?? 'unset' }));
+fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ token: process.env.BRAIN_KIT_ROUND_TOKEN ?? 'absent', mark: process.env.ANA_MARK ?? 'unset', cwd: process.cwd() }));
 fs.writeFileSync(path.join(__dirname, 'bin', 'claude.exe'), ${JSON.stringify(NATIVE)});
 `;
 const FAILING_INSTALLER = 'process.stderr.write("boom: no native package\\nFallback: node /home/ana/x.cjs\\n"); process.exit(1);\n';
@@ -61,7 +62,7 @@ function fakePackage(dir, { installer = FIXING_INSTALLER(join(dir, 'marker.json'
 const repair = ({ link, env }, options = {}) => repairStub(checkCli(link, { env }), { env, ...options });
 
 test('the 14/09/2026 stub, found through the symlink npm puts on PATH, is reinstalled and the CLI then answers', { skip: SKIP }, () => {
-  const { stub, link, marker, env } = fakePackage(makeTempDir('brain-kit-incident-0914-repair-'));
+  const { pkg, stub, link, marker, env } = fakePackage(makeTempDir('brain-kit-incident-0914-repair-'));
   const before = checkCli(link, { env });
   assert.equal(before.problem, 'stub');
   assert.equal(before.realPath, realpathSync(stub), 'the stub is named by its real path, not by the link');
@@ -69,7 +70,7 @@ test('the 14/09/2026 stub, found through the symlink npm puts on PATH, is reinst
   assert.deepEqual(repairStub(before, { env }), { tried: true, fixed: true, skipped: null, said: null });
   const after = checkCli(link, { env });
   assert.deepEqual([after.ok, after.version], [true, '2.1.281']);
-  assert.deepEqual(JSON.parse(readFileSync(marker, 'utf8')), { token: 'absent', mark: 'given' }, 'the installer ran with the environment it was given');
+  assert.deepEqual(JSON.parse(readFileSync(marker, 'utf8')), { token: 'absent', mark: 'given', cwd: realpathSync(pkg) }, 'the installer ran with the environment it was given, in its own package');
 });
 
 test('checkCli has no side effect: a stub it reports stays the stub, byte for byte', { skip: SKIP }, () => {
@@ -98,6 +99,31 @@ for (const [name, packageOptions, repairOptions, skipped] of REFUSALS) {
     assert.throws(() => readFileSync(marker), { code: 'ENOENT' }, 'the installer never ran');
   });
 }
+
+test('a stub that vanished between the check and the repair is treated as young: not tried, never a throw', { skip: SKIP }, () => {
+  const p = fakePackage(makeTempDir('brain-kit-incident-0914-repair-'));
+  const cli = checkCli(p.link, { env: p.env });
+  assert.equal(cli.problem, 'stub');
+  rmSync(p.stub);
+  assert.deepEqual(repairStub(cli, { env: p.env }), { tried: false, fixed: false, skipped: 'young', said: null });
+  assert.throws(() => readFileSync(p.marker), { code: 'ENOENT' }, 'the installer never ran');
+});
+
+test('a real path that cannot be resolved leaves realPath null and never turns an existing file into missing', { skip: SKIP }, () => {
+  const { stub } = fakePackage(makeTempDir('brain-kit-incident-0914-repair-'));
+  const real = fs.realpathSync;
+  fs.realpathSync = () => { throw Object.assign(new Error('realpath failed'), { code: 'EIO' }); };
+  syncBuiltinESMExports();
+  let cli;
+  try {
+    cli = checkCli(stub);
+  } finally {
+    fs.realpathSync = real;
+    syncBuiltinESMExports();
+  }
+  assert.deepEqual([cli.problem, cli.realPath], ['stub', null]);
+  assert.equal(repairStub(cli).skipped, 'layout', 'with no real path there is no package to trust');
+});
 
 test('no repair when the CLI is not a stub (its --version fails)', { skip: SKIP }, () => {
   const dir = makeTempDir('brain-kit-incident-0914-repair-');

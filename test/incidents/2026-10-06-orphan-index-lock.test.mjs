@@ -9,7 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync, utimesSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { EXIT } from '../../src/exit-codes.mjs';
 import { moveOrphanIndexLock } from '../../src/guards/index-lock.mjs';
 import { CLEAN_ENV, makeRepo, write } from '../helpers/git-repo.mjs';
@@ -41,7 +41,7 @@ test('06/10/2026 replayed: a 0-byte lock, 20 minutes old, in a clean tree is mov
   assert.ok(r.ageMinutes >= 19 && r.ageMinutes <= 21, String(r.ageMinutes));
   assert.equal(existsSync(lock), false, 'git can take its lock again');
   assert.equal(existsSync(r.to), true, 'the old lock is kept for a person to look at');
-  assert.deepEqual(readdirSync(join(root, '.git')).filter((n) => n.startsWith('index.lock')), [r.to.split('/').at(-1)]);
+  assert.deepEqual(readdirSync(join(root, '.git')).filter((n) => n.startsWith('index.lock')), [basename(r.to)]);
 });
 
 test('no lock: nothing to do', () => {

@@ -20,8 +20,8 @@ import { USAGE_LIMIT_PATTERNS } from '../../src/commands/curate.mjs';
 import { makeCurateWorld, STREAMS, utcDay } from '../helpers/curate-world.mjs';
 
 const COPY = {
-  en: { head: /the model's usage limit is spent \(resets 11am\)/, tail: /Nothing was curated and no watermark moved; the first window after the reset resumes\./ },
-  'pt-BR': { head: /o limite de uso do modelo acabou \(resets 11am\)/, tail: /Nada foi curado e nenhuma marca d'água andou; a primeira janela depois da liberação retoma\./ },
+  en: { head: /the model's usage limit is spent \(resets 11am\)/, tail: /\. No watermark moved; the first window after the reset resumes\.$/ },
+  'pt-BR': { head: /o limite de uso do modelo acabou \(resets 11am\)/, tail: /\. Nenhuma marca d'água andou; a primeira janela depois da liberação retoma\.$/ },
 };
 
 function startRound(lang, scenario) {

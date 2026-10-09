@@ -96,6 +96,15 @@ test('open incidents are the non-zero lines after the newest closing one, groupe
   assert.deepEqual([repairs, corrupt, problem], [[], 0, null]);
 });
 
+test('a newest line with no usable time keeps the group\'s last time', () => {
+  const w = world();
+  w.incidents([
+    incident('2026-10-07T12:00:00.000Z', { exit: EXIT.TEMPFAIL, reasonCode: 'dirty_tree', reason: 'Old reason.' }),
+    incident('not a time', { exit: EXIT.TEMPFAIL, reasonCode: 'dirty_tree', reason: 'Newest reason.' }),
+  ]);
+  assert.deepEqual(w.facts().incidents.open, [{ reasonCode: 'dirty_tree', count: 2, firstHuman: '07/10 09:00', lastHuman: '07/10 09:00', known: true, reason: 'Newest reason.' }]);
+});
+
 test('the newest reason of a group is cut to one line of 200 characters', () => {
   const w = world();
   w.incidents([incident('2026-10-08T12:00:00.000Z', { reason: `${'x'.repeat(300)}\nsecond line` })]);
@@ -140,6 +149,15 @@ test('the repairs of the last 24 hours are listed, in the vault zone, and an old
   assert.equal(w.lines('pt-BR').at(-1), 'Corrigido sozinho em 09/10 06:00: cli_reinstalled 2.1.301');
 });
 
+test('a repair stamped after now is not one of the last 24 hours', () => {
+  const w = world();
+  w.incidents([
+    incident(iso(NOW.getTime() - HOUR), { exit: 0, reasonCode: 'nothing_to_curate', repairs: [{ kind: 'cli_reinstalled', version: '2.1.301' }] }),
+    incident(iso(NOW.getTime() + 2 * HOUR), { exit: 0, reasonCode: 'nothing_to_curate', repairs: [{ kind: 'cli_reinstalled', version: '2.1.302' }] }),
+  ]);
+  assert.deepEqual(w.facts().incidents.repairs, [{ atHuman: '09/10 08:00', kind: 'cli_reinstalled', detail: '2.1.301' }]);
+});
+
 test('a repair in a round that went wrong is listed too, and its time is the vault zone\'s, not UTC', () => {
   const w = world();
   // 01:30 UTC on 09/10 is 22:30 of 08/10 at UTC-3.
@@ -176,23 +194,21 @@ test('a network check that waited, or a record without one, says nothing and car
 
 // ------------------------------------------------------------ days behind
 
-test('a source more than one day behind yesterday is a line with its days; one day behind is nothing', () => {
+test('an active source more than one day behind yesterday is a line with its days; a source the round does not read is not', () => {
   const w = world();
-  w.mark({ transcripts: '2026-10-05', calendar: '2026-10-07', meeting_notes: '2026-10-08', slides: '2026-10-06' });
-  assert.deepEqual(w.facts().marks, {
-    sources: {
-      transcripts: { day: '2026-10-05', behind: 3 },
-      calendar: { day: '2026-10-07', behind: 1 },
-      meeting_notes: { day: '2026-10-08', behind: 0 },
-      slides: { day: '2026-10-06', behind: 2 },
-    },
-    problem: null,
-  });
-  assert.deepEqual(w.lines().slice(2), [
-    'Source transcripts: 3 days not curated; the next round reads them.',
-    'Source slides: 2 days not curated; the next round reads them.',
-  ]);
-  assert.equal(w.lines('pt-BR').at(-2), 'Fonte transcripts: 3 dias sem curadoria; a próxima rodada lê esses dias.');
+  // calendar is listed but not configured (off) in the fixture, slides is no source at all: neither is read by a round.
+  w.mark({ transcripts: '2026-10-05', calendar: '2026-10-06', slides: '2026-10-06' });
+  assert.deepEqual(w.facts().marks, { sources: { transcripts: { day: '2026-10-05', behind: 3 } }, problem: null });
+  assert.deepEqual(w.lines().slice(2), ['Source transcripts: 3 days not curated; the next rounds read them.']);
+  assert.deepEqual(w.lines('pt-BR').slice(2), ['Fonte transcripts: 3 dias sem curadoria; as próximas rodadas leem esses dias.']);
+});
+
+test('with curate disabled no source is behind: no mark, no line', () => {
+  const w = world();
+  w.config.curate.enabled = false;
+  w.mark({ transcripts: '2026-10-05' });
+  assert.deepEqual(w.facts().marks, { sources: {}, problem: null });
+  assert.equal(w.lines().length, 2);
 });
 
 test('a source marked after yesterday is not behind', () => {
@@ -298,7 +314,7 @@ test('the briefing\'s sources block carries the same lines', () => {
   const text = renderBlocks({ blocks, problems, facts: w.facts(), config, root: w.root, t: createTranslator('en'), kit: '"/opt/brain-kit/bin/brain-kit.mjs"', log: config.taxonomy.log, selection: null, mark: null });
   assert.match(text, /Open incident: dirty_tree, 1 time\(s\) from 08\/10 09:00 to 08\/10 09:00 \(known cause\)\. Latest reason: Three files are changed\./);
   assert.match(text, /The network check answered in 16 ms on its first try/);
-  assert.match(text, /Source transcripts: 3 days not curated; the next round reads them\./);
+  assert.match(text, /Source transcripts: 3 days not curated; the next rounds read them\./);
 });
 
 test('brain-kit preflight prints them, and its JSON carries incidents and marks', async () => {

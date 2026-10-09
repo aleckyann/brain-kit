@@ -622,8 +622,9 @@ window can retry, was recorded as a failure of the kit, with no cause. The same 
 why that mattered: from 03/10 to 06/10/2026 seven rounds were postponed on a dirty tree,
 each one notified, and three working days went uncurated, because the only record of a
 failure a person saw was a notification, gone once dismissed.
-**Rule.** A failure carries its own words. Every sync outcome that is not a success puts
-the last line sync wrote, git's own, in the reason. A lost network is a known cause,
+**Rule.** A failure carries its own words. A sync that is diverged, postponed or failed puts
+git's own line in the reason, or sync's last line where git said none (a dirty tree names
+its files instead). A lost network is a known cause,
 recognised by what git, ssh and curl say (could not resolve a host name, name or service
 not known, temporary failure in name resolution, network is unreachable): exit 69
 `sync_offline`, no mark moves, the next window tries again. A cause the kit cannot name (git
@@ -773,9 +774,9 @@ realtime timer whose time passed while the machine slept fires when it wakes;
 `Persistent=` only covers the time the timer was inactive, such as a machine that was off.
 The page a person reads to understand a round that fired at resume told them it could not
 have.
-**Rule.** Do not rely on the timer to keep a round from firing at resume: it will. Daytime
-windows make a fire at resume rarer, not impossible, and what absorbs it is the wait for the
-network inside the round, together with a sync that names a lost network as such. Check a
+**Rule.** Do not rely on the timer to keep a round from firing at resume: it will. What
+absorbs it is the wait for the network inside the round, together with a sync that names a
+lost network as such. Check a
 claim about a scheduler against the journal, comparing the unit's start with the time of
 the resume, before writing it down.
 **Where it lives in brain-kit.** [scheduling.md](scheduling.md) ("What each platform does

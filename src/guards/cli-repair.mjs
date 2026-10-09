@@ -14,8 +14,8 @@
 // shim there is a batch file), 'layout' (the real path is not
 // <pkg>/bin/<file> of the @anthropic-ai/claude-code package with install.cjs
 // a regular file, never a link) or 'young' (the stub is no more than
-// `minAgeMs` old, so an install may be running, the CLI's own update
-// included). Tried: `fixed` is the installer's own exit status, so the
+// `minAgeMs` old, or gone since checkCli, so an install may be running, the
+// CLI's own update included). Tried: `fixed` is the installer's own exit status, so the
 // caller checks the CLI again; `said` is the first line the installer wrote
 // to stderr (its last line is a fallback command with an absolute home
 // path). The installer gets `env` and no shell: pass the person's, never the
@@ -47,8 +47,14 @@ export function repairStub(cli, { env = process.env, now = new Date(), platform 
   if (platform === 'win32') return skip('windows');
   const install = installerOf(cli.realPath);
   if (install === null) return skip('layout');
-  if (now.getTime() - statSync(cli.realPath).mtimeMs <= minAgeMs) return skip('young');
-  const r = run(process.execPath, [install], { env, timeout: timeoutMs, encoding: 'utf8' });
+  let mtimeMs;
+  try {
+    mtimeMs = statSync(cli.realPath).mtimeMs;
+  } catch {
+    return skip('young'); // gone since checkCli: an install is replacing it right now
+  }
+  if (now.getTime() - mtimeMs <= minAgeMs) return skip('young');
+  const r = run(process.execPath, [install], { cwd: dirname(install), env, timeout: timeoutMs, killSignal: 'SIGKILL', encoding: 'utf8' });
   const fixed = !r.error && r.status === 0;
   const line = `${r.stderr ?? ''}`.split('\n').map((l) => l.trim()).find((l) => l !== '');
   const said = line ?? (r.error ? r.error.code ?? r.error.message : fixed ? null : `exit ${r.status}`);

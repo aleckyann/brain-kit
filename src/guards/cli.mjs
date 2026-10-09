@@ -46,9 +46,13 @@ export function checkCli(claudeBin, { env = process.env, timeoutMs = VERSION_TIM
     try {
       const st = statSync(path);
       if (st.isFile()) size = st.size;
-      realPath = realpathSync(path);
     } catch {
       size = null;
+    }
+    try {
+      realPath = realpathSync(path);
+    } catch {
+      realPath = null;
     }
   }
   if (size === null) {

@@ -20,7 +20,8 @@
 //       never deleted, and the move is recorded in the round's `repairs`;
 //       any other lock stays, and this step never ends the round
 //       (incident 06/10/2026)
-//    5. sync in process, under the round's lock; diverged: 75; failed: 1
+//    5. sync in process, under the round's lock; diverged: 1; postponed: 75;
+//       a lost network to the remote: 69 (sync_offline); failed: 1
 //    6. only now load the configuration and check the prompt it names and
 //       the allow rules it adds (one that grants a path or command tool
 //       with no scope: exit 2), so a synced configuration is what runs
@@ -1206,8 +1207,10 @@ export async function runCurate(argv, io, t, deps = {}) {
     // 5. Sync, under the lock this round holds.
     onStep('sync');
     const outcome = {};
-    // Sync's last non-empty line on stderr already quotes git: it is what
-    // every sync outcome that is not a success puts in the round's reason.
+    // Git's own line where sync has one (outcome.detail), else sync's last
+    // non-empty line on stderr: what a sync outcome that is not a success
+    // puts in the round's reason. Git's words come first so the briefing's
+    // cut never drops them.
     let lastSyncLine = null;
     const syncIo = {
       ...io,
@@ -1218,11 +1221,12 @@ export async function runCurate(argv, io, t, deps = {}) {
       synced = syncUnderLock(root, syncIo, t, env, outcome);
     } catch (error) {
       io.stderr.write(`${t('sync.git_failed', { detail: error.message })}\n`);
-      lastSyncLine = lastNonEmptyLine(error.message) ?? lastSyncLine;
+      // Git's first line is its error; its last is often advice.
+      outcome.detail = firstNonEmptyLine(error.message) ?? outcome.detail;
       outcome.gitFailed = true;
       synced = EXIT.FAILURE;
     }
-    const detail = lastSyncLine ?? '-';
+    const detail = outcome.detail ?? lastSyncLine ?? '-';
     // A diverged base is exit 1, not 75: retrying cannot fix it, a person
     // must reconcile the two histories (controller ruling, fix round 1).
     if (outcome.diverged) return fail(EXIT.FAILURE, 'sync_diverged', t('curate.sync_diverged', { detail }));
@@ -1997,6 +2001,10 @@ function lastLine(text) {
 // words a pattern looks for), or null.
 function lastNonEmptyLine(text) {
   return String(text ?? '').split(/\r?\n/).filter((line) => line.trim() !== '').at(-1) ?? null;
+}
+
+function firstNonEmptyLine(text) {
+  return String(text ?? '').split(/\r?\n/).find((line) => line.trim() !== '') ?? null;
 }
 
 // Step 18: last-run.json, the log's last line, the lock, the notification.

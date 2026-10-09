@@ -314,8 +314,9 @@ lado, sync, e só então a configuração já sincronizada), e toda forma de uma
 termina com uma saída diferente de zero, um motivo no `last-run.json` e no log, e o seu
 comando de notificação. A rodada só conserta sozinha o que consegue provar que é seguro
 (uma trava do índice deixada por um git que morreu, um launcher falso que a instalação da
-CLI deixou), nomeia toda causa que conhece, diz quando não conhece e guarda cada falha e
-cada conserto no `incidents.jsonl`, para o briefing matinal. O `--dry` mostra o que uma
+CLI deixou), nomeia toda causa que conhece, diz quando não conhece e guarda cada falha
+(menos a de uma rodada adiada porque outra rodada segurava a trava) e cada conserto no
+`incidents.jsonl`, para o briefing matinal. O `--dry` mostra o que uma
 rodada faria e o `--check` roda todos os passos até o modelo, consertos incluídos.
 
 O `watermark` mostra e move o último dia varrido de cada fonte. Cada fonte lê os dias

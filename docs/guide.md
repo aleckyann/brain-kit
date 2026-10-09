@@ -483,7 +483,8 @@ configuration as synced), and every way a round can fail ends with a non-zero ex
 in `last-run.json` and the log, and your notify command. A round repairs on its own only
 what it can prove safe (an index lock left by a dead git command, a launcher stub an install
 of the CLI left behind), names every cause it knows, says so when it does not, and keeps
-each failure and repair in `incidents.jsonl` for the morning briefing. `--dry` shows what a
+each failure (except a round postponed because another round held the lock) and each repair
+in `incidents.jsonl` for the morning briefing. `--dry` shows what a
 round would do and `--check` runs every step up to the model, repairs included.
 
 `watermark` shows and moves the last day each source was swept. Each source reads the

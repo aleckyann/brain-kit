@@ -11,12 +11,14 @@
 // GIT_SSH_COMMAND is a script that prints what ssh prints and exits 255.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { EXIT } from '../../src/exit-codes.mjs';
 import { OFFLINE_PATTERNS } from '../../src/commands/curate.mjs';
+import { createTranslator } from '../../src/lang.mjs';
 import { git } from '../helpers/git-repo.mjs';
-import { makeCurateWorld } from '../helpers/curate-world.mjs';
+import { BIN, makeCurateWorld } from '../helpers/curate-world.mjs';
 import { makeTempDir } from '../helpers/tmp.mjs';
 
 // A world whose remote cannot be reached, and one round of it in `lang`
@@ -32,6 +34,10 @@ function failingRound(message, lang) {
   return { w, r, last: w.lastRun() };
 }
 
+const UNKNOWN = {
+  en: ' The cause is not one brain-kit knows: the text before this sentence is what the program said, and brain-kit did not repair it.',
+  'pt-BR': ' A causa não é uma que o brain-kit conhece: o texto antes desta frase é o que o programa disse, e o brain-kit não a corrigiu.',
+};
 const RESOLVE = 'ssh: Could not resolve hostname example.invalid: Temporary failure in name resolution';
 
 for (const [lang, sentence] of [['en', /no network to the remote/], ['pt-BR', /sem rede para o remoto/]]) {
@@ -43,6 +49,7 @@ for (const [lang, sentence] of [['en', /no network to the remote/], ['pt-BR', /s
     assert.equal(last.unknownCause, undefined, 'a lost network is a known cause');
     assert.match(last.reason, /Could not resolve hostname example\.invalid/);
     assert.match(last.reason, sentence);
+    assert.equal(last.reason, createTranslator(lang)('curate.sync_offline', { detail: RESOLVE }), 'git\'s own line, not sync\'s sentence around it, so a cut reason keeps git\'s words');
     assert.equal(w.watermark(), null);
     assert.equal(w.notifications().length, 1);
     assert.equal(w.notifications()[0].at(-1), last.reason);
@@ -56,6 +63,7 @@ for (const [lang, sentence] of [['en', /no network to the remote/], ['pt-BR', /s
     assert.equal(last.unknownCause, true, 'git itself failed, and the record says the cause is unknown');
     assert.match(last.reason, /fatal: protocol error: bad line length/);
     assert.match(last.reason, lang === 'en' ? /\. The cause is not one brain-kit knows/ : /\. A causa não é uma que o brain-kit conhece/);
+    assert.ok(last.reason.endsWith(UNKNOWN[lang]), last.reason);
     assert.doesNotMatch(last.reason, /see the message above|veja a mensagem acima/);
     assert.doesNotMatch(last.reason, /\.\./, 'a reason that already ends in a full stop gets no second one');
     assert.equal(w.watermark(), null);
@@ -99,9 +107,42 @@ test('a fast-forward that git itself refuses is a git failure: sync_failed with 
   assert.equal(r.status, EXIT.FAILURE, r.stderr);
   const last = w.lastRun();
   assert.equal(last.reasonCode, 'sync_failed');
-  assert.match(last.reason, /Could not fast-forward main/);
+  assert.match(last.reason, /^brain-kit curate: sync failed \(fatal: .*cannot lock ref/, 'git\'s own line is the detail');
+  assert.doesNotMatch(last.reason, /Could not fast-forward main/);
   assert.match(last.reason, /\. The cause is not one brain-kit knows/);
   assert.equal(last.unknownCause, true);
+});
+
+test('a checkout git itself refuses is a git failure too: sync_failed with git\'s line and the unknown-cause sentence', () => {
+  const w = makeCurateWorld();
+  git(w.vault, ['checkout', '-q', '-b', 'curator/today']);
+  git(w.vault, ['worktree', 'add', '-q', join(w.base, 'second'), 'main']);
+  w.publishNotes(1);
+  const r = w.curate();
+  assert.equal(r.status, EXIT.FAILURE, r.stderr);
+  assert.match(r.stderr, /Could not check out main/);
+  const last = w.lastRun();
+  assert.equal(last.reasonCode, 'sync_failed');
+  assert.match(last.reason, /^brain-kit curate: sync failed \(fatal: 'main' is already used by worktree/);
+  assert.match(last.reason, /\. The cause is not one brain-kit knows/);
+  assert.equal(last.unknownCause, true);
+  assert.equal(w.watermark(), null);
+});
+
+test('git failing under sync (a proposed file it cannot bring back past an index lock) quotes git\'s first line, not the advice after it', () => {
+  const w = makeCurateWorld();
+  w.write('index.md', `${readFileSync(join(w.vault, 'index.md'), 'utf8')}\nA proposed line.\n`);
+  const proposed = spawnSync(process.execPath, [BIN, 'propose', 'Index', '--only', 'index.md'], { cwd: w.vault, env: w.env, encoding: 'utf8' });
+  assert.equal(proposed.status, EXIT.OK, proposed.stderr);
+  // Empty, but the tree has a change of its own: step 4b leaves it, and sync's restore meets it.
+  writeFileSync(join(w.vault, '.git', 'index.lock'), '');
+  const r = w.curate();
+  assert.equal(r.status, EXIT.FAILURE, r.stderr);
+  const last = w.lastRun();
+  assert.equal(last.reasonCode, 'sync_failed');
+  assert.equal(last.unknownCause, true);
+  assert.match(last.reason, /^brain-kit curate: sync failed \(git checkout HEAD exited with status 128: fatal: .*index\.lock/);
+  assert.doesNotMatch(last.reason, /Another git process/);
 });
 
 test('a postponed sync names what sync said, not "see the message above"', () => {
