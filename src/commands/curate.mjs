@@ -1092,8 +1092,12 @@ export async function runCurate(argv, io, t, deps = {}) {
     return exit;
   };
   // A reason the kit cannot explain ends by saying so (R5): the cause is
-  // not one it knows, and the text before is the program's own.
-  const withUnknownCause = (reason) => `${reason}${t('curate.unknown_cause', {})}`;
+  // not one it knows, and the text before is the program's own. The text
+  // before may end on a bare detail, so the sentence boundary is kept.
+  const withUnknownCause = (reason) => {
+    const said = reason.trimEnd();
+    return `${/[.!?]$/.test(said) ? said : `${said}.`}${t('curate.unknown_cause', {})}`;
+  };
 
   // 3. The lock.
   onStep('lock');

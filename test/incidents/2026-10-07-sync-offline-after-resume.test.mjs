@@ -53,8 +53,9 @@ for (const [lang, sentence] of [['en', /no network to the remote/], ['pt-BR', /s
     assert.equal(r.status, EXIT.FAILURE, r.stderr);
     assert.equal(last.reasonCode, 'sync_failed');
     assert.match(last.reason, /fatal: protocol error: bad line length/);
-    assert.match(last.reason, lang === 'en' ? /not one brain-kit knows/ : /não é uma que o brain-kit conhece/);
+    assert.match(last.reason, lang === 'en' ? /\. The cause is not one brain-kit knows/ : /\. A causa não é uma que o brain-kit conhece/);
     assert.doesNotMatch(last.reason, /see the message above|veja a mensagem acima/);
+    assert.doesNotMatch(last.reason, /\.\./, 'a reason that already ends in a full stop gets no second one');
     assert.equal(w.watermark(), null);
     assert.equal(w.launches().length, 0);
   });

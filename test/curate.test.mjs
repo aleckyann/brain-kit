@@ -325,7 +325,7 @@ test('an error result whose text matches no login phrase stays model_failed, exi
   const last = w.lastRun();
   assert.equal(last.reasonCode, 'model_failed');
   assert.ok(last.reason.includes('(result success, exit 1): The stream ended early after the first turn'), last.reason);
-  assert.match(last.reason, /not one brain-kit knows/, 'a model failure says its cause is unknown');
+  assert.match(last.reason, /after the first turn\. The cause is not one brain-kit knows/, 'a model failure says its cause is unknown, after a full stop');
   assert.equal(w.watermark(), null);
   assert.deepEqual(w.notifications().map((call) => call.at(-1)), [last.reason]);
 
