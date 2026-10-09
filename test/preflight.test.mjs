@@ -24,7 +24,7 @@ const UTC3 = 'America/Argentina/Buenos_Aires';
 const NOW = new Date('2026-09-25T12:00:00Z');
 const REAL_GIT = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8', env: CLEAN_ENV }).stdout.trim();
 
-const FACT_KEYS = ['today', 'todayHuman', 'weekday', 'tz', 'lastRun', 'connectorStates', 'openPullRequests', 'stale', 'pending', 'git', 'lock', 'questions'];
+const FACT_KEYS = ['today', 'todayHuman', 'weekday', 'tz', 'lastRun', 'connectorStates', 'openPullRequests', 'stale', 'pending', 'git', 'lock', 'questions', 'incidents', 'marks'];
 
 // A fake gh that answers only the call the preflight makes: `gh api
 // --paginate ... --jq <filter>`, over pages of the GitHub API's own shape
@@ -230,6 +230,7 @@ test('briefingFacts: a last run is read as the curator wrote it, with its time i
   assert.deepEqual(facts.lastRun, {
     at: '2026-09-25T12:30:00.000Z', atHuman: '25/09/2026 09:30', exit: 0, reasonCode: null,
     sources: { transcripts: { state: null, advanced: true }, calendar: { state: 'connected', advanced: false }, meeting_notes: { state: 'needs_auth', advanced: null } },
+    networkWarning: null, networkWaitedMs: null,
     problem: null,
   });
   assert.deepEqual(facts.connectorStates, {
@@ -578,7 +579,9 @@ test('preflight --json: version, then exactly the facts\' keys in their order, a
   assert.deepEqual(Object.keys(parsed.lock), ['held', 'command', 'reason', 'legacy']);
   world.lastRun({ at: '2026-09-25T12:30:00.000Z', exit: 0, reasonCode: null, sources: { calendar: { state: 'connected', advanced: true } } });
   const withRun = JSON.parse((await preflight(world, ['--json'])).out);
-  assert.deepEqual(Object.keys(withRun.lastRun), ['at', 'atHuman', 'exit', 'reasonCode', 'sources', 'problem']);
+  assert.deepEqual(Object.keys(withRun.lastRun), ['at', 'atHuman', 'exit', 'reasonCode', 'sources', 'networkWarning', 'networkWaitedMs', 'problem']);
+  assert.deepEqual(Object.keys(parsed.incidents), ['open', 'repairs', 'corrupt', 'problem']);
+  assert.deepEqual(Object.keys(parsed.marks), ['sources', 'problem']);
 });
 
 test('preflight: the dir argument, a subdirectory, and exit 2 outside a vault or with bad arguments', async () => {
@@ -641,6 +644,8 @@ test('renderPreflight: an item with no what reads as a dash, a detached HEAD is 
     git: { branch: null, defaultBranch: 'main', upstream: 'origin/main', ahead: 0, behind: 4, dirty: 2, reason: null },
     lock: { held: null, command: null, reason: 'boom' },
     questions: { ok: false, reason: 'EACCES', file: '/s/questions.log', escalateAfter: 3, maxAgeDays: 45, open: null, escalated: null, toArchive: null, corrupt: null },
+    incidents: { open: [], repairs: [], corrupt: 0, problem: null },
+    marks: { sources: {}, problem: null },
   };
   const text = renderPreflight(facts, t, { vault: '/v' });
   for (const line of [

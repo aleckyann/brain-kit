@@ -69,6 +69,8 @@ function facts(over = {}) {
       sources: { transcripts: { state: null, advanced: true }, calendar: { state: 'needs_auth', advanced: false }, meeting_notes: { state: 'tools_missing', advanced: false } },
     },
     connectorStates: { calendar: { state: 'needs_auth', at: '2026-09-24T09:30:00Z', atHuman: '24/09/2026 09:30' } },
+    incidents: { open: [], repairs: [], corrupt: 0, problem: null },
+    marks: { sources: {}, problem: null },
     openPullRequests: { ok: true, reason: null, detail: null, items: [{ number: 7, title: 'curation of 24/09', url: 'https://example.invalid/pr/7', createdHuman: '24/09/2026' }] },
     stale: { ok: true, reason: null, count: 1, notes: [{ path: 'projects/old.md', staleAfter: '2026-09-01', staleAfterHuman: '01/09/2026' }] },
     pending: {
