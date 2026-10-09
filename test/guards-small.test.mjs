@@ -160,6 +160,17 @@ test('network: unset check is a TCP connection to api.anthropic.com:443, bounded
   assert.equal(emptyCheck.ok, true);
 });
 
+test('network: the default TCP connection proves a connection, so an instant one is never did_not_wait; a configured check that answers at once still is', async () => {
+  for (const check of [undefined, null, []]) {
+    const r = await waitForNetwork(check, { timeoutMs: 60000 }, { ...fakeClock(), connect: async () => true });
+    assert.deepEqual(r, { ok: true, waitedMs: 0, attempts: 1, warning: null }, String(check));
+  }
+  const argv = await waitForNetwork(['nm-online', '-q'], { timeoutMs: 60000 }, { ...fakeClock(), runArgv: async () => true });
+  assert.equal(argv.warning, 'did_not_wait');
+  const fn = await waitForNetwork(async () => true, { timeoutMs: 60000 }, fakeClock());
+  assert.equal(fn.warning, 'did_not_wait');
+});
+
 test('network: machine.network_check is an argument vector; exit 0 is success', async () => {
   const seen = [];
   const runArgv = async (argv, limit) => { seen.push([argv, limit]); return true; };

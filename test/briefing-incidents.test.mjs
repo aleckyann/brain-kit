@@ -156,8 +156,8 @@ test('a network check that did not wait is a line, with what it answered in', ()
   w.lastRun({ ...RUN, network: { ok: true, waitedMs: 16, attempts: 1, warning: 'did_not_wait' } });
   const facts = w.facts();
   assert.deepEqual([facts.lastRun.networkWarning, facts.lastRun.networkWaitedMs], ['did_not_wait', 16]);
-  assert.equal(w.lines().at(-1), 'The network check answered in 16 ms on its first try: it may not wait for a connection. See brain-kit doctor.');
-  assert.equal(w.lines('pt-BR').at(-1), 'A checagem de rede respondeu em 16 ms na primeira tentativa: talvez não espere a conexão. Veja brain-kit doctor.');
+  assert.equal(w.lines().at(-1), 'The network check answered in 16 ms on its first try: it may not wait for a connection. Check network_check in machine.json.');
+  assert.equal(w.lines('pt-BR').at(-1), 'A checagem de rede respondeu em 16 ms na primeira tentativa: talvez não espere a conexão. Confira network_check no machine.json.');
 });
 
 test('a network check that waited, or a record without one, says nothing and carries null', () => {

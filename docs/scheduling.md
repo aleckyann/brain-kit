@@ -146,10 +146,11 @@ once broke a real routine.
    not a repository, a reclaim that died) as `lock_unusable`, with its own exit code.
 4. **The network.** The round waits for a connection, up to two minutes, by running
    `machine.network_check` or, when that is unset, by opening a connection to the model's
-   endpoint. None: exit 69. A check that answers in under 100 milliseconds
-   (`curate.network_min_wait_ms`) on its first try is accepted but noted as "did not wait"
-   in the log and in `last-run.json`: it may be answering about something other than the
-   connection. The note is never a failure, but the morning briefing and `brain-kit
+   endpoint. None: exit 69. A `machine.network_check` that answers in under 100
+   milliseconds (`curate.network_min_wait_ms`) on its first try is accepted but noted as
+   "did not wait" in the log and in `last-run.json`: it may be answering about something
+   other than the connection. The default connection is never noted: it proves a
+   connection, however fast it answers. The note is never a failure, but the morning briefing and `brain-kit
    preflight` repeat it (see [Incidents](#incidents-what-the-rounds-leave-behind)).
 
    **4b. An orphaned index lock** (the `index_lock` step in the code). Before sync meets

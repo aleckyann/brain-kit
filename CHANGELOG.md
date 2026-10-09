@@ -79,6 +79,12 @@ fail, as it did before (docs/scheduling.md, steps 4b and 10).
   With nothing open, repaired, warned or behind there is no extra line. `preflight --json`
   gains `incidents` and `marks` among its facts, and the last round's facts carry the network
   check's warning and wait (`networkWarning`, `networkWaitedMs`).
+- The "did not wait" note is raised only for a configured `machine.network_check` (or a
+  check a caller passes as a function). The default connection to the model's endpoint
+  proves a connection by construction and answers in about 50 milliseconds, so without
+  this the briefing would have warned almost every morning once `network_check` is
+  removed. The warning now points to `network_check` in `machine.json`, not to `brain-kit
+  doctor`, which has no such check.
 
 ### The scheduling documentation
 

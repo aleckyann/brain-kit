@@ -7,8 +7,10 @@
 // waited for the network manager to start, not for a connection; it came
 // back in 0.02 seconds with exit 0 and protected nothing. So a check that
 // succeeds on its FIRST try in under `minWaitMs` is accepted but reported
-// `did_not_wait`, for the log and for `doctor` to show: it may be answering
-// about something other than the connection.
+// `did_not_wait`, for the log and the briefing to show: it may be answering
+// about something other than the connection. Only a configured check (an
+// argument vector or a function) is reported so: the default TCP connection
+// proves a connection by construction, however fast it answers.
 //
 //   waitForNetwork(check, { timeoutMs, minWaitMs = 100, intervalMs = 1000 }, deps)
 //     -> Promise<{ ok, waitedMs, attempts, warning: 'did_not_wait' | null }>
@@ -118,6 +120,7 @@ export async function waitForNetwork(check, {
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? defaultSleep;
   const attempt = attemptFor(check, { connect: deps.connect ?? tcpConnect, runArgv: deps.runArgv ?? runArgvCheck });
+  const configured = typeof check === 'function' || (Array.isArray(check) && check.length > 0);
   const start = now();
   let attempts = 0;
   for (;;) {
@@ -131,7 +134,7 @@ export async function waitForNetwork(check, {
     }
     const waitedMs = now() - start;
     if (ok) {
-      const warning = attempts === 1 && waitedMs < minWaitMs ? 'did_not_wait' : null;
+      const warning = configured && attempts === 1 && waitedMs < minWaitMs ? 'did_not_wait' : null;
       return { ok: true, waitedMs, attempts, warning };
     }
     if (waitedMs + intervalMs > timeoutMs) return { ok: false, waitedMs, attempts, warning: null };
