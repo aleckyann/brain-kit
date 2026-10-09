@@ -833,6 +833,7 @@
   "preflight.incident_group": "Open incident: {reasonCode}, {count} time(s) from {first} to {last} ({known}). Latest reason: {reason}",
   "preflight.incident_known": "known cause",
   "preflight.incident_unknown": "unknown cause",
+  "preflight.incidents_corrupt": "{count} line(s) of incidents.jsonl could not be read and may hide an open incident.",
   "preflight.repair": "Repaired on its own at {at}: {kind} {detail}",
   "preflight.network_did_not_wait": "The network check answered in {ms} ms on its first try: it may not wait for a connection. See brain-kit doctor.",
   "preflight.mark_behind": "Source {source}: {days} days not curated; the next round reads them.",

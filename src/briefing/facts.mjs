@@ -148,6 +148,25 @@ function unreadableRun(detail) {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const REASON_MAX_CHARS = 200;
 
+// An absolute path starts the text or follows whitespace, a quote or an
+// opening parenthesis, and is `/...`, `~/...` or `C:\...`; it ends at the next
+// whitespace, quote or closing parenthesis. A URL (`https://host/a/b`) and a
+// relative path (`docs/guide.md`) never start one.
+const PATH_TOKEN = /(?<=^|[\s'"`(])(?:\/|~\/|[A-Za-z]:[\\/])[^\s'"`)]*/g;
+
+// The text with every absolute path cut down to its last segment, so a
+// reason or an error the kit prints for a person names the file and not the
+// home directory around it. shortcut: a path with a space in it (a
+// directory called "My Files") is cut at the space and its tail stays; a
+// token with one separator only (`/tmp`) is left, upgrade when a reason
+// carries either.
+export function withoutPaths(text) {
+  return String(text).replace(PATH_TOKEN, (token) => {
+    const segments = token.split(/[\\/]/);
+    return segments.length > 2 ? segments.filter(Boolean).pop() : token;
+  });
+}
+
 // The short form of what a repair did, from its own fields: the file name
 // an orphaned lock was moved to (never its path), the version a stub was
 // replaced with. A kind this version does not know has none.
@@ -170,14 +189,14 @@ function incidentFacts(stateDir, now, tz) {
     const before = groups.get(reasonCode);
     groups.set(reasonCode, {
       reasonCode, count: (before?.count ?? 0) + 1, firstHuman: before?.firstHuman ?? at, lastHuman: at,
-      known: line.known === true, reason: firstLine(line.reason).slice(0, REASON_MAX_CHARS),
+      known: line.known === true, reason: firstLine(withoutPaths(line.reason ?? '')).slice(0, REASON_MAX_CHARS),
     });
   }
   const since = now.getTime() - DAY_MS;
   const repairs = lines.filter((line) => Date.parse(line.at) >= since).flatMap((line) => (Array.isArray(line.repairs) ? line.repairs : [])
     .filter(isPlainObject)
     .map((repair) => ({ atHuman: shortInstant(line.at, tz), kind: String(repair.kind ?? '-'), detail: repairDetail(repair) })));
-  return { open: [...groups.values()], repairs, corrupt, problem };
+  return { open: [...groups.values()], repairs, corrupt, problem: problem === null ? null : withoutPaths(problem) };
 }
 
 // Each source's watermark and how many days it is behind yesterday (negative
@@ -188,7 +207,7 @@ function markFacts(stateDir, today) {
     mark = readWatermark(stateDir);
   } catch (error) {
     if (!(error instanceof WatermarkError)) throw error;
-    return { sources: {}, problem: error.detail };
+    return { sources: {}, problem: withoutPaths(error.detail) };
   }
   const yesterday = addDays(today, -1);
   const sources = {};

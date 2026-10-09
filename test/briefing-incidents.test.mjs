@@ -7,13 +7,13 @@
 // briefing's `sources` block and `brain-kit preflight` alike.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { KIT_ROOT } from '../src/version.mjs';
 import { EXIT } from '../src/exit-codes.mjs';
 import { createTranslator } from '../src/lang.mjs';
 import { STATE_FILES } from '../src/state.mjs';
-import { briefingFacts } from '../src/briefing/facts.mjs';
+import { briefingFacts, withoutPaths } from '../src/briefing/facts.mjs';
 import { briefingBlocks, renderBlocks } from '../src/briefing/blocks.mjs';
 import { renderLastRun, runPreflight } from '../src/commands/preflight.mjs';
 import { CLEAN_ENV, makeRepo } from './helpers/git-repo.mjs';
@@ -223,12 +223,64 @@ test('a watermark.json that is not JSON is one unreadable line, never a throw', 
   assert.match(lines[0], /^Could not read watermark\.json: .*(JSON|Expected|Unexpected)/);
 });
 
-test('a line that is not a record is counted in the facts, and the rest is read', () => {
+test('a line that is not a record is counted, said in a line after the open incidents, and the rest is read', () => {
   const w = world();
-  writeFileSync(join(w.stateDir, STATE_FILES.INCIDENTS), `not json\n${JSON.stringify(incident('2026-10-08T12:00:00.000Z', { reasonCode: 'dirty_tree' }))}\n`);
+  const good = JSON.stringify(incident('2026-10-08T12:00:00.000Z', { reasonCode: 'dirty_tree', exit: EXIT.TEMPFAIL, reason: 'Three files are changed.' }));
+  writeFileSync(join(w.stateDir, STATE_FILES.INCIDENTS), `${good}\n`);
+  const clean = w.facts().incidents;
+  assert.equal(clean.corrupt, 0);
+  assert.ok(!w.lines().some((line) => line.includes('could not be read')), 'a clean file says nothing about corrupt lines');
+  writeFileSync(join(w.stateDir, STATE_FILES.INCIDENTS), `not json\n${good}\n{"half\n`);
   const { open, corrupt } = w.facts().incidents;
-  assert.equal(corrupt, 1);
+  assert.equal(corrupt, 2);
   assert.deepEqual(open.map((g) => g.reasonCode), ['dirty_tree']);
+  assert.deepEqual(w.lines().slice(2), [
+    'Open incident: dirty_tree, 1 time(s) from 08/10 09:00 to 08/10 09:00 (known cause). Latest reason: Three files are changed.',
+    '2 line(s) of incidents.jsonl could not be read and may hide an open incident.',
+  ]);
+  assert.equal(w.lines('pt-BR').at(-1), '2 linha(s) de incidents.jsonl não puderam ser lidas e podem esconder um incidente aberto.');
+});
+
+// ------------------------------------------------------------ no absolute path reaches the text
+
+test('withoutPaths: an absolute path token becomes its last segment', () => {
+  assert.equal(withoutPaths('/home/ana/x/node_modules/pkg/bin/claude.exe is 500 bytes'), 'claude.exe is 500 bytes');
+  assert.equal(withoutPaths("open '/home/ana/.local/state/brain-kit/v/watermark.json'"), "open 'watermark.json'");
+  assert.equal(withoutPaths('C:\\Users\\ana\\x\\claude.exe is 500 bytes'), 'claude.exe is 500 bytes');
+  assert.equal(withoutPaths('moved to ~/.cache/brain-kit/lock (stale)'), 'moved to lock (stale)');
+  assert.equal(withoutPaths('read (/var/state/brain-kit/last-run.json) and "/var/state/brain-kit/incidents.jsonl"'), 'read (last-run.json) and "incidents.jsonl"');
+  assert.equal(withoutPaths('/a/b and /c/d/e'), 'b and e', 'every token of the text, not the first only');
+});
+
+test('withoutPaths: a URL, a relative path, a one-separator path and plain words are untouched', () => {
+  for (const text of ['see https://example.com/a/b', 'see docs/guide.md', 'and/or the 09/10/2026 round', 'at /tmp now', 'at ~/x now', 'C:\\x now', 'no path here', '']) {
+    assert.equal(withoutPaths(text), text);
+  }
+});
+
+test('an open incident whose reason starts with a path shows the file name, not the path, and keeps its 200 characters for the words', () => {
+  const w = world();
+  w.incidents([
+    incident('2026-10-08T12:00:00.000Z', { reasonCode: 'cli_stub', exit: EXIT.FAILURE, reason: `/home/ana/x/node_modules/pkg/bin/claude.exe is 500 bytes, ${'y'.repeat(300)}` }),
+  ]);
+  const group = w.facts().incidents.open[0];
+  assert.equal(group.reason.length, 200);
+  assert.ok(group.reason.startsWith('claude.exe is 500 bytes, yyy'), group.reason);
+  const line = w.lines().at(-1);
+  assert.match(line, /^Open incident: cli_stub, 1 time\(s\) .* Latest reason: claude\.exe is 500 bytes/);
+  assert.ok(!line.includes('/home/'), line);
+});
+
+test('a file that cannot be opened is named by its file name, never its path, in the unreadable line', { skip: process.getuid?.() === 0 ? 'root reads any file' : false }, () => {
+  const w = world();
+  const file = join(w.stateDir, STATE_FILES.WATERMARK);
+  writeFileSync(file, '{"sources":{}}\n');
+  chmodSync(file, 0o000);
+  const { problem } = w.facts().marks;
+  assert.equal(problem, "EACCES: permission denied, open 'watermark.json'");
+  const line = w.lines().at(-1);
+  assert.equal(line, "Could not read watermark.json: EACCES: permission denied, open 'watermark.json'");
+  assert.ok(!line.includes(w.stateDir), line);
 });
 
 // ------------------------------------------------------------ the two places the lines appear

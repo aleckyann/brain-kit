@@ -833,6 +833,7 @@
   "preflight.incident_group": "Incidente aberto: {reasonCode}, {count} vez(es) de {first} a {last} ({known}). Último motivo: {reason}",
   "preflight.incident_known": "causa conhecida",
   "preflight.incident_unknown": "causa desconhecida",
+  "preflight.incidents_corrupt": "{count} linha(s) de incidents.jsonl não puderam ser lidas e podem esconder um incidente aberto.",
   "preflight.repair": "Corrigido sozinho em {at}: {kind} {detail}",
   "preflight.network_did_not_wait": "A checagem de rede respondeu em {ms} ms na primeira tentativa: talvez não espere a conexão. Veja brain-kit doctor.",
   "preflight.mark_behind": "Fonte {source}: {days} dias sem curadoria; a próxima rodada lê esses dias.",

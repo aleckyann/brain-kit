@@ -75,7 +75,8 @@ function yesNo(t, value) {
 }
 
 // What the rounds left that nobody has answered, after the last-run and
-// connector lines: the open incidents, the repairs of the last 24 hours, a
+// connector lines: the open incidents (and the lines of their file that
+// could not be read, which may hide one), the repairs of the last 24 hours, a
 // network check that answered at once, and each source more than one day
 // behind yesterday (one day behind is a normal morning). Nothing to say is
 // no line.
@@ -88,6 +89,7 @@ function renderRoundNews(facts, t) {
     const reason = group.reason === '' ? '-' : group.reason;
     lines.push(t('preflight.incident_group', { reasonCode: group.reasonCode, count: group.count, first: group.firstHuman ?? '-', last: group.lastHuman ?? '-', known, reason }));
   }
+  if (incidents.corrupt > 0) lines.push(t('preflight.incidents_corrupt', { count: incidents.corrupt }));
   for (const repair of incidents.repairs) {
     lines.push(t('preflight.repair', { at: repair.atHuman ?? '-', kind: repair.kind, detail: repair.detail ?? '-' }));
   }
