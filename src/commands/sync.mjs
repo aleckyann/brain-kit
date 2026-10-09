@@ -168,7 +168,10 @@ export async function runSync(argv, io, t, deps = {}) {
 // lock. An unexpected git failure throws; runSync turns it into exit 1
 // (sync.git_failed), and so must any other caller. `outcome`, when given,
 // is filled with `{ diverged: true }` for the one exit 1 a caller may want
-// to tell from the others (`curate` postpones on it, exit 75).
+// to tell from the others (`curate` postpones on it, exit 75), and with
+// `{ gitFailed: true }` where a git command's own failure is what the run
+// reports (the fetch, the fast-forward): a cause the kit itself did not
+// diagnose, as opposed to a refusal that names its cause and its command.
 export function syncUnderLock(root, io, t, env, outcome = {}) {
   // What step 2 brought back to HEAD, so that the hint to get it back from
   // its ref is said at the end of the run, whatever the run's outcome, for
@@ -239,6 +242,7 @@ function syncSteps(root, io, t, env, outcome, brought) {
     return EXIT.FAILURE;
   }
   if (fetched.status === 'failed') {
+    outcome.gitFailed = true;
     io.stderr.write(`${t('sync.fetch_failed', { remote, branch: remoteBranch, detail: fetched.detail })}\n`);
     return EXIT.FAILURE;
   }
@@ -276,7 +280,7 @@ function syncSteps(root, io, t, env, outcome, brought) {
     io.stderr.write(`${t('sync.ignored_in_the_way', { branch, upstream, files: inTheWay })}\n`);
     return EXIT.TEMPFAIL;
   }
-  return fastForward(root, io, t, env, { branch, upstream, behind, from, to: fetched.sha, ref: fetched.ref });
+  return fastForward(root, io, t, env, outcome, { branch, upstream, behind, from, to: fetched.sha, ref: fetched.ref });
 }
 
 // Step 2's first half: every dirty path whose bytes are still exactly what
@@ -354,7 +358,7 @@ function sayHowToGetBack(root, io, t, env, brought) {
 
 // Checkout, fast-forward, prove, return, prove. Every failure still tries
 // to return to where the run started before it reports.
-function fastForward(root, io, t, env, { branch, upstream, behind, from, to, ref }) {
+function fastForward(root, io, t, env, outcome, { branch, upstream, behind, from, to, ref }) {
   const startBranch = currentBranch(root, { env });
   const startCommit = resolveCommit(root, 'HEAD', { env });
   const onDefault = startBranch === branch;
@@ -370,6 +374,7 @@ function fastForward(root, io, t, env, { branch, upstream, behind, from, to, ref
     const merge = runGit(root, ['merge', '--ff-only', '-q', ref], { env });
     if (merge.status !== 0 || resolveCommit(root, `refs/heads/${branch}`, { env }) !== to) {
       failure = t('sync.fast_forward_failed', { branch, upstream, detail: detailOf(merge) });
+      outcome.gitFailed = true;
     }
   }
   if (failure === null) {

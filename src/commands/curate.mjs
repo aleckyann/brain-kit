@@ -1065,6 +1065,7 @@ export async function runCurate(argv, io, t, deps = {}) {
     at: now.toISOString(), durationMs: null, exit: null, reasonCode: null, reason: null, window: null, network: null,
     sources: {}, warnings: [], remainingDays: 0, deferredDays: [], costUsd: null, budgetUsd: undefined, maxTurns: undefined, timeoutMinutes: undefined, numTurns: null, denials: [], isolation: null, proposed: null, leftovers: [],
     mode: null, relaunched: false, notConfigured: [], userRules: null, connectorStates: knownStates(previousRun),
+    unknownCause: undefined,
   };
   // The notifications this round owes besides the one for a non-zero exit:
   // one per best-effort connector source whose state changed.
@@ -1093,8 +1094,11 @@ export async function runCurate(argv, io, t, deps = {}) {
   };
   // A reason the kit cannot explain ends by saying so (R5): the cause is
   // not one it knows, and the text before is the program's own. The text
-  // before may end on a bare detail, so the sentence boundary is kept.
+  // before may end on a bare detail, so the sentence boundary is kept. The
+  // round's record says so too (`unknownCause`, absent otherwise), so no
+  // reader needs a list of reason codes.
   const withUnknownCause = (reason) => {
+    run.unknownCause = true;
     const said = reason.trimEnd();
     return `${/[.!?]$/.test(said) ? said : `${said}.`}${t('curate.unknown_cause', {})}`;
   };
@@ -1192,6 +1196,7 @@ export async function runCurate(argv, io, t, deps = {}) {
     } catch (error) {
       io.stderr.write(`${t('sync.git_failed', { detail: error.message })}\n`);
       lastSyncLine = lastNonEmptyLine(error.message) ?? lastSyncLine;
+      outcome.gitFailed = true;
       synced = EXIT.FAILURE;
     }
     const detail = lastSyncLine ?? '-';
@@ -1211,7 +1216,11 @@ export async function runCurate(argv, io, t, deps = {}) {
     if (synced !== EXIT.OK) {
       // A lost network is a known cause the next window retries (R1).
       if (OFFLINE_PATTERNS.some((re) => re.test(detail))) return fail(EXIT.UNAVAILABLE, 'sync_offline', t('curate.sync_offline', { detail }));
-      return fail(EXIT.FAILURE, 'sync_failed', withUnknownCause(t('curate.sync_failed', { detail })));
+      // The reason code is sync_failed whoever diagnosed it; only a failure
+      // of git itself is a cause the kit does not know (R5). A refusal sync
+      // diagnosed (no remote, no default branch...) already names its cause.
+      const failed = t('curate.sync_failed', { detail });
+      return fail(EXIT.FAILURE, 'sync_failed', outcome.gitFailed ? withUnknownCause(failed) : failed);
     }
 
     // 6. The configuration, as synced, and the prompt it names.
