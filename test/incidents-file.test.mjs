@@ -238,7 +238,7 @@ test('a round that finds nothing wrong leaves no line', () => {
   assert.equal(readIncidents(w.state).lines.length, 1);
 });
 
-test('a lock held by a live process leaves no line, and a lock that cannot be used leaves one', () => {
+test('a lock held by a live process leaves no line; a lock that cannot be used leaves one, unless the run is --dry or --check', () => {
   const w = makeCurateWorld();
   const held = acquireLock(w.vault, { command: 'sync', env: w.env });
   try {
@@ -251,6 +251,13 @@ test('a lock held by a live process leaves no line, and a lock that cannot be us
   assert.deepEqual(readIncidents(w.state), { lines: [], corrupt: 0, problem: null });
 
   rmSync(join(w.vault, '.git'), { recursive: true, force: true });
+  // --dry and --check change nothing a person reads later: a false open incident would outlive them.
+  w.curate(['--dry']);
+  assert.deepEqual(readIncidents(w.state), { lines: [], corrupt: 0, problem: null }, '--dry');
+  const checked = w.curate(['--check']);
+  assert.equal(checked.status, EXIT.USAGE, checked.stderr);
+  assert.equal(w.lastRun().reasonCode, 'lock_unusable', 'the same refusal the plain run records');
+  assert.deepEqual(readIncidents(w.state), { lines: [], corrupt: 0, problem: null }, '--check');
   const unusable = w.curate();
   assert.equal(unusable.status, EXIT.USAGE, unusable.stderr);
   const { lines } = readIncidents(w.state);
@@ -259,12 +266,16 @@ test('a lock held by a live process leaves no line, and a lock that cannot be us
   assert.equal(lines[0].exit, EXIT.USAGE);
 });
 
-test('a machine.json that cannot be read leaves one line, with the shape of any other; --dry leaves none', () => {
+test('a machine.json that cannot be read leaves one line, with the shape of any other; --dry and --check leave none', () => {
   const w = makeCurateWorld();
   writeFileSync(w.machineFile, '{ not json\n');
   const dry = w.curate(['--dry']);
   assert.equal(dry.status, EXIT.USAGE, dry.stderr);
-  assert.deepEqual(readIncidents(w.state), { lines: [], corrupt: 0, problem: null });
+  assert.deepEqual(readIncidents(w.state), { lines: [], corrupt: 0, problem: null }, '--dry');
+  // The rollout proves machine.json with --check: a typo there must not be an open incident.
+  const checked = w.curate(['--check']);
+  assert.equal(checked.status, EXIT.USAGE, checked.stderr);
+  assert.deepEqual(readIncidents(w.state), { lines: [], corrupt: 0, problem: null }, '--check');
   const r = w.curate();
   assert.equal(r.status, EXIT.USAGE, r.stderr);
   const last = w.lastRun();
@@ -289,7 +300,7 @@ function seed(w, ...days) {
   writeFileSync(join(w.state, STATE_FILES.INCIDENTS), lines.map((l) => `${JSON.stringify(l)}\n`).join(''));
 }
 
-test('a round that holds the lock prunes the lines older than log_retention_days (30 by default) before it appends', () => {
+test('a round that holds the lock prunes the lines older than log_retention_days (30 by default), after it appends its own', () => {
   const w = makeCurateWorld();
   seed(w, 31, 29);
   writeFileSync(join(w.vault, 'draft.md'), 'draft\n');

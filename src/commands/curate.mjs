@@ -1048,7 +1048,7 @@ export async function runCurate(argv, io, t, deps = {}) {
       } catch {
         // as above
       }
-      recordIncident({ at: now.toISOString(), exit: EXIT.USAGE, reasonCode: 'machine_invalid', reason, repairs: [] }, stateDir, log);
+      if (!parsed.check) recordIncident({ at: now.toISOString(), exit: EXIT.USAGE, reasonCode: 'machine_invalid', reason, repairs: [] }, stateDir, log);
     }
     return EXIT.USAGE;
   }
@@ -1122,7 +1122,7 @@ export async function runCurate(argv, io, t, deps = {}) {
     // retry fixes, and is recorded as such, never as held.
     run.reasonCode = error.exitCode === EXIT.TEMPFAIL ? 'lock_held' : 'lock_unusable';
     run.reason = reason;
-    return finishRound({ run, io, log, stateDir, machine, env, started, lock: null, writeLastRun: true, check: false, notices });
+    return finishRound({ run, io, log, stateDir, machine, env, started, lock: null, writeLastRun: true, check: parsed.check, notices });
   }
   recordFile = roundRecordPath(root, lock.token, env);
   log('start', { root, check: parsed.check });
@@ -2071,8 +2071,11 @@ function finishRound({ run, io, log, stateDir, machine, env, started, lock, writ
     } catch (error) {
       io.stderr.write(`brain-kit curate: ${STATE_FILES.LAST_RUN}: ${error.code ?? error.message}\n`);
     }
-    // Both before the lock is released: the file is rewritten only by a
-    // round that holds it, and a round with no lock (lock_unusable) only appends.
+  }
+  // --check proves a configuration and leaves no incident behind (R6). Both
+  // before the lock is released: the file is rewritten only by a round that
+  // holds it, and a round with no lock (lock_unusable) only appends.
+  if (writeLastRun && !check) {
     recordIncident(run, stateDir, log);
     if (lock !== null) {
       try {
