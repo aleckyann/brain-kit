@@ -1147,6 +1147,7 @@
   "curate.up_to_date": "brain-kit curate: already up to date, every source was swept through yesterday.",
   "curate.dirty": "brain-kit curate: postponed, the working tree has changes the round did not make: {files}. If they should become a pull request, propose them with brain-kit propose \"<summary>\" --only <paths>, and do not commit them on the default branch: sync would later report the branches as diverged. If they are yours to keep, commit them on another branch or stash them (git stash -u), and the next round runs.",
   "curate.cli_unusable": "brain-kit curate: the Claude Code CLI cannot run a round: {problem}",
+  "curate.cli_repair_failed": " brain-kit tried to reinstall it and the installer said: {said}",
   "curate.source_unknown": "brain-kit curate: {setting} names {sources}, which this version cannot read; no watermark moved.",
   "curate.source_skipped": "brain-kit curate: the best-effort source {source} has no reader in this version and was skipped.",
   "curate.source_misconfigured": "brain-kit curate: the required source {source} is not set up ({problems}); fix {setting}. No watermark moved.",

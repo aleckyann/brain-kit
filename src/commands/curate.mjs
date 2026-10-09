@@ -29,7 +29,9 @@
 //       `brain-kit watermark reopen`; nothing open: exit 0
 //    8. a dirty tree: exit 75 naming every file
 //    9. the round's own snapshot
-//   10. the CLI is a real program; not: exit 1
+//   10. the CLI is a real program; not: exit 1, after reinstalling a launcher
+//       stub an npm install left behind when it is safe to (src/guards/
+//       cli-repair.mjs, incident 14/09/2026), the repair recorded in `repairs`
 //   11. collect the sources, each over its own days (its open days after
 //       its own mark, its own oldest seven, phase 3 decision D5 and ruling
 //       C1 of task 5's review; the round's window is their union); a
@@ -121,6 +123,7 @@ import { moveOrphanIndexLock } from '../guards/index-lock.mjs';
 import { checkDirtyTree } from '../guards/dirty-tree.mjs';
 import { takeSnapshot } from '../guards/snapshot.mjs';
 import { checkCli } from '../guards/cli.mjs';
+import { repairStub } from '../guards/cli-repair.mjs';
 import { checkIsolation } from '../guards/isolation.mjs';
 import { connectorStateMessage, connectorStates } from '../guards/connectors.mjs';
 import { evidenceFor, unreadRequired } from '../guards/read-evidence.mjs';
@@ -1345,8 +1348,19 @@ export async function runCurate(argv, io, t, deps = {}) {
     // 10. The CLI.
     onStep('cli');
     const childEnv = modelEnv(env, machine, lock.token);
-    const cli = checkCli(claudeBin, { env: childEnv });
-    if (!cli.ok) return fail(EXIT.FAILURE, `cli_${cli.problem}`, t('curate.cli_unusable', { problem: t(cli.messageKey, cli.params) }));
+    let cli = checkCli(claudeBin, { env: childEnv });
+    // A launcher stub an npm install left behind is reinstalled with the
+    // person's environment, never childEnv (it carries the round token).
+    const repair = repairStub(cli, { env, now });
+    if (repair.tried || repair.skipped !== 'not_stub') log('cli_repair', repair);
+    if (repair.tried) {
+      cli = checkCli(claudeBin, { env: childEnv });
+      if (cli.ok) run.repairs.push({ kind: 'cli_reinstalled', version: cli.version });
+    }
+    if (!cli.ok) {
+      const tried = repair.tried ? t('curate.cli_repair_failed', { said: repair.said ?? 'exit 0' }) : '';
+      return fail(EXIT.FAILURE, `cli_${cli.problem}`, `${t('curate.cli_unusable', { problem: t(cli.messageKey, cli.params) })}${tried}`);
+    }
 
     // 11. The sources.
     onStep('sources');

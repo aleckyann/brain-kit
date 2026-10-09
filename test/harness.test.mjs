@@ -5,7 +5,7 @@
 // test/helpers/fake-claude.mjs, never the real binary.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildArgv, CONNECTOR_ARGS, ISOLATION_ARGS, MAX_TIMER_MS, ROUND_ENV, ROUND_TOOLS, runModel, unscopedRules } from '../src/harness/claude-code.mjs';
@@ -704,7 +704,7 @@ test('checkCli: a missing file, a --version that prints error text or fails, and
   assert.equal(checkCli(FAKE, { env: failing.env }).problem, 'version');
 
   const good = scenario({ version: '2.1.281 (Claude Code)' });
-  assert.deepEqual(checkCli(FAKE, { env: good.env }), { ok: true, problem: null, version: '2.1.281', messageKey: null, params: null });
+  assert.deepEqual(checkCli(FAKE, { env: good.env }), { ok: true, problem: null, version: '2.1.281', messageKey: null, params: null, realPath: realpathSync(FAKE) });
 });
 
 // --- messages ---------------------------------------------------------------------

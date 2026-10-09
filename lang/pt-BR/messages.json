@@ -1147,6 +1147,7 @@
   "curate.up_to_date": "brain-kit curate: já está em dia, toda fonte foi varrida até ontem.",
   "curate.dirty": "brain-kit curate: adiada, a árvore de trabalho tem mudanças que a rodada não fez: {files}. Se devem virar um pull request, proponha-as com brain-kit propose \"<resumo>\" --only <caminhos> e não faça commit delas no branch padrão, porque depois o sync recusaria, dizendo que os branches divergiram. Se você quer guardá-las, faça commit delas em outro branch ou guarde-as com git stash -u, e a próxima rodada roda.",
   "curate.cli_unusable": "brain-kit curate: a CLI do Claude Code não consegue rodar uma rodada: {problem}",
+  "curate.cli_repair_failed": " O brain-kit tentou reinstalar e o instalador disse: {said}",
   "curate.source_unknown": "brain-kit curate: {setting} cita {sources}, que esta versão não sabe ler; nenhuma marca d'água andou.",
   "curate.source_skipped": "brain-kit curate: a fonte opcional {source} não tem leitor nesta versão e foi pulada.",
   "curate.source_misconfigured": "brain-kit curate: a fonte obrigatória {source} não está configurada ({problems}); corrija {setting}. Nenhuma marca d'água andou.",
