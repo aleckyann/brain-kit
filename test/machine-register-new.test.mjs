@@ -710,7 +710,7 @@ function movedWithRefusedRound(world) {
   const newState = stateDirFor(moved.newPath, moved.env);
   const curate = cli(world, ['curate'], { env: moved.env, cwd: moved.newPath });
   assert.equal(curate.status, EXIT.USAGE, curate.stderr);
-  assert.deepEqual(readdirSync(newState).sort(), ['last-run.json', 'logs']);
+  assert.deepEqual(readdirSync(newState).sort(), ['incidents.jsonl', 'last-run.json', 'logs']);
   return { ...moved, newState };
 }
 
@@ -735,7 +735,7 @@ test('S2: register --from still refuses anything beyond that trace in the target
   const r = await machine(world, ['register', '--from', moved.oldPath], { env: moved.env, cwd: moved.newPath });
   assert.equal(r.code, EXIT.FAILURE, r.stderr);
   assert.ok(r.stderr.includes('watermark.json') && r.stderr.includes(moved.newState), r.stderr);
-  assert.deepEqual(readdirSync(moved.newState).sort(), ['last-run.json', 'logs', 'watermark.json']);
+  assert.deepEqual(readdirSync(moved.newState).sort(), ['incidents.jsonl', 'last-run.json', 'logs', 'watermark.json']);
   assert.ok(existsSync(join(moved.oldState, 'machine.json')));
 });
 
@@ -751,7 +751,7 @@ test('S2: a register --from that fails after setting the trace aside puts the tr
       return renameSync(from, to);
     };
     await assert.rejects(machine(world, ['register', '--from', moved.oldPath], { env: moved.env, cwd: moved.newPath, deps: { rename } }), /EXDEV/);
-    assert.deepEqual(readdirSync(moved.newState).sort(), ['last-run.json', 'logs'], `failing rename ${failAt}: the trace is back`);
+    assert.deepEqual(readdirSync(moved.newState).sort(), ['incidents.jsonl', 'last-run.json', 'logs'], `failing rename ${failAt}: the trace is back`);
     assert.ok(readFileSync(join(moved.oldState, 'machine.json')).equals(before), `failing rename ${failAt}: the old state is where it was`);
     assert.deepEqual(readdirSync(dirname(moved.newState)).filter((name) => name.includes('trace')), []);
     const again = await machine(world, ['register', '--from', moved.oldPath], { env: moved.env, cwd: moved.newPath });

@@ -1,6 +1,6 @@
-import { chmodSync, existsSync, mkdirSync, realpathSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { isWindows, restrictToOwner } from './platform.mjs';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 
@@ -30,6 +30,9 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 //                 whatever a round killed outright left there. A round with
 //                 --keep-stream writes its digests next to its stream in
 //                 LOG_DIR instead, where they age out with the logs.
+//   INCIDENTS     one JSON line per round that went wrong or repaired
+//                 something, appended before the round releases its lock
+//                 and pruned only by a round holding it (src/incidents.mjs).
 //
 // There is no lock and no snapshot here, on purpose. A state directory is
 // chosen by the caller's environment (BRAIN_KIT_STATE_DIR, XDG_STATE_HOME),
@@ -44,6 +47,7 @@ export const STATE_FILES = Object.freeze({
   LOG_DIR: 'logs',
   QUESTIONS_LOG: 'questions.log',
   DIGEST_DIR: 'digests',
+  INCIDENTS: 'incidents.jsonl',
 });
 
 // A relative XDG_STATE_HOME is ignored, as the XDG Base Directory
@@ -130,6 +134,18 @@ export function vaultIdFor(vaultRoot) {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
   return `${name === '' ? 'vault' : name}-${shortHash(absolute)}`;
+}
+
+// A file written in full to a private sibling and renamed into place.
+export function writePrivate(file, text) {
+  const tmp = `${file}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+  try {
+    writeFileSync(tmp, text, { mode: 0o600, flag: 'wx' });
+    renameSync(tmp, file);
+  } catch (error) {
+    rmSync(tmp, { force: true });
+    throw error;
+  }
 }
 
 // Create the state directory (and any missing parents) with mode 0700. The

@@ -85,7 +85,7 @@
 // merging, when: the vault is not configured (config and manifest valid);
 // a machine.json is already in the state directory, whatever it holds; the
 // state directory holds anything but the trace a round leaves when it stops
-// for lack of machine.json (last-run.json and logs/), because that is
+// for lack of machine.json (last-run.json, incidents.jsonl and logs/), because that is
 // evidence the claim "never had state" is false; and, unless the state
 // directory is pinned by BRAIN_KIT_STATE_DIR, when the state root holds the
 // state of a vault of this vault's folder name that is no longer where its
@@ -132,13 +132,14 @@ const MACHINE_FILE_MODE = 0o600;
 const MANAGED_KEYS = Object.freeze(['vault_id', 'canonical_path', 'state_dir']);
 
 // What a round that stopped for lack of machine.json leaves in the state
-// directory: its log and last-run.json (src/commands/curate.mjs writes both
-// before it reads the machine file). Nothing else counts as "no state", for
+// directory: its log, last-run.json and its line in incidents.jsonl
+// (src/commands/curate.mjs writes all three when it cannot read the machine
+// file). Nothing else counts as "no state", for
 // `register --new` and for `register --from` alike: a target holding exactly
 // this is not another vault's state, it is the mark of a command run too
 // early, and refusing it would send the person from `curate` to a `--from`
 // that refuses.
-const TRACE_OF_A_REFUSED_ROUND = Object.freeze([STATE_FILES.LAST_RUN, STATE_FILES.LOG_DIR]);
+const TRACE_OF_A_REFUSED_ROUND = Object.freeze([STATE_FILES.LAST_RUN, STATE_FILES.LOG_DIR, STATE_FILES.INCIDENTS]);
 
 function beyondTrace(names) {
   return names.filter((name) => !TRACE_OF_A_REFUSED_ROUND.includes(name));

@@ -569,7 +569,7 @@ refuses what it finds there. Set them after it.
 the one thing `machine register` cannot tell by itself. So it refuses, writing nothing, when
 the vault is not a configured one; when the state directory already holds a `machine.json`
 (whatever is in it) or anything else that is not the trace of a round that stopped for lack
-of one (`last-run.json` and the logs); and when it finds, beside the state directory, the
+of one (`last-run.json`, `incidents.jsonl` and the logs); and when it finds, beside the state directory, the
 state of a vault of the same folder name that is no longer where its record says, which is
 this vault before it moved. That last one is the case for `--from`, not `--new`: a vault
 that moved on the same machine keeps its marks with
@@ -583,7 +583,7 @@ this machine looks like any other: `--new` goes ahead and starts a second, empty
 the old one. It does say so. When it succeeds it lists every state on the machine whose vault
 is no longer where its record says, with the old path, and the undo: delete the
 `machine.json` it just wrote, then run `brain-kit machine register --from <that path>`. A
-refused round that left its trace (`last-run.json` and the logs) does not get in the way of
+refused round that left its trace (`last-run.json`, `incidents.jsonl` and the logs) does not get in the way of
 that `--from`: `register` sets the trace aside and removes it once the state is registered.
 
 **One machine runs the rounds.** State is per machine and not in the vault, so each machine

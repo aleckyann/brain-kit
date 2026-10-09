@@ -104,7 +104,7 @@
 // for the model's launcher (`runModel`, handed the very options the real
 // one gets, so a test can see that no kill timer is armed), for the tests.
 // Production passes nothing.
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, appendFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { homedir, constants as osConstants } from 'node:os';
@@ -114,7 +114,8 @@ import { EXIT } from '../exit-codes.mjs';
 import { CONFIG_FILENAME, ConfigError, MACHINE_FILENAME, loadConfig, loadMachine } from '../config.mjs';
 import { createTranslator, SUPPORTED_LANGS } from '../lang.mjs';
 import { findVaultRoot } from '../vault.mjs';
-import { ensureStateDir, stateDirFor, STATE_FILES } from '../state.mjs';
+import { ensureStateDir, stateDirFor, STATE_FILES, writePrivate } from '../state.mjs';
+import { appendIncident, incidentFor, pruneIncidents } from '../incidents.mjs';
 import { dirtyPaths } from '../git.mjs';
 import { expandHome } from '../doctor/checks.mjs';
 import { acquireLock } from '../guards/lock.mjs';
@@ -279,18 +280,6 @@ function pad2(n) {
 
 function localIsoDate(date) {
   return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
-}
-
-// A file written in full to a private sibling and renamed into place.
-function writePrivate(file, text) {
-  const tmp = `${file}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
-  try {
-    writeFileSync(tmp, text, { mode: 0o600, flag: 'wx' });
-    renameSync(tmp, file);
-  } catch (error) {
-    rmSync(tmp, { force: true });
-    throw error;
-  }
 }
 
 // The sources this round runs, the listed ones that are off, and the
@@ -1059,6 +1048,7 @@ export async function runCurate(argv, io, t, deps = {}) {
       } catch {
         // as above
       }
+      recordIncident({ at: now.toISOString(), exit: EXIT.USAGE, reasonCode: 'machine_invalid', reason, repairs: [] }, stateDir, log);
     }
     return EXIT.USAGE;
   }
@@ -2019,8 +2009,12 @@ const OWN_LOG_FILE = /^curate-(?:\d{4}-\d{2}-\d{2}\.log|[0-9TZ-]+\.stream\.jsonl
 const OWN_DIGEST_DIR = /^curate-[0-9TZ-]+-[0-9a-f]{8}\.digests$/;
 const DEFAULT_LOG_RETENTION_DAYS = 30;
 
+function logRetentionDays(machine) {
+  return Number.isInteger(machine?.log_retention_days) && machine.log_retention_days > 0 ? machine.log_retention_days : DEFAULT_LOG_RETENTION_DAYS;
+}
+
 function pruneLogs(stateDir, machine, now = Date.now()) {
-  const days = Number.isInteger(machine?.log_retention_days) && machine.log_retention_days > 0 ? machine.log_retention_days : DEFAULT_LOG_RETENTION_DAYS;
+  const days = logRetentionDays(machine);
   const dir = join(stateDir, STATE_FILES.LOG_DIR);
   let names;
   try {
@@ -2040,6 +2034,19 @@ function pruneLogs(stateDir, machine, now = Date.now()) {
     } catch {
       // A file that went away or cannot be read is left to the next round.
     }
+  }
+}
+
+// The round's line in incidents.jsonl (src/incidents.mjs), best effort like
+// the log: one that cannot be written is logged and never changes the exit.
+function recordIncident(run, stateDir, log) {
+  try {
+    const entry = incidentFor(run);
+    if (entry === null) return;
+    ensureStateDir(stateDir);
+    appendIncident(stateDir, entry);
+  } catch (error) {
+    log('incident_not_written', { error: error.code ?? error.message });
   }
 }
 
@@ -2063,6 +2070,16 @@ function finishRound({ run, io, log, stateDir, machine, env, started, lock, writ
       writePrivate(join(stateDir, STATE_FILES.LAST_RUN), `${JSON.stringify(run, null, 2)}\n`);
     } catch (error) {
       io.stderr.write(`brain-kit curate: ${STATE_FILES.LAST_RUN}: ${error.code ?? error.message}\n`);
+    }
+    // Both before the lock is released: the file is rewritten only by a
+    // round that holds it, and a round with no lock (lock_unusable) only appends.
+    recordIncident(run, stateDir, log);
+    if (lock !== null) {
+      try {
+        pruneIncidents(stateDir, { now: new Date(), retentionDays: logRetentionDays(machine) });
+      } catch (error) {
+        log('incidents_not_pruned', { error: error.code ?? error.message });
+      }
     }
   }
   log('exit', { exit, reasonCode: run.reasonCode, reason: run.reason, check });
