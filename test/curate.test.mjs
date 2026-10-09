@@ -324,7 +324,8 @@ test('an error result whose text matches no login phrase stays model_failed, exi
   assert.equal(r.status, EXIT.FAILURE, r.stderr);
   const last = w.lastRun();
   assert.equal(last.reasonCode, 'model_failed');
-  assert.ok(last.reason.endsWith('(result success, exit 1): The stream ended early after the first turn'), last.reason);
+  assert.ok(last.reason.includes('(result success, exit 1): The stream ended early after the first turn'), last.reason);
+  assert.match(last.reason, /not one brain-kit knows/, 'a model failure says its cause is unknown');
   assert.equal(w.watermark(), null);
   assert.deepEqual(w.notifications().map((call) => call.at(-1)), [last.reason]);
 
@@ -332,7 +333,7 @@ test('an error result whose text matches no login phrase stays model_failed, exi
   // still follows it.
   authScenario(w, { replace: [[LOGIN_EXPIRED, 'z'.repeat(400)]], stderr: 'warning one\nlast warning\n' });
   assert.equal(w.curate().status, EXIT.FAILURE);
-  assert.ok(w.lastRun().reason.endsWith(`: ${'z'.repeat(300)}; last warning`), w.lastRun().reason);
+  assert.ok(w.lastRun().reason.includes(`: ${'z'.repeat(300)}; last warning`), w.lastRun().reason);
 });
 
 test('a model whose text merely mentions a failed login is never auth_expired: a successful round stays 0, a failed one that is not an error result stays model_failed and shows no text', () => {
@@ -471,6 +472,7 @@ test('a diverged default branch fails the round with 1 and sync\'s message: a pe
   assert.equal(r.status, EXIT.FAILURE, r.stderr);
   assert.match(r.stderr, /diverged/);
   assert.equal(w.lastRun().reasonCode, 'sync_diverged');
+  assert.match(w.lastRun().reason, /have diverged: 1 ahead and 1 behind/, 'the reason carries sync\'s own line');
   assert.equal(w.notifications().length, 1);
   assert.equal(traces(w).model, false);
 });

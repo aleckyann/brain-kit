@@ -960,6 +960,21 @@ export function cleanupProposals(root, proposals, env) {
   return { restored, changed: match.changed };
 }
 
+// ---------------------------------------------------------------- sync failures
+
+// What git, ssh and curl say when the remote's host cannot be reached at all
+// (a machine just back from sleep, name resolution not yet up): a failed
+// sync whose last line matches one is a lost network, a known cause the next
+// window retries, never a failure of the sync itself (07/10/2026).
+export const OFFLINE_PATTERNS = Object.freeze([
+  /Could not resolve hostname/,
+  /Could not resolve host/,
+  /Temporary failure in name resolution/,
+  /Name or service not known/,
+  /nodename nor servname provided/,
+  /Network is unreachable/,
+]);
+
 // ---------------------------------------------------------------- the command
 
 export async function runCurate(argv, io, t, deps = {}) {
@@ -1076,6 +1091,9 @@ export async function runCurate(argv, io, t, deps = {}) {
     run.reason = reason;
     return exit;
   };
+  // A reason the kit cannot explain ends by saying so (R5): the cause is
+  // not one it knows, and the text before is the program's own.
+  const withUnknownCause = (reason) => `${reason}${t('curate.unknown_cause', {})}`;
 
   // 3. The lock.
   onStep('lock');
@@ -1100,7 +1118,7 @@ export async function runCurate(argv, io, t, deps = {}) {
   try {
     await roundUnderLock();
   } catch (error) {
-    fail(EXIT.FAILURE, 'internal_error', t('curate.internal_error', { detail: error instanceof Error ? error.message : String(error) }));
+    fail(EXIT.FAILURE, 'internal_error', withUnknownCause(t('curate.internal_error', { detail: error instanceof Error ? error.message : String(error) })));
   } finally {
     for (const signal of FORWARDED_SIGNALS) process.removeListener(signal, onSignal);
     // The digests hold what the person wrote: gone first, on every end this
@@ -1157,16 +1175,25 @@ export async function runCurate(argv, io, t, deps = {}) {
     // 5. Sync, under the lock this round holds.
     onStep('sync');
     const outcome = {};
+    // Sync's last non-empty line on stderr already quotes git: it is what
+    // every sync outcome that is not a success puts in the round's reason.
+    let lastSyncLine = null;
+    const syncIo = {
+      ...io,
+      stderr: { write: (chunk) => { lastSyncLine = lastNonEmptyLine(chunk) ?? lastSyncLine; return io.stderr.write(chunk); } },
+    };
     let synced;
     try {
-      synced = syncUnderLock(root, io, t, env, outcome);
+      synced = syncUnderLock(root, syncIo, t, env, outcome);
     } catch (error) {
       io.stderr.write(`${t('sync.git_failed', { detail: error.message })}\n`);
+      lastSyncLine = lastNonEmptyLine(error.message) ?? lastSyncLine;
       synced = EXIT.FAILURE;
     }
+    const detail = lastSyncLine ?? '-';
     // A diverged base is exit 1, not 75: retrying cannot fix it, a person
     // must reconcile the two histories (controller ruling, fix round 1).
-    if (outcome.diverged) return fail(EXIT.FAILURE, 'sync_diverged', t('curate.sync_diverged', {}));
+    if (outcome.diverged) return fail(EXIT.FAILURE, 'sync_diverged', t('curate.sync_diverged', { detail }));
     if (synced === EXIT.TEMPFAIL) {
       // Sync postpones first on a dirty tree; the round's own reason names
       // the files, as step 8 would (review finding M6).
@@ -1175,9 +1202,13 @@ export async function runCurate(argv, io, t, deps = {}) {
         const files = early.files.map((f) => `${f.path} (${f.mtime ?? '-'})`).join(', ');
         return fail(EXIT.TEMPFAIL, 'dirty_tree', t('curate.dirty', { files }));
       }
-      return fail(EXIT.TEMPFAIL, 'sync_postponed', t('curate.sync_postponed', {}));
+      return fail(EXIT.TEMPFAIL, 'sync_postponed', t('curate.sync_postponed', { detail }));
     }
-    if (synced !== EXIT.OK) return fail(EXIT.FAILURE, 'sync_failed', t('curate.sync_failed', {}));
+    if (synced !== EXIT.OK) {
+      // A lost network is a known cause the next window retries (R1).
+      if (OFFLINE_PATTERNS.some((re) => re.test(detail))) return fail(EXIT.UNAVAILABLE, 'sync_offline', t('curate.sync_offline', { detail }));
+      return fail(EXIT.FAILURE, 'sync_failed', withUnknownCause(t('curate.sync_failed', { detail })));
+    }
 
     // 6. The configuration, as synced, and the prompt it names.
     onStep('config');
@@ -1825,7 +1856,7 @@ export async function runCurate(argv, io, t, deps = {}) {
         exit = fail(EXIT.UNAVAILABLE, 'model_unavailable', t('curate.model_unavailable', { subtype, detail }));
       } else {
         const detail = [said, lastLine(out.stderrTail)].filter(Boolean).join('; ') || (out.spawnError ?? '-');
-        exit = fail(EXIT.FAILURE, 'model_failed', t('curate.model_failed', { subtype, code: String(out.exitCode ?? out.signal ?? '-'), detail }));
+        exit = fail(EXIT.FAILURE, 'model_failed', withUnknownCause(t('curate.model_failed', { subtype, code: String(out.exitCode ?? out.signal ?? '-'), detail })));
       }
     } else if (unread.length > 0) {
       const sources = unread.map((id) => `${id} (${evidence[id].read}/${evidence[id].expected ?? '-'})`).join(', ');
@@ -1907,6 +1938,12 @@ function recordDirOf(file) {
 
 function lastLine(text) {
   return String(text ?? '').trim().split(/\r?\n/).at(-1)?.slice(0, 300) ?? '';
+}
+
+// The last line of a text that is not blank, whole (a cut could drop the
+// words a pattern looks for), or null.
+function lastNonEmptyLine(text) {
+  return String(text ?? '').split(/\r?\n/).filter((line) => line.trim() !== '').at(-1) ?? null;
 }
 
 // Step 18: last-run.json, the log's last line, the lock, the notification.
