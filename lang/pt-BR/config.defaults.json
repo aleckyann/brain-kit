@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/aleckyann/brain-kit/main/schema/config.schema.json",
-  "kit_version": "0.1.1",
+  "kit_version": "0.1.2",
   "lang": "pt-BR",
   "okf_version": "0.2",
   "owner": {
@@ -347,6 +347,7 @@
         "get_file_metadata"
       ],
       "search_title_contains": "Anotações do Gemini",
+      "search_folders": [],
       "attached_title_prefix": "",
       "window_hours_before_day": 12,
       "dedup_by": "literal-title-in-log",

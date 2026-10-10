@@ -502,7 +502,7 @@ A pasta `evals/` traz um caso de `claude plugin eval` por skill e idioma; veja
 
 ## Status
 
-<!-- status-reviewed: 0.1.1 -->
+<!-- status-reviewed: 0.1.2 -->
 
 | Fase | Conteúdo | Estado |
 |---|---|---|
@@ -511,13 +511,13 @@ A pasta `evals/` traz um caso de `claude plugin eval` por skill e idioma; veja
 | 2 | Curador agendado sobre transcripts locais, templates de agendamento | concluída |
 | 3 | Fontes de agenda e notas de reunião (de melhor esforço, por desenho) | concluída |
 | 4 | Briefing matinal | concluída |
-| 5 | Migração do vault original para o kit | em andamento. Feito: a 5a (o que um vault em migração precisa, desde a 0.0.2); o curador agendado do vault saiu dos scripts legados para o kit em 01/10/2026 (um timer de usuário do systemd às 09:30 com novas tentativas às 14:00 e às 20:00, o timer legado desativado) e as primeiras rodadas reais foram acompanhadas; o modelo lê um extrato em texto de cada transcript (0.0.5); o briefing matinal roda como tarefa do aplicativo para desktop e rodou pela primeira vez em 01/10/2026, e desde a 0.0.6 o curador reconhece a sessão dele pelo envelope que o aplicativo põe em volta do prompt da tarefa. Desde a 0.0.10 o que o curador registra é uma configuração do kit, e por padrão ele registra tudo, inclusive informação pessoal e sensível. Falta para a fase terminar: cinco rodadas do curador e três briefings sem falha inexplicada, a limpeza dos scripts legados depois de sete dias estáveis e o primeiro `verify` no vault |
+| 5 | Migração do vault original para o kit | em andamento. Feito: a 5a (o que um vault em migração precisa, desde a 0.0.2); o curador agendado do vault saiu dos scripts legados para o kit em 01/10/2026 (um timer de usuário do systemd às 09:30 com novas tentativas às 14:00 e às 20:00, o timer legado desativado) e as primeiras rodadas reais foram acompanhadas; o modelo lê um extrato em texto de cada transcript (0.0.5); o briefing matinal roda como tarefa do aplicativo para desktop e rodou pela primeira vez em 01/10/2026, e desde a 0.0.6 o curador reconhece a sessão dele pelo envelope que o aplicativo põe em volta do prompt da tarefa. Desde a 0.0.10 o que o curador registra é uma configuração do kit, e por padrão ele registra tudo, inclusive informação pessoal e sensível. Falta para a fase terminar: cinco rodadas do curador e três briefings sem falha inexplicada, a limpeza dos scripts legados depois de sete dias estáveis e o primeiro `verify` no vault. O que as rodadas do vault encontraram de 30/09 a 09/10/2026 a 0.1.2 respondeu: um lock do git órfão e o stub do CLI, que a rodada agora repara sozinha, a rede que ainda não tinha voltado quando a máquina acordou e o limite de uso gasto, que ela agora nomeia, e atas numa pasta compartilhada que nenhuma porta alcançava, que ela agora lê |
 | 6 | Publicação 0.1.0 no npm | 0.1.0 publicada no npm em 02/10/2026, por decisão do dono, antes da execução por um adotante externo; o que ela e a saída da fase 5 acharem sai como 0.1.x. Feito antes: `docs/incident-response.md`, `examples/minimal-vault`, duas caminhadas numa máquina limpa feitas por um agente no papel de quem usa pela primeira vez, não por uma pessoa (a primeira achou as lacunas entre o `init` e o primeiro pull request, que a 0.0.8 fechou; a segunda seguiu só o README em português, chegou ao primeiro pull request e achou o que a 0.0.9 fechou: um README para quem não é desenvolvedor, um Node mais velho que o mínimo, um `doctor` que não conferia nada antes do primeiro vault e um projeto do vault que só funcionava na máquina que o criou), o Node mínimo aceito fixado em 22 (0.0.9), e uma Release no GitHub com o texto do CHANGELOG para cada tag. Feito depois: em 05/10/2026, a primeira pessoa de fora fez o caminho, no Windows 10, do `init` a quatro pull requests mesclados, com o plugin e os hooks funcionando, sem cronometrar; o que ela achou (o Windows, as sessões longas e, no CI, a trava de push no macOS) a 0.1.1 corrigiu. Falta: uma execução cronometrada por um adotante externo, uma pessoa que não é quem mantém o projeto (o critério da 0.1.0: de uma máquina limpa a um vault validado, o plugin instalado, o hook ativo e o primeiro pull request em menos de 30 minutos no relógio do próprio adotante; a estimativa do README, com a leitura, é de cerca de 35, e nenhuma pessoa cronometrou o caminho ainda) e a saída da fase 5 |
 | 7 | Outras forjas, outros harnesses, mais fontes, cada um só quando um segundo caso real precisar | planejada |
 
-A tag mais recente é a `v0.1.1`. Toda versão a partir da 0.0.2 é uma tag do git, e a 0.1.0 é
-também a primeira no npm (`second-brain-kit`) desde o esqueleto 0.0.1 da fase 0; a 0.1.1 ainda
-não está no npm, e o passo 1 do README a instala pela tag.
+A tag mais recente é a `v0.1.2`. Toda versão a partir da 0.0.2 é uma tag do git, e a 0.1.0 é
+também a primeira no npm (`second-brain-kit`) desde o esqueleto 0.0.1 da fase 0; a 0.1.1 e a
+0.1.2 ainda não estão no npm, e o passo 1 do README instala a mais recente pela tag.
 
 O kit está em construção. A fase 1 está concluída: o validador, o linter, as travas de push,
 o `init`, o `init --adopt`, o `update`, o `doctor`, o loop de pull request (`sync`,

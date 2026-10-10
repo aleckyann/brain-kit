@@ -7,7 +7,7 @@ Names of people, companies and tools were removed on purpose.
 
 Seventy three lessons were extracted from the original vault, written up as seventy
 two entries: the four day curation outage of September 2026 produced two lessons about
-the same incident and is written up once, under 13/09/2026. Fourteen entries were added
+the same incident and is written up once, under 13/09/2026. Fifteen entries were added
 since, each dated: the leak gate that blocked its own release tag (18/09/2026), the
 selection of transcripts by modification time (24/09/2026), the settings a headless
 run inherits (24/09/2026), which the kit's own build produced, the round that took its
@@ -20,8 +20,9 @@ owner's own health left out of the log on purpose (02/10/2026), the first run of
 on Windows, reported by a reader (05/10/2026), and, met by the rounds of the original
 vault and answered in the kit, a spent usage limit recorded as a failure of the run
 (30/09/2026), an empty index lock a day old that stopped the sync (06/10/2026), the name
-resolution that was not back when the round fired on resume (07/10/2026) and the timer that
-fires on resume whatever `Persistent=` says (09/10/2026). Eighty six
+resolution that was not back when the round fired on resume (07/10/2026), the timer that
+fires on resume whatever `Persistent=` says (09/10/2026) and the minutes of a committee
+that lived in a shared folder no door reached (09/10/2026). Eighty seven
 entries follow. Where a lesson carries no date of its own,
 the entry says "Undated" and explains why.
 
@@ -1033,6 +1034,27 @@ sentence with no marker of its own, and the meeting-notes source's prompt block,
 `src/sources/meeting-notes-google-drive.mjs`, in both languages;
 `test/prompt-curate.test.mjs` and `test/sources-meeting-notes.test.mjs` pin the label
 (Phase 5).
+
+### 09/10/2026: committee minutes lived in a folder no door reached
+**What happened.** The minutes of a recurring board-style committee lived in a shared
+folder of another company. The meeting-notes service wrote them there, attached to no
+calendar event and titled unlike the vault's literal, so neither the title search nor the
+attachments ever reached them. The vault knew the committee only from its third session
+on, and two sessions were recovered by hand two months later. On the same days the folder
+showed two traps: 25 PDF transcripts of old sessions uploaded in one evening, all created
+that day, and the next morning dozens of documents from 2024 modified in bulk, all in the
+same minute.
+**Rule.** A folder of minutes is a door of its own, named by its id and searched to its
+last page every round, and a round that skips it does not close the day. Only its native
+documents count, never a PDF transcript, and only those created within days of the
+window, never an old document touched in bulk.
+**Where it lives in brain-kit.** `src/sources/meeting-notes-google-drive.mjs`
+(`sources.meeting_notes.search_folders`: one exact query per folder, its parent, its
+document type, created at most seven days before the modification bound and modified
+after it; one line of the prompt block per folder, in the vault's language; the source read
+only when every folder's search reached its last page; `bad_folder` for an entry that is
+not a folder id), [connectors.md](connectors.md),
+`test/incidents/2026-10-09-minutes-in-a-shared-folder.test.mjs` (Phase 5).
 
 ### Undated: the document search is accent sensitive and fails silently
 **What happened.** The search string for the automatically generated meeting notes

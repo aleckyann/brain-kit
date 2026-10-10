@@ -63,7 +63,8 @@ enforces.
 
 ### The meeting notes
 
-Meeting notes have two doors (incident of 11/08/2026):
+Meeting notes have two doors (incident of 11/08/2026), and a third one when you name a
+folder (incident of 09/10/2026):
 
 - **The title search.** The round asks the document store for the documents whose title
   contains the literal in `sources.meeting_notes.search_title_contains`, modified after the
@@ -75,6 +76,17 @@ Meeting notes have two doors (incident of 11/08/2026):
 - **The documents attached to the calendar's events**, reached through the calendar
   source's listing in the same round: all of them when `attached_title_prefix` is empty
   (the default), or only those whose title starts with it.
+- **A folder of minutes**, for each folder id in `sources.meeting_notes.search_folders`
+  (empty by default): minutes a meeting-notes service writes into a folder, attached to no
+  event and titled unlike the literal. The model is given one exact query per folder,
+  `parentId = '<folder id>' and mimeType = 'application/vnd.google-apps.document' and
+  createdTime > '<instant minus 7 days>' and modifiedTime > '<instant>'`, the same instant
+  as the title search. Only native documents, because such a folder also holds PDF
+  transcripts and a full transcription is never opened; only documents created at most
+  seven days before that instant, because old documents touched in bulk are not new
+  minutes. The source counts as read only when every folder's search, like the title
+  search, holds its four clauses as given, none negated, and was answered without an error
+  and whole to its last page: a round that skips a folder leaves the day open.
 
 While the calendar source is on, a meeting-notes day closes only when the calendar was also
 read over that day in the same round; the title search alone does not close it, and the
@@ -143,6 +155,13 @@ under `sources.meeting_notes`:
 "enabled": true,
 "search_title_contains": "<the fixed part of the title, copied>"
 ```
+
+When minutes live in a folder no other door reaches, add its id, the part of the folder's
+address after `/folders/` and before any `?`, to `"search_folders": ["<folder id>"]`. A
+string that is not a folder id (letters, digits, `_` and `-`, ten or more) turns the source
+off with the problem `bad_folder`, named by the round and by `doctor`; an entry that is not
+a string (`42`, `null`) fails the configuration's schema instead, and the whole
+`brain-kit.config.json` is refused, as for any other schema error.
 
 The language pack's default (`Notes by Gemini` in English, `Anotações do Gemini` in
 Portuguese) is only a suggestion. The document search is accent sensitive: a literal
