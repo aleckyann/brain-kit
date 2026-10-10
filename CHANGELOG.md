@@ -92,10 +92,12 @@ fail, as it did before (docs/scheduling.md, steps 4b and 10).
   default). Each folder gets one exact query, its native documents created at most seven
   days before the modification bound and modified after it, and one line of the prompt
   block, and the source counts as read only when every folder's search, like the title
-  search, reached its last page. An entry that is not a folder id turns the source off as
-  `bad_folder`. The minutes of a committee lived in a shared folder that neither the title
-  search nor the event's attachments reached (09/10/2026); the same folder held PDF
-  transcripts and old documents touched in bulk, which the two filters keep out.
+  search, reached its last page. A string that is not a folder id turns the source off as
+  `bad_folder`; an entry that is not a string fails the configuration's schema, and the
+  whole `brain-kit.config.json` is refused, as for any other schema error. The minutes of a
+  committee lived in a shared folder that neither the title search nor the event's
+  attachments reached (09/10/2026); the same folder held PDF transcripts and old documents
+  touched in bulk, which the two filters keep out.
 
 ### The scheduling documentation
 

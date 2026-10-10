@@ -610,7 +610,7 @@ test('no folder, or an empty list of them: the query, the prompt block and the e
 test('one folder: three doors in the heading, its exact query as a code span on one line right after the attachments, in the words of the vault language', () => {
   const copy = {
     'pt-BR': `Porta de pasta: chame ${SEARCH} com exatamente esta query, caractere por caractere: \`${FOLDER_QUERY}\`. Siga o nextPageToken como na primeira porta, até vir uma página sem ele. Cada documento encontrado é uma ata: leia inteiro, como os outros, e não destile de novo o que já está no log.`,
-    en: `Folder door: call ${SEARCH} with exactly this query, character for character: \`${FOLDER_QUERY}\`. Follow nextPageToken as with the first door, until a page comes without it. Each document it finds is a set of minutes: read it whole, like the others, and do not distil again what the log already holds.`,
+    en: `Folder door: call ${SEARCH} with exactly this query, character for character: \`${FOLDER_QUERY}\`. Follow nextPageToken as with the first door, until a page comes without it. Each document it finds is a set of minutes: read it whole, like the others, and do not distill again what the log already holds.`,
   };
   const heading = {
     'pt-BR': 'Notas de reunião, por três portas: os documentos que a busca por título abaixo encontra, os documentos anexados aos eventos de agenda desta rodada e os documentos das pastas de atas listadas abaixo. Uma nota de reunião é uma fonte de primeira classe, com o mesmo peso de uma transcrição.',

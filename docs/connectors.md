@@ -157,9 +157,11 @@ under `sources.meeting_notes`:
 ```
 
 When minutes live in a folder no other door reaches, add its id, the part of the folder's
-address after `/folders/` and before any `?`, to `"search_folders": ["<folder id>"]`. An entry that is not a
-folder id (letters, digits, `_` and `-`, ten or more) turns the source off with the problem
-`bad_folder`, named by the round and by `doctor`.
+address after `/folders/` and before any `?`, to `"search_folders": ["<folder id>"]`. A
+string that is not a folder id (letters, digits, `_` and `-`, ten or more) turns the source
+off with the problem `bad_folder`, named by the round and by `doctor`; an entry that is not
+a string (`42`, `null`) fails the configuration's schema instead, and the whole
+`brain-kit.config.json` is refused, as for any other schema error.
 
 The language pack's default (`Notes by Gemini` in English, `Anotações do Gemini` in
 Portuguese) is only a suggestion. The document search is accent sensitive: a literal
