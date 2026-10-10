@@ -86,6 +86,17 @@ fail, as it did before (docs/scheduling.md, steps 4b and 10).
   removed. The warning now points to `network_check` in `machine.json`, not to `brain-kit
   doctor`, which has no such check.
 
+### Meeting notes
+
+- A third door: `sources.meeting_notes.search_folders`, a list of folder ids (empty by
+  default). Each folder gets one exact query, its native documents created at most seven
+  days before the modification bound and modified after it, and one line of the prompt
+  block, and the source counts as read only when every folder's search, like the title
+  search, reached its last page. An entry that is not a folder id turns the source off as
+  `bad_folder`. The minutes of a committee lived in a shared folder that neither the title
+  search nor the event's attachments reached (09/10/2026); the same folder held PDF
+  transcripts and old documents touched in bulk, which the two filters keep out.
+
 ### The scheduling documentation
 
 - The claim that `Persistent=false` keeps a systemd user timer from firing on resume was

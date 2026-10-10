@@ -296,7 +296,7 @@
             "enabled": { "type": "boolean" },
             "provider": { "type": "string" }, "server_display_name": { "type": "string" }, "tool_prefix": { "type": "string" },
             "tool_suffixes": { "type": "array", "items": { "type": "string" } },
-            "search_title_contains": { "type": "string" }, "attached_title_prefix": { "type": "string" },
+            "search_title_contains": { "type": "string" }, "search_folders": { "type": "array", "items": { "type": "string" } }, "attached_title_prefix": { "type": "string" },
             "window_hours_before_day": { "type": "integer", "minimum": 0 },
             "dedup_by": { "type": "string" },
             "never_download": { "type": "array", "items": { "type": "string" } }

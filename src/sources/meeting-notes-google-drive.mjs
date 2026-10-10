@@ -38,6 +38,14 @@
 //   - Undated, the deduplication key had to be the escaped literal title:
 //     a title already in the log, in straight quotes and exactly as
 //     written there, is not distilled again.
+//   - 09/10/2026, a committee's minutes lived in a shared folder of another
+//     company, neither attached to the event nor titled like the literal,
+//     so neither door reached them. A third door, `search_folders`: one
+//     exact query per folder, its native documents only (the folder also
+//     held PDF transcripts) created at most FOLDER_CREATED_DAYS before the
+//     modification bound (its old documents were touched in bulk), and the
+//     source is read only when every folder's search, like the title
+//     search, reached its last page.
 // The prompt block says all of it, in the vault's language. The kit can
 // measure only the search: how many documents exist it cannot know, so the
 // documents a round opens are counted (`documents`), never a condition.
@@ -47,13 +55,14 @@
 // excludeContentSnippets, snippetVerbosity) answers { files[...],
 // nextPageToken? }; its query language has `title contains '...'` and
 // `modifiedTime > '<RFC 3339>'`, strings in single quotes and a quote inside
-// one written \'. How it reads a backslash is unmeasured, so a title holding
-// one builds no query at all. An event's attachment carries only fileUrl and
-// title, and the document id is the part of fileUrl after /d/ (ruling R-B2):
-// the prompt block says so, and the evidence never depends on it. The
-// connector also has write tools, which the round must never reach:
-// WRITE_SUFFIXES are denied whatever the configuration lists, and never
-// allowed.
+// one written \'; measured 10/10/2026, also `parentId = '...'`, `mimeType =
+// '...'` and `createdTime > '<RFC 3339>'`. How it reads a backslash is
+// unmeasured, so a title holding one builds no query at all. An event's
+// attachment carries only fileUrl and title, and the document id is the
+// part of fileUrl after /d/ (ruling R-B2): the prompt block says so, and
+// the evidence never depends on it. The connector also has write tools,
+// which the round must never reach: WRITE_SUFFIXES are denied whatever the
+// configuration lists, and never allowed.
 import { createTranslator } from '../lang.mjs';
 
 export const SEARCH_SUFFIX = 'search_files';
@@ -72,6 +81,16 @@ const TOOL_PREFIX_SHAPE = /^mcp__[A-Za-z0-9_-]+__$/;
 const TOOL_SUFFIX_SHAPE = /^[a-z][a-z0-9_]*$/;
 
 const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+
+// A folder id of the document store: letters, digits, _ and -, never short.
+const FOLDER_ID_SHAPE = /^[A-Za-z0-9_-]{10,}$/;
+const DOCUMENT_MIME = 'application/vnd.google-apps.document';
+
+// A document created long ago and touched in bulk is not new minutes:
+// minutes are written within days of the meeting.
+// shortcut: 7 days is a guess from one folder, make it a setting if a vault needs another span
+const FOLDER_CREATED_DAYS = 7;
 
 function settingsOf(config) {
   const settings = config?.sources?.meeting_notes;
@@ -86,6 +105,11 @@ function stringOr(value, fallback) {
 // document in the store.
 function usableTitle(value) {
   return typeof value === 'string' && value.trim() !== '';
+}
+
+// The folders of the third door, each once, in the order listed.
+function foldersOf(settings) {
+  return Array.isArray(settings.search_folders) ? [...new Set(settings.search_folders)] : [];
 }
 
 // The tools the round may call: the configured suffixes of the right shape,
@@ -105,6 +129,8 @@ function readSuffixes(settings) {
 //   bad_tool_prefix  tool_prefix is not an MCP prefix; detail: the prefix
 //   missing_tools    a tool the prompt block names is not among the usable
 //                    tool_suffixes; detail: the missing suffixes
+//   bad_folder       an entry of search_folders is not a folder id; detail:
+//                    the entry, as JSON
 function problemsOf(settings) {
   const problems = [];
   const title = settings.search_title_contains;
@@ -116,6 +142,9 @@ function problemsOf(settings) {
   const usable = readSuffixes(settings);
   const missing = REQUIRED_SUFFIXES.filter((suffix) => !usable.includes(suffix));
   if (missing.length > 0) problems.push({ code: 'missing_tools', detail: missing.join(', ') });
+  for (const folder of foldersOf(settings)) {
+    if (typeof folder !== 'string' || !FOLDER_ID_SHAPE.test(folder)) problems.push({ code: 'bad_folder', detail: JSON.stringify(folder) });
+  }
   return problems;
 }
 
@@ -153,6 +182,13 @@ function modifiedClause(since) {
   return `modifiedTime > '${since}'`;
 }
 
+// The four clauses of a folder's query; none holds ' and ', since a folder id
+// is letters, digits, _ and -, so the query splits back into them.
+function folderClauses(folder, since) {
+  const created = rfc3339(Date.parse(since) - FOLDER_CREATED_DAYS * DAY_MS);
+  return [`parentId = '${folder}'`, `mimeType = '${DOCUMENT_MIME}'`, `createdTime > '${created}'`, modifiedClause(since)];
+}
+
 // An instant as RFC 3339 in UTC, a whole second written without a fraction.
 function rfc3339(ms) {
   const iso = new Date(ms).toISOString();
@@ -177,6 +213,7 @@ function renderPromptBlock(t, plan, settings) {
     t('sources.meeting_notes.heading'),
     t('sources.meeting_notes.search', { tool: plan.toolPrefix + SEARCH_SUFFIX, query: plan.query }),
     attached === '' ? t('sources.meeting_notes.attachments_any', { metadata }) : t('sources.meeting_notes.attachments_prefix', { prefix: attached, metadata }),
+    ...plan.folderQueries.map((query) => t('sources.meeting_notes.folder', { tool: plan.toolPrefix + SEARCH_SUFFIX, query })),
     t('sources.meeting_notes.read', { tool: plan.toolPrefix + READ_SUFFIX }),
     t('sources.meeting_notes.distill'),
     t('sources.meeting_notes.no_access'),
@@ -191,6 +228,8 @@ function renderPromptBlock(t, plan, settings) {
 //   since       the modification bound, RFC 3339 in UTC
 //   query       the exact query for search_files; null when not configured,
 //               so no search is ever offered for a source that is off
+//   folderQueries the exact query for each folder of search_folders, in
+//               order; empty when there is none or not configured
 //   toolPrefix  the connector's tool prefix, which names the tools the
 //               evidence counts
 //   problems    { code, detail }, see problemsOf
@@ -206,6 +245,7 @@ function collect({ window, config }) {
     literal,
     since,
     query: configured ? `${titleClause(literal)} and ${modifiedClause(since)}` : null,
+    folderQueries: configured ? foldersOf(settings).map((folder) => folderClauses(folder, since).join(' and ')) : [],
     toolPrefix: stringOr(settings.tool_prefix, ''),
     problems,
   };
@@ -264,15 +304,17 @@ function reachedLastPage(uses, succeeded, results, start) {
 // Clauses the model adds around the two do not matter; the two themselves
 // must be there character for character, so a search without an accent,
 // with the title reworded, or with the bound missing, moved or negated is
-// not a read. A plan that is not configured is never read. `expected` is
-// always 1: the kit cannot know how many documents exist, so `documents`
-// only counts the read_file_content results, succeeded and failed, for the
-// round's report. `listed` counts the files every successful search of the
-// round holding both clauses (first pages and next pages, the chain that
-// proves the read or any other: scoped re-review) listed, the stream
-// parser's `items`; null when the source was not read or any of those
-// results gave no count: `empty` counts only when it is 0 (ruling R-F1,
-// src/guards/watermark.mjs).
+// not a read. Each folder query of the plan needs such a chain of its own,
+// holding its four clauses, none negated: a folder left unsearched leaves
+// the source unread. A plan that is not configured is never read.
+// `expected` is always 1: the kit cannot know how many documents exist, so
+// `documents` only counts the read_file_content results, succeeded and
+// failed, for the round's report. `listed` counts the files every
+// successful search of the round holding both clauses, or a folder query's
+// four (first pages and next pages, the chain that proves the read or any
+// other: scoped re-review) listed, the stream parser's `items`; null when
+// the source was not read or any of those results gave no count: `empty`
+// counts only when it is 0 (ruling R-F1, src/guards/watermark.mjs).
 // A result succeeded only when it says so (`isError: false`) and its text
 // was whole (`complete` is not false: a truncated answer is a failed call,
 // ruling I2 of task 2's review, which extends R-B3; a record without the
@@ -295,23 +337,18 @@ function readEvidence(record, plan) {
     else documents.failed += 1;
   }
 
-  let pages = null;
+  let read = 0;
   let searches = [];
   if (plan?.configured === true) {
-    const title = titleClause(plan.literal);
-    const bound = modifiedClause(plan.since);
-    const asks = (use) => use.name === prefix + SEARCH_SUFFIX && succeeded(use)
-      && typeof use.input?.query === 'string' && use.input.query.includes(title) && use.input.query.includes(bound)
-      && !negated(use.input.query, title) && !negated(use.input.query, bound);
-    searches = uses.filter(asks);
-    for (let index = 0; index < uses.length && pages === null; index += 1) {
-      const use = uses[index];
-      if (noPageToken(use) && asks(use)) pages = reachedLastPage(uses, succeeded, results, index);
-    }
+    const chains = [[titleClause(plan.literal), modifiedClause(plan.since)], ...(plan.folderQueries ?? []).map((query) => query.split(' and '))];
+    const asking = chains.map((clauses) => (use) => use.name === prefix + SEARCH_SUFFIX && succeeded(use)
+      && typeof use.input?.query === 'string' && clauses.every((clause) => use.input.query.includes(clause) && !negated(use.input.query, clause)));
+    const reached = (asks) => uses.some((use, index) => noPageToken(use) && asks(use) && reachedLastPage(uses, succeeded, results, index) !== null);
+    searches = uses.filter((use) => asking.some((asks) => asks(use)));
+    read = asking.every(reached) ? 1 : 0;
   }
-  const read = pages === null ? 0 : 1;
   let listed = null;
-  if (pages !== null) {
+  if (read === 1) {
     const counts = searches.map((use) => results.get(use.id)?.items);
     listed = counts.every((n) => Number.isInteger(n) && n >= 0) ? counts.reduce((sum, n) => sum + n, 0) : null;
   }

@@ -1,7 +1,7 @@
 // The meeting-notes source (src/sources/meeting-notes-google-drive.mjs):
 // the query it hands the round, the prompt block around it, the tool rules
 // and connector spec it gives the harness, and the read evidence measured on
-// round records, hand-built and captured (test/fixtures/stream/). Its two
+// round records, hand-built and captured (test/fixtures/stream/). Its
 // incidents have their own files under test/incidents/.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -561,4 +561,175 @@ test('readEvidence: listed sums the files on the pages of the search chain that 
   assert.equal(listed([search(q, { hasNextPage: true, items: 0 }), search(q, { pageToken: 'page-2', items: null })]), null, 'one page with no count');
   assert.equal(listed([search('title contains \'x\'', { items: 0 })]), null, 'nothing read');
   assert.equal(meetingNotesSource.readEvidence(record([search(q, { items: 0 })]), { ...plan, configured: false }).listed, null, 'a source that is off');
+});
+
+// --- the third door: a folder of minutes (09/10/2026) ---------------------------------
+
+// Made-up folder ids, and the query the pinned window gives the first: its
+// native documents, created at most seven days before the modification
+// bound and modified after it.
+const FOLDER = '1AbCdEfGhIjKlMnOpQrStUv';
+const OTHER_FOLDER = '0ZyXwVuTsRqPoNmLkJiHg-_';
+const PARENT = `parentId = '${FOLDER}'`;
+const MIME = "mimeType = 'application/vnd.google-apps.document'";
+const CREATED = "createdTime > '2026-05-04T15:00:00Z'";
+const BOUND = `modifiedTime > '${SINCE}'`;
+const FOLDER_QUERY = `${PARENT} and ${MIME} and ${CREATED} and ${BOUND}`;
+const OTHER_QUERY = FOLDER_QUERY.replace(FOLDER, OTHER_FOLDER);
+
+// The block as it was before the third door: two doors, eight lines.
+function twoDoorBlock(lang, plan) {
+  const t = createTranslator(lang);
+  return [
+    t('sources.meeting_notes.heading'),
+    t('sources.meeting_notes.search', { tool: SEARCH, query: plan.query }),
+    t('sources.meeting_notes.attachments_any', { metadata: METADATA }),
+    t('sources.meeting_notes.read', { tool: READ }),
+    t('sources.meeting_notes.distill'),
+    t('sources.meeting_notes.no_access'),
+    t('sources.meeting_notes.speakers'),
+    t('sources.meeting_notes.never_download'),
+  ].join('\n');
+}
+
+test('no folder, or an empty list of them: the query, the prompt block and the evidence are what they were', () => {
+  for (const lang of LANGS) {
+    for (const folders of [undefined, []]) {
+      const plan = planFor({ search_folders: folders }, lang);
+      const label = `${lang}, search_folders ${JSON.stringify(folders)}`;
+      assert.deepEqual(plan.problems, [], label);
+      assert.deepEqual(plan.folderQueries, [], label);
+      assert.equal(plan.query, planFor({}, lang).query, label);
+      assert.equal(plan.promptBlock, twoDoorBlock(lang, plan), label);
+      assert.deepEqual(evidence(record([search(plan.query)]), plan), READ_ONCE, label);
+    }
+  }
+  assert.deepEqual(planFor({ enabled: false, search_folders: [FOLDER] }).folderQueries, [], 'a source that is off offers no folder query either');
+});
+
+test('one folder: its exact query, one line of the prompt block right after the attachments, in the words of the vault language', () => {
+  const copy = {
+    'pt-BR': `Rode também, com ${SEARCH}, esta consulta exata numa pasta de atas e siga todas as páginas: ${FOLDER_QUERY}. Cada documento encontrado é uma ata: leia inteiro, como os outros, e não destile de novo o que já está no log.`,
+    en: `Also run this exact query with ${SEARCH} on a folder of minutes and follow every page: ${FOLDER_QUERY}. Each document it finds is a set of minutes: read it whole, like the others, and do not distil again what the log already holds.`,
+  };
+  for (const lang of LANGS) {
+    const t = createTranslator(lang);
+    const plan = planFor({ search_folders: [FOLDER] }, lang);
+    assert.deepEqual(plan.problems, [], lang);
+    assert.equal(plan.configured, true, lang);
+    assert.equal(plan.query, planFor({}, lang).query, `${lang}: the title query is unchanged`);
+    assert.deepEqual(plan.folderQueries, [FOLDER_QUERY], lang);
+    const line = t('sources.meeting_notes.folder', { tool: SEARCH, query: FOLDER_QUERY });
+    assert.equal(line, copy[lang], lang);
+    const lines = plan.promptBlock.split('\n');
+    assert.equal(lines.filter((l) => l === line).length, 1, `${lang}: one line for the folder`);
+    assert.equal(lines.indexOf(line), lines.indexOf(t('sources.meeting_notes.attachments_any', { metadata: METADATA })) + 1, `${lang}: right after the attachments line`);
+    assert.equal(plan.promptBlock.split(FOLDER_QUERY).length - 1, 1, `${lang}: the folder query once`);
+    assert.deepEqual(lines.filter((l) => l !== line), twoDoorBlock(lang, plan).split('\n'), `${lang}: every other line as it was`);
+  }
+  const elsewhere = planFor({ tool_prefix: 'mcp__Drive__', search_folders: [FOLDER] });
+  assert.ok(elsewhere.promptBlock.split('\n').includes(createTranslator('en')('sources.meeting_notes.folder', { tool: 'mcp__Drive__search_files', query: FOLDER_QUERY })), 'the search tool under the configured prefix');
+});
+
+test('the folder query: the created bound is seven days before the modification bound, whatever the window', () => {
+  assert.deepEqual(planFor({ search_folders: [FOLDER], window_hours_before_day: 0 }).folderQueries, [
+    `${PARENT} and ${MIME} and createdTime > '2026-05-05T03:00:00Z' and modifiedTime > '2026-05-12T03:00:00Z'`,
+  ]);
+  const odd = planFor({ search_folders: [FOLDER], window_hours_before_day: 0 }, 'en', { from: new Date('2026-05-12T03:00:00.250Z'), to: WINDOW.to });
+  assert.deepEqual(odd.folderQueries, [`${PARENT} and ${MIME} and createdTime > '2026-05-05T03:00:00.250Z' and modifiedTime > '2026-05-12T03:00:00.250Z'`], 'a fraction of a second is kept in both bounds');
+});
+
+test('one folder: the title chain alone leaves the source unread; with the folder chain, to its last page, it is read', () => {
+  const plan = planFor({ search_folders: [FOLDER] });
+  assert.deepEqual(evidence(record([search(plan.query)]), plan), NOT_READ, 'the title chain alone');
+  assert.deepEqual(evidence(record([search(FOLDER_QUERY)]), plan), NOT_READ, 'the folder chain alone');
+  assert.deepEqual(evidence(record([search(plan.query), search(FOLDER_QUERY)]), plan), READ_ONCE);
+  assert.deepEqual(evidence(record([
+    search(plan.query), search(FOLDER_QUERY, { hasNextPage: true }), search(FOLDER_QUERY, { pageToken: 'page-2' }),
+  ]), plan), READ_ONCE, 'two pages, the second asked for with its token');
+  assert.deepEqual(evidence(record([
+    search(FOLDER_QUERY, { hasNextPage: true }), search(plan.query), search(FOLDER_QUERY, { pageToken: 'page-2' }),
+  ]), plan), READ_ONCE, 'the two chains interleaved');
+  assert.deepEqual(evidence(record([search(plan.query), search(FOLDER_QUERY, { hasNextPage: true })]), plan), NOT_READ, 'the folder\'s next page never asked for');
+  assert.deepEqual(evidence(record([search(plan.query), search(FOLDER_QUERY, { pageToken: 'page-2' })]), plan), NOT_READ, 'a folder chain that starts with a page token');
+});
+
+test('a folder search counts only with its four clauses as given, none negated, answered with no error, by the configured connector', () => {
+  const plan = planFor({ search_folders: [FOLDER] });
+  const title = search(plan.query);
+  for (const query of [
+    `${PARENT} and ${CREATED} and ${BOUND}`,
+    `${MIME} and ${CREATED} and ${BOUND}`,
+    `${PARENT} and ${MIME} and ${BOUND}`,
+    `${PARENT} and ${MIME} and ${CREATED}`,
+    `not ${FOLDER_QUERY}`,
+    `${PARENT} and not ${MIME} and ${CREATED} and ${BOUND}`,
+    `${PARENT} and ${MIME} and not (${CREATED}) and ${BOUND}`,
+    OTHER_QUERY,
+    FOLDER_QUERY.replace('2026-05-04T15:00:00Z', '2026-04-11T15:00:00Z'),
+    FOLDER_QUERY.replace('vnd.google-apps.document', 'pdf'),
+  ]) {
+    assert.deepEqual(evidence(record([title, search(query)]), plan), NOT_READ, query);
+  }
+  assert.deepEqual(evidence(record([title, search(FOLDER_QUERY, { isError: true })]), plan), NOT_READ, 'a failed folder search');
+  assert.deepEqual(evidence(record([title, search(FOLDER_QUERY, { complete: false })]), plan), NOT_READ, 'a folder search cut short');
+  assert.deepEqual(evidence(record([title, search(FOLDER_QUERY, { answered: false })]), plan), NOT_READ, 'a folder search never answered');
+  assert.deepEqual(evidence(record([title, search(FOLDER_QUERY, { isError: true }), search(FOLDER_QUERY)]), plan), READ_ONCE, 'a successful retry of it');
+  assert.deepEqual(evidence(record([title, search(FOLDER_QUERY, { name: 'mcp__plugin_example_docs__search_files' })]), plan), NOT_READ, 'another server\'s search');
+  assert.deepEqual(evidence(record([title, search(`${BOUND} and ${CREATED} and ${MIME} and ${PARENT}`)]), plan), READ_ONCE, 'the clauses in another order');
+  assert.deepEqual(evidence(record([title, search(`${FOLDER_QUERY} and trashed = false`)]), plan), READ_ONCE, 'a clause the model adds');
+});
+
+test('two folders: the chain of each is needed', () => {
+  const plan = planFor({ search_folders: [FOLDER, OTHER_FOLDER] });
+  assert.deepEqual(plan.folderQueries, [FOLDER_QUERY, OTHER_QUERY]);
+  const t = createTranslator('en');
+  const lines = plan.promptBlock.split('\n');
+  const first = lines.indexOf(t('sources.meeting_notes.folder', { tool: SEARCH, query: FOLDER_QUERY }));
+  assert.ok(first !== -1 && lines[first + 1] === t('sources.meeting_notes.folder', { tool: SEARCH, query: OTHER_QUERY }), 'one line each, in the order listed');
+  const title = search(plan.query);
+  assert.deepEqual(evidence(record([title, search(FOLDER_QUERY)]), plan), NOT_READ, 'the first folder only');
+  assert.deepEqual(evidence(record([title, search(OTHER_QUERY)]), plan), NOT_READ, 'the second folder only');
+  assert.deepEqual(evidence(record([title, search(OTHER_QUERY), search(FOLDER_QUERY)]), plan), READ_ONCE);
+  assert.deepEqual(evidence(record([search(OTHER_QUERY), search(FOLDER_QUERY)]), plan), NOT_READ, 'both folders, no title search');
+});
+
+test('a folder id that is not one is bad_folder and turns the source off; the same folder twice is one door', () => {
+  for (const [entry, detail] of [['short', '"short"'], ['', '""'], [42, '42'], ['has space here', '"has space here"'], ['123456789', '"123456789"'], [null, 'null']]) {
+    const config = configWith({ search_folders: [FOLDER, entry] });
+    const plan = meetingNotesSource.collect({ window: WINDOW, config, now: NOW });
+    assert.deepEqual(plan.problems, [{ code: 'bad_folder', detail }], JSON.stringify(entry));
+    assert.equal(plan.configured, false, JSON.stringify(entry));
+    assert.equal(plan.query, null, JSON.stringify(entry));
+    assert.deepEqual(plan.folderQueries, [], JSON.stringify(entry));
+    assert.equal(plan.promptBlock, createTranslator('en')('sources.meeting_notes.off'), JSON.stringify(entry));
+    assert.equal(meetingNotesSource.isConfigured(config), false, JSON.stringify(entry));
+  }
+  assert.equal(meetingNotesSource.isConfigured(configWith({ search_folders: ['0123456789', 'a_b-C'.repeat(4)] })), true, 'ten characters or more of letters, digits, _ and -');
+  assert.deepEqual(planFor({ search_folders: ['short', 'short'] }).problems, [{ code: 'bad_folder', detail: '"short"' }], 'a bad entry listed twice is one problem');
+  assert.deepEqual(planFor({ enabled: false, search_folders: [42] }).problems.map((p) => p.code), ['disabled', 'bad_folder']);
+  const twice = planFor({ search_folders: [FOLDER, OTHER_FOLDER, FOLDER] });
+  assert.deepEqual(twice.folderQueries, [FOLDER_QUERY, OTHER_QUERY]);
+  assert.equal(twice.promptBlock.split(FOLDER_QUERY).length - 1, 1, 'one line for the folder listed twice');
+});
+
+test('the schema takes sources.meeting_notes.search_folders as a list of text, and only as one', () => {
+  const config = JSON.parse(readFileSync(join(KIT_ROOT, 'test', 'fixtures', 'config', 'valid.json'), 'utf8'));
+  config.sources.meeting_notes.search_folders = [FOLDER];
+  assert.deepEqual(validateConfig(config), []);
+  config.sources.meeting_notes.search_folders = FOLDER;
+  assert.deepEqual(validateConfig(config), ['$.sources.meeting_notes.search_folders: expected array, got string']);
+  config.sources.meeting_notes.search_folders = [42];
+  assert.deepEqual(validateConfig(config), ['$.sources.meeting_notes.search_folders[0]: expected string, got number']);
+});
+
+test('readEvidence: listed sums the files of the title searches and of the folder searches', () => {
+  const plan = planFor({ search_folders: [FOLDER] });
+  const listed = (calls) => meetingNotesSource.readEvidence(record(calls), plan).listed;
+  assert.equal(listed([search(plan.query, { items: 1 }), search(FOLDER_QUERY, { hasNextPage: true, items: 2 }), search(FOLDER_QUERY, { pageToken: 'page-2', items: 3 })]), 6);
+  assert.equal(listed([search(plan.query, { items: 1 }), search(FOLDER_QUERY, { items: 2 }), search(FOLDER_QUERY, { items: 4 })]), 7, 'the folder searched twice');
+  assert.equal(listed([search(plan.query, { items: 1 }), search(FOLDER_QUERY, { items: 2 }), search(`${PARENT} and ${BOUND}`, { items: 9 })]), 3, 'a search without the four clauses does not count');
+  assert.equal(listed([search(plan.query, { items: 1 }), search(FOLDER_QUERY)]), null, 'a folder page with no count');
+  assert.equal(listed([search(plan.query), search(FOLDER_QUERY, { items: 2 })]), null, 'a title page with no count');
+  assert.equal(listed([search(plan.query, { items: 1 })]), null, 'the folder never searched: the source is not read');
 });
