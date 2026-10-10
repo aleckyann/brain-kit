@@ -607,10 +607,14 @@ test('no folder, or an empty list of them: the query, the prompt block and the e
   assert.deepEqual(planFor({ enabled: false, search_folders: [FOLDER] }).folderQueries, [], 'a source that is off offers no folder query either');
 });
 
-test('one folder: its exact query, one line of the prompt block right after the attachments, in the words of the vault language', () => {
+test('one folder: three doors in the heading, its exact query as a code span on one line right after the attachments, in the words of the vault language', () => {
   const copy = {
-    'pt-BR': `Rode também, com ${SEARCH}, esta consulta exata numa pasta de atas e siga todas as páginas: ${FOLDER_QUERY}. Cada documento encontrado é uma ata: leia inteiro, como os outros, e não destile de novo o que já está no log.`,
-    en: `Also run this exact query with ${SEARCH} on a folder of minutes and follow every page: ${FOLDER_QUERY}. Each document it finds is a set of minutes: read it whole, like the others, and do not distil again what the log already holds.`,
+    'pt-BR': `Porta de pasta: chame ${SEARCH} com exatamente esta query, caractere por caractere: \`${FOLDER_QUERY}\`. Siga o nextPageToken como na primeira porta, até vir uma página sem ele. Cada documento encontrado é uma ata: leia inteiro, como os outros, e não destile de novo o que já está no log.`,
+    en: `Folder door: call ${SEARCH} with exactly this query, character for character: \`${FOLDER_QUERY}\`. Follow nextPageToken as with the first door, until a page comes without it. Each document it finds is a set of minutes: read it whole, like the others, and do not distil again what the log already holds.`,
+  };
+  const heading = {
+    'pt-BR': 'Notas de reunião, por três portas: os documentos que a busca por título abaixo encontra, os documentos anexados aos eventos de agenda desta rodada e os documentos das pastas de atas listadas abaixo. Uma nota de reunião é uma fonte de primeira classe, com o mesmo peso de uma transcrição.',
+    en: "Meeting notes, through three doors: the documents the title search below finds, the documents attached to this round's calendar events, and the documents of the folders of minutes listed below. A meeting note is a first-class source, with the same weight as a transcript.",
   };
   for (const lang of LANGS) {
     const t = createTranslator(lang);
@@ -625,7 +629,11 @@ test('one folder: its exact query, one line of the prompt block right after the 
     assert.equal(lines.filter((l) => l === line).length, 1, `${lang}: one line for the folder`);
     assert.equal(lines.indexOf(line), lines.indexOf(t('sources.meeting_notes.attachments_any', { metadata: METADATA })) + 1, `${lang}: right after the attachments line`);
     assert.equal(plan.promptBlock.split(FOLDER_QUERY).length - 1, 1, `${lang}: the folder query once`);
-    assert.deepEqual(lines.filter((l) => l !== line), twoDoorBlock(lang, plan).split('\n'), `${lang}: every other line as it was`);
+    assert.ok(line.includes(`\`${FOLDER_QUERY}\``), `${lang}: the query, whole, as a code span`);
+    assert.equal(lines[0], heading[lang], `${lang}: the heading names three doors`);
+    assert.equal(t('sources.meeting_notes.heading_with_folders'), heading[lang], lang);
+    const twoDoors = twoDoorBlock(lang, plan).split('\n');
+    assert.deepEqual(lines.filter((l) => l !== line).slice(1), twoDoors.slice(1), `${lang}: every other line as it was`);
   }
   const elsewhere = planFor({ tool_prefix: 'mcp__Drive__', search_folders: [FOLDER] });
   assert.ok(elsewhere.promptBlock.split('\n').includes(createTranslator('en')('sources.meeting_notes.folder', { tool: 'mcp__Drive__search_files', query: FOLDER_QUERY })), 'the search tool under the configured prefix');
@@ -703,11 +711,13 @@ test('a folder id that is not one is bad_folder and turns the source off; the sa
     assert.equal(plan.query, null, JSON.stringify(entry));
     assert.deepEqual(plan.folderQueries, [], JSON.stringify(entry));
     assert.equal(plan.promptBlock, createTranslator('en')('sources.meeting_notes.off'), JSON.stringify(entry));
+    assert.ok(plan.promptBlock.includes('search_title_contains, search_folders, tool_prefix or tool_suffixes'), 'the off line names the setting that turned it off');
     assert.equal(meetingNotesSource.isConfigured(config), false, JSON.stringify(entry));
   }
   assert.equal(meetingNotesSource.isConfigured(configWith({ search_folders: ['0123456789', 'a_b-C'.repeat(4)] })), true, 'ten characters or more of letters, digits, _ and -');
   assert.deepEqual(planFor({ search_folders: ['short', 'short'] }).problems, [{ code: 'bad_folder', detail: '"short"' }], 'a bad entry listed twice is one problem');
   assert.deepEqual(planFor({ enabled: false, search_folders: [42] }).problems.map((p) => p.code), ['disabled', 'bad_folder']);
+  assert.ok(createTranslator('pt-BR')('sources.meeting_notes.off').includes('search_title_contains, search_folders, tool_prefix ou tool_suffixes'), 'pt-BR: the same list');
   const twice = planFor({ search_folders: [FOLDER, OTHER_FOLDER, FOLDER] });
   assert.deepEqual(twice.folderQueries, [FOLDER_QUERY, OTHER_QUERY]);
   assert.equal(twice.promptBlock.split(FOLDER_QUERY).length - 1, 1, 'one line for the folder listed twice');

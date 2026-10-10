@@ -210,7 +210,7 @@ function renderPromptBlock(t, plan, settings) {
   const attached = stringOr(settings.attached_title_prefix, '');
   const metadata = plan.toolPrefix + METADATA_SUFFIX;
   return [
-    t('sources.meeting_notes.heading'),
+    t(plan.folderQueries.length > 0 ? 'sources.meeting_notes.heading_with_folders' : 'sources.meeting_notes.heading'),
     t('sources.meeting_notes.search', { tool: plan.toolPrefix + SEARCH_SUFFIX, query: plan.query }),
     attached === '' ? t('sources.meeting_notes.attachments_any', { metadata }) : t('sources.meeting_notes.attachments_prefix', { prefix: attached, metadata }),
     ...plan.folderQueries.map((query) => t('sources.meeting_notes.folder', { tool: plan.toolPrefix + SEARCH_SUFFIX, query })),
