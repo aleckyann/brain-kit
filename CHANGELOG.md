@@ -1,5 +1,116 @@
 # Changelog
 
+## Unreleased
+
+What the scheduled rounds of the original vault met between 30/09/2026 and 09/10/2026,
+answered: a round now repairs the two causes it can prove safe to repair without a person,
+names the ones it used to report as a plain failure, and leaves a durable record that the
+next morning's briefing shows. Before, a round that stopped for one of these exited 1 with
+"see the message above", one notification said so, and nothing was left to read once it was
+dismissed: from 03/10/2026 to 06/10/2026 seven rounds postponed on a dirty tree, each one
+notified, and three working days went uncurated before anyone looked. The constraint was
+visibility, not detection. Each change has its entry in docs/incidents.md and its test under
+`test/incidents/`.
+
+### Repairs a round makes on its own
+
+Two, each only when the round can prove it is safe, each said in the log and recorded in the
+`repairs` of `last-run.json`; a repair that does not apply leaves the round to go on, or to
+fail, as it did before (docs/scheduling.md, steps 4b and 10).
+
+- An orphaned `index.lock` is moved aside before sync (a new step, `index_lock`, between the
+  network and sync). It is moved only when all four hold: the file is empty (a commit waiting
+  in an editor has already written the new index into its lock), it is more than 10 minutes
+  old, no operation (rebase, merge, cherry-pick, revert, bisect) is half done, and the tree
+  has no change of its own. It is renamed to `index.lock.stale-<stamp>` beside itself, never
+  deleted, and the lock of this working tree's git directory is the only one looked at. Any
+  other lock stays, and so does one the file system refuses to rename; sync then fails with
+  git's own words, as below.
+- A launcher stub an npm install of the CLI left behind (about 500 bytes where the native
+  binary should be, seen on 14/09, 22/09, 30/09 and 03/10/2026) is reinstalled by running the
+  package's own `install.cjs`, only when it is not Windows, the stub is inside the CLI's npm
+  package, the installer is a regular file and the stub is more than 10 minutes old (an
+  install in progress, the CLI's own update included, is never raced). The installer runs
+  with your environment, never the round's, which carries its token, no shell and a 120
+  second limit, and the CLI is checked again. When it does not apply the round fails as
+  before (`cli_stub`, exit 1); when it was tried and failed, the reason says so and quotes
+  the installer's first line of error output.
+- `brain-kit curate --check` stops after step 12, so it passes both repairs: it can move an
+  orphaned lock aside and run the installer, as a round does. It writes no `last-run.json`
+  and no incident, and the repair goes to the log.
+
+### Causes the round now names
+
+- A lost network to the remote is exit 69 `sync_offline`, a known cause that the next window
+  retries with no mark moved, instead of exit 1 `sync_failed`. It is recognised by what git,
+  ssh and curl print (could not resolve a host name, name or service not known, temporary
+  failure in name resolution, nodename nor servname provided, network is unreachable). The
+  machine that woke from sleep with name resolution not yet up on 07/10/2026 (twice) and on
+  09/10/2026 was this.
+- Every sync outcome that ended a round with "see the message above" (`sync_failed`,
+  `sync_postponed`, `sync_diverged`) now puts the last line sync wrote, git's own, in its
+  reason.
+- A spent usage limit is exit 75 `usage_limited`, postponed on purpose, instead of exit 1
+  `model_failed` (30/09/2026). The reason carries the hour the CLI said it resets, no mark
+  moves, and the first window after the reset covers the day. An expired login is still read
+  first and keeps `auth_expired`.
+- A cause the kit cannot explain (`model_failed`, a failure of git itself in sync,
+  `internal_error`) ends its reason with a sentence saying so: the cause is not one the kit
+  knows, nothing was repaired, and the text before it is what the program said.
+  `last-run.json` records it as `unknownCause`.
+
+### What is kept, and what the briefing shows
+
+- `incidents.jsonl` in the state directory is a new file, one JSON line per round that
+  exited non-zero (except `lock_held`, which repeats at every window and says nothing new),
+  per round that made a repair, and, as a closing line, per round that ran the model and
+  ended `proposed` or `nothing_proposed`: no other exit 0 proves the causes before it gone.
+  The open incidents are the non-zero lines newer than the newest closing one. It is only
+  appended to while a round runs, and a round that holds the vault lock drops the lines older
+  than `log_retention_days` (30 by default). `--dry` and `--check` write nothing, and
+  `brain-kit machine register --new` and `--from` count it, with `last-run.json` and the
+  logs, as the trace of a round refused for lack of `machine.json`.
+- The briefing's `sources` block and `brain-kit preflight` add a line for each open
+  incident, grouped by reason code (how many times, from when to when, a known or an unknown
+  cause, the newest reason); a line when `incidents.jsonl` has lines that cannot be read;
+  each repair of the last 24 hours; a network check that answered on its first try without
+  waiting (`did_not_wait`, the signal nobody read before 07/10/2026); and each source more
+  than one day behind yesterday. Each absolute path in a reason is shown as its last segment.
+  With nothing open, repaired, warned or behind there is no extra line. `preflight --json`
+  gains `incidents` and `marks` among its facts, and the last round's facts carry the network
+  check's warning and wait (`networkWarning`, `networkWaitedMs`).
+- The "did not wait" note is raised only for a configured `machine.network_check` (or a
+  check a caller passes as a function). The default connection to the model's endpoint
+  proves a connection by construction and answers in about 50 milliseconds, so without
+  this the briefing would have warned almost every morning once `network_check` is
+  removed. The warning now points to `network_check` in `machine.json`, not to `brain-kit
+  doctor`, which has no such check.
+
+### The scheduling documentation
+
+- The claim that `Persistent=false` keeps a systemd user timer from firing on resume was
+  wrong. The system journal shows the unit starting in the same second as the resume (07/10
+  and 09/10/2026): a realtime timer whose time passed during sleep fires when the machine
+  wakes, and `Persistent=` only covers the time the timer was inactive. docs/scheduling.md,
+  the comment in `src/commands/schedule.mjs` and the title of the test now say what the line
+  does, and that the round's own wait for the network is what absorbs a fire at resume. The
+  unit files are unchanged.
+- docs/scheduling.md describes steps 4b and 10, the new exit reasons, the two new fields of
+  `last-run.json`, `incidents.jsonl` and what the briefing reads from it, and "When the usage
+  limit is spent", and `brain-kit curate --help` lists the new step in the round's order.
+
+### Left out on purpose
+
+- A dirty tree is still postponed (exit 75) with every file named, never cleaned: the kit
+  cannot tell a person's work from debris.
+- An expired login still ends the round with exit 69 and the `/login` instruction. The kit
+  does not probe the login before a launch, and does not log in.
+- Sync does not wait for the remote's host name before it runs: the host in a remote can be an
+  SSH alias or sit behind a proxy and never resolve on the machine while git reaches it, so
+  such a wait would refuse rounds that work. `sync_offline` names a lost network when git
+  says so, and the default network check, which opens a connection to the model's endpoint
+  and so needs name resolution, waits for a connection for up to two minutes.
+
 ## 0.1.1 (tagged `v0.1.1`, not on npm)
 
 What a reader's run of 0.1.0 on Windows 10, on 05/10/2026, found, fixed: Windows is supported,

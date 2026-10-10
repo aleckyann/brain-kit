@@ -15,7 +15,13 @@
 //       so in words, with the round's own sentence, and exits 1 too
 //    3. take the vault lock; held: exit 75 naming the holder
 //    4. wait for the network; none: exit 69 (did_not_wait is a note, R14)
-//    5. sync in process, under the round's lock; diverged: 75; failed: 1
+//   4b. an index.lock that cannot belong to a live git command (empty, over
+//       10 minutes old, no operation half done, a clean tree) is moved aside,
+//       never deleted, and the move is recorded in the round's `repairs`;
+//       any other lock stays, and this step never ends the round
+//       (incident 06/10/2026)
+//    5. sync in process, under the round's lock; diverged: 1; postponed: 75;
+//       a lost network to the remote: 69 (sync_offline); failed: 1
 //    6. only now load the configuration and check the prompt it names and
 //       the allow rules it adds (one that grants a path or command tool
 //       with no scope: exit 2), so a synced configuration is what runs
@@ -24,7 +30,9 @@
 //       `brain-kit watermark reopen`; nothing open: exit 0
 //    8. a dirty tree: exit 75 naming every file
 //    9. the round's own snapshot
-//   10. the CLI is a real program; not: exit 1
+//   10. the CLI is a real program; not: exit 1, after reinstalling a launcher
+//       stub an npm install left behind when it is safe to (src/guards/
+//       cli-repair.mjs, incident 14/09/2026), the repair recorded in `repairs`
 //   11. collect the sources, each over its own days (its open days after
 //       its own mark, its own oldest seven, phase 3 decision D5 and ruling
 //       C1 of task 5's review; the round's window is their union); a
@@ -66,10 +74,11 @@
 //   14. read evidence, the sources line and the round record
 //   15. bring what the round proposed back to HEAD's content, byte-proved
 //   16. the exit code, first match wins: isolation 1; an expired login 69
-//       (auth_expired, the reason saying to log in again with /login);
-//       another model failure 69 or 1; a required source unread 4; a round
-//       record that cannot be read 1; anything still dirty 1; a proposal
-//       not opened 3; otherwise 0. A best-effort source never changes it.
+//       (auth_expired, the reason saying to log in again with /login); a
+//       spent usage limit 75 (usage_limited, the reason saying when it
+//       resets); another model failure 69 or 1; a required source unread
+//       4; a round record that cannot be read 1; anything still dirty 1; a
+//       proposal not opened 3; otherwise 0. A best-effort source never changes it.
 //   17. advance each source's watermark through its own last day, only on
 //       0 or 3
 //   18. always: remove the round record and the round's digests (unless
@@ -96,7 +105,7 @@
 // for the model's launcher (`runModel`, handed the very options the real
 // one gets, so a test can see that no kill timer is armed), for the tests.
 // Production passes nothing.
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, appendFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { homedir, constants as osConstants } from 'node:os';
@@ -106,15 +115,18 @@ import { EXIT } from '../exit-codes.mjs';
 import { CONFIG_FILENAME, ConfigError, MACHINE_FILENAME, loadConfig, loadMachine } from '../config.mjs';
 import { createTranslator, SUPPORTED_LANGS } from '../lang.mjs';
 import { findVaultRoot } from '../vault.mjs';
-import { ensureStateDir, stateDirFor, STATE_FILES } from '../state.mjs';
+import { ensureStateDir, stateDirFor, STATE_FILES, writePrivate } from '../state.mjs';
+import { appendIncident, incidentFor, pruneIncidents } from '../incidents.mjs';
 import { dirtyPaths } from '../git.mjs';
 import { expandHome } from '../doctor/checks.mjs';
 import { acquireLock } from '../guards/lock.mjs';
 import { GuardError } from '../guards/location.mjs';
 import { waitForNetwork } from '../guards/network.mjs';
+import { moveOrphanIndexLock } from '../guards/index-lock.mjs';
 import { checkDirtyTree } from '../guards/dirty-tree.mjs';
 import { takeSnapshot } from '../guards/snapshot.mjs';
 import { checkCli } from '../guards/cli.mjs';
+import { repairStub } from '../guards/cli-repair.mjs';
 import { checkIsolation } from '../guards/isolation.mjs';
 import { connectorStateMessage, connectorStates } from '../guards/connectors.mjs';
 import { evidenceFor, unreadRequired } from '../guards/read-evidence.mjs';
@@ -151,6 +163,10 @@ const TIMEOUT_SETTING = `${CONFIG_FILENAME} curate.timeout_minutes`;
 const NOTIFY_TIMEOUT_MS = 30000;
 // The setting a vault adds allow rules with, as a person finds it.
 const ALLOWED_EXTRA_SETTING = `${CONFIG_FILENAME} curate.allowed_tools_extra`;
+// What the CLI says when the model's usage limit is spent (30/09/2026: "You've
+// hit your weekly limit", then the hour it resets). ASCII only: the measured
+// text, with its middle dot, lives in test/fixtures/stream/usage-limit.jsonl.
+export const USAGE_LIMIT_PATTERNS = Object.freeze([/hit your [a-z ]*limit/i, /usage limit/i]);
 const API_ERROR = /API Error|\b401\b|authentication/i;
 const API_MARKERS = Object.freeze([/API Error/i, /\b401\b/, /authentication/i]);
 
@@ -265,18 +281,6 @@ function pad2(n) {
 
 function localIsoDate(date) {
   return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
-}
-
-// A file written in full to a private sibling and renamed into place.
-function writePrivate(file, text) {
-  const tmp = `${file}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
-  try {
-    writeFileSync(tmp, text, { mode: 0o600, flag: 'wx' });
-    renameSync(tmp, file);
-  } catch (error) {
-    rmSync(tmp, { force: true });
-    throw error;
-  }
 }
 
 // The sources this round runs, the listed ones that are off, and the
@@ -960,6 +964,21 @@ export function cleanupProposals(root, proposals, env) {
   return { restored, changed: match.changed };
 }
 
+// ---------------------------------------------------------------- sync failures
+
+// What git, ssh and curl say when the remote's host cannot be reached at all
+// (a machine just back from sleep, name resolution not yet up): a failed
+// sync whose last line matches one is a lost network, a known cause the next
+// window retries, never a failure of the sync itself (07/10/2026).
+export const OFFLINE_PATTERNS = Object.freeze([
+  /Could not resolve hostname/,
+  /Could not resolve host/,
+  /Temporary failure in name resolution/,
+  /Name or service not known/,
+  /nodename nor servname provided/,
+  /Network is unreachable/,
+]);
+
 // ---------------------------------------------------------------- the command
 
 export async function runCurate(argv, io, t, deps = {}) {
@@ -1030,6 +1049,7 @@ export async function runCurate(argv, io, t, deps = {}) {
       } catch {
         // as above
       }
+      if (!parsed.check) recordIncident({ at: now.toISOString(), exit: EXIT.USAGE, reasonCode: 'machine_invalid', reason, repairs: [] }, stateDir, log);
     }
     return EXIT.USAGE;
   }
@@ -1050,6 +1070,8 @@ export async function runCurate(argv, io, t, deps = {}) {
     at: now.toISOString(), durationMs: null, exit: null, reasonCode: null, reason: null, window: null, network: null,
     sources: {}, warnings: [], remainingDays: 0, deferredDays: [], costUsd: null, budgetUsd: undefined, maxTurns: undefined, timeoutMinutes: undefined, numTurns: null, denials: [], isolation: null, proposed: null, leftovers: [],
     mode: null, relaunched: false, notConfigured: [], userRules: null, connectorStates: knownStates(previousRun),
+    unknownCause: undefined,
+    repairs: [],
   };
   // The notifications this round owes besides the one for a non-zero exit:
   // one per best-effort connector source whose state changed.
@@ -1076,6 +1098,16 @@ export async function runCurate(argv, io, t, deps = {}) {
     run.reason = reason;
     return exit;
   };
+  // A reason the kit cannot explain ends by saying so (R5): the cause is
+  // not one it knows, and the text before is the program's own. The text
+  // before may end on a bare detail, so the sentence boundary is kept. The
+  // round's record says so too (`unknownCause`, absent otherwise), so no
+  // reader needs a list of reason codes.
+  const withUnknownCause = (reason) => {
+    run.unknownCause = true;
+    const said = reason.trimEnd();
+    return `${/[.!?]$/.test(said) ? said : `${said}.`}${t('curate.unknown_cause', {})}`;
+  };
 
   // 3. The lock.
   onStep('lock');
@@ -1091,7 +1123,7 @@ export async function runCurate(argv, io, t, deps = {}) {
     // retry fixes, and is recorded as such, never as held.
     run.reasonCode = error.exitCode === EXIT.TEMPFAIL ? 'lock_held' : 'lock_unusable';
     run.reason = reason;
-    return finishRound({ run, io, log, stateDir, machine, env, started, lock: null, writeLastRun: true, check: false, notices });
+    return finishRound({ run, io, log, stateDir, machine, env, started, lock: null, writeLastRun: true, check: parsed.check, notices });
   }
   recordFile = roundRecordPath(root, lock.token, env);
   log('start', { root, check: parsed.check });
@@ -1100,7 +1132,7 @@ export async function runCurate(argv, io, t, deps = {}) {
   try {
     await roundUnderLock();
   } catch (error) {
-    fail(EXIT.FAILURE, 'internal_error', t('curate.internal_error', { detail: error instanceof Error ? error.message : String(error) }));
+    fail(EXIT.FAILURE, 'internal_error', withUnknownCause(t('curate.internal_error', { detail: error instanceof Error ? error.message : String(error) })));
   } finally {
     for (const signal of FORWARDED_SIGNALS) process.removeListener(signal, onSignal);
     // The digests hold what the person wrote: gone first, on every end this
@@ -1154,19 +1186,50 @@ export async function runCurate(argv, io, t, deps = {}) {
     }
     if (interrupted) return fail(EXIT.FAILURE, 'interrupted', t('curate.interrupted', { signal: interrupted }));
 
+    // 4b. A lock git left behind, moved aside before sync meets it. A step
+    // that cannot tell is not a reason to end the round: sync fails, or not,
+    // with git's own words.
+    onStep('index_lock');
+    let lockMove;
+    try {
+      lockMove = moveOrphanIndexLock(root, { env, now });
+    } catch (error) {
+      lockMove = { moved: false, to: null, ageMinutes: null, skipped: 'git_failed', error: error instanceof Error ? error.message : String(error) };
+    }
+    if (lockMove.moved) {
+      run.repairs.push({ kind: 'index_lock_moved', to: lockMove.to, ageMinutes: lockMove.ageMinutes });
+      log('index_lock_moved', lockMove);
+      io.stdout.write(`${t('curate.index_lock_moved', { to: lockMove.to, minutes: lockMove.ageMinutes })}\n`);
+    } else if (lockMove.skipped !== 'absent') {
+      log('index_lock_kept', lockMove);
+    }
+
     // 5. Sync, under the lock this round holds.
     onStep('sync');
     const outcome = {};
+    // Git's own line where sync has one (outcome.detail), else sync's last
+    // non-empty line on stderr: what a sync outcome that is not a success
+    // puts in the round's reason. Git's words come first so the briefing's
+    // cut never drops them.
+    let lastSyncLine = null;
+    const syncIo = {
+      ...io,
+      stderr: { write: (chunk) => { lastSyncLine = lastNonEmptyLine(chunk) ?? lastSyncLine; return io.stderr.write(chunk); } },
+    };
     let synced;
     try {
-      synced = syncUnderLock(root, io, t, env, outcome);
+      synced = syncUnderLock(root, syncIo, t, env, outcome);
     } catch (error) {
       io.stderr.write(`${t('sync.git_failed', { detail: error.message })}\n`);
+      // Git's first line is its error; its last is often advice.
+      outcome.detail = firstNonEmptyLine(error.message) ?? outcome.detail;
+      outcome.gitFailed = true;
       synced = EXIT.FAILURE;
     }
+    const detail = outcome.detail ?? lastSyncLine ?? '-';
     // A diverged base is exit 1, not 75: retrying cannot fix it, a person
     // must reconcile the two histories (controller ruling, fix round 1).
-    if (outcome.diverged) return fail(EXIT.FAILURE, 'sync_diverged', t('curate.sync_diverged', {}));
+    if (outcome.diverged) return fail(EXIT.FAILURE, 'sync_diverged', t('curate.sync_diverged', { detail }));
     if (synced === EXIT.TEMPFAIL) {
       // Sync postpones first on a dirty tree; the round's own reason names
       // the files, as step 8 would (review finding M6).
@@ -1175,9 +1238,17 @@ export async function runCurate(argv, io, t, deps = {}) {
         const files = early.files.map((f) => `${f.path} (${f.mtime ?? '-'})`).join(', ');
         return fail(EXIT.TEMPFAIL, 'dirty_tree', t('curate.dirty', { files }));
       }
-      return fail(EXIT.TEMPFAIL, 'sync_postponed', t('curate.sync_postponed', {}));
+      return fail(EXIT.TEMPFAIL, 'sync_postponed', t('curate.sync_postponed', { detail }));
     }
-    if (synced !== EXIT.OK) return fail(EXIT.FAILURE, 'sync_failed', t('curate.sync_failed', {}));
+    if (synced !== EXIT.OK) {
+      // A lost network is a known cause the next window retries (R1).
+      if (OFFLINE_PATTERNS.some((re) => re.test(detail))) return fail(EXIT.UNAVAILABLE, 'sync_offline', t('curate.sync_offline', { detail }));
+      // The reason code is sync_failed whoever diagnosed it; only a failure
+      // of git itself is a cause the kit does not know (R5). A refusal sync
+      // diagnosed (no remote, no default branch...) already names its cause.
+      const failed = t('curate.sync_failed', { detail });
+      return fail(EXIT.FAILURE, 'sync_failed', outcome.gitFailed ? withUnknownCause(failed) : failed);
+    }
 
     // 6. The configuration, as synced, and the prompt it names.
     onStep('config');
@@ -1276,8 +1347,19 @@ export async function runCurate(argv, io, t, deps = {}) {
     // 10. The CLI.
     onStep('cli');
     const childEnv = modelEnv(env, machine, lock.token);
-    const cli = checkCli(claudeBin, { env: childEnv });
-    if (!cli.ok) return fail(EXIT.FAILURE, `cli_${cli.problem}`, t('curate.cli_unusable', { problem: t(cli.messageKey, cli.params) }));
+    let cli = checkCli(claudeBin, { env: childEnv });
+    // A launcher stub an npm install left behind is reinstalled with the
+    // person's environment, never childEnv (it carries the round token).
+    const repair = repairStub(cli, { env, now });
+    if (repair.tried || repair.skipped !== 'not_stub') log('cli_repair', repair);
+    if (repair.tried) {
+      cli = checkCli(claudeBin, { env: childEnv });
+      if (cli.ok) run.repairs.push({ kind: 'cli_reinstalled', version: cli.version });
+    }
+    if (!cli.ok) {
+      const tried = repair.tried ? t('curate.cli_repair_failed', { said: repair.said ?? 'exit 0' }) : '';
+      return fail(EXIT.FAILURE, `cli_${cli.problem}`, `${t('curate.cli_unusable', { problem: t(cli.messageKey, cli.params) })}${tried}`);
+    }
 
     // 11. The sources.
     onStep('sources');
@@ -1815,17 +1897,23 @@ export async function runCurate(argv, io, t, deps = {}) {
       // by the markers found in it on an API error (review finding M5), and
       // by its last line otherwise.
       const said = errorText(result, [lock.token]);
+      const limitText = [said, out.stderrTail].find((text) => USAGE_LIMIT_PATTERNS.some((re) => re.test(text)));
       if (isLoginFailure(result)) {
         // An expired login is not a model failure and no retry fixes it:
         // exit 69 with what the person must do, and no mark moves.
         exit = fail(EXIT.UNAVAILABLE, 'auth_expired', t('curate.auth_expired', { detail: said || '-' }));
+      } else if (limitText !== undefined) {
+        // A spent usage limit lifts on its own: postponed on purpose (75),
+        // with the hour it resets, and no mark moves. A known cause.
+        const resets = /resets[^\n]*/i.exec(limitText)?.[0].slice(0, 300).trim() || '-';
+        exit = fail(EXIT.TEMPFAIL, 'usage_limited', t('curate.usage_limited', { resets }));
       } else if (API_ERROR.test(out.stderrTail) || (result?.isError === true && API_ERROR.test(result.text ?? ''))) {
         const markers = API_MARKERS.map((re) => re.exec(out.stderrTail)?.[0]).filter(Boolean).join(', ');
         const detail = [said, markers].filter(Boolean).join('; ') || '-';
         exit = fail(EXIT.UNAVAILABLE, 'model_unavailable', t('curate.model_unavailable', { subtype, detail }));
       } else {
         const detail = [said, lastLine(out.stderrTail)].filter(Boolean).join('; ') || (out.spawnError ?? '-');
-        exit = fail(EXIT.FAILURE, 'model_failed', t('curate.model_failed', { subtype, code: String(out.exitCode ?? out.signal ?? '-'), detail }));
+        exit = fail(EXIT.FAILURE, 'model_failed', withUnknownCause(t('curate.model_failed', { subtype, code: String(out.exitCode ?? out.signal ?? '-'), detail })));
       }
     } else if (unread.length > 0) {
       const sources = unread.map((id) => `${id} (${evidence[id].read}/${evidence[id].expected ?? '-'})`).join(', ');
@@ -1909,6 +1997,16 @@ function lastLine(text) {
   return String(text ?? '').trim().split(/\r?\n/).at(-1)?.slice(0, 300) ?? '';
 }
 
+// The last line of a text that is not blank, whole (a cut could drop the
+// words a pattern looks for), or null.
+function lastNonEmptyLine(text) {
+  return String(text ?? '').split(/\r?\n/).filter((line) => line.trim() !== '').at(-1) ?? null;
+}
+
+function firstNonEmptyLine(text) {
+  return String(text ?? '').split(/\r?\n/).find((line) => line.trim() !== '') ?? null;
+}
+
 // Step 18: last-run.json, the log's last line, the lock, the notification.
 // The model's process group is already dead: runModel kills it before it
 // resolves, so no child of the round outlives the lock.
@@ -1919,8 +2017,12 @@ const OWN_LOG_FILE = /^curate-(?:\d{4}-\d{2}-\d{2}\.log|[0-9TZ-]+\.stream\.jsonl
 const OWN_DIGEST_DIR = /^curate-[0-9TZ-]+-[0-9a-f]{8}\.digests$/;
 const DEFAULT_LOG_RETENTION_DAYS = 30;
 
+function logRetentionDays(machine) {
+  return Number.isInteger(machine?.log_retention_days) && machine.log_retention_days > 0 ? machine.log_retention_days : DEFAULT_LOG_RETENTION_DAYS;
+}
+
 function pruneLogs(stateDir, machine, now = Date.now()) {
-  const days = Number.isInteger(machine?.log_retention_days) && machine.log_retention_days > 0 ? machine.log_retention_days : DEFAULT_LOG_RETENTION_DAYS;
+  const days = logRetentionDays(machine);
   const dir = join(stateDir, STATE_FILES.LOG_DIR);
   let names;
   try {
@@ -1940,6 +2042,19 @@ function pruneLogs(stateDir, machine, now = Date.now()) {
     } catch {
       // A file that went away or cannot be read is left to the next round.
     }
+  }
+}
+
+// The round's line in incidents.jsonl (src/incidents.mjs), best effort like
+// the log: one that cannot be written is logged and never changes the exit.
+function recordIncident(run, stateDir, log) {
+  try {
+    const entry = incidentFor(run);
+    if (entry === null) return;
+    ensureStateDir(stateDir);
+    appendIncident(stateDir, entry);
+  } catch (error) {
+    log('incident_not_written', { error: error.code ?? error.message });
   }
 }
 
@@ -1963,6 +2078,19 @@ function finishRound({ run, io, log, stateDir, machine, env, started, lock, writ
       writePrivate(join(stateDir, STATE_FILES.LAST_RUN), `${JSON.stringify(run, null, 2)}\n`);
     } catch (error) {
       io.stderr.write(`brain-kit curate: ${STATE_FILES.LAST_RUN}: ${error.code ?? error.message}\n`);
+    }
+  }
+  // --check proves a configuration and leaves no incident behind (R6). Both
+  // before the lock is released: the file is rewritten only by a round that
+  // holds it, and a round with no lock (lock_unusable) only appends.
+  if (writeLastRun && !check) {
+    recordIncident(run, stateDir, log);
+    if (lock !== null) {
+      try {
+        pruneIncidents(stateDir, { now: new Date(), retentionDays: logRetentionDays(machine) });
+      } catch (error) {
+        log('incidents_not_pruned', { error: error.code ?? error.message });
+      }
     }
   }
   log('exit', { exit, reasonCode: run.reasonCode, reason: run.reason, check });

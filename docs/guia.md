@@ -309,10 +309,15 @@ Claude Code: nenhum arquivo de configuração seu ou do projeto é carregado, ne
 nenhum servidor MCP, nenhuma skill e nenhuma ferramenta nativa além das sete de que ele
 precisa; ele lê só o vault e um extrato de cada transcript que a rodada lista, e tudo o que as regras da
 própria rodada não permitem é negado. A rodada confere o isolamento pelo primeiro evento
-da CLI e para o modelo se ele não se confirmar. Os passos rodam numa ordem fixa e testada (lock, rede, sync, e só então a
-configuração já sincronizada), e toda forma de uma rodada falhar termina com uma saída
-diferente de zero, um motivo no `last-run.json` e no log, e o seu comando de notificação. O
-`--dry` mostra o que uma rodada faria e o `--check` roda todos os passos até o modelo.
+da CLI e para o modelo se ele não se confirmar. Os passos rodam numa ordem fixa e testada (lock, rede, uma trava do índice órfã posta de
+lado, sync, e só então a configuração já sincronizada), e toda forma de uma rodada falhar
+termina com uma saída diferente de zero, um motivo no `last-run.json` e no log, e o seu
+comando de notificação. A rodada só conserta sozinha o que consegue provar que é seguro
+(uma trava do índice deixada por um git que morreu, um launcher falso que a instalação da
+CLI deixou), nomeia toda causa que conhece, diz quando não conhece e guarda cada falha
+(menos a de uma rodada adiada porque outra rodada segurava a trava) e cada conserto no
+`incidents.jsonl`, para o briefing matinal. O `--dry` mostra o que uma
+rodada faria e o `--check` roda todos os passos até o modelo, consertos incluídos.
 
 O `watermark` mostra e move o último dia varrido de cada fonte. Cada fonte lê os dias
 seguintes à própria marca, os mais antigos primeiro e inteiros (quantos couberem em
@@ -383,7 +388,7 @@ estados e o que fazer em cada um, e a política de privacidade.
 ## O briefing matinal
 
 Toda manhã de dia útil, ou quando você pede, o briefing mostra, numa sessão sua, onde o
-vault está: a última rodada do curador e o estado de cada fonte, o que está atrasado, o que
+vault está: a última rodada do curador, os incidentes ainda abertos e o estado de cada fonte, o que está atrasado, o que
 vence hoje e nos próximos dias, as pendências sem data, os pull requests esperando o seu
 merge, as notas para revisar, os pontos cegos, o vault diante da estratégia, e as perguntas
 que ele precisa que você responda. O conteúdo é o próprio `briefing.blocks` do vault,

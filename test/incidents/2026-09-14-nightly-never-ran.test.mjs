@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { KIT_ROOT } from '../../src/version.mjs';
 import { dryFiles, makeScheduleWorld, unitValues, VAULT_ID } from '../helpers/schedule-world.mjs';
 
-test('the timer never catches up at resume: Persistent=false, once, and nothing else', async () => {
+test('the timer asks for no catch-up of what it missed while inactive: Persistent=false, once, and no boot or startup trigger', async () => {
   const world = makeScheduleWorld();
   const r = await world.run(['install', '--platform', 'systemd', '--dry']);
   assert.equal(r.status, 0, r.stderr);

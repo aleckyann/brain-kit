@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { KIT_ROOT } from '../../src/version.mjs';
 import { git } from './git-repo.mjs';
@@ -221,7 +221,10 @@ export function makeCurateWorld({ machine: machineExtra = {}, config: editConfig
     },
     // `brain-kit curate` as a scheduler runs it, a process of its own.
     curate(args = [], extraEnv = {}) {
-      assert.equal(machine.claude_bin, FAKE, 'this test must run the fake claude, never the real one');
+      // The fake itself, or a launcher this world's own directory holds (a
+      // test that stands a package there for the round to repair).
+      const ownLauncher = typeof machine.claude_bin === 'string' && resolve(machine.claude_bin).startsWith(`${world.base}${sep}`);
+      assert.ok(machine.claude_bin === FAKE || ownLauncher, 'this test must run the fake claude, never the real one');
       return spawnSync(process.execPath, [BIN, 'curate', ...args], { cwd: world.vault, env: { ...env, ...extraEnv }, encoding: 'utf8', timeout: 120000 });
     },
     lastRun() {

@@ -8,7 +8,9 @@
 // connector states carried from round to round, the pull requests waiting
 // for a merge, the notes past their stale_after, the pending items by
 // deadline, the working tree, the vault lock (and the legacy lock, when
-// machine.json sets one) and the question queue.
+// machine.json sets one), the question queue, the incidents still open and
+// the repairs of the last 24 hours (incidents.jsonl), and how far behind
+// each source's watermark is.
 //
 // Every open pull request is listed, never a first page (ruling R-T1).
 //
@@ -30,6 +32,7 @@ import { join } from 'node:path';
 import { pathEntries } from '../platform.mjs';
 import { run as runCommand } from '../exec.mjs';
 import { STATE_FILES } from '../state.mjs';
+import { openIncidents, readIncidents } from '../incidents.mjs';
 import { walkVault as realWalkVault } from '../vault.mjs';
 import { listPublishable as realListPublishable, noteFileSet } from '../file-set.mjs';
 import { isMarkdown, makeReadFile } from '../commands/validate.mjs';
@@ -38,9 +41,9 @@ import { isValidIsoDate } from '../dates.mjs';
 import { aheadBehind, currentBranch, defaultBranch, defaultBranchUpstream, dirtyPaths, resolveCommit, runGit } from '../git.mjs';
 import { describeLock } from '../guards/lock.mjs';
 import { legacyLockSetting, probeLegacyLock } from '../guards/legacy-lock.mjs';
-import { localDay } from '../guards/watermark.mjs';
+import { addDays, daysBetween, localDay, readWatermark, WatermarkError } from '../guards/watermark.mjs';
 import { findExecutable as realFindExecutable } from '../doctor/checks.mjs';
-import { knownStates } from '../commands/curate.mjs';
+import { knownStates, sourcesOf } from '../commands/curate.mjs';
 import { ghEnvOf } from '../commands/propose.mjs';
 import { vaultClock } from '../commands/prompt.mjs';
 import { pendingBuckets } from './pending.mjs';
@@ -91,6 +94,13 @@ function humanDayOf(value, tz) {
   return humanDay(localDay(at, tz));
 }
 
+// An instant as DD/MM HH:MM in `tz` (the year is the one of the briefing's
+// day), or null when the value is not an instant.
+function shortInstant(value, tz) {
+  const human = humanInstant(value, tz);
+  return human === null ? null : `${human.slice(0, 5)}${human.slice(10)}`;
+}
+
 // The curator's last round, as src/commands/curate.mjs writes it at the end
 // of every round, and the connector states it carries.
 function lastRunFacts(stateDir, tz) {
@@ -113,12 +123,15 @@ function lastRunFacts(stateDir, tz) {
     }
   }
   const at = typeof value.at === 'string' ? value.at : null;
+  const network = isPlainObject(value.network) ? value.network : {};
   const lastRun = {
     at,
     atHuman: humanInstant(at, tz),
     exit: Number.isInteger(value.exit) ? value.exit : null,
     reasonCode: typeof value.reasonCode === 'string' ? value.reasonCode : null,
     sources,
+    networkWarning: typeof network.warning === 'string' ? network.warning : null,
+    networkWaitedMs: Number.isFinite(network.waitedMs) ? network.waitedMs : null,
     problem: null,
   };
   const connectorStates = {};
@@ -129,7 +142,87 @@ function lastRunFacts(stateDir, tz) {
 }
 
 function unreadableRun(detail) {
-  return { at: null, atHuman: null, exit: null, reasonCode: null, sources: {}, problem: String(detail) };
+  return { at: null, atHuman: null, exit: null, reasonCode: null, sources: {}, networkWarning: null, networkWaitedMs: null, problem: String(detail) };
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const REASON_MAX_CHARS = 200;
+
+// An absolute path starts the text or follows whitespace, a quote or an
+// opening parenthesis, and is `/...`, `~/...` or `C:\...`; it ends at the next
+// whitespace, quote or closing parenthesis. A URL (`https://host/a/b`) and a
+// relative path (`docs/guide.md`) never start one.
+const PATH_TOKEN = /(?<=^|[\s'"`(])(?:\/|~\/|[A-Za-z]:[\\/])[^\s'"`)]*/g;
+
+// The text with every absolute path cut down to its last segment, so a
+// reason or an error the kit prints for a person names the file and not the
+// home directory around it. shortcut: a path with a space in it (a
+// directory called "My Files") is cut at the space and its tail stays; a
+// token with one separator only (`/tmp`) is left, upgrade when a reason
+// carries either.
+export function withoutPaths(text) {
+  return String(text).replace(PATH_TOKEN, (token) => {
+    const segments = token.split(/[\\/]/);
+    return segments.length > 2 ? segments.filter(Boolean).pop() : token;
+  });
+}
+
+// The short form of what a repair did, from its own fields: the file name
+// an orphaned lock was moved to (never its path), the version a stub was
+// replaced with. A kind this version does not know has none.
+function repairDetail(repair) {
+  if (repair.kind === 'index_lock_moved' && typeof repair.to === 'string') return repair.to.split(/[\\/]/).pop();
+  if (repair.kind === 'cli_reinstalled' && typeof repair.version === 'string') return repair.version;
+  return null;
+}
+
+// What incidents.jsonl says now: the open incidents grouped by reason code
+// (in the order each code first appeared; the newest line gives `known` and
+// the reason, cut to one line), and the repairs any round made in the last
+// 24 hours. A file that cannot be read is a `problem`, never a throw.
+function incidentFacts(stateDir, now, tz) {
+  const { lines, corrupt, problem } = readIncidents(stateDir);
+  const groups = new Map();
+  for (const line of openIncidents(lines)) {
+    const reasonCode = typeof line.reasonCode === 'string' ? line.reasonCode : '-';
+    const at = shortInstant(line.at, tz);
+    const before = groups.get(reasonCode);
+    groups.set(reasonCode, {
+      reasonCode, count: (before?.count ?? 0) + 1, firstHuman: before?.firstHuman ?? at, lastHuman: at ?? before?.lastHuman ?? null,
+      known: line.known === true, reason: firstLine(withoutPaths(line.reason ?? '')).slice(0, REASON_MAX_CHARS),
+    });
+  }
+  const since = now.getTime() - DAY_MS;
+  const within = (line) => {
+    const at = Date.parse(line.at);
+    return at >= since && at <= now.getTime();
+  };
+  const repairs = lines.filter(within).flatMap((line) => (Array.isArray(line.repairs) ? line.repairs : [])
+    .filter(isPlainObject)
+    .map((repair) => ({ atHuman: shortInstant(line.at, tz), kind: String(repair.kind ?? '-'), detail: repairDetail(repair) })));
+  return { open: [...groups.values()], repairs, corrupt, problem: problem === null ? null : withoutPaths(problem) };
+}
+
+// Each source a round reads (curate's own active list), with its watermark
+// and how many days it is behind yesterday (negative when it is ahead), the
+// way `doctor` counts them. A source a round does not read is never behind,
+// and with curate disabled none is.
+function markFacts(stateDir, today, config) {
+  if (config.curate?.enabled === false) return { sources: {}, problem: null };
+  let mark;
+  try {
+    mark = readWatermark(stateDir);
+  } catch (error) {
+    if (!(error instanceof WatermarkError)) throw error;
+    return { sources: {}, problem: withoutPaths(error.detail) };
+  }
+  const yesterday = addDays(today, -1);
+  const sources = {};
+  for (const { id } of sourcesOf(config).active) {
+    const day = mark.sources[id];
+    if (day !== undefined) sources[id] = { day, behind: daysBetween(day, yesterday) };
+  }
+  return { sources, problem: null };
 }
 
 // The open pull requests, every page of them, from `gh api` run in the vault.
@@ -306,5 +399,7 @@ export function briefingFacts({ root, config, machine = null, stateDir, now = ne
     git: gitFacts(root, env),
     lock: lockFacts(root, env, stateDir),
     questions: questionFacts(stateDir, config, today, env),
+    incidents: incidentFacts(stateDir, now, tz),
+    marks: markFacts(stateDir, today, config),
   };
 }

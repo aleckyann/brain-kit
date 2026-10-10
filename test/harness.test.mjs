@@ -5,7 +5,7 @@
 // test/helpers/fake-claude.mjs, never the real binary.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildArgv, CONNECTOR_ARGS, ISOLATION_ARGS, MAX_TIMER_MS, ROUND_ENV, ROUND_TOOLS, runModel, unscopedRules } from '../src/harness/claude-code.mjs';
@@ -704,7 +704,7 @@ test('checkCli: a missing file, a --version that prints error text or fails, and
   assert.equal(checkCli(FAKE, { env: failing.env }).problem, 'version');
 
   const good = scenario({ version: '2.1.281 (Claude Code)' });
-  assert.deepEqual(checkCli(FAKE, { env: good.env }), { ok: true, problem: null, version: '2.1.281', messageKey: null, params: null });
+  assert.deepEqual(checkCli(FAKE, { env: good.env }), { ok: true, problem: null, version: '2.1.281', messageKey: null, params: null, realPath: realpathSync(FAKE) });
 });
 
 // --- messages ---------------------------------------------------------------------
@@ -762,7 +762,7 @@ const CONNECTOR_TOOL_PREFIXES = ['mcp__claude_ai_Google_Calendar__', 'mcp__claud
 test('the stream fixtures carry no path of a real machine: no /home/ but /home/ana/, no /tmp/claude-, no -home-', () => {
   const files = readdirSync(FIXTURES).filter((f) => f.endsWith('.jsonl'));
   assert.deepEqual(files.sort(), [
-    'auth-expired.jsonl', 'connectors-connected.jsonl', 'connectors-states.jsonl', 'default-run.jsonl', 'denied-run.jsonl', 'isolated-run.jsonl', 'max-turns.jsonl',
+    'auth-expired.jsonl', 'connectors-connected.jsonl', 'connectors-states.jsonl', 'default-run.jsonl', 'denied-run.jsonl', 'isolated-run.jsonl', 'max-turns.jsonl', 'usage-limit.jsonl',
   ]);
   for (const file of files) {
     const text = readFileSync(join(FIXTURES, file), 'utf8');

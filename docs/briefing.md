@@ -55,6 +55,10 @@ working out whether something is late.
 | Today and its weekday | the clock, in `vault.timezone`, never the machine's zone |
 | The curator's last round | `<state dir>/last-run.json`: when, the exit and what it means, the reason, and for each source its state and whether its mark advanced; a record that cannot be read is said to be unreadable, never "no round yet" |
 | Connector states | the states the rounds carry in `last-run.json`, each with the round that saw it |
+| Open incidents | `<state dir>/incidents.jsonl`: the rounds that failed since the last one that ran the model to its end, grouped by reason code (how many times, first and last time, a known or an unknown cause, and the newest reason cut to one line, each absolute path shown as its last segment); a line when the file has lines that cannot be read, since they may hide one |
+| Repairs of the last 24 hours | the same file: what a round fixed on its own (an index lock moved aside, the CLI reinstalled) and when |
+| The network check | `network` in `last-run.json`: a check that answered on its first try in under the minimum wait (`did_not_wait`, with the milliseconds) and may not wait for a connection |
+| Sources behind | the mark in `watermark.json` of each source a round reads (none with `curate.enabled` false) against yesterday in the vault's zone: a source more than one day behind says how many days are not curated and that the next rounds read them (one day behind is a normal morning) |
 | Open pull requests | `gh api --paginate` over the repository's open pull requests, every page, with no cap; `gh` absent, failing or printing something else gives "not known" and the reason, never an empty list |
 | Notes past their `stale_after` | the same files `validate` judges; a plain date is due on that day in the vault's zone, a date and time with an offset at that instant; a note that cannot be read is named as not verified |
 | Pending items by deadline | the tables `briefing.pending` names (below) |
@@ -119,7 +123,7 @@ name is ever added. One that predates the setting reads its language pack's list
 
 | Block | Kind | What it shows |
 |---|---|---|
-| `sources` | fact | the curator's last round, each source whose mark did not advance with what to do about it, the carried connector states, git and the lock |
+| `sources` | fact | the curator's last round, each source whose mark did not advance with what to do about it, the carried connector states, the open incidents, the repairs of the last 24 hours, a network check that did not wait and each source more than a day behind (a line for each, none when there is nothing to say), git and the lock |
 | `due` | fact | overdue items and items due today |
 | `upcoming` | fact | items due within `briefing.upcoming_days`, and how many fall later |
 | `undated` | fact | pending items with no readable deadline |

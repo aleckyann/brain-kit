@@ -19,11 +19,15 @@ each step are in [incidents.md](incidents.md).
 brain-kit machine set transcripts_dir ~/.claude/projects    # the default; set it only if yours differs
 brain-kit machine set notify_command '["notify-send", "brain-kit"]'
 brain-kit curate --dry                                      # what a round would do, nothing written
-brain-kit curate --check                                    # every step up to the model, no model call
+brain-kit curate --check                                    # every step up to the model, repairs included; no model call
 brain-kit curate                                            # one real round
 brain-kit schedule install
 brain-kit doctor
 ```
+
+`--check` is not a pure preview: it moves an orphaned index lock aside as a round would
+(step 4b) and, when the window is not empty, reinstalls a launcher stub an npm install left
+behind (step 10).
 
 `sources.transcripts.include_projects` in `brain-kit.config.json` lists the Claude Code
 project directories (the names under `~/.claude/projects`) whose sessions feed the vault.
@@ -146,13 +150,37 @@ once broke a real routine.
    not a repository, a reclaim that died) as `lock_unusable`, with its own exit code.
 4. **The network.** The round waits for a connection, up to two minutes, by running
    `machine.network_check` or, when that is unset, by opening a connection to the model's
-   endpoint. None: exit 69. A check that answers in under 100 milliseconds
-   (`curate.network_min_wait_ms`) on its first try is accepted but noted as "did not wait"
-   in the log and in `last-run.json`: it may be answering about something other than the
-   connection. The note is never a failure.
+   endpoint. None: exit 69. A `machine.network_check` that answers in under 100
+   milliseconds (`curate.network_min_wait_ms`) on its first try is accepted but noted as
+   "did not wait" in the log and in `last-run.json`: it may be answering about something
+   other than the connection. The default connection is never noted: it proves a
+   connection, however fast it answers. The note is never a failure, but the morning briefing and `brain-kit
+   preflight` repeat it (see [Incidents](#incidents-what-the-rounds-leave-behind)).
+
+   **4b. An orphaned index lock** (the `index_lock` step in the code). Before sync meets
+   it, an `index.lock` in this working tree's git directory that cannot belong to a live
+   git command is renamed to `index.lock.stale-<YYYYMMDDTHHMMSS>` beside itself, never
+   deleted. All four must hold: the file is empty (a commit waiting in an editor has
+   already written the new index into its lock), it is more than 10 minutes old, no
+   operation (rebase, merge, cherry-pick, revert, bisect) is half done, and the tree has no
+   change of its own. The move is said on the output and in the log, and recorded in the
+   round's `repairs`. Any other lock stays where it is, and so does one the file system
+   refuses to rename (`EBUSY`, `EPERM` on Windows): the log says it was kept, and sync then
+   fails with git's own words. This step never ends the round. The stale file can be
+   deleted by hand.
 5. **Sync.** The default branch is brought level with its remote. Behind: fast-forward.
    Diverged: exit 1, because retrying cannot fix it and a person has to reconcile the two
-   histories. An operation in progress or a dirty tree in the way: exit 75.
+   histories. An operation in progress or a dirty tree in the way: exit 75. The reasons
+   of a sync that is diverged, postponed or failed carry git's own line where git said one,
+   else the last line sync wrote, never "see the message above". When that line says the remote's host cannot
+   be reached (could not resolve a host name, name or service not known, temporary failure
+   in name resolution, nodename nor servname provided, network is unreachable), the round
+   exits 69 with `reasonCode` `sync_offline`: a machine just back from sleep whose name
+   resolution is not up, a known cause that the next window retries, with no mark moved. A
+   failure of git itself (a fetch, a checkout or a fast-forward git refused, or a git command
+   that could not run) is exit 1 `sync_failed`, unless git's line is one of the name
+   resolution errors above, which is exit 69 `sync_offline`; a `sync_failed` reason ends by
+   saying that the cause is not one the kit knows.
 6. **The configuration and the prompt, as synced.** Only now, so a change you merged
    upstream is what runs. A `curate.prompt` that points outside the vault, or a rule in
    `curate.allowed_tools_extra` that grants a path or command tool with no scope: exit 2.
@@ -165,7 +193,18 @@ once broke a real routine.
    wrote from what was already there.
 10. **The CLI.** `claude_bin` must be a real program: not missing, not a launcher of a few
     hundred bytes left by an interrupted install, and `--version` must print a version.
-    Otherwise exit 1.
+    Otherwise exit 1. A launcher stub is repaired first, when all of this holds: it is not
+    Windows (npm's launcher there is a batch file, named as such), the stub is inside an npm
+    package of the CLI (`<package>/bin/<file>`, the `package.json` above it naming that
+    package), the package's `install.cjs` is a regular file, not a link, and the stub is more
+    than 10 minutes old, so an install in progress, the CLI's own update included, is never
+    raced. The round then runs that installer with your environment (never the round's, which
+    carries its token), no shell and a 120 second limit, checks the CLI again and records
+    `cli_reinstalled` with the version in `repairs`. The installer needs no network. When it
+    fails or leaves the CLI unusable, the round exits 1 as before (`cli_stub`), and its
+    reason adds that the repair was tried and quotes the installer's first line of error
+    output. A stub that is not eligible exits 1 as before with nothing tried; the log's
+    `cli_repair` line says which condition failed.
 11. **The sources, each over its own days.** Every source reads only its own open days,
     the days of the window after its own mark (see the watermark, below). A listed source
     that is off is recorded in `last-run.json` (`notConfigured`); when it is off for any
@@ -200,7 +239,10 @@ once broke a real routine.
     one, the isolated mode ([security.md](security.md), [connectors.md](connectors.md)).
     **`--check` stops here.** It prints the plan, the mode, every rule that refused it,
     the command line, the round's three limits, the privacy policy line and the prompt's
-    size.
+    size. It has passed steps 4b and 10 on the way, so it can move an orphaned index lock
+    aside and run the CLI's installer over a launcher stub, exactly as a round would. What it
+    repaired goes to the log (the lock move also to the output); it writes no `last-run.json`
+    and no incident.
 13. **The model.** The round writes the digests, says every one it had to cut, and then
     its three limits and the privacy policy in effect, one line: what the model is told to
     record about personal and sensitive subjects (`privacy.sensitive`,
@@ -240,9 +282,11 @@ once broke a real routine.
     is brought back to the default branch's content, so the next round does not stop on a
     dirty tree made by this one.
 16. **The exit code**, first match wins: isolation broken 1; interrupted or timed out 1;
-    an expired login 69 (`auth_expired`, [below](#when-the-login-expires)); the model
-    failed 69 (an API error) or 1, the reason quoting the start of the CLI's error text
-    when the run ended in an error result; a required source whose mark would
+    an expired login 69 (`auth_expired`, [below](#when-the-login-expires)); a spent usage
+    limit 75 (`usage_limited`, [below](#when-the-usage-limit-is-spent)); the model failed
+    69 (an API error) or 1, the reason quoting the start of the CLI's error text when the
+    run ended in an error result and, for the exit 1 (`model_failed`), ending by saying that
+    the cause is not one the kit knows; a required source whose mark would
     not advance 4 (a file not read, or no `BRAIN_KIT_SOURCES` line reporting it); a round
     record that cannot be read 1; anything still dirty 1; a pull request not opened 3
     (the reason names the branch and the `gh pr create --head <branch> --fill` that opens
@@ -251,8 +295,10 @@ once broke a real routine.
 17. **The watermark** advances, only on exit 0 or 3, each source through its own last day
     (below).
 18. **Always:** the round's digests are removed (unless the stream is kept), on a failure,
-    an exit 4 or a signal as on a success; `last-run.json` is written, the log gets its last
-    line, the lock is released
+    an exit 4 or a signal as on a success; `last-run.json` is written, a line goes to
+    `incidents.jsonl` when the round failed, repaired something or ran the model to its end
+    ([below](#incidents-what-the-rounds-leave-behind)), the log gets its last line, the lock
+    is released
     (the model's process group is already dead), and `machine.notify_command` runs on any
     non-zero exit, with the reason as its last argument, and once more for each
     best-effort connector source whose state changed since the last round.
@@ -283,9 +329,15 @@ it does not reach them.
 
 What each platform does with a window missed while the machine was off or asleep:
 
-- **systemd** (the reference on Linux): user units with `Persistent=false`, so a missed
-  window is skipped, not run late. A user timer runs only while you are logged in, unless
-  lingering is enabled for your user: `loginctl enable-linger $USER`.
+- **systemd** (the reference on Linux): user units with `Persistent=false`, so a window
+  missed while the timer was not running (the machine off) is skipped, not run late. A
+  window that passed while the machine slept is not one of those: a realtime timer fires
+  when the machine wakes, whatever `Persistent=` says (the unit started in the same second
+  as the resume, on 07/10/2026 at 06:24:15 and on 09/10/2026 at 07:58:26). What absorbs that
+  fire is the round's own wait for the network (step 4): a round that finds none, or that
+  gets past the check and still cannot resolve the remote's host (`sync_offline`), ends
+  with exit 69, and the next window tries again. A user timer runs only while you are
+  logged in, unless lingering is enabled for your user: `loginctl enable-linger $USER`.
 - **launchd** (macOS): launchd has no switch to skip a missed window. It fires once at wake
   for a window missed during sleep. The round's own network wait is what covers that.
 - **cron**: a missed window is not caught up.
@@ -569,7 +621,7 @@ refuses what it finds there. Set them after it.
 the one thing `machine register` cannot tell by itself. So it refuses, writing nothing, when
 the vault is not a configured one; when the state directory already holds a `machine.json`
 (whatever is in it) or anything else that is not the trace of a round that stopped for lack
-of one (`last-run.json` and the logs); and when it finds, beside the state directory, the
+of one (`last-run.json`, `incidents.jsonl` and the logs); and when it finds, beside the state directory, the
 state of a vault of the same folder name that is no longer where its record says, which is
 this vault before it moved. That last one is the case for `--from`, not `--new`: a vault
 that moved on the same machine keeps its marks with
@@ -583,7 +635,7 @@ this machine looks like any other: `--new` goes ahead and starts a second, empty
 the old one. It does say so. When it succeeds it lists every state on the machine whose vault
 is no longer where its record says, with the old path, and the undo: delete the
 `machine.json` it just wrote, then run `brain-kit machine register --from <that path>`. A
-refused round that left its trace (`last-run.json` and the logs) does not get in the way of
+refused round that left its trace (`last-run.json`, `incidents.jsonl` and the logs) does not get in the way of
 that `--from`: `register` sets the trace aside and removes it once the state is registered.
 
 **One machine runs the rounds.** State is per machine and not in the vault, so each machine
@@ -678,12 +730,12 @@ What the bridge does not cover, by design:
 | Exit | Meaning | What to do |
 |---|---|---|
 | 0 | Done, nothing to do, or up to date | Nothing. Review the pull request if one was opened. |
-| 1 | The round failed | Read `reason` in `last-run.json`. It names the setting or the command that fixes it: a diverged branch to reconcile, a watermark to reopen, a CLI to reinstall, a file the round left behind. |
+| 1 | The round failed | Read `reason` in `last-run.json`. It names the setting or the command that fixes it: a diverged branch to reconcile, a watermark to reopen, a CLI to reinstall, a file the round left behind. When the reason ends by saying the cause is not one brain-kit knows, the text before that sentence is what the program said: it is the lead to follow, and `unknownCause` in `last-run.json` is `true`. |
 | 2 | Not a vault, or a bad setting | Fix `machine.json` or `brain-kit.config.json` as the message says, then `brain-kit doctor`. |
 | 3 | Proposed, but the pull request is not open | The commit and branch are pushed; from the vault, run the `gh pr create --head <branch> --fill` the reason names (check `gh auth status`). The mark advanced. |
 | 4 | A required source was not read | Only a source in `curate.sources.required` sets it; a best-effort one never does. The reason says which. A file that cannot be read (`source_unreadable`): fix its permissions, or add a pattern for it to `sources.transcripts.exclude_path_patterns`; `brain-kit watermark assume-covered` skips its days once you have looked. A project directory that cannot be listed, or a link to one the round cannot follow (into a directory it cannot enter, to a volume that is not mounted, a loop) (`source_unreadable` too, the reason names it): its sessions could be on any day, so skipping days does not clear it and every round stops there until you fix its permissions or take it out of `sources.transcripts.include_projects` (with `"all"`, a pattern covering the whole directory leaves it out). A first day over the cap (`cap_exceeded`): raise `curate.caps.transcripts` or exclude some projects. Otherwise `last-run.json` says how many files of how many were read, or that the model's last line did not report the source. The day stays open and the next round reads it. |
-| 69 | No network, or the model unavailable | Usually passes on its own at the next window, except `auth_expired`: your Claude Code login expired, and every window stops the same way until you log in again ([When the login expires](#when-the-login-expires)). |
-| 75 | Postponed | Another writer holds the vault lock or the legacy lock, or the tree is dirty (the files are listed). Propose them (`brain-kit propose "<summary>" --only <paths>`), or, if they are yours to keep, commit them on another branch or stash them (`git stash -u`: plain `git stash` leaves a new file where it is); the next window retries. A tree that stays dirty stops every round, so do not let it sit. |
+| 69 | No network, or the model unavailable | Usually passes on its own at the next window, whether the network never came (`no_network`) or came without the remote's host name (`sync_offline`: sync's last line is in the reason), except `auth_expired`: your Claude Code login expired, and every window stops the same way until you log in again ([When the login expires](#when-the-login-expires)). |
+| 75 | Postponed | Another writer holds the vault lock or the legacy lock, or the tree is dirty (the files are listed). Propose them (`brain-kit propose "<summary>" --only <paths>`), or, if they are yours to keep, commit them on another branch or stash them (`git stash -u`: plain `git stash` leaves a new file where it is); the next window retries. A tree that stays dirty stops every round, so do not let it sit. Or the model's usage limit is spent (`usage_limited`; [When the usage limit is spent](#when-the-usage-limit-is-spent)): nothing to do, the first window after the reset resumes. |
 
 ## Reading last-run.json and the logs
 
@@ -704,6 +756,8 @@ otherwise `~/.local/state/brain-kit/<vault name>-<hash>/` (or under `$XDG_STATE_
 | `mode`, `relaunched` | the last launch's mode (`isolated` or `connectors`), and whether the round launched a second time |
 | `notConfigured` | each listed source that is off, with its problems |
 | `userRules` | in a round with a connector source to read: the user allow rules mirrored as denies (`mirrored`), those recorded as widening reads (`widenedReads`), and those that refused connector mode (`blocking`); null otherwise |
+| `repairs` | what the round fixed on its own before the model: `index_lock_moved` (with the name it was moved to and its age in minutes) and `cli_reinstalled` (with the version the CLI then printed); empty when it fixed nothing |
+| `unknownCause` | `true` when the reason is one the kit could not explain (`model_failed`, a `sync_failed` that git itself caused, `internal_error`), absent otherwise |
 | `connectorStates` | each connector source's last known state and when a round saw it, carried from round to round (what the notification and the session's status line compare against) |
 | `warnings`, `remainingDays` | everything said on the way, and the days still open |
 | `costUsd`, `numTurns` | what the model cost and how many turns it took |
@@ -716,6 +770,7 @@ otherwise `~/.local/state/brain-kit/<vault name>-<hash>/` (or under `$XDG_STATE_
 
 The log is `logs/curate-YYYY-MM-DD.log`, one file per day, one line per event:
 `<instant> <event> <json>`. The events are `start`, `network_did_not_wait`,
+`index_lock_moved` and `index_lock_kept` (step 4b: the move, or the condition that kept the lock), `cli_repair` (the installer's outcome, or the condition that kept it from running), `incident_not_written` and `incidents_not_pruned` (the incident file could not be appended to or pruned, with the error code),
 `days_remaining`, `days_deferred`, `source_skipped`, `source_off` (a listed source half
 configured), `source_warning`, `source_no_day` (a source with no open day of its own),
 `source_blocked` (a connector source a user rule blocked, with the rule), `source_waiting`
@@ -750,6 +805,49 @@ time limit). The default report lists only what needs attention: `--verbose` lis
 line, and `--only <id>` lists the checks it names, ok or not.
 `brain-kit doctor --only connectors --probe` asks the CLI for each connector's state now,
 without a round.
+
+## Incidents: what the rounds leave behind
+
+`last-run.json` is overwritten by the next round, and a notification is gone once it is
+dismissed. Between 03/10/2026 and 06/10/2026 seven rounds of the original vault were
+postponed on a dirty tree, each one notified, and three working days went uncurated before
+anyone acted: the failure was detected every time, and nothing kept it in front of anyone.
+`incidents.jsonl` in the state directory keeps what the next round would overwrite, one JSON object per line:
+
+```json
+{"at":"2026-10-07T09:30:04.000Z","exit":69,"reasonCode":"sync_offline","known":true,"reason":"...","repairs":[],"closes":false}
+```
+
+`known` is `false` when the reason ends by saying the cause is not one the kit knows
+(`unknownCause` in `last-run.json`). A line is appended, before the round lets go of the
+lock, for:
+
+- every round that exits non-zero, except `lock_held` (a sibling is running, and it repeats
+  at every window without saying anything new). A round refused for an invalid `machine.json`
+  (`machine_invalid`) holds no lock and appends its line all the same;
+- every round that repaired something, whatever its exit;
+- a closing line (`"closes": true`) for every round that ran the model and ended
+  `proposed` or `nothing_proposed`. No other exit 0 closes anything: `up_to_date`,
+  `disabled`, `nothing_to_curate` and `nothing_available` never reach the model, so they
+  prove nothing about the causes before them.
+
+An incident is open until a round closes: the open incidents are the non-zero lines newer
+than the newest closing one. `--dry` and `--check` write no line. The file is only appended
+to while a round runs; the one rewrite, which drops the lines older than `log_retention_days`
+(the logs' retention, default 30) and any line that is not a JSON object, is made by a round
+that holds the vault lock. A line that cannot be written is logged and never changes the
+round's exit.
+
+The morning briefing's `sources` block and `brain-kit preflight` read it back, in the
+vault's language, and add a line for each of these and for nothing else: every open
+incident, grouped by reason code (how many times, from when to when, a known or an unknown
+cause, and the newest reason cut to one line, with each absolute path shown as its last
+segment); a line when `incidents.jsonl` has lines that could not be read, because they may
+hide an open incident; every repair of the last 24 hours; a network check that answered
+without waiting on its first try (`did_not_wait`, with the milliseconds); and each source a
+round reads whose mark is more than one day behind yesterday (one day behind is a normal
+morning). When
+none of it applies, there is no line.
 
 ## A round that hangs
 
@@ -811,6 +909,24 @@ What you do: on the machine that runs the rounds, as the user they run as, run `
 a terminal and log in with `/login`. Then run `brain-kit curate` once by hand, or wait for
 the next window: it covers every day still open.
 
+## When the usage limit is spent
+
+The model has a usage limit, and when it is spent the CLI still starts: it prints that the
+limit was hit and the hour it resets as its only message, and ends with an error result, at
+no cost and in one turn (incident of 30/09/2026). The round reads a run as a spent limit
+when the CLI's error text, or the end of its standard error, holds `hit your ... limit`
+(`hit your weekly limit`, for one) or `usage limit` in any case. An expired login is read
+first, and a text that only resembles these (a run that "hit a snag") stays a model failure.
+
+What the round does: it exits 75 with `reasonCode` `usage_limited`, postponed on purpose.
+Its `reason`, in the vault's language, carries what the CLI said from `resets` to the end of
+that line (cut to 300 characters), says nothing was curated and that no watermark moved, and
+`machine.notify_command` is called once. It is a known cause: the reason does not say the
+cause is unknown, and `incidents.jsonl` records it as known.
+
+What you do: nothing. The limit lifts on its own at the hour the reason names, and the first
+window after it covers every day still open.
+
 ## When rounds seem to do nothing
 
 Compare the sizes of the recent logs first. A healthy round writes a dozen lines or more,
@@ -826,7 +942,8 @@ Then, in order:
 2. `brain-kit schedule status`: installed, current and enabled, and when it fires next.
    On Linux, if rounds only run while you are logged in, enable lingering.
 3. `brain-kit watermark show`: a mark days behind yesterday means rounds are not closing
-   days; `last-run.json` says why. A calendar or meeting-notes mark that stays behind while
+   days; `last-run.json` says why, and `incidents.jsonl` keeps what the rounds before it said
+   (`brain-kit preflight` prints the open ones). A calendar or meeting-notes mark that stays behind while
    the transcripts move is a connector that is not there: `brain-kit doctor --only
    connectors --probe` says which state, and [connectors.md](connectors.md) what to do.
 4. `brain-kit curate --check`, then one `brain-kit curate` by hand, reading its output to

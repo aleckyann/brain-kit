@@ -22,7 +22,7 @@ import { EXIT } from '../exit-codes.mjs';
 import { CONFIG_FILENAME, ConfigError, loadConfig, loadMachine, MACHINE_FILENAME } from '../config.mjs';
 import { createTranslator, REFERENCE_LANG, SUPPORTED_LANGS } from '../lang.mjs';
 import { findVaultRoot } from '../vault.mjs';
-import { stateDirFor } from '../state.mjs';
+import { STATE_FILES, stateDirFor } from '../state.mjs';
 import { localDay } from '../guards/watermark.mjs';
 import { briefingFacts, humanDay } from '../briefing/facts.mjs';
 
@@ -74,6 +74,33 @@ function yesNo(t, value) {
   return t('preflight.unknown');
 }
 
+// What the rounds left that nobody has answered, after the last-run and
+// connector lines: the open incidents (and the lines of their file that
+// could not be read, which may hide one), the repairs of the last 24 hours, a
+// network check that answered at once, and each source more than one day
+// behind yesterday (one day behind is a normal morning). Nothing to say is
+// no line.
+function renderRoundNews(facts, t) {
+  const lines = [];
+  const { incidents, marks } = facts;
+  if (incidents.problem !== null) lines.push(t('preflight.incidents_unreadable', { file: STATE_FILES.INCIDENTS, detail: incidents.problem }));
+  for (const group of incidents.open) {
+    const known = group.known ? t('preflight.incident_known') : t('preflight.incident_unknown');
+    const reason = group.reason === '' ? '-' : group.reason;
+    lines.push(t('preflight.incident_group', { reasonCode: group.reasonCode, count: group.count, first: group.firstHuman ?? '-', last: group.lastHuman ?? '-', known, reason }));
+  }
+  if (incidents.corrupt > 0) lines.push(t('preflight.incidents_corrupt', { count: incidents.corrupt }));
+  for (const repair of incidents.repairs) {
+    lines.push(t('preflight.repair', { at: repair.atHuman ?? '-', kind: repair.kind, detail: repair.detail ?? '-' }));
+  }
+  if (facts.lastRun?.networkWarning === 'did_not_wait') lines.push(t('preflight.network_did_not_wait', { ms: facts.lastRun.networkWaitedMs ?? '-' }));
+  if (marks.problem !== null) lines.push(t('preflight.marks_unreadable', { file: STATE_FILES.WATERMARK, detail: marks.problem }));
+  for (const [source, entry] of Object.entries(marks.sources)) {
+    if (entry.behind > 1) lines.push(t('preflight.mark_behind', { source, days: entry.behind }));
+  }
+  return lines;
+}
+
 export function renderLastRun(facts, t) {
   const lines = [];
   const run = facts.lastRun;
@@ -91,6 +118,7 @@ export function renderLastRun(facts, t) {
     lines.push(t('preflight.connectors_header'));
     for (const [source, entry] of carried) lines.push(t('preflight.connector', { source, state: entry.state, at: entry.atHuman ?? '-' }));
   }
+  lines.push(...renderRoundNews(facts, t));
   return lines;
 }
 

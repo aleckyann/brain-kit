@@ -7,7 +7,7 @@ Names of people, companies and tools were removed on purpose.
 
 Seventy three lessons were extracted from the original vault, written up as seventy
 two entries: the four day curation outage of September 2026 produced two lessons about
-the same incident and is written up once, under 13/09/2026. Ten entries were added
+the same incident and is written up once, under 13/09/2026. Fourteen entries were added
 since, each dated: the leak gate that blocked its own release tag (18/09/2026), the
 selection of transcripts by modification time (24/09/2026), the settings a headless
 run inherits (24/09/2026), which the kit's own build produced, the round that took its
@@ -16,8 +16,12 @@ kit, and, all five found in real runs on the kit, the attachments the connector
 answered "not found" (30/09/2026), the expired login a round reported with no reason
 (30/09/2026), the transcripts too big for the Read tool (01/10/2026), the envelope
 the desktop application wraps a scheduled task's prompt in (01/10/2026) and the
-owner's own health left out of the log on purpose (02/10/2026), and the first run of the
-kit on Windows, reported by a reader (05/10/2026). Eighty two
+owner's own health left out of the log on purpose (02/10/2026), the first run of the kit
+on Windows, reported by a reader (05/10/2026), and, met by the rounds of the original
+vault and answered in the kit, a spent usage limit recorded as a failure of the run
+(30/09/2026), an empty index lock a day old that stopped the sync (06/10/2026), the name
+resolution that was not back when the round fired on resume (07/10/2026) and the timer that
+fires on resume whatever `Persistent=` says (09/10/2026). Eighty six
 entries follow. Where a lesson carries no date of its own,
 the entry says "Undated" and explains why.
 
@@ -407,6 +411,25 @@ from an unknown commit", "in a SHA-256 repository a deletion is a deletion:
 its name is scanned and nothing is read behind it", "the mirror idiom pushed
 BY URL is scanned in full and refused, like the same push by remote name").
 
+### 06/10/2026: an empty index lock, a day old, stopped the sync
+**What happened.** The round died at sync on 06/10/2026 because an `index.lock` was in the
+git directory, empty and a day old, left there by a git command that had been killed. The
+round exited 1 `sync_failed`, curated nothing and would have failed the same way at every
+window, until a person deleted the file by hand. The vault's own lock does not help: it keeps the kit's writers apart, not a git
+command a person started, so the round could not tell a live command from a dead one.
+**Rule.** A round moves a lock aside only when it cannot belong to a live command, and four
+facts must hold together: the file is empty (a commit waiting in an editor has already
+written the new index into its lock, so a live one never is), it is more than 10 minutes
+old, no operation (rebase, merge, cherry-pick, revert, bisect) is half done, and the tree has
+no change of its own. The lock is the one in this working tree's git directory, never the
+common one. It is renamed beside itself with the time of the move, never deleted, and the
+round says so and records it as a repair. If any fact fails, or the file system refuses the
+rename, the lock stays and sync fails with git's own words.
+**Where it lives in brain-kit.** `src/guards/index-lock.mjs` (`moveOrphanIndexLock`),
+`src/commands/curate.mjs` (step 4b, `index_lock`, the repair in `repairs`),
+[scheduling.md](scheduling.md) (step 4b),
+`test/incidents/2026-10-06-orphan-index-lock.test.mjs` (Phase 5).
+
 ## Headless runs, network and scheduling
 
 ### 13/09/2026: four days with no curation while the scheduler reported success
@@ -585,8 +608,40 @@ resume. Curation then ran from a stale base, and nobody noticed.
 **Rule.** The network wait comes before the base update, and the test asserts the
 order of the steps.
 **Where it lives in brain-kit.** `brain-kit curate` (fixed, tested order: machine
-file, lock, network, sync, config), `test/incidents/2026-09-14-order-network-sync.test.mjs`
+file, lock, network, index lock, sync, config), `test/incidents/2026-09-14-order-network-sync.test.mjs`
 (Phase 2).
+
+### 07/10/2026: name resolution was not back when the round fired, and the round said only "see the message above"
+**What happened.** The machine woke from sleep and the round fired in the same second, on
+07/10/2026 (twice) and again on 09/10/2026. The network check the machine file configured
+answered in 13 to 28 milliseconds, which the kit already flagged as "did not wait" in the
+log and in `last-run.json`, where nobody read it. `git fetch` could not resolve the remote's
+host name, sync failed, and the round ended exit 1 `sync_failed` with the reason "see the
+message above": a message printed to a stream nobody reads under a scheduler. A lost network, which the next
+window can retry, was recorded as a failure of the kit, with no cause. The same week showed
+why that mattered: from 03/10 to 06/10/2026 seven rounds were postponed on a dirty tree,
+each one notified, and three working days went uncurated, because the only record of a
+failure a person saw was a notification, gone once dismissed.
+**Rule.** A failure carries its own words. A sync that is diverged, postponed or failed puts
+git's own line in the reason, or sync's last line where git said none (a dirty tree names
+its files instead). A lost network is a known cause,
+recognised by what git, ssh and curl say (could not resolve a host name, name or service
+not known, temporary failure in name resolution, network is unreachable): exit 69
+`sync_offline`, no mark moves, the next window tries again. A cause the kit cannot name (git
+itself failing, a model failure, an unexpected error) ends its reason with a sentence
+saying so. And a failure outlives its notification: every round that fails or repairs
+something leaves a line in `incidents.jsonl`, and the morning briefing shows the incidents
+still open, the repairs of the last 24 hours, a network check that answered without waiting
+and the sources more than a day behind. A configured network check that answers in
+milliseconds proves nothing about the network; the default, a connection to the model's
+endpoint, needs name resolution and is retried for two minutes.
+**Where it lives in brain-kit.** `src/commands/curate.mjs` (step 5: the last line of sync
+in every outcome, `OFFLINE_PATTERNS`, `sync_offline`, the unknown-cause sentence),
+`src/commands/sync.mjs` (what marks a failure of git itself), `src/incidents.mjs`
+(`incidents.jsonl`), `src/briefing/facts.mjs` and `brain-kit preflight` (the incident, repair,
+network and mark lines of the briefing's `sources` block), [scheduling.md](scheduling.md)
+("Incidents: what the rounds leave behind"),
+`test/incidents/2026-10-07-sync-offline-after-resume.test.mjs` (Phase 5).
 
 ### Undated: updating the base from inside the round rewrites the running script
 **What happened.** A checkout performed from inside the round would swap the file
@@ -641,17 +696,52 @@ text in every model failure's reason), `brain-kit doctor` check `last-run` (an e
 login fails, never reads as a soft exit), [scheduling.md](scheduling.md) ("When the
 login expires"), `test/incidents/2026-09-30-oauth-expired-round.test.mjs` (Phase 5a).
 
+### 30/09/2026: a spent usage limit was recorded as a failure of the model run
+**What happened.** The weekly usage limit of the model the round named ran out. The CLI
+started, printed that the limit had been hit and the hour it resets (11am) as its only
+message, and ended with a result marked as an error under the subtype `success`, at no
+cost and in one turn. The round recorded `model_failed`, exit 1, the code for a failure
+the kit cannot explain, and notified like any fault. Nothing was wrong with the round,
+and nothing a person did at that moment could help: the limit lifts at the hour the CLI
+named, and every window before it would have stopped the same way.
+**Rule.** A spent usage limit is a postponement, not a failure. Recognise the CLI's own
+words (that a limit was hit, or a "usage limit"), exit 75 with a reason code of its own,
+put the hour it resets, as the CLI said it, in the reason, notify once and move no mark:
+the first window after the reset covers the day. An expired login is still read first
+and keeps its own code, and a text that only resembles the CLI's (a run that "hit a
+snag") stays a model failure.
+**Where it lives in brain-kit.** `src/commands/curate.mjs` (step 16: exit 75,
+`usage_limited`, `USAGE_LIMIT_PATTERNS`, the reason carrying the CLI's text from "resets"
+to the end of its line), `test/fixtures/stream/usage-limit.jsonl` (the measured text),
+[scheduling.md](scheduling.md) ("When the usage limit is spent"),
+`test/incidents/2026-09-30-usage-limit.test.mjs` (Phase 5).
+
 ### 14/09/2026: the CLI binary was a 500 byte stub for two days
 **What happened.** At 15:49 on 14/09/2026 a reinstall did not run its post install
 step, so the native binary was never fetched and the CLI was dead. The round at 09:32
 on 16/09 aborted with "native binary not installed"; the next one, three minutes
-later, completed only because the high water mark had not advanced.
+later, completed only because the high water mark had not advanced. It came back: the
+CLI's own update printed that it had succeeded and left the stub again on 22/09, 30/09
+and 03/10/2026. The kit detected it each time (exit 1, `cli_stub`) and never repaired
+it, so each time a person ran the install script by hand.
 **Rule.** The dependency on the CLI goes beyond `PATH`: the native binary has to be
 installed. Fingerprint: a launcher of about 500 bytes is a stub, about 213 MB is the
 real thing, and `--version` returns error text instead of a number. It can be fixed
-offline by running the package's own install script.
+offline by running the package's own install script, and a round does that itself, only
+when it is sure what it touches and that nothing else is installing: not on Windows, the
+stub's real path is `<package>/bin/<file>` of the CLI's npm package with `install.cjs` a
+regular file (never a link), and the stub is more than 10 minutes old, so an install in
+progress, the CLI's own update included, is never raced. The installer runs with the
+person's environment, never the round's, which carries its token, and the CLI is checked
+again. The check that `doctor` shares stays free of side effects. When the repair does not
+apply the round fails as before; when it was tried and did not work, the reason says so
+and quotes the installer's first line of error output (its last line is a fallback
+command with an absolute home path).
 **Where it lives in brain-kit.** `src/guards/cli.mjs`, `brain-kit doctor` check
-`claude-real`, `test/incidents/2026-09-14-cli-stub.test.mjs` (Phase 2).
+`claude-real`, `test/incidents/2026-09-14-cli-stub.test.mjs` (Phase 2); the repair:
+`src/guards/cli-repair.mjs` (`repairStub`, called by step 10 of `curate`; the repair is
+recorded in the round's `repairs`), [scheduling.md](scheduling.md) (step 10),
+`test/incidents/2026-09-14-cli-stub-repair.test.mjs` (Phase 5).
 
 ### 15/09/2026: fixing one failure mode revealed the next
 **What happened.** On 15 and 16/09/2026 the rounds aborted on the dirty tree guard
@@ -674,6 +764,26 @@ does, not what time it used to run.
 **Where it lives in brain-kit.** `brain-kit schedule install` (daytime windows, names
 by function), [scheduling.md](scheduling.md),
 `test/incidents/2026-09-14-nightly-never-ran.test.mjs` (Phase 2).
+
+### 09/10/2026: a timer fires on resume, whatever `Persistent=` says
+**What happened.** The scheduling documentation, a comment in the scheduler's code and the
+title of a test all said that `Persistent=false` on the timer keeps a window missed during
+sleep from running at resume. The system journal says otherwise: on 07/10/2026 at 06:24:15
+and on 09/10/2026 at 07:58:26 the unit started in the same second as the resume. A
+realtime timer whose time passed while the machine slept fires when it wakes;
+`Persistent=` only covers the time the timer was inactive, such as a machine that was off.
+The page a person reads to understand a round that fired at resume told them it could not
+have.
+**Rule.** Do not rely on the timer to keep a round from firing at resume: it will. What
+absorbs it is the wait for the network inside the round, together with a sync that names a
+lost network as such. Check a
+claim about a scheduler against the journal, comparing the unit's start with the time of
+the resume, before writing it down.
+**Where it lives in brain-kit.** [scheduling.md](scheduling.md) ("What each platform does
+with a window missed"), `src/commands/schedule.mjs` (the comment on the timer),
+`src/guards/network.mjs`, `test/incidents/2026-09-14-nightly-never-ran.test.mjs`, which
+asserts what the timer asks for (`Persistent=false`, once, and no boot or startup trigger)
+and no longer says the timer never fires at resume (Phase 2).
 
 ### 17/09/2026: the high water mark, and why it lags by one day on purpose
 **What happened.** A machine suspended for several days only gets one catch up fire

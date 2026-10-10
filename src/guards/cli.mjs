@@ -9,7 +9,10 @@
 // (a Windows batch launcher, which only cmd.exe starts), `stub`
 // (a file under 2 KB), `version` (`--version` fails, times out, or prints
 // something that does not start with a dotted version number).
-import { accessSync, constants, statSync } from 'node:fs';
+// Every result carries `realPath`, the file behind any symlink (npm's
+// claude is a link to the package's bin/claude.exe), or null when there is
+// none to resolve; checkCli itself never changes anything.
+import { accessSync, constants, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { findProgram, isBatchFile, pathEntries } from '../platform.mjs';
 import { spawnSync } from 'node:child_process';
@@ -38,6 +41,7 @@ export function checkCli(claudeBin, { env = process.env, timeoutMs = VERSION_TIM
   const bin = String(claudeBin);
   const path = resolveCliPath(claudeBin, env, platform);
   let size = null;
+  let realPath = null;
   if (path !== null) {
     try {
       const st = statSync(path);
@@ -45,26 +49,31 @@ export function checkCli(claudeBin, { env = process.env, timeoutMs = VERSION_TIM
     } catch {
       size = null;
     }
+    try {
+      realPath = realpathSync(path);
+    } catch {
+      realPath = null;
+    }
   }
   if (size === null) {
-    return { ok: false, problem: 'missing', version: null, messageKey: 'harness.cli.missing', params: { bin } };
+    return { ok: false, problem: 'missing', version: null, messageKey: 'harness.cli.missing', params: { bin }, realPath };
   }
   // A batch launcher (npm's claude.cmd on Windows) is started by cmd.exe
   // only, and the kit never runs a shell (src/exec.mjs): the round could not
   // start it, whatever its size.
   if (isBatchFile(path, platform)) {
-    return { ok: false, problem: 'batch', version: null, messageKey: 'harness.cli.batch', params: { bin: path } };
+    return { ok: false, problem: 'batch', version: null, messageKey: 'harness.cli.batch', params: { bin: path }, realPath };
   }
   if (size < STUB_MAX_BYTES) {
     const bytes = size;
-    return { ok: false, problem: 'stub', version: null, messageKey: 'harness.cli.stub', params: { bin, bytes } };
+    return { ok: false, problem: 'stub', version: null, messageKey: 'harness.cli.stub', params: { bin, bytes }, realPath };
   }
   const r = spawnSync(path, ['--version'], { env, encoding: 'utf8', timeout: timeoutMs });
   const printed = `${r.stdout ?? ''}`.trim();
   const match = r.error || r.status !== 0 ? null : VERSION_RE.exec(printed);
   if (!match) {
     const output = (printed || `${r.stderr ?? ''}`.trim() || (r.error ? r.error.code ?? String(r.error) : '')).split('\n')[0].slice(0, 200);
-    return { ok: false, problem: 'version', version: null, messageKey: 'harness.cli.version', params: { bin, output } };
+    return { ok: false, problem: 'version', version: null, messageKey: 'harness.cli.version', params: { bin, output }, realPath };
   }
-  return { ok: true, problem: null, version: match[0], messageKey: null, params: null };
+  return { ok: true, problem: null, version: match[0], messageKey: null, params: null, realPath };
 }
