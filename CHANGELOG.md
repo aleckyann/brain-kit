@@ -1,16 +1,22 @@
 # Changelog
 
-## Unreleased
+## 0.1.2 (tagged `v0.1.2`, not on npm)
 
 What the scheduled rounds of the original vault met between 30/09/2026 and 09/10/2026,
-answered: a round now repairs the two causes it can prove safe to repair without a person,
-names the ones it used to report as a plain failure, and leaves a durable record that the
-next morning's briefing shows. Before, a round that stopped for one of these exited 1 with
-"see the message above", one notification said so, and nothing was left to read once it was
-dismissed: from 03/10/2026 to 06/10/2026 seven rounds postponed on a dirty tree, each one
-notified, and three working days went uncurated before anyone looked. The constraint was
-visibility, not detection. Each change has its entry in docs/incidents.md and its test under
-`test/incidents/`.
+answered. A round now repairs the two causes it can prove safe to repair without a person,
+an orphaned index lock and the launcher stub an npm install of the CLI leaves behind; it
+names a lost network and a spent usage limit, which it used to report as a plain failure,
+and says so when a cause is one the kit does not know; and it leaves a durable record,
+`incidents.jsonl`, that the next morning's briefing shows. Before, a round that stopped for
+one of these exited 1 with "see the message above", one notification said so, and nothing
+was left to read once it was dismissed: from 03/10/2026 to 06/10/2026 seven rounds postponed
+on a dirty tree, each one notified, and three working days went uncurated before anyone
+looked. The constraint was visibility, not detection. The meeting notes gain a third door, a
+folder of minutes, because a committee's minutes lived in a shared folder that neither the
+title search nor the event's attachments reached. And the scheduling documentation no longer
+claims that `Persistent=false` keeps a timer from firing when the machine wakes. Each change
+has its entry in docs/incidents.md and its test under `test/incidents/`. Install or update
+with the README's step 1, which takes the latest tag.
 
 ### Repairs a round makes on its own
 
@@ -88,16 +94,20 @@ fail, as it did before (docs/scheduling.md, steps 4b and 10).
 
 ### Meeting notes
 
-- A third door: `sources.meeting_notes.search_folders`, a list of folder ids (empty by
-  default). Each folder gets one exact query, its native documents created at most seven
-  days before the modification bound and modified after it, and one line of the prompt
-  block, and the source counts as read only when every folder's search, like the title
-  search, reached its last page. A string that is not a folder id turns the source off as
-  `bad_folder`; an entry that is not a string fails the configuration's schema, and the
-  whole `brain-kit.config.json` is refused, as for any other schema error. The minutes of a
-  committee lived in a shared folder that neither the title search nor the event's
-  attachments reached (09/10/2026); the same folder held PDF transcripts and old documents
-  touched in bulk, which the two filters keep out.
+- A third door, `sources.meeting_notes.search_folders`: a list of folder ids, empty by
+  default. When minutes live in a folder no other door reaches, its id goes there (the part
+  of the folder's address after `/folders/` and before any `?`), and each round searches
+  that folder with one exact query and three filters: native documents only, created at
+  most seven days before the modification bound, and modified after that bound, as the
+  title search is. The folder of 09/10/2026 showed why the first two: it held PDF
+  transcripts of old sessions uploaded in one evening, which the first keeps out, and
+  documents years old touched in bulk the next morning, which the second keeps out. Each
+  folder gets one line of the prompt block, and the source counts as read only when every
+  folder's search, like the title search, reached its last page. A string that is not a
+  folder id (letters, digits, `_` and `-`, ten or more) turns the source off as
+  `bad_folder`, named by the round and by `doctor`; an entry that is not a string fails the
+  configuration's schema, and the whole `brain-kit.config.json` is refused, as for any
+  other schema error. docs/connectors.md says how to turn it on.
 
 ### The scheduling documentation
 
@@ -123,6 +133,13 @@ fail, as it did before (docs/scheduling.md, steps 4b and 10).
   such a wait would refuse rounds that work. `sync_offline` names a lost network when git
   says so, and the default network check, which opens a connection to the model's endpoint
   and so needs name resolution, waits for a connection for up to two minutes.
+- A day a round did not cover gets no pull request of its own. Its mark keeps it open and
+  the next rounds catch it up, oldest first; days no round ever covered are recovered by
+  hand, outside the kit.
+- No cap yet on how many documents a folder search opens. `curate.caps.search_docs_opened`
+  and `curate.caps.attached_notes_opened` bound the title search and the attachments only;
+  the documents a round opens are counted (`documents` in `last-run.json`), and the
+  filters above are what keeps a folder's search to the window's minutes.
 
 ## 0.1.1 (tagged `v0.1.1`, not on npm)
 
