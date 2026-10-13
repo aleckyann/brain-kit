@@ -38,4 +38,4 @@ Os cabeçalhos das colunas de [pendencias/acompanhamentos.md](pendencias/acompan
 
 ## O log
 
-[memoria/log.md](memoria/log.md) tem um título por dia, o mais recente primeiro, e cada entrada começa com um marcador em negrito: **Captura**, **Promovido**, **Correção** ou **Criação**.
+[memoria/log.md](memoria/log.md) tem um título por dia, o mais recente primeiro, e cada entrada começa com um marcador em negrito: **Captura**, **Promovido**, **Correção** ou **Criação**. Uma nota que nasce de uma captura cita o log em `sources` com a âncora do dia em que a captura entrou, `resource: /memoria/log.md#2026-05-22` (a data do título), e o link no corpo leva a mesma âncora: sem ela o ponteiro cai no arquivo inteiro.

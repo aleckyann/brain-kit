@@ -4,7 +4,7 @@ title: Conventions
 description: How notes in this vault are named, dated, linked and laid out, so every agent and person writes them the same way.
 generated:
   by: process:brain-kit-init
-  at: 2026-10-01T12:46:59+00:00
+  at: 2026-10-13T11:13:13+00:00
 ---
 
 # Conventions
@@ -38,4 +38,4 @@ The column headings of [pending/follow-ups.md](pending/follow-ups.md), [pending/
 
 ## The log
 
-[memory/log.md](memory/log.md) has one heading per day, most recent first, and each entry starts with a bold marker: **Capture**, **Promoted**, **Correction** or **Creation**.
+[memory/log.md](memory/log.md) has one heading per day, most recent first, and each entry starts with a bold marker: **Capture**, **Promoted**, **Correction** or **Creation**. A note born from a capture cites the log in `sources` with the anchor of the day the capture went under, `resource: /memory/log.md#2026-05-22` (the heading's date), and the body link carries the same anchor: without it the pointer lands on the whole file.

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+A note born from a capture now cites the log by day. The curator's prompts (the scheduled
+round and the `curate-session` skill) and the vault's CONVENTIONS template write the
+`sources` entry as `resource: /<log>#YYYY-MM-DD`, the anchor of the day heading the capture
+went under, and a body link to the log carries the same anchor. Before, the entry was
+`/<log>`: in the original vault, on 13/10/2026, all 200 citations of the log pointed at a
+file of 1,110 lines and 659 KB, none at the day they came from. The validator does not
+change: section 5.1 of the spec requires only a non-empty `resource`, and
+`link-target-exists` already resolves a target without its fragment. Found during an audit
+of that vault's log, whose numbers are in the pull request that proposed this.
+
 ## 0.1.2 (tagged `v0.1.2`, not on npm)
 
 What the scheduled rounds of the original vault met between 30/09/2026 and 09/10/2026,
