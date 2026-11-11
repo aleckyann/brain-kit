@@ -25,6 +25,14 @@ whole. Only top-level keys are counted, in the shapes `PARSER_LIMITS` now lists:
 repeated inside one `sources` entry still passes. The incident is in docs/incidents.md under
 11/11/2026, with its test.
 
+The `propose` tests expect git's own record of a push. From git 2.56, a push to a url that
+exactly one configured remote names updates that remote's tracking refs, as a push by remote
+name always did ("Fixes since v2.55" in git's release notes), and `propose` pushes by url. The
+CI runners moved from git 2.55.0 (the last green run of `main`, 13/10/2026) to 2.56.0, and
+eighteen `propose` tests then failed on every branch: each found
+`refs/remotes/origin/<branch>` at the pushed commit, where it expected no change. From git
+2.56 on, the tests expect that ref and no other change. `propose` itself is unchanged.
+
 ## 0.1.2 (tagged `v0.1.2`, not on npm)
 
 What the scheduled rounds of the original vault met between 30/09/2026 and 09/10/2026,

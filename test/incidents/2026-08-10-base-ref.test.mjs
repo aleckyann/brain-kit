@@ -19,7 +19,7 @@ import { createTranslator } from '../../src/lang.mjs';
 import { walkVault } from '../../src/vault.mjs';
 import { git } from '../helpers/git-repo.mjs';
 import { gitProbe } from '../helpers/sync-world.mjs';
-import { BRANCH, NOW, fingerprint, makeProposeWorld, note } from '../helpers/propose-world.mjs';
+import { BRANCH, NOW, afterPush, fingerprint, makeProposeWorld, note } from '../helpers/propose-world.mjs';
 
 const t = createTranslator('en');
 const YESTERDAY = 'bot/2026-09-22-12-00-00';
@@ -70,5 +70,5 @@ test('yesterday\'s unmerged commit does not ride into today\'s pull request: the
   assert.equal(gitProbe(world.remote, ['merge-base', '--is-ancestor', yesterday, commit]).status, 1, 'yesterday\'s commit is not in the proposal\'s history');
   assert.deepEqual(world.changedIn(commit), ['A\tnotes/today.md']);
   assert.equal(git(world.remote, ['ls-tree', '--name-only', '-r', commit]).includes('notes/yesterday.md'), false);
-  assert.deepEqual(fingerprint(world.vault), before, 'HEAD is still on yesterday\'s branch, and nothing local moved');
+  assert.deepEqual(fingerprint(world.vault), afterPush(before, BRANCH, commit), 'HEAD is still on yesterday\'s branch, and nothing local moved');
 });

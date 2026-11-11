@@ -27,7 +27,7 @@ import { git } from './helpers/git-repo.mjs';
 import { nonUtf8NameRefusal } from './helpers/tmp.mjs';
 import { LEGACY_KEYWORDS } from './helpers/privacy-keywords.mjs';
 import { configText, gitProbe, repoState } from './helpers/sync-world.mjs';
-import { BRANCH, NOW, PR_URL, fingerprint, makeProposeWorld, note } from './helpers/propose-world.mjs';
+import { BRANCH, NOW, PR_URL, PUSH_BY_URL_TRACKS, afterPush, fingerprint, makeProposeWorld, note } from './helpers/propose-world.mjs';
 
 const t = createTranslator('en');
 const line = (key, params) => `${t(key, params)}\n`;
@@ -100,7 +100,7 @@ test('success: exactly the listed path, on the remote tip, by the agent, as a pu
   const expected = template.replace('{{summary}}', 'Add A').replace('{{files}}', '- `notes/a.md`').replace('{{branch}}', BRANCH).replace('{{base}}', 'main');
   assert.equal(calls[0].body, expected);
 
-  assert.deepEqual(fingerprint(world.vault), before, 'HEAD, the branches, the index and the working tree are byte-identical');
+  assert.deepEqual(fingerprint(world.vault), afterPush(before, BRANCH, commit), 'HEAD, the branches, the index and the working tree are byte-identical');
   assert.equal(gitProbe(world.vault, ['status', '--porcelain']).stdout, '?? notes/\n', 'the proposed file is still uncommitted locally');
   assert.deepEqual(readdirSync(world.tmp), [], 'the temporary index and body are removed');
   assert.deepEqual(readdirSync(join(world.vault, '.git', 'brain-kit-proposals')), [], 'a confirmed proposal leaves no body or record');
@@ -120,7 +120,7 @@ test('--only commits exactly the listed paths; another session\'s modified, stag
   assert.equal(run.code, EXIT.OK, run.stderr);
   const commit = world.remoteSha(`refs/heads/${BRANCH}`);
   assert.deepEqual(world.changedIn(commit), ['A\tnotes/also-mine.md', 'A\tnotes/mine.md']);
-  assert.deepEqual(fingerprint(world.vault), before);
+  assert.deepEqual(fingerprint(world.vault), afterPush(before, BRANCH, commit));
   assert.equal(gitProbe(world.vault, ['status', '--porcelain=v1', '--untracked-files=all']).stdout, statusBefore);
   assert.equal(git(world.vault, ['diff', '--cached', '--name-only']), 'staged.md\n', 'the other session\'s staged file is still staged, and only it');
 });
@@ -448,7 +448,7 @@ for (const [label, mode, key] of [
       assert.deepEqual(readdirSync(world.tmp), [], 'the temporary index and tree are removed');
       assert.equal(readFileSync(body[1], 'utf8'), world.ghCalls()[0].body);
     }
-    assert.deepEqual(fingerprint(world.vault), before);
+    assert.deepEqual(fingerprint(world.vault), afterPush(before, BRANCH, world.remoteSha(`refs/heads/${BRANCH}`)));
   });
 }
 
@@ -461,7 +461,7 @@ test('gh absent: exit 3, the branch published, the finishing command printed', a
   assert.ok(world.remoteSha(`refs/heads/${BRANCH}`));
   assert.match(run.stderr, new RegExp(`^The commit is pushed as ${BRANCH}, but the pull request was not opened: .*Open it by hand with: gh pr create --base main --head ${BRANCH} --title 'curate: Add A' --body-file \\S+\\n$`));
   assert.deepEqual(world.ghCalls(), []);
-  assert.deepEqual(fingerprint(world.vault), before);
+  assert.deepEqual(fingerprint(world.vault), afterPush(before, BRANCH, world.remoteSha(`refs/heads/${BRANCH}`)));
 });
 
 test('the lock held: exit 75 naming the holder, and nothing is read, pushed or asked', async () => {
@@ -1033,7 +1033,7 @@ function bareCloneOf(world, name) {
   return dir;
 }
 
-test('a pushurl elsewhere: the branch lands there, is proved there, and no remote-tracking reference is left behind', async () => {
+test('a pushurl elsewhere: the branch lands there, is proved there, and no reference moves but git\'s own record of the push', async () => {
   const world = makeProposeWorld();
   const pushed = bareCloneOf(world, 'pushed.git');
   git(world.vault, ['config', 'remote.origin.pushurl', pushed]);
@@ -1043,7 +1043,8 @@ test('a pushurl elsewhere: the branch lands there, is proved there, and no remot
   assert.equal(run.code, EXIT.OK, run.stderr);
   assert.equal(world.remoteSha(`refs/heads/${BRANCH}`), null, 'nothing published to the fetch url');
   assert.deepEqual(git(pushed, ['diff-tree', '-r', '--no-commit-id', '--name-status', `${BRANCH}^`, BRANCH]).trim().split('\n'), ['A\tnotes/a.md']);
-  assert.deepEqual(fingerprint(world.vault), before, 'every reference, remote-tracking ones included, is as it was');
+  const commit = git(pushed, ['rev-parse', BRANCH]).trim();
+  assert.deepEqual(fingerprint(world.vault), afterPush(before, BRANCH, commit), 'every reference, remote-tracking ones included, is as it was, but git\'s record of the push');
 });
 
 test('the mirror idiom (insteadOf to a mirror, identity pushInsteadOf upstream): the push and its proof both go upstream', async () => {
@@ -1787,7 +1788,7 @@ test('not joined: one byte changed after the push goes to the open pull request 
   assert.equal(git(world.remote, ['rev-parse', `${second}^`]).trim(), first, 'the new commit\'s only parent is the branch\'s tip');
   assert.equal(git(world.remote, ['show', `${BRANCH}:notes/a.md`]), `${note('A')}x`);
   assert.equal(commitMessage(world, second), 'curate: A again\n');
-  assert.deepEqual(fingerprint(world.vault), before, 'HEAD, the index and the working tree never move');
+  assert.deepEqual(fingerprint(world.vault), afterPush(before, BRANCH, second), 'HEAD, the index and the working tree never move');
   const ledger = readLedgerOf(world).proposals;
   assert.deepEqual(ledger.map((p) => [p.branch, p.commit, p.paths]), [[BRANCH, second, ['notes/a.md']]], 'one entry per branch, at its new commit');
   assert.equal(git(world.vault, ['rev-parse', `refs/brain-kit/proposed/${BRANCH.replace(/[^A-Za-z0-9._-]/g, '-')}`]).trim(), second, 'the local ref moved with it');
@@ -1968,7 +1969,9 @@ test('not joined: the ledger entry comes with a local ref at the pushed commit, 
   const commit = world.remoteSha(`refs/heads/${BRANCH}`);
   assert.equal(git(world.vault, ['rev-parse', proposedRefOf(BRANCH)]).trim(), commit);
   const lines = (text) => text.split('\n').filter(Boolean).sort();
-  assert.deepEqual(lines(git(world.vault, ['for-each-ref', '--format=%(refname) %(objectname)'])), lines(`${refsBefore}${proposedRefOf(BRANCH)} ${commit}\n`));
+  // git's own record of the push (PUSH_BY_URL_TRACKS) is no reference propose writes.
+  const tracked = PUSH_BY_URL_TRACKS ? `refs/remotes/origin/${BRANCH} ${commit}\n` : '';
+  assert.deepEqual(lines(git(world.vault, ['for-each-ref', '--format=%(refname) %(objectname)'])), lines(`${refsBefore}${proposedRefOf(BRANCH)} ${commit}\n${tracked}`));
 });
 
 test('not joined: a ref that cannot be made (one of that name already there) means no entry, exit 3, said, and the other ref untouched', async () => {
