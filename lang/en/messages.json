@@ -99,6 +99,7 @@
   "spec.status_enum.invalid": "status \"{value}\" is not one of draft, stable, deprecated",
   "spec.stale_after_format.invalid": "stale_after \"{value}\" must be an ISO 8601 datetime with an explicit UTC offset; section 5 requires this for every timestamp-valued key, so a plain date is no longer accepted here",
   "spec.sources_resource.missing_resource": "sources[{index}] is missing a non-empty resource",
+  "spec.unique_keys.repeated": "{key} is written {count} times in the frontmatter, the first on line {first}; YAML allows a key once per mapping, and readers disagree on such a block (this one reads the first copy, others the last, others refuse the block), so keep the current one and delete the rest",
   "house.required_fields.missing": "{key} is required by this vault's own configuration but is missing",
   "house.required_fields.empty": "{key} is required by this vault's own configuration but is empty",
   "house.forbidden_fields.present": "{key} is forbidden by this vault's own configuration but is present",

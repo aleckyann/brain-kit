@@ -249,6 +249,7 @@ const PARITY_CONFIG = {
 // (required-fields, forbidden-fields, extension-fields).
 const CATEGORY_MAP = [
   { original: '[spec] semType', ruler: 'spec', id: 'type-required' },
+  { original: '[spec] chaveRepetida', ruler: 'spec', id: 'unique-keys' },
   { original: '[spec] indexComFrontmatter', ruler: 'spec', id: 'index-no-frontmatter' },
   { original: '[casa] raizSemOkfVersion', ruler: 'house', id: 'root-okf-version' },
   { original: '[casa] okfVersionDesatualizada', ruler: 'house', id: 'root-okf-version' },

@@ -636,6 +636,31 @@ export function frontmatterKeyLine(frontmatter, key) {
   return found ? found.index + 2 : null;
 }
 
+// --- repeatedKeys ---------------------------------------------------------------
+
+// The top-level keys written more than once, in order of first appearance,
+// each as { key, lines }: `lines` holds the 1-based line, in the WHOLE file,
+// of every copy (frontmatterKeyLine's arithmetic). YAML gives each key of a
+// mapping one place, and every reader above stops at the FIRST line that
+// opens with the key, so a second copy is never read here while another
+// YAML reader may keep the last one, or refuse the block. A line counts as
+// a key exactly as topLevelKey sees one: at column 0, bare or quoted (so
+// `type` and `"type"` are one key), never a list item or a comment.
+//
+// shortcut: top-level keys only; a field repeated inside one `sources`
+// entry is not counted (readBlockEntry keeps its last copy). Count inside
+// entries too once a vault needs it.
+export function repeatedKeys(frontmatter) {
+  const seen = new Map();
+  (frontmatter ?? '').split('\n').forEach((line, index) => {
+    const key = topLevelKey(line);
+    if (key === null) return;
+    if (!seen.has(key.name)) seen.set(key.name, []);
+    seen.get(key.name).push(index + 2);
+  });
+  return [...seen].filter(([, lines]) => lines.length > 1).map(([key, lines]) => ({ key, lines }));
+}
+
 // --- danglingItems ------------------------------------------------------------
 
 // Why a reader declined one shape, named precisely enough to act on:
@@ -928,4 +953,5 @@ export const PARSER_LIMITS = Object.freeze([
   'A hash preceded by a space inside an UNQUOTED scalar value starts a YAML comment: readScalar strips it and returns the shortened value, correct per the format, which can still surprise a value meant to hold a literal "#" unquoted.',
   'A field of a readEntries entry with lines indented deeper than the entry\'s fields under it (a nested mapping or list, or a folded value) is not read: that field is undefined in the entry, and the entry\'s other fields are still read.',
   'readEntries reads a list entry written as one inline mapping only when it closes on its own line with nothing after it but a comment, holds no nested value and has no field lines under it; any other inline entry, and an inline list of mappings on the key line, returns undefined for the whole field.',
+  'repeatedKeys returns a key only when its copies are in a shape topLevelKey reads (column 0, plain, or quoted with no escape): an escaped or doubled quote, an explicit or tagged key and a plain key holding a colon are missed, and so is a field repeated in one entry, where readEntries keeps the last copy.',
 ]);

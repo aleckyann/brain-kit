@@ -47,6 +47,6 @@ Você vai propor as linhas da tabela de ritmo semanal do vault a partir da agend
 ## Confirmar e propor
 
 14. Mostre todas as linhas propostas, já no formato da tabela, e diga quais títulos ficaram de fora por já estarem nela. Peça confirmação e espere: a pessoa pode aprovar, corrigir ou recusar cada linha.
-15. Escreva só as linhas confirmadas, no fim da tabela, e carimbe o frontmatter do arquivo com `generated: { by: {{agent}}, at: <data e hora ISO 8601 com o deslocamento de UTC> }`, trocando `<model>` pelo modelo que você está usando. Nunca escreva `verified`.
+15. Escreva só as linhas confirmadas, no fim da tabela, e carimbe o frontmatter do arquivo substituindo a linha `generated:` que ele já tem (a chave aparece uma vez só) por `generated: { by: {{agent}}, at: <data e hora ISO 8601 com o deslocamento de UTC> }`, com `<model>` trocado pelo modelo que você está usando. Nunca escreva `verified`.
 16. Rode `{{kit}} validate` e `{{kit}} lint` e corrija o que eles apontarem, até os dois passarem. Um apontamento sobre um título nunca se resolve reescrevendo o título: tire a linha, com a pessoa.
 17. Rode `{{kit}} propose "<resumo em uma linha>" --only <o arquivo de rituais>`, só com esse arquivo. Passe o link do pull request à pessoa e pare. Nunca faça o merge.
