@@ -47,6 +47,6 @@ You are proposing the rows of the vault's weekly rhythm table from the person's 
 ## Confirm and propose
 
 14. Show every proposed row, already in the table's format, and say which titles were left out because the table already has them. Ask for confirmation and wait: the person may approve, correct or refuse each row.
-15. Write only the confirmed rows, at the end of the table, and re-stamp the file's frontmatter with `generated: { by: {{agent}}, at: <ISO 8601 datetime with its UTC offset> }`, with `<model>` replaced by the model you are running as. Never write `verified`.
+15. Write only the confirmed rows, at the end of the table, and re-stamp the file's frontmatter by replacing the `generated:` line it already has (the key appears once) with `generated: { by: {{agent}}, at: <ISO 8601 datetime with its UTC offset> }`, with `<model>` replaced by the model you are running as. Never write `verified`.
 16. Run `{{kit}} validate` and `{{kit}} lint` and fix what they report, until both pass. A finding on a title is never fixed by rewording the title: drop the row, with the person.
 17. Run `{{kit}} propose "<one-line summary>" --only <the rituals file>`, with that file alone. Give the person the pull request link and stop. Never merge it.

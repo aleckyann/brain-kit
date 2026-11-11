@@ -22,7 +22,7 @@ import { EXIT } from '../../src/exit-codes.mjs';
 import { createTranslator } from '../../src/lang.mjs';
 import { walkVault } from '../../src/vault.mjs';
 import { git } from '../helpers/git-repo.mjs';
-import { BRANCH, NOW, fingerprint, makeProposeWorld, note } from '../helpers/propose-world.mjs';
+import { BRANCH, NOW, afterPush, fingerprint, makeProposeWorld, note } from '../helpers/propose-world.mjs';
 
 const t = createTranslator('en');
 
@@ -56,7 +56,7 @@ for (const start of ['a branch', 'a detached HEAD']) {
       const before = fingerprint(world.vault);
       const run = await propose(world, ['A', '--only', 'notes/a.md']);
       assert.equal(run.code, expected, run.stderr);
-      assert.deepEqual(fingerprint(world.vault), before);
+      assert.deepEqual(fingerprint(world.vault), afterPush(before, BRANCH, world.remoteSha(`refs/heads/${BRANCH}`)));
       if (expected === EXIT.OK) assert.ok(world.remoteSha(`refs/heads/${BRANCH}`));
     });
   }

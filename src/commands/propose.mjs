@@ -30,13 +30,15 @@
 // THE PUSH GOES TO THE PUSH DESTINATION, BY URL, AND IS PROVED THERE. The
 // destination is what `git push <remote>` would use: every url `git remote
 // get-url --push --all` prints (a pushurl, several, pushInsteadOf applied).
-// Each is pushed to by url, never by remote name, so no remote-tracking
-// reference is written, and each is asked with `git ls-remote` whether it
-// now holds the commit. Both calls run with an identity url rewrite for
-// that url (url.<u>.insteadOf and pushInsteadOf, read before any rule of the
-// person's, see pinnedConfig), so a mirror's insteadOf can never send the
-// push or the question somewhere else, and `ls-remote --get-url` proves the
-// pin first.
+// Each is pushed to by url, never by remote name, and each is asked with
+// `git ls-remote` whether it now holds the commit. Both calls run with an
+// identity url rewrite for that url (url.<u>.insteadOf and pushInsteadOf,
+// read before any rule of the person's, see pinnedConfig), so a mirror's
+// insteadOf can never send the push or the question somewhere else, and
+// `ls-remote --get-url` proves the pin first. Up to git 2.55 a push by url
+// wrote no remote-tracking reference; from 2.56 git records the pushed
+// branch under the one configured remote that names that url, as a push by
+// remote name always did.
 //
 // In order, under the vault's lock (src/guards/lock.mjs), released in
 // every outcome:

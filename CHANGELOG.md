@@ -12,6 +12,27 @@ change: section 5.1 of the spec requires only a non-empty `resource`, and
 `link-target-exists` already resolves a target without its fragment. Found during an audit
 of that vault's log, whose numbers are in the pull request that proposed this.
 
+A frontmatter key written more than once is now a finding. `validate` gains `unique-keys`,
+in the specification ruler at the should level, so the default `validate.fail_on` fails the
+run. In the original vault five notes reached up to eighteen `generated` lines and every
+check passed, because every reader stops at the first line of a key. The lines came from
+merge conflicts resolved by keeping both sides, then from curator rounds that added a line
+instead of replacing it. So every instruction that stamps `generated` (the round's and the
+briefing's prompts, the `curate-session`, `review-stale` and `seed-rituals` skills and the
+vault's `AGENTS.md`) now says, in both languages, to replace the line and never add another,
+and the vault's `AGENTS.md` adds that a merge conflict is never resolved by keeping both sides
+whole. Only top-level keys are counted, in the shapes `PARSER_LIMITS` now lists: a field
+repeated inside one `sources` entry still passes. The incident is in docs/incidents.md under
+11/11/2026, with its test.
+
+The `propose` tests expect git's own record of a push. From git 2.56, a push to a url that
+exactly one configured remote names updates that remote's tracking refs, as a push by remote
+name always did ("Fixes since v2.55" in git's release notes), and `propose` pushes by url. The
+CI runners moved from git 2.55.0 (the last green run of `main`, 13/10/2026) to 2.56.0, and
+eighteen `propose` tests then failed on every branch: each found
+`refs/remotes/origin/<branch>` at the pushed commit, where it expected no change. From git
+2.56 on, the tests expect that ref and no other change. `propose` itself is unchanged.
+
 ## 0.1.2 (tagged `v0.1.2`, not on npm)
 
 What the scheduled rounds of the original vault met between 30/09/2026 and 09/10/2026,

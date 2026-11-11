@@ -7,7 +7,7 @@ Names of people, companies and tools were removed on purpose.
 
 Seventy three lessons were extracted from the original vault, written up as seventy
 two entries: the four day curation outage of September 2026 produced two lessons about
-the same incident and is written up once, under 13/09/2026. Fifteen entries were added
+the same incident and is written up once, under 13/09/2026. Sixteen entries were added
 since, each dated: the leak gate that blocked its own release tag (18/09/2026), the
 selection of transcripts by modification time (24/09/2026), the settings a headless
 run inherits (24/09/2026), which the kit's own build produced, the round that took its
@@ -21,12 +21,37 @@ on Windows, reported by a reader (05/10/2026), and, met by the rounds of the ori
 vault and answered in the kit, a spent usage limit recorded as a failure of the run
 (30/09/2026), an empty index lock a day old that stopped the sync (06/10/2026), the name
 resolution that was not back when the round fired on resume (07/10/2026), the timer that
-fires on resume whatever `Persistent=` says (09/10/2026) and the minutes of a committee
-that lived in a shared folder no door reached (09/10/2026). Eighty seven
+fires on resume whatever `Persistent=` says (09/10/2026), the minutes of a committee
+that lived in a shared folder no door reached (09/10/2026) and, found by an audit of
+that vault, a key written eighteen times in a note's frontmatter that every check read
+as once (11/11/2026). Eighty eight
 entries follow. Where a lesson carries no date of its own,
 the entry says "Undated" and explains why.
 
 ## Format and links
+
+### 11/11/2026: a key written eighteen times was read as once
+**What happened.** An audit found five notes of the original vault with the
+`generated` key repeated in their frontmatter, one of them eighteen times. Two causes
+stacked. Of the forty six times one of those notes gained a line, fifteen were merge
+conflicts resolved in the code forge's web editor by keeping both sides whole, the
+first one in every note; the same merges also left table rows, `sources` entries and
+whole sections in more than one version. The other thirty one were curator rounds and
+sessions from 23/10/2026 on: each added its own line above the ones already there
+instead of replacing the first, and the prompt only said that a changed note carries
+`generated`. Every reader in the kit stops at the first line of a key, so `validate`
+read the newest stamp and passed every day, and so did the vault's original
+validator.
+**Rule.** A top-level key written more than once is a finding, at the should level,
+which fails the run under the default `validate.fail_on`. Every instruction that
+stamps `generated` says to replace the line, never to add one. A merge conflict is
+never resolved by keeping both sides whole.
+**Where it lives in brain-kit.** `unique-keys` in `src/rules/spec.mjs`, on
+`repeatedKeys` in `src/frontmatter.mjs`, whose blind spots are in `PARSER_LIMITS`; the
+round's and the briefing's prompts, the `curate-session`, `review-stale` and
+`seed-rituals` skills and the vault's `AGENTS.md`, in both languages;
+`test/rules-spec.test.mjs` (the `unique-keys` cases) and
+`test/incidents/2026-11-11-repeated-generated-key.test.mjs` (Phase 5).
 
 ### 10/08/2026: every internal link returned 404 on the review screen
 **What happened.** Internal links were written with a leading slash, the form the

@@ -115,7 +115,7 @@ function findingsForRealVault(fileContents) {
   return runSpecRules(files, context);
 }
 
-// One clean note that satisfies all eight rules at once, including the
+// One clean note that satisfies all nine rules at once, including the
 // case that matters most: stale_after as a datetime WITH AN OFFSET, which
 // is exactly the shape the original validator failed under a [spec]
 // label even though the canonical format accepts it. Every per-rule
@@ -139,7 +139,7 @@ const CLEAN_NOTE = [
 ].join('\n');
 
 // Broadened in fix round 1: this is the only test certifying the absence
-// of a false positive across all eight rules AT ONCE, and a narrower one
+// of a false positive across all nine rules AT ONCE, and a narrower one
 // (a single field-free log) would not have caught any of the three
 // review findings that live in this exact area (a fenced heading/date
 // pair read as real, a comment in the root index read as a declaration,
@@ -189,7 +189,7 @@ test('a vault where every note satisfies every rule, the root index carries no f
 
 // --- SPEC_RULES and runSpecRules: shape and the ruler+id identity -------------
 
-test('SPEC_RULES is a plain array of eight rule objects, each with a stable id and a section string, and a check function', () => {
+test('SPEC_RULES is a plain array of nine rule objects, each with a stable id and a section string, and a check function', () => {
   assert.ok(Array.isArray(SPEC_RULES));
   assert.deepEqual(
     SPEC_RULES.map((rule) => rule.id),
@@ -202,6 +202,7 @@ test('SPEC_RULES is a plain array of eight rule objects, each with a stable id a
       'status-enum',
       'stale-after-format',
       'sources-resource',
+      'unique-keys',
     ],
   );
   for (const rule of SPEC_RULES) {
@@ -217,10 +218,11 @@ test('SPEC_RULES is a plain array of eight rule objects, each with a stable id a
 // 'should' finding from different checks, so neither carries one
 // uniform level of its own; every finding either of them produces must
 // set its own `level`, with nothing to silently fall back to. The other
-// six rules agree with themselves (type-required always 'must'; the
-// five section 5 to 10 rules always 'should'), so their rule object
-// carries that one level as every one of their findings' default.
-test('type-required is must-level and the five section 5 to 10 rules are should-level; index-no-frontmatter and log-format carry no single level of their own', () => {
+// seven rules agree with themselves (type-required always 'must'; the
+// five section 5 to 10 rules and unique-keys always 'should'), so their
+// rule object carries that one level as every one of their findings'
+// default.
+test('type-required is must-level, the five section 5 to 10 rules and unique-keys are should-level; index-no-frontmatter and log-format carry no single level of their own', () => {
   const levelById = Object.fromEntries(SPEC_RULES.map((rule) => [rule.id, rule.level]));
   assert.deepEqual(levelById, {
     'type-required': 'must',
@@ -231,6 +233,7 @@ test('type-required is must-level and the five section 5 to 10 rules are should-
     'status-enum': 'should',
     'stale-after-format': 'should',
     'sources-resource': 'should',
+    'unique-keys': 'should',
   });
 });
 
@@ -1219,6 +1222,56 @@ test('sources-resource does not fire when sources is absent, but does fire, agai
   const unreadable = findings.filter((f) => isSpec('sources-resource')(f) && f.file === 'people/unreadable-sources.md');
   assert.equal(unreadable.length, 1);
   assert.match(renderedMessage(unreadable[0]), /PARSER_LIMITS/);
+});
+
+// --- unique-keys ------------------------------------------------------------------
+
+test('unique-keys flags a top-level key written three times, bare and quoted alike, once, at the line of its second copy', () => {
+  const files = {
+    ...cleanVaultFiles(),
+    'people/three-generated.md': CLEAN_NOTE.replace(
+      'generated: { by: human:ana, at: 2026-09-18T09:30:00Z }',
+      'generated: { by: human:ana, at: 2026-09-20T09:30:00Z }\n"generated": { by: human:ana, at: 2026-09-19T09:30:00Z }\ngenerated: { by: human:ana, at: 2026-09-18T09:30:00Z }',
+    ),
+  };
+  const findings = findingsFor(files).filter(isSpec('unique-keys'));
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].file, 'people/three-generated.md');
+  assert.equal(findings[0].line, 4);
+  assert.equal(findings[0].level, 'should');
+  assert.equal(findings[0].check, 'top-level-key-once');
+  assert.deepEqual(findings[0].params, { key: 'generated', count: 3, first: 3 });
+  assert.match(renderedMessage(findings[0]), /^generated is written 3 times in the frontmatter, the first on line 3;/);
+});
+
+test('unique-keys counts only top-level keys: not a field repeated inside list entries, not a comment, not the body', () => {
+  const note = [
+    '---',
+    'type: note',
+    '# type: a comment, not a key',
+    'generated: { by: human:ana, at: 2026-09-18T09:30:00Z }',
+    'title: "a value with type: inside"',
+    'sources:',
+    '  - id: one',
+    '    resource: https://example.com/a',
+    '  - id: one',
+    '    resource: https://example.com/b',
+    '---',
+    'type: prose in the body that looks like a key',
+    '',
+    '```yaml',
+    'generated: inside a fence',
+    '```',
+    '',
+  ].join('\n');
+  assert.deepEqual(findingsFor({ ...cleanVaultFiles(), 'notes/nested.md': note }).filter(isSpec('unique-keys')), []);
+});
+
+test('unique-keys checks the root index too: okf_version declared twice passes index-no-frontmatter and is still a repeated key', () => {
+  const files = { ...cleanVaultFiles(), 'index.md': '---\nokf_version: "0.2"\nokf_version: "0.2"\n---\n# Welcome\n' };
+  const findings = findingsFor(files);
+  assert.deepEqual(findings.filter(isSpec('index-no-frontmatter')), []);
+  assert.deepEqual(findings.filter(isSpec('unique-keys')).map((f) => [f.file, f.line, f.params.key]), [['index.md', 3, 'okf_version']]);
 });
 
 // --- a rule must never throw: malformed, truncated, empty and binary-ish files ----

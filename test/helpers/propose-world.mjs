@@ -25,6 +25,9 @@
 //     packed-refs, .git/config, the index's
 //     bytes and every working-tree file's bytes, mode and modification
 //     time, in one comparable value: what propose must never move.
+//   - `afterPush(before, branch, commit)`: that value as it must read once
+//     `branch` is published at `commit`, which from git 2.56 on includes
+//     git's own record of the push (PUSH_BY_URL_TRACKS below).
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -195,4 +198,22 @@ export function fingerprint(dir) {
     index: sha256(readFileSync(join(dir, '.git', 'index'))),
     files: files(dir),
   };
+}
+
+// git 2.56 and later record a push to a url that exactly one configured
+// remote names under that remote's tracking refs, as a push by remote name
+// always did ("Fixes since v2.55" in git's release notes); 2.55 and earlier
+// recorded nothing. propose pushes by url, so from 2.56 a published branch
+// leaves refs/remotes/origin/<branch> at the published commit.
+const [gitMajor, gitMinor] = /(\d+)\.(\d+)/.exec(spawnSync('git', ['version'], { encoding: 'utf8' }).stdout).slice(1).map(Number);
+export const PUSH_BY_URL_TRACKS = gitMajor > 2 || (gitMajor === 2 && gitMinor >= 56);
+
+// `before` (a fingerprint) as it must read once `branch` is published at
+// `commit`: the tracking ref above is the only reference allowed to differ.
+// A null commit (nothing was published) changes nothing.
+export function afterPush(before, branch, commit) {
+  if (!PUSH_BY_URL_TRACKS || commit === null) return before;
+  const ref = `refs/remotes/origin/${branch}`;
+  const kept = before.refs.split('\n').filter((entry) => entry !== '' && !entry.startsWith(`${ref} `));
+  return { ...before, refs: `${[...kept, `${ref} ${commit} `].sort().join('\n')}\n` };
 }

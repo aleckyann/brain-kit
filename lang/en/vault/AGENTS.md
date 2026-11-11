@@ -28,11 +28,12 @@ You are working in a second brain: a markdown vault in the Open Knowledge Format
 1. Every change goes through a pull request. Never commit to the default branch.
 2. Before proposing, run `brain-kit validate` and `brain-kit lint`. A pull request that fails either does not merge.
 3. The owner merging the pull request is the approval.
+4. A merge conflict is never resolved by keeping both sides whole: the frontmatter keeps one line per key, and a table row, section or entry that appears on both sides becomes one.
 
 ## Rules
 
 - **Single source of truth:** this repository. Nothing important lives only in a chat.
 - **Never write `verified`** about your own work. Human confirmation enters when the owner merges.
-- **Date everything:** every note carries `generated: { by, at }`, with the right actor and an ISO 8601 datetime with its UTC offset. See [CONVENTIONS.md](CONVENTIONS.md).
+- **Date everything:** every note carries `generated: { by, at }`, with the right actor and an ISO 8601 datetime with its UTC offset. The key appears once: when you change a note, replace its `generated:` line, never add another. See [CONVENTIONS.md](CONVENTIONS.md).
 - **Confidential:** notes about people are sensitive. Keep the repository private, and never link a note inside people/ from outside it, except its index. See [SECURITY.md](SECURITY.md).
 - **Do not invent:** if it is not in the vault and nobody said it, you do not know it. Check before stating.

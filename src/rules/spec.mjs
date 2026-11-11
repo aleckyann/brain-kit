@@ -3,7 +3,7 @@
 // (src/rules/house.mjs, a later task) is where a vault's own config gets
 // a say; this module has no config section of its own at all, and never
 // reads context.config for that reason. It also never reads context.all:
-// none of these eight rules resolves a link against the vault's full
+// none of these nine rules resolves a link against the vault's full
 // file list (link-target-exists, the one rule that does, is a house
 // rule), so the walk asking for every file, attachments included, is not
 // something this module needed.
@@ -276,7 +276,7 @@
 // anyone looks for one.
 import { posix } from 'node:path';
 import { DATE_PATTERN, isValidCalendarDate, isValidIsoDate } from '../dates.mjs';
-import { frontmatterKeyLine, readEntries, readMapping, readScalar, splitFrontmatter } from '../frontmatter.mjs';
+import { frontmatterKeyLine, readEntries, readMapping, readScalar, repeatedKeys, splitFrontmatter } from '../frontmatter.mjs';
 import { stripCode } from '../markdown.mjs';
 
 const RESERVED_FILENAMES = Object.freeze(['index.md', 'log.md']);
@@ -905,6 +905,46 @@ const sourcesResource = {
   },
 };
 
+// --- unique-keys (4, 11) -------------------------------------------------------------
+//
+// Section 4 makes a concept's frontmatter a YAML block, and section 11
+// counts a parseable YAML frontmatter block among the three things that
+// make a bundle conformant. YAML 1.2.2 gives each key of a mapping one
+// place (section 3.2.1.1) and lists a key that is not unique among the
+// failure points of loading (section 3.3), without requiring a processor
+// to reject it; the format itself never mentions a repeated key. That is
+// an arguable reading, so the claim is 'should', the lower tier, as this
+// file's header requires; under the default validate.fail_on ('any') it
+// still fails the run.
+//
+// Every reader in src/frontmatter.mjs stops at the FIRST line of a key,
+// so a repeated key passed every other rule here: in the original vault
+// five notes reached up to eighteen `generated` lines with this validator
+// green (docs/incidents.md, 11/11/2026). Reserved files are checked too:
+// a root index.md that declares okf_version twice is the same defect.
+
+const uniqueKeys = {
+  id: 'unique-keys',
+  section: '4, 11',
+  level: 'should',
+  check(files, context) {
+    const findings = [];
+    for (const file of files) {
+      const { frontmatter } = splitFrontmatter(context.readFile(file));
+      for (const { key, lines } of repeatedKeys(frontmatter)) {
+        findings.push({
+          file,
+          line: lines[1],
+          check: 'top-level-key-once',
+          messageKey: 'spec.unique_keys.repeated',
+          params: { key, count: lines.length, first: lines[0] },
+        });
+      }
+    }
+    return findings;
+  },
+};
+
 export const SPEC_RULES = Object.freeze([
   typeRequired,
   indexNoFrontmatter,
@@ -914,6 +954,7 @@ export const SPEC_RULES = Object.freeze([
   statusEnum,
   staleAfterFormat,
   sourcesResource,
+  uniqueKeys,
 ]);
 
 // Runs every rule over `files`, in order, and returns their findings

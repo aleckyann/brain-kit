@@ -28,11 +28,12 @@ Você está trabalhando num segundo cérebro: um vault em markdown no Open Knowl
 1. Toda mudança passa por um pull request. Nunca faça commit direto no branch padrão.
 2. Antes de propor, rode `brain-kit validate` e `brain-kit lint`. Um pull request que falha em qualquer um dos dois não entra.
 3. O merge do pull request pelo dono é a aprovação.
+4. Conflito de merge nunca se resolve mantendo os dois lados inteiros: no frontmatter fica uma linha por chave, e uma linha de tabela, seção ou entrada que aparece dos dois lados vira uma só.
 
 ## Regras
 
 - **Fonte única da verdade:** este repositório. Nada importante existe só num chat.
 - **Nunca escreva `verified`** sobre o próprio trabalho. A confirmação humana entra quando o dono faz o merge.
-- **Registre a data de tudo:** toda nota leva `generated: { by, at }`, com o ator certo e uma data e hora ISO 8601 com o deslocamento de UTC. Veja [CONVENTIONS.md](CONVENTIONS.md).
+- **Registre a data de tudo:** toda nota leva `generated: { by, at }`, com o ator certo e uma data e hora ISO 8601 com o deslocamento de UTC. A chave aparece uma vez só: ao alterar uma nota, substitua a linha `generated:`, nunca acrescente outra. Veja [CONVENTIONS.md](CONVENTIONS.md).
 - **Confidencial:** notas sobre pessoas são sensíveis. Mantenha o repositório privado e nunca crie, fora de pessoas/, um link para uma nota de dentro dela, exceto o seu índice. Veja [SECURITY.md](SECURITY.md).
 - **Não invente:** se não está no vault e ninguém disse, você não sabe. Verifique antes de afirmar.
